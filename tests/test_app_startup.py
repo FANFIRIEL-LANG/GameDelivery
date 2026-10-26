@@ -162,6 +162,68 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.deleteLater()
                     self.app.processEvents()
 
+    def test_playerok_order_imports_once_and_prepares_under_same_local_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            InventorySnapshotStore(database).replace(
+                [CardCopy("asset-playerok-1", "Example Game", "Trading Card")],
+                bot_name="Bot A",
+            )
+            source_order = {
+                "platform": "playerok",
+                "order_id": "deal-123",
+                "title": "Steam Card Set",
+                "buyer": "buyer-a",
+                "status": "PAID",
+                "amount": "250",
+                "created_at": "2026-10-01T00:00:00+00:00",
+                "url": "https://playerok.com/deal/deal-123",
+            }
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
+                 patch("app.main.QMessageBox.information") as info, \
+                 patch("app.main.QMessageBox.warning") as warning:
+                window = MainWindow()
+                try:
+                    window._import_marketplace_order(source_order)
+                    self.assertEqual(window.orders.rowCount(), 1)
+                    local_order_id = window.orders.item(0, 0).text()
+                    self.assertEqual(window.orders.item(0, 1).text(), "Playerok · buyer-a")
+                    self.assertEqual(window.orders.item(0, 2).text(), "Steam Card Set")
+                    window._import_marketplace_order(source_order)
+                    self.assertEqual(window.orders.rowCount(), 1)
+
+                    window.order_recipient.setText(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+                    )
+                    window.order_assets.item(0).setSelected(True)
+                    window._prepare_delivery_order()
+                    warning.assert_not_called()
+                    info.assert_called_once()
+                    with sqlite3.connect(database) as db:
+                        order = db.execute(
+                            "SELECT source_platform, source_order_id, source_title, source_buyer, "
+                            "recipient_trade_url, status, asset_count FROM delivery_orders WHERE order_id = ?",
+                            (local_order_id,),
+                        ).fetchone()
+                        reserved_assets = db.execute(
+                            "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
+                            (local_order_id,),
+                        ).fetchall()
+                    self.assertEqual(
+                        order,
+                        (
+                            "playerok", "deal-123", "Steam Card Set", "buyer-a",
+                            "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
+                            "reserved — не отправлен", 1,
+                        ),
+                    )
+                    self.assertEqual(reserved_assets, [("Bot A", "asset-playerok-1")])
+                    self.assertEqual(window.orders.rowCount(), 1)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
     def test_main_window_constructs_with_expected_tabs(self):
         window = MainWindow()
         try:
