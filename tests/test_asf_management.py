@@ -114,9 +114,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
         get_inventory.assert_not_called()
         self.assertIn("выбери бота", self.widget.status.text())
 
-    @patch("app.asf_management.ASFInventoryController.refresh")
-    def test_snapshot_refresh_uses_selected_bot_and_ipc_password(self, refresh):
-        refresh.return_value = {"item_count": 12, "updated_at": "2026-10-27T00:00:00+00:00"}
+    def test_snapshot_refresh_uses_selected_bot_and_ipc_password(self):
         from PySide6.QtWidgets import QTableWidgetItem
         self.widget.table.setRowCount(1)
         self.widget.table.setItem(0, 0, QTableWidgetItem("card-bot"))
