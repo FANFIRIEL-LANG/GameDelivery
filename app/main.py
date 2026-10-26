@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
             recipient = self._validate_trade_url(self.order_recipient.text())
             selected = [
                 item.data(Qt.ItemDataRole.UserRole) for item in self.order_assets.selectedItems()
-                if item.data(256) is not None
+                if item.data(Qt.ItemDataRole.UserRole) is not None
             ]
             if not selected:
                 raise ValueError("Выбери хотя бы один незарезервированный актив.")
