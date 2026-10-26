@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         form.addWidget(self.order_recipient, 2)
         form.addWidget(self.order_bot, 1)
         self.order_refresh = QPushButton("Обновить активы")
-        self.order_refresh.clicked.connect(self._load_order_assets)
+        self.order_refresh.clicked.connect(self._load_order_bots)
         form.addWidget(self.order_refresh)
         layout.addLayout(form)
 
@@ -229,11 +229,24 @@ class MainWindow(QMainWindow):
                             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                         )
                     """)
-                    db.execute(
-                        "INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count) "
-                        "VALUES (?, ?, 'reserved — не отправлен', ?)",
-                        (order_id, recipient, len(selected)),
+                    db.execute("""
+                    CREATE TABLE IF NOT EXISTS delivery_order_assets (
+                        order_id TEXT NOT NULL,
+                        bot_name TEXT NOT NULL,
+                        asset_id TEXT NOT NULL,
+                        PRIMARY KEY (order_id, bot_name, asset_id),
+                        FOREIGN KEY (order_id) REFERENCES delivery_orders(order_id)
                     )
+                """)
+                db.execute(
+                    "INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count) "
+                    "VALUES (?, ?, 'reserved — не отправлен', ?)",
+                    (order_id, recipient, len(selected)),
+                )
+                db.executemany(
+                    "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
+                    [(order_id, bot_name, asset_id) for bot_name, asset_id in selected],
+                )
             except Exception:
                 AssetReservationStore(self._database_path).release(order_id)
                 raise
