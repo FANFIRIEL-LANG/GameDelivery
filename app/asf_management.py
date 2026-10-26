@@ -41,8 +41,10 @@ class ASFManagementWidget(QWidget):
         buttons = QHBoxLayout()
         self.refresh_button = QPushButton("Обновить список ботов")
         self.export_button = QPushButton("Сохранить конфигурацию нового бота")
+        self.restart_button = QPushButton("Перезапустить ASF…")
         buttons.addWidget(self.refresh_button)
         buttons.addWidget(self.export_button)
+        buttons.addWidget(self.restart_button)
         buttons.addStretch()
         root.addLayout(buttons)
 
@@ -57,6 +59,7 @@ class ASFManagementWidget(QWidget):
 
         self.refresh_button.clicked.connect(self.refresh_bots)
         self.export_button.clicked.connect(self.export_config)
+        self.restart_button.clicked.connect(self.restart_asf)
 
     def _client(self) -> ASFClient:
         return ASFClient(ipc_password=self.ipc_password.text() or None)
@@ -103,3 +106,25 @@ class ASFManagementWidget(QWidget):
             f"Конфигурация сохранена: {path}. Enabled=false; Steam-пароль не включён. "
             "Для создания бота вручную проверь файл и импортируй его в каталог config ASF."
         )
+
+    def restart_asf(self):
+        answer = QMessageBox.question(
+            self,
+            "Перезапуск ASF",
+            "Перезапустить весь экземпляр ASF? Это временно отключит все боты. Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status.setText("Перезапуск ASF отменён.")
+            return
+        self.restart_button.setEnabled(False)
+        try:
+            self._client().restart(confirmed=True)
+            self.status.setText(
+                "Команда перезапуска отправлена ASF. Подключение может временно пропасть."
+            )
+        except (ASFError, ValueError, OSError) as exc:
+            self.status.setText(f"Не удалось перезапустить ASF: {exc}")
+        finally:
+            self.restart_button.setEnabled(True)
