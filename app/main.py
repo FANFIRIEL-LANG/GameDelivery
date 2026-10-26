@@ -79,7 +79,8 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         note = QLabel(
-            "Подготовка доставки: выбери бота и конкретные активы из локального снимка ASF. "
+            "Playerok-заказы можно импортировать с вкладки «Площадки». Выбери импортированный заказ, "
+            "введи trade URL покупателя и отметь активы ASF. Если заказ не выбран, создастся ручной черновик. "
             "Резервирование локальное; обмены не отправляются."
         )
         note.setObjectName("muted")
@@ -114,7 +115,7 @@ class MainWindow(QMainWindow):
         AssetReservationStore(self._database_path)
         self._ensure_delivery_order_schema()
         self.orders = QTableWidget(0, 5)
-        self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Предметы", "Статус", "Обновлено"])
+        self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Товар / активы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
         self.orders.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.orders.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -417,7 +418,8 @@ class MainWindow(QMainWindow):
         order_id = self.orders.item(row, 0).text()
         with sqlite3.connect(self._database_path) as db:
             order = db.execute(
-                "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
+                "SELECT recipient_trade_url, status, source_platform, source_order_id, "
+                "source_title, source_buyer FROM delivery_orders WHERE order_id = ?",
                 (order_id,),
             ).fetchone()
             assets = db.execute(
@@ -427,7 +429,15 @@ class MainWindow(QMainWindow):
             ).fetchall()
         if order is None:
             raise ValueError("Заказ не найден в базе данных.")
-        lines = [f"Заказ: {order_id}", f"Статус: {order[1]}", f"Trade URL: {order[0]}", "", "Активы:"]
+        lines = [f"Заказ GameDelivery: {order_id}", f"Статус: {order[1]}"]
+        if order[2] == "playerok":
+            lines.extend([
+                f"Источник: Playerok",
+                f"ID сделки Playerok: {order[3] or '—'}",
+                f"Товар: {order[4] or '—'}",
+                f"Покупатель Playerok: {order[5] or '—'}",
+            ])
+        lines.extend([f"Steam trade URL: {order[0] or 'не указан'}", "", "Зарезервированные активы:"])
         lines.extend(f"• {bot} — asset {asset}" for bot, asset in assets)
         if not assets:
             lines.append("Состав не сохранён (старый заказ).")
@@ -438,15 +448,30 @@ class MainWindow(QMainWindow):
             order_id = self._selected_order_id()
             with sqlite3.connect(self._database_path) as db:
                 row = db.execute(
-                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                    "SELECT status, source_platform FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
                 ).fetchone()
             if row is None:
                 raise ValueError("Заказ не найден в базе данных.")
-            if row[0] != "reserved — не отправлен":
-                raise ValueError("Снять резерв можно только у заказа в статусе «reserved — не отправлен».")
+            original_status, source_platform = row
+            if original_status not in {"reserved — не отправлен", "imported — ожидание подготовки"}:
+                raise ValueError(
+                    "Отменить можно только подготовленный заказ без отправки или импортированный "
+                    "заказ, который ещё не готовился к доставке."
+                )
+            cancelled_status = (
+                "cancelled — резерв снят"
+                if original_status == "reserved — не отправлен"
+                else "cancelled — отказ от заказа"
+            )
+            action_text = (
+                "освободить зарезервированные активы"
+                if original_status == "reserved — не отправлен"
+                else "убрать импортированный заказ из очереди"
+            )
             answer = QMessageBox.question(
                 self, "Отменить заказ",
-                f"Отменить {order_id} и освободить его активы? Это не отправляет обмен.",
+                f"Отменить {order_id} и {action_text}? Обмен не отправляется.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -457,18 +482,18 @@ class MainWindow(QMainWindow):
                 current = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
                 ).fetchone()
-                if current is None or current[0] != "reserved — не отправлен":
+                if current is None or current[0] != original_status:
                     raise ValueError("Статус заказа изменился. Обнови список и повтори действие.")
                 db.execute(
-                    "UPDATE delivery_orders SET status = 'cancelled — резерв снят' WHERE order_id = ?",
-                    (order_id,),
+                    "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                    (cancelled_status, order_id, original_status),
                 )
                 db.execute(
                     "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
                 )
             self._load_saved_orders()
             self._load_order_assets()
-            self.statusBar().showMessage(f"Заказ {order_id} отменён; резерв снят.")
+            self.statusBar().showMessage(f"Заказ {order_id} отменён.")
         except (OSError, sqlite3.Error, ValueError) as exc:
             QMessageBox.warning(self, "Не удалось отменить заказ", str(exc))
 
