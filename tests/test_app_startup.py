@@ -202,7 +202,8 @@ class AppStartupSmokeTests(unittest.TestCase):
                     with sqlite3.connect(database) as db:
                         order = db.execute(
                             "SELECT source_platform, source_order_id, source_title, source_buyer, "
-                            "recipient_trade_url, status, asset_count FROM delivery_orders WHERE order_id = ?",
+                            "recipient_trade_url, status, asset_count, source_status, source_amount, source_url "
+                            "FROM delivery_orders WHERE order_id = ?",
                             (local_order_id,),
                         ).fetchone()
                         reserved_assets = db.execute(
@@ -214,7 +215,8 @@ class AppStartupSmokeTests(unittest.TestCase):
                         (
                             "playerok", "deal-123", "Steam Card Set", "buyer-a",
                             "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
-                            "reserved — не отправлен", 1,
+                            "reserved — не отправлен", 1, "PAID", "250",
+                            "https://playerok.com/deal/deal-123",
                         ),
                     )
                     self.assertEqual(reserved_assets, [("Bot A", "asset-playerok-1")])
