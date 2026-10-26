@@ -36,10 +36,12 @@ behavior has been verified. A web proxy check alone is not proof
 that Steam CM traffic uses the proxy.
 
 Proxy credentials must not be embedded in the proxy URI, logs, GitHub, or
-diagnostic summaries. The model returns secrets only in the explicit ASF
-configuration payload. Before the UI stores credentials, implement protected
-local secret storage and ensure secrets are never serialized into ordinary
-settings or logs.
+diagnostic summaries. The current UI stores proxy metadata in local SQLite and
+stores the proxy password through the operating-system keyring (`keyring`); it
+fails closed when a usable keyring backend is unavailable. IPCPassword is
+requested interactively when applying settings and is not stored by the UI.
+The secret is included only in the explicit ASF configuration request payload
+when applying the selected bot's proxy.
 
 ## Scope and safeguards
 
