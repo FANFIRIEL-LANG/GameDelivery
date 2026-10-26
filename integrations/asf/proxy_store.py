@@ -47,37 +47,77 @@ class ProxyStore:
             raise RuntimeError("Для безопасного хранения паролей установи пакет keyring") from exc
         return keyring
 
+    @staticmethod
+    def _delete_secret(keyring: Any, username: str) -> None:
+        """Delete a keyring entry if present, without hiding backend failures."""
+        try:
+            keyring.delete_password(SERVICE_NAME, username)
+        except Exception as exc:
+            errors = getattr(keyring, "errors", None)
+            missing_types = tuple(
+                error_type
+                for error_type in (
+                    getattr(errors, "PasswordDeleteError", None),
+                    getattr(errors, "PasswordNotFoundException", None),
+                )
+                if isinstance(error_type, type)
+            )
+            if missing_types and isinstance(exc, missing_types):
+                return
+            raise RuntimeError("Не удалось удалить пароль прокси из системного хранилища") from None
+
     def save(self, bot_name: str, proxy: Any, *, enabled: bool = True) -> None:
         bot_name = bot_name.strip()
         if not bot_name:
             raise ValueError("Укажи имя бота ASF")
+
         keyring = self._keyring()
-        # Fail closed if the OS credential backend is unavailable or unusable.
         backend = keyring.get_keyring()
         priority = getattr(backend, "priority", 0)
         if not priority or priority < 1:
             raise RuntimeError("Системное хранилище учётных данных недоступно; пароль не сохранён")
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO steam_proxy_profiles
-                    (bot_name, scheme, host, port, username, enabled, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-                ON CONFLICT(bot_name) DO UPDATE SET
-                    scheme=excluded.scheme, host=excluded.host, port=excluded.port,
-                    username=excluded.username, enabled=excluded.enabled,
-                    updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                """,
-                (bot_name, proxy.scheme, proxy.host, proxy.port, proxy.username, int(enabled)),
-            )
+
         password_key = f"{bot_name}:password"
+        try:
+            previous_password = keyring.get_password(SERVICE_NAME, password_key)
+        except Exception:
+            raise RuntimeError("Не удалось проверить системное хранилище учётных данных") from None
+
+        # Store the secret first. If the database write fails, restore the prior
+        # secret so the profile and its credential cannot silently diverge.
         if proxy.password is not None:
-            keyring.set_password(SERVICE_NAME, password_key, proxy.password)
-        else:
             try:
-                keyring.delete_password(SERVICE_NAME, password_key)
-            except keyring.errors.PasswordDeleteError:
+                keyring.set_password(SERVICE_NAME, password_key, proxy.password)
+            except Exception:
+                raise RuntimeError("Не удалось сохранить пароль прокси в системном хранилище") from None
+
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO steam_proxy_profiles
+                        (bot_name, scheme, host, port, username, enabled, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    ON CONFLICT(bot_name) DO UPDATE SET
+                        scheme=excluded.scheme, host=excluded.host, port=excluded.port,
+                        username=excluded.username, enabled=excluded.enabled,
+                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    """,
+                    (bot_name, proxy.scheme, proxy.host, proxy.port, proxy.username, int(enabled)),
+                )
+        except Exception:
+            try:
+                if previous_password is None:
+                    self._delete_secret(keyring, password_key)
+                else:
+                    keyring.set_password(SERVICE_NAME, password_key, previous_password)
+            except Exception:
+                # Preserve the original DB error; no credential value is included.
                 pass
+            raise
+
+        if proxy.password is None:
+            self._delete_secret(keyring, password_key)
 
     def list_profiles(self) -> list[dict[str, object]]:
         with self._connect() as connection:
@@ -96,13 +136,12 @@ class ProxyStore:
             ).fetchone()
         if exists is None:
             raise KeyError("Профиль прокси не найден")
-        return self._keyring().get_password(SERVICE_NAME, f"{bot_name}:password")
+        try:
+            return self._keyring().get_password(SERVICE_NAME, f"{bot_name}:password")
+        except Exception:
+            raise RuntimeError("Не удалось прочитать пароль прокси из системного хранилища") from None
 
     def delete(self, bot_name: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM steam_proxy_profiles WHERE bot_name = ?", (bot_name,))
-        keyring = self._keyring()
-        try:
-            keyring.delete_password(SERVICE_NAME, f"{bot_name}:password")
-        except keyring.errors.PasswordDeleteError:
-            pass
+        self._delete_secret(self._keyring(), f"{bot_name}:password")
