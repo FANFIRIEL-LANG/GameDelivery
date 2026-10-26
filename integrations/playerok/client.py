@@ -32,6 +32,7 @@ class PlayerokAdapter(MarketplaceAdapter):
         self._account_factory = account_factory
         self._keyring_backend = keyring_backend
         self._session_token: str | None = None
+        self._session_persisted = False
         self._pending_second_factor_session: Any | None = None
 
     def _account_type(self) -> Callable[..., Any]:
@@ -85,6 +86,7 @@ class PlayerokAdapter(MarketplaceAdapter):
             token = None
         if token:
             self._session_token = token
+            self._session_persisted = True
         return token
 
     def _save_token(self, token: str | None) -> bool:
@@ -93,9 +95,11 @@ class PlayerokAdapter(MarketplaceAdapter):
         self._session_token = str(token)
         try:
             self._keyring().set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, self._session_token)
+            self._session_persisted = True
             return True
         except Exception:
             # Keep the session usable for this run but clearly report non-persistence.
+            self._session_persisted = False
             return False
 
     def request_login_code(self, email: str) -> dict[str, Any]:
@@ -171,7 +175,7 @@ class PlayerokAdapter(MarketplaceAdapter):
             account = self._account_type()(token=token)
             try:
                 profile = await account.get_me()
-                return self._profile_result(profile, True)
+                return self._profile_result(profile, self._session_persisted)
             finally:
                 await account.aclose()
         return self._run(operation())
@@ -191,18 +195,24 @@ class PlayerokAdapter(MarketplaceAdapter):
             except Exception as exc:
                 remote_error = str(exc)
         self._session_token = None
+        self._session_persisted = False
         self._pending_second_factor_session = None
+        keyring_error = None
         try:
             self._keyring().delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        except Exception:
-            pass
+        except Exception as exc:
+            keyring_error = str(exc)
+        messages = []
+        if remote_error:
+            messages.append("Playerok не подтвердил удалённый выход: " + remote_error)
+        if keyring_error:
+            messages.append("Не удалось удалить сохранённый токен из системного хранилища: " + keyring_error)
+        if not messages:
+            messages.append("Выход выполнен, локальная сессия удалена.")
         return {
             "connected": False,
-            "local_session_cleared": True,
-            "message": (
-                "Локальная сессия удалена. Playerok не подтвердил удалённый выход: " + remote_error
-                if remote_error else "Выход выполнен, локальная сессия удалена."
-            ),
+            "local_session_cleared": keyring_error is None,
+            "message": " ".join(messages),
         }
 
     def fetch_orders(self) -> list[dict[str, Any]]:
