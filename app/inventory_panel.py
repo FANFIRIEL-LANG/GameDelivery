@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 from games.steam_cards.inventory_views import build_inventory_view
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
+from app.asf_inventory_controller import ASFInventoryController
+from integrations.asf.client import ASFError
 
 
 class InventoryPanel(QWidget):
