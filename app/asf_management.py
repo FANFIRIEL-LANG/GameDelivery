@@ -42,9 +42,11 @@ class ASFManagementWidget(QWidget):
         self.refresh_button = QPushButton("Обновить список ботов")
         self.export_button = QPushButton("Сохранить конфигурацию нового бота")
         self.restart_button = QPushButton("Перезапустить ASF…")
+        self.inventory_button = QPushButton("Показать инвентарь выбранного бота")
         buttons.addWidget(self.refresh_button)
         buttons.addWidget(self.export_button)
         buttons.addWidget(self.restart_button)
+        buttons.addWidget(self.inventory_button)
         buttons.addStretch()
         root.addLayout(buttons)
 
@@ -60,6 +62,7 @@ class ASFManagementWidget(QWidget):
         self.refresh_button.clicked.connect(self.refresh_bots)
         self.export_button.clicked.connect(self.export_config)
         self.restart_button.clicked.connect(self.restart_asf)
+        self.inventory_button.clicked.connect(self.show_inventory)
 
     def _client(self) -> ASFClient:
         return ASFClient(ipc_password=self.ipc_password.text() or None)
@@ -128,3 +131,32 @@ class ASFManagementWidget(QWidget):
             self.status.setText(f"Не удалось перезапустить ASF: {exc}")
         finally:
             self.restart_button.setEnabled(True)
+
+    def show_inventory(self):
+        row = self.table.currentRow()
+        if row < 0 or self.table.item(row, 0) is None:
+            self.status.setText("Сначала выбери бота в списке.")
+            return
+        bot_name = self.table.item(row, 0).text()
+        self.inventory_button.setEnabled(False)
+        try:
+            payload = self._client().get_bot_inventory(bot_name)
+            if isinstance(payload, dict):
+                safe_payload = dict(payload)
+                for key in list(safe_payload):
+                    if any(secret in str(key).casefold() for secret in ("password", "token", "secret", "apikey")):
+                        safe_payload.pop(key, None)
+                rendered = json.dumps(safe_payload, ensure_ascii=False, indent=2)
+            else:
+                rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle(f"Инвентарь ASF — {bot_name}")
+            dialog.setText(f"Ответ ASF для бота {bot_name}")
+            dialog.setDetailedText(rendered)
+            dialog.setIcon(QMessageBox.Icon.Information)
+            dialog.exec()
+            self.status.setText(f"Инвентарь получен через ASF для бота {bot_name}.")
+        except (ASFError, ValueError, OSError) as exc:
+            self.status.setText(f"Не удалось получить инвентарь {bot_name}: {exc}")
+        finally:
+            self.inventory_button.setEnabled(True)
