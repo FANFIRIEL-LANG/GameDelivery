@@ -33,6 +33,7 @@ class _MarketplaceTask(QThread):
 
 class MarketplacePanel(QWidget):
     connection_status_changed = Signal(str)
+    order_import_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -102,9 +103,12 @@ class MarketplacePanel(QWidget):
         self.disconnect_button.clicked.connect(self._disconnect)
         self.fetch_orders_button = QPushButton("Загрузить активные заказы")
         self.fetch_orders_button.clicked.connect(self._fetch_orders)
+        self.import_order_button = QPushButton("Добавить выбранный заказ в GameDelivery")
+        self.import_order_button.clicked.connect(self._import_selected_order)
         action_row.addWidget(self.restore_button)
         action_row.addWidget(self.disconnect_button)
         action_row.addWidget(self.fetch_orders_button)
+        action_row.addWidget(self.import_order_button)
         form.addLayout(action_row)
         root.addWidget(connection_card)
 
@@ -119,6 +123,7 @@ class MarketplacePanel(QWidget):
         self.orders_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.orders_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.orders_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.orders_table.itemSelectionChanged.connect(self._update_button_state)
         self.orders_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.orders_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.orders_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
@@ -134,6 +139,7 @@ class MarketplacePanel(QWidget):
         for widget in (
             self.send_code_button, self.confirm_code_button, self.two_factor_button,
             self.restore_button, self.disconnect_button, self.fetch_orders_button,
+            self.import_order_button,
         ):
             widget.setEnabled(not busy)
         if not busy:
@@ -147,6 +153,9 @@ class MarketplacePanel(QWidget):
         ):
             widget.setEnabled(not running)
         self.fetch_orders_button.setEnabled(not running and self._connected)
+        self.import_order_button.setEnabled(
+            not running and self._connected and self.orders_table.currentRow() >= 0
+        )
         self.two_factor_button.setEnabled(
             not running and bool(getattr(self.playerok, "_pending_second_factor_session", None))
         )
@@ -219,6 +228,19 @@ class MarketplacePanel(QWidget):
             "Загружаю активные продажи Playerok…",
         )
 
+    def _import_selected_order(self) -> None:
+        row = self.orders_table.currentRow()
+        if row < 0:
+            self.status_label.setText("Сначала выбери сделку в таблице.")
+            return
+        item = self.orders_table.item(row, 0)
+        order = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(order, dict) or not order.get("order_id"):
+            self.status_label.setText("Не удалось прочитать выбранную сделку.")
+            return
+        self.order_import_requested.emit(dict(order))
+        self.status_label.setText(f"Заказ {order['order_id']} передан в очередь GameDelivery.")
+
     def _task_completed(self, action: str, ok: bool, payload: Any) -> None:
         self._set_busy(False)
         if not ok:
@@ -270,6 +292,8 @@ class MarketplacePanel(QWidget):
             )
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value))
-                if column == 0 and order.get("url"):
-                    cell.setToolTip(str(order["url"]))
+                if column == 0:
+                    cell.setData(Qt.ItemDataRole.UserRole, dict(order))
+                    if order.get("url"):
+                        cell.setToolTip(str(order["url"]))
                 self.orders_table.setItem(row, column, cell)
