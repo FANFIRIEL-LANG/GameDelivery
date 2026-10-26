@@ -23,7 +23,7 @@ class ASFInventoryTests(unittest.TestCase):
                     ],
                     "Descriptions": [
                         {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
-                        {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card"},
+                        {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "12", "instanceid": "0", "name": "Background", "type": "Profile Background"},
                     ],
                 }
@@ -49,6 +49,31 @@ class ASFInventoryTests(unittest.TestCase):
     def test_parser_requires_requested_bot_to_be_present(self):
         with self.assertRaises(ASFError):
             parse_bot_inventory({"Success": True, "Result": {}}, "Bot A", "Game")
+
+    def test_missing_asset_description_rejects_snapshot(self):
+        payload = {
+            "Success": True,
+            "Result": {"Bot A": {
+                "Assets": [{"assetid": "100", "classid": "10", "instanceid": "0"}],
+                "Descriptions": [],
+            }},
+        }
+        with self.assertRaisesRegex(ASFError, "описания"):
+            parse_bot_inventory(payload, "Bot A", "Game")
+
+    def test_trading_card_without_game_tag_rejects_snapshot(self):
+        payload = {
+            "Success": True,
+            "Result": {"Bot A": {
+                "Assets": [{"assetid": "100", "classid": "10", "instanceid": "0"}],
+                "Descriptions": [{
+                    "classid": "10", "instanceid": "0", "name": "Card A",
+                    "type": "Steam Trading Card",
+                }],
+            }},
+        }
+        with self.assertRaisesRegex(ASFError, "тег игры"):
+            parse_bot_inventory(payload, "Bot A", "Game")
 
 
 if __name__ == "__main__":
