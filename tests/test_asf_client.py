@@ -78,7 +78,6 @@ class ASFClientTests(unittest.TestCase):
             "WebProxy": "socks5://proxy.example:1080",
             "WebProxyUsername": "user",
             "WebProxyPassword": "secret",
-            "SteamProtocols": 4,
         })
         self.assertTrue(summary["saved"])
         posted = json.loads(urlopen.call_args_list[1].args[0].data.decode("utf-8"))
@@ -88,7 +87,8 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(config["SteamLogin"], "account-name")
         self.assertEqual(config["SteamTradeToken"], "tradetoken")
         self.assertEqual(config["WebProxy"], "socks5://proxy.example:1080")
-        self.assertEqual(config["SteamProtocols"], 4)
+        self.assertEqual(config["SteamProtocols"], 7)
+        self.assertTrue(summary["steam_connection_proxy_requires_global_setting"])
         self.assertNotIn("secret", str(summary))
 
     @patch("integrations.asf.client.urlopen")
@@ -99,7 +99,6 @@ class ASFClientTests(unittest.TestCase):
                 "WebProxy": "http://proxy.example:8080",
                 "WebProxyUsername": None,
                 "WebProxyPassword": None,
-                "SteamProtocols": 4,
             })
         self.assertEqual(urlopen.call_count, 1)
 
