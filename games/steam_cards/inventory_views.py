@@ -53,8 +53,7 @@ def build_inventory_view(
     if mode not in {"shared", "separate"}:
         raise ValueError("mode должен быть 'shared' или 'separate'")
 
-    known_bots = {name.strip(): name for name in inventories if name.strip()}
-    selected: list[str] = []
+    # Materialize each iterable once: callers may provide generators, which must\n    # remain usable for both aggregation and owner-allocation passes.\n    normalized_inventories = {name: list(cards) for name, cards in inventories.items()}\n    known_bots = {name.strip(): name for name in normalized_inventories if name.strip()}\n    selected: list[str] = []
     seen: set[str] = set()
     for raw_name in selected_bots:
         name = raw_name.strip()
@@ -65,7 +64,7 @@ def build_inventory_view(
     assets: dict[tuple[str, str, bool, bool, str | None], list[str]] = defaultdict(list)
     seen_asset_ids: set[tuple[str, str]] = set()
     for bot_name in selected:
-        for card in inventories[known_bots[bot_name]]:
+        for card in normalized_inventories[known_bots[bot_name]]
             asset_id = str(card.asset_id).strip()
             game_name = card.game_name.strip()
             card_name = card.card_name.strip()
@@ -92,7 +91,7 @@ def build_inventory_view(
         if owner_key is None:
             per_bot: dict[str, list[str]] = defaultdict(list)
             for bot_name in selected:
-                bot_cards = inventories[known_bots[bot_name]]
+                bot_cards = normalized_inventories[known_bots[bot_name]]
                 for card in bot_cards:
                     if (
                         card.game_name.strip() == game_name
