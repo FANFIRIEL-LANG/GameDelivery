@@ -152,7 +152,10 @@ class MainWindow(QMainWindow):
                     source_platform TEXT NOT NULL DEFAULT 'manual',
                     source_order_id TEXT,
                     source_title TEXT NOT NULL DEFAULT '',
-                    source_buyer TEXT NOT NULL DEFAULT ''
+                    source_buyer TEXT NOT NULL DEFAULT '',
+                    source_status TEXT NOT NULL DEFAULT '',
+                    source_amount TEXT NOT NULL DEFAULT '',
+                    source_url TEXT NOT NULL DEFAULT ''
                 )
             """)
             columns = {
@@ -163,6 +166,9 @@ class MainWindow(QMainWindow):
                 "source_order_id": "TEXT",
                 "source_title": "TEXT NOT NULL DEFAULT ''",
                 "source_buyer": "TEXT NOT NULL DEFAULT ''",
+                "source_status": "TEXT NOT NULL DEFAULT ''",
+                "source_amount": "TEXT NOT NULL DEFAULT ''",
+                "source_url": "TEXT NOT NULL DEFAULT ''",
             }
             for name, definition in migrations.items():
                 if name not in columns:
@@ -187,10 +193,14 @@ class MainWindow(QMainWindow):
         external_id = str(marketplace_order.get("order_id") or "").strip()
         title = str(marketplace_order.get("title") or "Заказ с торговой площадки").strip()
         buyer = str(marketplace_order.get("buyer") or "").strip()
+        source_status = str(marketplace_order.get("status") or "").strip()
+        source_amount = str(marketplace_order.get("amount") or "").strip()
+        source_url = str(marketplace_order.get("url") or "").strip()
         if platform != "playerok" or not external_id:
             self.statusBar().showMessage("Не удалось импортировать заказ: нет поддерживаемого источника или ID.")
             return
         local_order_id = f"GD-{uuid4().hex[:12].upper()}"
+        imported_now = False
         try:
             self._ensure_delivery_order_schema()
             with sqlite3.connect(self._database_path) as db:
@@ -199,27 +209,40 @@ class MainWindow(QMainWindow):
                     (platform, external_id),
                 ).fetchone()
                 if existing:
-                    self.statusBar().showMessage(
-                        f"Сделка {external_id} уже импортирована как {existing[0]}."
+                    local_order_id = existing[0]
+                    db.execute(
+                        "UPDATE delivery_orders SET source_status = ?, source_amount = ?, source_url = ? "
+                        "WHERE order_id = ?",
+                        (source_status, source_amount, source_url, local_order_id),
                     )
-                    self.tabs.setCurrentIndex(0)
-                    return
-                db.execute("""
-                    INSERT INTO delivery_orders
-                        (order_id, recipient_trade_url, status, asset_count,
-                         source_platform, source_order_id, source_title, source_buyer)
-                    VALUES (?, '', 'imported — ожидание подготовки', 0, ?, ?, ?, ?)
-                """, (local_order_id, platform, external_id, title, buyer))
+                else:
+                    db.execute("""
+                        INSERT INTO delivery_orders
+                            (order_id, recipient_trade_url, status, asset_count,
+                             source_platform, source_order_id, source_title, source_buyer,
+                             source_status, source_amount, source_url)
+                        VALUES (?, '', 'imported — ожидание подготовки', 0, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        local_order_id, platform, external_id, title, buyer,
+                        source_status, source_amount, source_url,
+                    ))
+                    imported_now = True
             self._load_saved_orders()
             self.tabs.setCurrentIndex(0)
             for row in range(self.orders.rowCount()):
                 if self.orders.item(row, 0).text() == local_order_id:
                     self.orders.selectRow(row)
                     break
-            self.statusBar().showMessage(
-                f"Сделка Playerok {external_id} добавлена как {local_order_id}. "
-                "Укажи trade URL покупателя и выбери активы для подготовки."
-            )
+            if imported_now:
+                self.statusBar().showMessage(
+                    f"Сделка Playerok {external_id} добавлена как {local_order_id}. "
+                    "Укажи trade URL покупателя и выбери активы для подготовки."
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"Сделка Playerok {external_id} уже есть как {local_order_id}; "
+                    "данные площадки обновлены."
+                )
         except (OSError, sqlite3.Error, ValueError) as exc:
             self.statusBar().showMessage(f"Не удалось импортировать заказ Playerok: {exc}")
 
@@ -419,7 +442,8 @@ class MainWindow(QMainWindow):
         with sqlite3.connect(self._database_path) as db:
             order = db.execute(
                 "SELECT recipient_trade_url, status, source_platform, source_order_id, "
-                "source_title, source_buyer FROM delivery_orders WHERE order_id = ?",
+                "source_title, source_buyer, source_status, source_amount, source_url "
+                "FROM delivery_orders WHERE order_id = ?",
                 (order_id,),
             ).fetchone()
             assets = db.execute(
@@ -436,6 +460,9 @@ class MainWindow(QMainWindow):
                 f"ID сделки Playerok: {order[3] or '—'}",
                 f"Товар: {order[4] or '—'}",
                 f"Покупатель Playerok: {order[5] or '—'}",
+                f"Статус на площадке при последнем обновлении: {order[6] or '—'}",
+                f"Сумма на площадке при последнем обновлении: {order[7] or '—'}",
+                f"Ссылка на сделку: {order[8] or '—'}",
             ])
         lines.extend([f"Steam trade URL: {order[0] or 'не указан'}", "", "Зарезервированные активы:"])
         lines.extend(f"• {bot} — asset {asset}" for bot, asset in assets)
