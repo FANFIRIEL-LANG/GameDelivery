@@ -101,6 +101,29 @@ class ASFClient:
             raise ValueError("Имя бота не должно быть пустым")
         return self.request("/Api/Bot/" + quote(bot_name, safe=""))
 
+    def get_bot_inventory(
+        self,
+        bot_name: str,
+        *,
+        app_id: int = 753,
+        context_id: int = 6,
+        language: str = "english",
+    ) -> Any:
+        """Fetch one bot's Steam inventory through ASF's documented IPC route."""
+        if not bot_name.strip():
+            raise ValueError("Имя бота не должно быть пустым")
+        if isinstance(app_id, bool) or not isinstance(app_id, int) or app_id <= 0:
+            raise ValueError("app_id должен быть положительным целым числом")
+        if isinstance(context_id, bool) or not isinstance(context_id, int) or context_id <= 0:
+            raise ValueError("context_id должен быть положительным целым числом")
+        if not language.strip() or any(ch in language for ch in "/\\\\?#"):
+            raise ValueError("Некорректный язык инвентаря")
+        path = (
+            "/Api/Bot/" + quote(bot_name, safe="")
+            + f"/Inventory/{app_id}/{context_id}?language=" + quote(language, safe="")
+        )
+        return self.request(path)
+
     def get_bot_config(self, bot_name: str) -> dict[str, Any]:
         """Read the bot config from the official bot object returned by ASF IPC."""
         payload = _unwrap_result(self.get_bot(bot_name))
