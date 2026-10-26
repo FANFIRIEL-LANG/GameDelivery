@@ -119,6 +119,7 @@ class PlayerokAdapterTests(unittest.TestCase):
         self.assertEqual(orders[0]["title"], "Steam Card Set")
         self.assertEqual(orders[0]["buyer"], "buyer-a")
         self.assertEqual(orders[0]["status"], "PAID")
+        self.assertEqual(orders[0]["url"], "https://playerok.com/deal/deal-123")
         self.assertNotIn("session-secret", str(orders))
         gql_call = next(call for call in self.transport.calls if call["url"].endswith("/graphql"))
         self.assertEqual(gql_call["payload"]["operationName"], "Deals")
@@ -149,11 +150,15 @@ class PlayerokAdapterTests(unittest.TestCase):
             self.adapter.request_login_code("not-an-email")
         self.assertEqual(self.transport.calls, [])
 
-    def test_non_https_and_foreign_hosts_are_rejected(self):
+    def test_non_https_foreign_hosts_and_malformed_tokens_are_rejected(self):
         with self.assertRaises(ValueError):
             self.adapter._request("http://playerok.com/rest-api/public/auth/send-otp")
         with self.assertRaises(ValueError):
             self.adapter._request("https://attacker.example/auth/send-otp")
+        with self.assertRaises(RuntimeError):
+            self.adapter._request(
+                "https://playerok.com/rest-api/public/viewer", token="token\\r\\nInjected: true"
+            )
 
 
 if __name__ == "__main__":
