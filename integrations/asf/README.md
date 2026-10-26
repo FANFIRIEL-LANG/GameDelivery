@@ -19,18 +19,21 @@ not collect Steam passwords or persist ASF secrets in source control.
 The initial configuration model is in `proxy_config.py`. It maps one proxy to
 one ASF bot and builds the documented bot settings:
 
-- `WebProxy`, `WebProxyUsername`, and `WebProxyPassword` for ASF HTTP(S)
-  requests to Steam web services.
-- `SteamProtocols = 4` to restrict that bot to WebSocket transport, the ASF
-  documented requirement when its Steam client connection also needs to use
-  `WebProxy`.
+- `WebProxy`, `WebProxyUsername`, and `WebProxyPassword` are per-bot
+  settings for ASF HTTP(S) requests to Steam web services.
+- `SteamProtocols = 4` is a **global ASF setting**, not a bot setting. ASF
+  documents WebSocket-only transport as the requirement when Steam client
+  connections must also use `WebProxy`. Changing it affects every bot in that
+  ASF instance and may reduce connection fallback options.
 
-This is a configuration model only: the settings are not yet applied to a
-running ASF bot, and no UI or live connection test is implemented. The app must
-not show a proxy as active until applying the settings and verifying both
-traffic paths. Web-proxy reachability alone is not proof that Steam CM traffic
-uses the proxy. The configured WebSocket-only transport may reduce connection
-fallback options, so report it clearly in the UI.
+The app must never write `SteamProtocols` into a bot config or silently change
+the global setting. Applying a per-bot proxy profile only configures the web
+proxy; the UI must explicitly show that Steam CM proxying still requires the
+global setting and must not call both paths active. Before adding a global
+setting workflow, it must fetch the complete current global config, preserve
+all unrelated values, require clear user consent to the instance-wide effect,
+write through the official IPC endpoint, and verify the saved value. A web
+proxy check alone is not proof that Steam CM traffic uses the proxy.
 
 Proxy credentials must not be embedded in the proxy URI, logs, GitHub, or
 diagnostic summaries. The model returns secrets only in the explicit ASF
