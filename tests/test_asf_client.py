@@ -263,7 +263,7 @@ class ASFClientTests(unittest.TestCase):
         filename, content = ASFClient.serialize_new_bot_config("card-bot", steam_login="user")
         self.assertEqual(filename, "card-bot.json")
         self.assertEqual(json.loads(content), {"Enabled": False, "SteamLogin": "user"})
-        self.assertTrue(content.endswith("\\n"))
+        self.assertTrue(content.endswith("\n"))
 
 
 if __name__ == "__main__":
