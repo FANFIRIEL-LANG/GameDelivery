@@ -68,6 +68,25 @@ class ASFManagementWidgetTests(unittest.TestCase):
         restart.assert_called_once_with(confirmed=True)
         self.assertIn("отправлена", self.widget.status.text())
 
+    @patch("app.asf_management.QMessageBox.exec")
+    @patch("app.asf_management.ASFClient.get_bot_inventory")
+    def test_inventory_uses_selected_bot_and_displays_response(self, get_inventory, dialog_exec):
+        get_inventory.return_value = {"Result": [{"assetid": "123", "name": "Trading Card"}]}
+        self.widget.table.setRowCount(1)
+        from PySide6.QtWidgets import QTableWidgetItem
+        self.widget.table.setItem(0, 0, QTableWidgetItem("card-bot"))
+        self.widget.table.selectRow(0)
+        self.widget.show_inventory()
+        get_inventory.assert_called_once_with("card-bot")
+        self.assertIn("Инвентарь получен", self.widget.status.text())
+        dialog_exec.assert_called_once()
+
+    @patch("app.asf_management.ASFClient.get_bot_inventory")
+    def test_inventory_requires_selected_bot(self, get_inventory):
+        self.widget.show_inventory()
+        get_inventory.assert_not_called()
+        self.assertIn("выбери бота", self.widget.status.text())
+
     @patch("app.asf_management.QMessageBox.warning")
     def test_export_rejects_invalid_name_before_file_dialog(self, warning):
         with patch("app.asf_management.QFileDialog.getSaveFileName") as choose_path:
