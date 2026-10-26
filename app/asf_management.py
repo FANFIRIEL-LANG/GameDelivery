@@ -46,6 +46,7 @@ class ASFManagementWidget(QWidget):
         self.export_inventory_button = QPushButton("Экспорт инвентаря JSON")
         self._last_inventory = None
         self._last_inventory_bot = None
+        self._last_inventory_export_payload = None
         buttons.addWidget(self.refresh_button)
         buttons.addWidget(self.export_button)
         buttons.addWidget(self.restart_button)
@@ -152,15 +153,10 @@ class ASFManagementWidget(QWidget):
             payload = self._client().get_bot_inventory(bot_name)
             self._last_inventory = payload
             self._last_inventory_bot = bot_name
+            safe_payload = self._sanitize_inventory(payload)
+            self._last_inventory_export_payload = safe_payload
             self.export_inventory_button.setEnabled(True)
-            if isinstance(payload, dict):
-                safe_payload = dict(payload)
-                for key in list(safe_payload):
-                    if any(secret in str(key).casefold() for secret in ("password", "token", "secret", "apikey")):
-                        safe_payload.pop(key, None)
-                rendered = json.dumps(safe_payload, ensure_ascii=False, indent=2)
-            else:
-                rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+            rendered = json.dumps(safe_payload, ensure_ascii=False, indent=2)
             dialog = QMessageBox(self)
             dialog.setWindowTitle(f"Инвентарь ASF — {bot_name}")
             dialog.setText(f"Ответ ASF для бота {bot_name}")
@@ -173,8 +169,21 @@ class ASFManagementWidget(QWidget):
         finally:
             self.inventory_button.setEnabled(True)
 
+    @classmethod
+    def _sanitize_inventory(cls, value):
+        secret_markers = ("password", "token", "secret", "apikey", "api_key", "authorization", "cookie")
+        if isinstance(value, dict):
+            return {
+                key: cls._sanitize_inventory(item)
+                for key, item in value.items()
+                if not any(marker in str(key).casefold() for marker in secret_markers)
+            }
+        if isinstance(value, list):
+            return [cls._sanitize_inventory(item) for item in value]
+        return value
+
     def export_inventory(self):
-        if self._last_inventory is None or not self._last_inventory_bot:
+        if self._last_inventory_export_payload is None or not self._last_inventory_bot:
             self.status.setText("Сначала загрузи инвентарь выбранного бота.")
             return
         default_name = f"{self._last_inventory_bot}-inventory.json"
@@ -184,7 +193,7 @@ class ASFManagementWidget(QWidget):
         if not path:
             return
         try:
-            payload = json.dumps(self._last_inventory, ensure_ascii=False, indent=2)
+            payload = json.dumps(self._last_inventory_export_payload, ensure_ascii=False, indent=2)
             Path(path).write_text(payload, encoding="utf-8")
         except (OSError, TypeError, ValueError) as exc:
             QMessageBox.warning(self, "Экспорт инвентаря", f"Не удалось сохранить JSON: {exc}")
