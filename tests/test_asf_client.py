@@ -62,7 +62,6 @@ class ASFClientTests(unittest.TestCase):
             "WebProxy": None,
             "WebProxyUsername": None,
             "WebProxyPassword": None,
-            "SteamProtocols": 7,
         }
         urlopen.side_effect = [
             FakeResponse({
@@ -87,7 +86,7 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(config["SteamLogin"], "account-name")
         self.assertEqual(config["SteamTradeToken"], "tradetoken")
         self.assertEqual(config["WebProxy"], "socks5://proxy.example:1080")
-        self.assertEqual(config["SteamProtocols"], 7)
+        self.assertNotIn("SteamProtocols", config)
         self.assertTrue(summary["steam_connection_proxy_requires_global_setting"])
         self.assertNotIn("secret", str(summary))
 
