@@ -134,5 +134,28 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 1)
 
 
+    @patch("integrations.asf.client.urlopen")
+    def test_global_protocol_change_fails_if_readback_does_not_match(self, urlopen):
+        original = {"IPC": True, "SteamProtocols": 7}
+        unchanged = {"IPC": True, "SteamProtocols": 7}
+        urlopen.side_effect = [
+            FakeResponse({"Success": True, "Result": {"GlobalConfig": original}}),
+            FakeResponse({"Success": True}),
+            FakeResponse({"Success": True, "Result": {"GlobalConfig": unchanged}}),
+        ]
+        with self.assertRaises(ASFError):
+            ASFClient().apply_global_steam_protocols(confirmed_instance_wide_change=True)
+        self.assertEqual(urlopen.call_count, 3)
+
+    @patch("integrations.asf.client.urlopen")
+    def test_global_protocol_change_refuses_missing_setting_without_post(self, urlopen):
+        urlopen.return_value = FakeResponse({
+            "Success": True, "Result": {"GlobalConfig": {"IPC": True}}
+        })
+        with self.assertRaises(ASFError):
+            ASFClient().apply_global_steam_protocols(confirmed_instance_wide_change=True)
+        self.assertEqual(urlopen.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
