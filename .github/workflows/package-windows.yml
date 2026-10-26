@@ -1,0 +1,64 @@
+name: Package Windows Source Bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/steam-card-set-selection
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/steam-card-set-selection
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python files
+        run: python -m compileall -q app core integrations games notifications tests
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Create source bundle
+        run: |
+          mkdir -p dist/GameDelivery
+          git archive --format=tar HEAD | tar -xf - -C dist/GameDelivery
+          printf '%s\n' 'GameDelivery source bundle' 'Python 3.11+ required' 'Run install_and_start.bat on Windows.' 'Steam trades are disabled.' > dist/GameDelivery/PACKAGE_README.txt
+          cat > dist/GameDelivery/install_and_start.bat <<'EOF'
+          @echo off
+          cd /d %~dp0
+          where py >nul 2>nul
+          if errorlevel 1 (
+            echo Python launcher was not found. Install Python 3.11 or newer from python.org and enable Add Python to PATH.
+            pause
+            exit /b 1
+          )
+          py -3 -m venv .venv
+          if errorlevel 1 (
+            echo Could not create virtual environment.
+            pause
+            exit /b 1
+          )
+          call .venv\Scripts\activate.bat
+          python -m pip install --upgrade pip
+          if errorlevel 1 goto failed
+          python -m pip install -r requirements.txt
+          if errorlevel 1 goto failed
+          python -m app
+          if errorlevel 1 goto failed
+          exit /b 0
+          :failed
+          echo Setup or startup failed. Review the error above.
+          pause
+          exit /b 1
+          EOF
+          cd dist && zip -r GameDelivery-Windows-Source.zip GameDelivery
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GameDelivery-Windows-Source
+          path: dist/GameDelivery-Windows-Source.zip
+          if-no-files-found: error
+          retention-days: 14
