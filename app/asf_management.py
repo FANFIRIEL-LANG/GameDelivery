@@ -145,6 +145,9 @@ class ASFManagementWidget(QWidget):
             return
         bot_name = self.table.item(row, 0).text()
         self.inventory_button.setEnabled(False)
+        self._last_inventory = None
+        self._last_inventory_bot = None
+        self.export_inventory_button.setEnabled(False)
         try:
             payload = self._client().get_bot_inventory(bot_name)
             self._last_inventory = payload
