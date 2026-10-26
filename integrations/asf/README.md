@@ -48,10 +48,12 @@ when applying the selected bot's proxy.
 
 ## Scope and safeguards
 
-The Python adapter currently provides a small HTTP transport and process/bot
-status calls. It does not yet implement inventory pagination, item selection,
-trade offer construction, or automatic sending. These require verifying the
-exact IPC endpoints and request schemas for the selected ASF version.
+The Python adapter currently provides a small HTTP transport, process/bot
+status calls, per-bot proxy configuration with read-back verification, and an
+explicitly confirmed global `SteamProtocols` update with read-back verification.
+It does not yet implement inventory pagination, item selection, trade offer
+construction, or automatic sending. These require verifying the exact IPC
+endpoints and request schemas for the selected ASF version.
 
 Inventory data must be cached locally with per-bot ownership and refreshed from
 ASF; stale inventory must not be treated as available stock. Before any outgoing
