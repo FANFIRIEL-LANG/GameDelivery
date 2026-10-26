@@ -221,6 +221,33 @@ class ASFClientTests(unittest.TestCase):
         self.assertNotIn("secret", str(raised.exception))
         self.assertEqual(urlopen.call_count, 3)
 
+    @patch("integrations.asf.client.urlopen")
+    def test_get_bots_returns_bot_map_from_asf_status(self, urlopen):
+        urlopen.return_value = FakeResponse({
+            "Success": True,
+            "Result": {"Bots": {"bot-a": True, "bot-b": False}},
+        })
+        self.assertEqual(ASFClient().get_bots(), {"bot-a": True, "bot-b": False})
+        self.assertEqual(urlopen.call_args.args[0].full_url, "http://127.0.0.1:1242/Api/ASF")
+
+    @patch("integrations.asf.client.urlopen")
+    def test_get_bots_rejects_missing_bot_map(self, urlopen):
+        urlopen.return_value = FakeResponse({"Success": True, "Result": {"Version": "6.3.10.6"}})
+        with self.assertRaises(ASFError):
+            ASFClient().get_bots()
+
+    def test_restart_requires_explicit_confirmation(self):
+        with self.assertRaises(ValueError):
+            ASFClient().restart()
+
+    @patch("integrations.asf.client.urlopen")
+    def test_restart_uses_official_local_endpoint(self, urlopen):
+        urlopen.return_value = FakeResponse({"Success": True})
+        self.assertEqual(ASFClient().restart(confirmed=True), {"Success": True})
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF/Restart")
+        self.assertEqual(request.get_method(), "POST")
+
 
 if __name__ == "__main__":
     unittest.main()
