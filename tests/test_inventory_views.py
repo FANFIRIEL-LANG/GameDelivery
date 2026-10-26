@@ -1,0 +1,60 @@
+import unittest
+
+from games.steam_cards.inventory_views import build_inventory_view
+from games.steam_cards.selection import CardCopy
+
+
+def card(asset_id, name="Card A", game="Game", foil=False):
+    return CardCopy(asset_id, game, name, is_foil=foil)
+
+
+class InventoryViewTests(unittest.TestCase):
+    def setUp(self):
+        self.inventories = {
+            "Bot A": [card("same-id"), card("a2"), card("foil", foil=True)],
+            "Bot B": [card("same-id"), card("b2"), card("other", name="Card B")],
+            "Bot C": [card("c1", game="Other Game")],
+        }
+
+    def test_no_selected_bots_returns_empty_view(self):
+        view = build_inventory_view(self.inventories, [], mode="shared")
+        self.assertEqual(view.rows, ())
+        self.assertEqual(view.selected_bots, ())
+
+    def test_shared_mode_aggregates_quantity_but_preserves_owner(self):
+        view = build_inventory_view(self.inventories, ["Bot A", "Bot B"], mode="shared")
+        row = next(row for row in view.rows if row.game_name == "Game" and row.card_name == "Card A" and not row.is_foil)
+        self.assertEqual(row.quantity, 4)
+        self.assertEqual(dict(row.assets_by_bot), {
+            "Bot A": ("same-id", "a2"),
+            "Bot B": ("same-id", "b2"),
+        })
+
+    def test_same_asset_id_on_different_bots_is_not_a_duplicate(self):
+        view = build_inventory_view(self.inventories, ["Bot A", "Bot B"], mode="shared")
+        row = next(row for row in view.rows if row.card_name == "Card A" and not row.is_foil)
+        self.assertEqual(row.quantity, 4)
+        self.assertEqual(len(dict(row.assets_by_bot)), 2)
+
+    def test_separate_mode_keeps_bot_rows_separate(self):
+        view = build_inventory_view(self.inventories, ["Bot A", "Bot B"], mode="separate")
+        rows = [row for row in view.rows if row.card_name == "Card A" and not row.is_foil]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].quantity, 2)
+        self.assertEqual(rows[1].quantity, 2)
+        self.assertNotEqual(rows[0].assets_by_bot, rows[1].assets_by_bot)
+
+    def test_unknown_bot_is_ignored_and_duplicate_selection_removed(self):
+        view = build_inventory_view(
+            self.inventories, ["Bot A", "Unknown", "Bot A"], mode="separate"
+        )
+        self.assertEqual(view.selected_bots, ("Bot A",))
+        self.assertTrue(all(dict(row.assets_by_bot).keys() == {"Bot A"} for row in view.rows))
+
+    def test_invalid_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            build_inventory_view(self.inventories, ["Bot A"], mode="merged")
+
+
+if __name__ == "__main__":
+    unittest.main()
