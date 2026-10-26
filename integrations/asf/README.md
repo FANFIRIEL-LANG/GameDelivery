@@ -21,10 +21,13 @@ one ASF bot and builds the documented bot settings:
 
 - `WebProxy`, `WebProxyUsername`, and `WebProxyPassword` are per-bot
   settings for ASF HTTP(S) requests to Steam web services.
-- `SteamProtocols = 4` is a **global ASF setting**, not a bot setting. ASF
-  documents WebSocket-only transport as the requirement when Steam client
-  connections must also use `WebProxy`. Changing it affects every bot in that
-  ASF instance and may reduce connection fallback options.
+- `SteamProtocols = 4` is a **global ASF setting in the installed ASF
+  V6.3.10.6 schema**, not a bot setting. The version-tagged `GlobalConfig.cs`
+  defines it, while `BotConfig.cs` does not expose it. WebSocket-only transport
+  is required when Steam client connections must also use `WebProxy`. Changing
+  it affects every bot in that ASF instance and may reduce connection fallback
+  options. If the user upgrades ASF, re-check the installed version's schema
+  before applying settings.
 
 The app must never write `SteamProtocols` into a bot config or silently change
 the global setting. The client has a separate opt-in method that reads the
