@@ -27,7 +27,6 @@ class InventoryRow:
     is_trading_card: bool
     is_foil: bool
     quantity: int
-    # Exact assets grouped by the bot that owns them.
     assets_by_bot: tuple[tuple[str, tuple[str, ...]], ...]
 
 
@@ -44,18 +43,14 @@ def build_inventory_view(
     *,
     mode: InventoryMode,
 ) -> InventoryView:
-    """Build a shared or per-bot inventory view without losing asset ownership.
-
-    No selected bots produces an empty view. Shared mode aggregates matching
-    card identities across selected bots for display only; every asset remains
-    assigned to its source bot. Separate mode creates distinct rows per bot.
-    """
+    """Build a shared or per-bot view while preserving exact asset ownership."""
     if mode not in {"shared", "separate"}:
         raise ValueError("mode должен быть 'shared' или 'separate'")
 
-    # Materialize each iterable once: callers may provide generators, which must
-    # remain usable for both aggregation and owner-allocation passes.\n    normalized_inventories = {name: list(cards) for name, cards in inventories.items()}
-    known_bots = {name.strip(): name for name in normalized_inventories if name.strip()}\n    selected: list[str] = []
+    # Materialize once because an inventory may be a one-shot generator.
+    normalized = {name: list(cards) for name, cards in inventories.items()}
+    known_bots = {name.strip(): name for name in normalized if name.strip()}
+    selected: list[str] = []
     seen: set[str] = set()
     for raw_name in selected_bots:
         name = raw_name.strip()
@@ -63,62 +58,39 @@ def build_inventory_view(
             selected.append(name)
             seen.add(name)
 
-    assets: dict[tuple[str, str, bool, bool, str | None], list[str]] = defaultdict(list)
-    seen_asset_ids: set[tuple[str, str]] = set()
-    for bot_name in selected:
-        for card in normalized_inventories[known_bots[bot_name]]:
+    grouped: dict[tuple[str, str, bool, bool, str | None], dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    seen_assets: set[tuple[str, str]] = set()
+    for bot in selected:
+        for card in normalized[known_bots[bot]]:
             asset_id = str(card.asset_id).strip()
             game_name = card.game_name.strip()
             card_name = card.card_name.strip()
             if not asset_id or not game_name or not card_name:
                 continue
-            # Asset IDs are only unique within a Steam account, not across bots.
-            asset_key = (bot_name, asset_id)
-            if asset_key in seen_asset_ids:
+            asset_key = (bot, asset_id)
+            if asset_key in seen_assets:
                 continue
-            seen_asset_ids.add(asset_key)
-            owner_key = None if mode == "shared" else bot_name
-            assets[(game_name, card_name, card.is_trading_card, card.is_foil, owner_key)].append(asset_id)
+            seen_assets.add(asset_key)
+            owner_key = None if mode == "shared" else bot
+            grouped[(game_name, card_name, card.is_trading_card, card.is_foil, owner_key)][bot].append(asset_id)
 
     rows: list[InventoryRow] = []
-    for (game_name, card_name, is_card, is_foil, owner_key), ids in sorted(
-        assets.items(),
+    for (game_name, card_name, is_card, is_foil, owner_key), per_bot in sorted(
+        grouped.items(),
         key=lambda item: (
             item[0][0].casefold(), item[0][1].casefold(),
             item[0][2], item[0][3], (item[0][4] or "").casefold(),
         ),
     ):
-        # Shared rows keep a per-bot allocation map so no item can be mistaken
-        # as transferable from another bot.
-        if owner_key is None:
-            per_bot: dict[str, list[str]] = defaultdict(list)
-            for bot_name in selected:
-                bot_cards = normalized_inventories[known_bots[bot_name]]
-                for card in bot_cards:
-                    if (
-                        card.game_name.strip() == game_name
-                        and card.card_name.strip() == card_name
-                        and card.is_trading_card == is_card
-                        and card.is_foil == is_foil
-                        and card.asset_id.strip() in ids
-                        and card.asset_id.strip()
-                    ):
-                        per_bot[bot_name].append(card.asset_id.strip())
-            assets_by_bot = tuple(
-                (bot, tuple(dict.fromkeys(per_bot[bot])))
-                for bot in selected if per_bot.get(bot)
-            )
-        else:
-            assets_by_bot = ((owner_key, tuple(dict.fromkeys(ids))),)
-        rows.append(
-            InventoryRow(
-                game_name=game_name,
-                card_name=card_name,
-                is_trading_card=is_card,
-                is_foil=is_foil,
-                quantity=sum(len(asset_ids) for _, asset_ids in assets_by_bot),
-                assets_by_bot=assets_by_bot,
-            )
-        )
-
+        owners = [(bot, tuple(ids)) for bot, ids in per_bot.items() if ids]
+        if owner_key is not None:
+            owners = [(owner_key, tuple(per_bot.get(owner_key, [])))]
+        rows.append(InventoryRow(
+            game_name=game_name,
+            card_name=card_name,
+            is_trading_card=is_card,
+            is_foil=is_foil,
+            quantity=sum(len(ids) for _, ids in owners),
+            assets_by_bot=tuple(owners),
+        ))
     return InventoryView(mode=mode, selected_bots=tuple(selected), rows=tuple(rows))
