@@ -173,5 +173,42 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 1)
 
 
+    @patch("integrations.asf.client.urlopen")
+    def test_proxy_apply_fails_if_readback_does_not_match(self, urlopen):
+        existing = {
+            "AcceptGifts": True,
+            "Enabled": True,
+            "WebProxy": None,
+            "WebProxyUsername": None,
+            "WebProxyPassword": None,
+        }
+        unchanged = {
+            "AcceptGifts": True,
+            "Enabled": True,
+            "WebProxy": None,
+            "WebProxyUsername": None,
+        }
+        urlopen.side_effect = [
+            FakeResponse({
+                "Success": True,
+                "Result": {"bot-a": {"BotConfig": existing, "BotName": "bot-a"}},
+            }),
+            FakeResponse({"Success": True, "Result": {"bot-a": True}}),
+            FakeResponse({
+                "Success": True,
+                "Result": {"bot-a": {"BotConfig": unchanged, "BotName": "bot-a"}},
+            }),
+        ]
+        with self.assertRaises(ASFError) as raised:
+            ASFClient().apply_proxy_settings("bot-a", {
+                "WebProxy": "socks5://proxy.example:1080",
+                "WebProxyUsername": "user",
+                "WebProxyPassword": "secret",
+            })
+        self.assertIn("не подтвердил адрес веб-прокси", str(raised.exception))
+        self.assertNotIn("secret", str(raised.exception))
+        self.assertEqual(urlopen.call_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
