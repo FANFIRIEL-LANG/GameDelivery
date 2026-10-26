@@ -66,7 +66,7 @@ def build_inventory_view(
     assets: dict[tuple[str, str, bool, bool, str | None], list[str]] = defaultdict(list)
     seen_asset_ids: set[tuple[str, str]] = set()
     for bot_name in selected:
-        for card in normalized_inventories[known_bots[bot_name]]
+        for card in normalized_inventories[known_bots[bot_name]]:
             asset_id = str(card.asset_id).strip()
             game_name = card.game_name.strip()
             card_name = card.card_name.strip()
