@@ -73,6 +73,9 @@ class PlayerokAdapter(MarketplaceAdapter):
             "session_saved": session_saved,
         }
 
+    def has_saved_session(self) -> bool:
+        return bool(self._saved_token())
+
     def _saved_token(self) -> str | None:
         if self._session_token:
             return self._session_token
