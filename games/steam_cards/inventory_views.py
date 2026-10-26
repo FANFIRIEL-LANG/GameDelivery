@@ -53,7 +53,9 @@ def build_inventory_view(
     if mode not in {"shared", "separate"}:
         raise ValueError("mode должен быть 'shared' или 'separate'")
 
-    # Materialize each iterable once: callers may provide generators, which must\n    # remain usable for both aggregation and owner-allocation passes.\n    normalized_inventories = {name: list(cards) for name, cards in inventories.items()}\n    known_bots = {name.strip(): name for name in normalized_inventories if name.strip()}\n    selected: list[str] = []
+    # Materialize each iterable once: callers may provide generators, which must
+    # remain usable for both aggregation and owner-allocation passes.\n    normalized_inventories = {name: list(cards) for name, cards in inventories.items()}
+    known_bots = {name.strip(): name for name in normalized_inventories if name.strip()}\n    selected: list[str] = []
     seen: set[str] = set()
     for raw_name in selected_bots:
         name = raw_name.strip()
