@@ -15,6 +15,7 @@ from games.steam_cards.reservations import AssetReservationStore
 from app.inventory_panel import InventoryPanel
 from app.proxy_settings import ProxySettingsWidget
 from app.asf_management import ASFManagementWidget
+from app.platforms_panel import MarketplacePanel
 
 
 class MainWindow(QMainWindow):
@@ -33,6 +34,7 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("Автоматизация доставки игровых предметов")
         subtitle.setObjectName("muted")
         status = QLabel("Playerok: не подключён")
+        self.platform_status = status
         status.setObjectName("status")
         header.addWidget(title)
         header.addSpacing(12)
@@ -43,6 +45,9 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._orders_tab(), "Заказы")
+        self.marketplace_panel = MarketplacePanel()
+        self.marketplace_panel.connection_status_changed.connect(self.platform_status.setText)
+        self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
         self.tabs.addTab(self._games_tab(), "Модули игр")
