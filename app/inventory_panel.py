@@ -75,7 +75,7 @@ class InventoryPanel(QWidget):
             }
             self.reservation_rows = self._load_reservations()
             selected_before = {
-                item.text() for item in self.bot_list.selectedItems()
+                item.data(Qt.ItemDataRole.UserRole) for item in self.bot_list.selectedItems()
             }
             self.bot_list.clear()
             for bot in sorted(self.inventories, key=str.casefold):
