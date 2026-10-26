@@ -307,7 +307,20 @@ class MainWindow(QMainWindow):
             if not selected:
                 raise ValueError("Выбери хотя бы один незарезервированный актив.")
 
-            order_id = f"GD-{uuid4().hex[:12].upper()}"
+            self._ensure_delivery_order_schema()
+            existing_order_id = None
+            selected_row = self.orders.currentRow()
+            if selected_row >= 0 and self.orders.item(selected_row, 0):
+                candidate_id = self.orders.item(selected_row, 0).text().strip()
+                with sqlite3.connect(self._database_path) as db:
+                    candidate = db.execute(
+                        "SELECT source_platform, status FROM delivery_orders WHERE order_id = ?",
+                        (candidate_id,),
+                    ).fetchone()
+                if candidate and candidate[0] == "playerok" and candidate[1] == "imported — ожидание подготовки":
+                    existing_order_id = candidate_id
+
+            order_id = existing_order_id or f"GD-{uuid4().hex[:12].upper()}"
             reservations = AssetReservationStore(self._database_path)
             result = reservations.reserve(order_id, selected)
             if not result["reserved"]:
@@ -318,29 +331,26 @@ class MainWindow(QMainWindow):
 
             try:
                 with sqlite3.connect(self._database_path) as db:
-                    db.execute("""
-                        CREATE TABLE IF NOT EXISTS delivery_orders (
-                            order_id TEXT PRIMARY KEY,
-                            recipient_trade_url TEXT NOT NULL,
-                            status TEXT NOT NULL,
-                            asset_count INTEGER NOT NULL,
-                            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    db.execute("BEGIN IMMEDIATE")
+                    if existing_order_id:
+                        current = db.execute(
+                            "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                        ).fetchone()
+                        if current is None or current[0] != "imported — ожидание подготовки":
+                            raise ValueError("Заказ Playerok уже изменился. Обнови список и повтори.")
+                        db.execute(
+                            "UPDATE delivery_orders SET recipient_trade_url = ?, "
+                            "status = 'reserved — не отправлен', asset_count = ? "
+                            "WHERE order_id = ? AND status = 'imported — ожидание подготовки'",
+                            (recipient, len(selected), order_id),
                         )
-                    """)
-                    db.execute("""
-                        CREATE TABLE IF NOT EXISTS delivery_order_assets (
-                            order_id TEXT NOT NULL,
-                            bot_name TEXT NOT NULL,
-                            asset_id TEXT NOT NULL,
-                            PRIMARY KEY (order_id, bot_name, asset_id),
-                            FOREIGN KEY (order_id) REFERENCES delivery_orders(order_id)
+                    else:
+                        db.execute(
+                            "INSERT INTO delivery_orders "
+                            "(order_id, recipient_trade_url, status, asset_count, source_platform) "
+                            "VALUES (?, ?, 'reserved — не отправлен', ?, 'manual')",
+                            (order_id, recipient, len(selected)),
                         )
-                    """)
-                    db.execute(
-                        "INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count) "
-                        "VALUES (?, ?, 'reserved — не отправлен', ?)",
-                        (order_id, recipient, len(selected)),
-                    )
                     db.executemany(
                         "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
                         [(order_id, bot_name, asset_id) for bot_name, asset_id in selected],
@@ -353,7 +363,7 @@ class MainWindow(QMainWindow):
             self._load_order_assets()
             QMessageBox.information(
                 self, "Заказ подготовлен",
-                f"Заказ {order_id} создан. Активов зарезервировано: {len(selected)}. "
+                f"Заказ {order_id} создан/подготовлен. Активов зарезервировано: {len(selected)}. "
                 "Обмен не отправлялся."
             )
         except (OSError, sqlite3.Error, ValueError) as exc:
@@ -364,15 +374,24 @@ class MainWindow(QMainWindow):
             return
         self.orders.setRowCount(0)
         try:
+            self._ensure_delivery_order_schema()
             with sqlite3.connect(self._database_path) as db:
                 rows = db.execute(
-                    "SELECT order_id, recipient_trade_url, asset_count, status, created_at "
-                    "FROM delivery_orders ORDER BY created_at DESC"
+                    "SELECT order_id, asset_count, status, created_at, source_platform, "
+                    "source_title, source_buyer FROM delivery_orders ORDER BY created_at DESC"
                 ).fetchall()
-            for order_id, recipient, count, status, created in rows:
+            for order_id, count, status, created, platform, title, buyer in rows:
+                if platform == "playerok":
+                    source = "Playerok" + (f" · {buyer}" if buyer else "")
+                    items = title or "Заказ Playerok"
+                    if count:
+                        items += f" · {count} активов"
+                else:
+                    source = "Ручной заказ"
+                    items = f"{count} активов"
                 row = self.orders.rowCount()
                 self.orders.insertRow(row)
-                for col, value in enumerate((order_id, "Steam trade URL", str(count), status, created)):
+                for col, value in enumerate((order_id, source, items, status, created)):
                     self.orders.setItem(row, col, QTableWidgetItem(str(value)))
         except sqlite3.Error as exc:
             self.statusBar().showMessage(f"Не удалось загрузить сохранённые заказы: {exc}")
