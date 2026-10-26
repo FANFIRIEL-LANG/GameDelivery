@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
         self.proxy_settings = ProxySettingsWidget()
         layout.addWidget(self.proxy_settings, 1)
         telegram = QLabel("Telegram: только уведомления и статистика."); telegram.setObjectName("muted"); layout.addWidget(telegram)
-        warning = QLabel("Профили прокси сохраняются локально. Они пока не применяются к работающему ASF, и реальная отправка предметов отключена.")
+        warning = QLabel("Прокси можно применить через локальный ASF IPC. Для Steam CM приложение запросит отдельное подтверждение глобального SteamProtocols=4. Фактическая маршрутизация трафика и реальная отправка предметов пока не подтверждены.")
         warning.setWordWrap(True); warning.setStyleSheet("color: #f2c879;"); layout.addWidget(warning)
         return page
 
