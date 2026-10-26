@@ -168,7 +168,7 @@ class AppStartupSmokeTests(unittest.TestCase):
             self.assertEqual(window.windowTitle(), "GameDelivery — локальная панель")
             self.assertEqual(
                 [window.tabs.tabText(i) for i in range(window.tabs.count())],
-                ["Заказы", "Инвентарь", "Модули игр", "Журнал", "Настройки", "ASF-боты"],
+                ["Заказы", "Площадки", "Инвентарь", "Модули игр", "Журнал", "Настройки", "ASF-боты"],
             )
             self.assertGreaterEqual(window.width(), 900)
             self.assertGreaterEqual(window.height(), 600)
