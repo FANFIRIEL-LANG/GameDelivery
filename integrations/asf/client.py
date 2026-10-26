@@ -130,11 +130,25 @@ class ASFClient:
             bot_key = _find_key(result, bot_name)
             if bot_key is not None and result[bot_key] is False:
                 raise ASFError("ASF не сохранил конфигурацию прокси")
+        # Verify the non-secret proxy fields by reading the bot config back.
+        # ASF may omit secret fields from responses, so never require the password
+        # to be echoed and never return the config to the UI.
+        verified = self.get_bot_config(bot_name)
+        expected_uri = proxy_settings["WebProxy"]
+        expected_username = proxy_settings["WebProxyUsername"]
+        actual_uri_key = _find_key(verified, "WebProxy")
+        actual_username_key = _find_key(verified, "WebProxyUsername")
+        if actual_uri_key is None or verified[actual_uri_key] != expected_uri:
+            raise ASFError("ASF не подтвердил адрес веб-прокси после сохранения")
+        if actual_username_key is None or verified[actual_username_key] != expected_username:
+            raise ASFError("ASF не подтвердил логин веб-прокси после сохранения")
+
         # Deliberately return only a safe summary; never expose BotConfig.
         return {
             "bot_name": bot_name,
             "settings_submitted": sorted(allowed),
             "saved": True,
+            "verified": True,
             "steam_connection_proxy_requires_global_setting": True,
         }
 
