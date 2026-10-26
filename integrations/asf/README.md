@@ -14,6 +14,30 @@ not collect Steam passwords or persist ASF secrets in source control.
 - Use the running ASF instance's `/swagger` page as the source of truth for
   endpoint schemas for the installed version.
 
+## Per-account proxy
+
+The initial configuration model is in `proxy_config.py`. It maps one proxy to
+one ASF bot and builds the documented bot settings:
+
+- `WebProxy`, `WebProxyUsername`, and `WebProxyPassword` for ASF HTTP(S)
+  requests to Steam web services.
+- `SteamProtocols = 4` to restrict that bot to WebSocket transport, the ASF
+  documented requirement when its Steam client connection also needs to use
+  `WebProxy`.
+
+This is a configuration model only: the settings are not yet applied to a
+running ASF bot, and no UI or live connection test is implemented. The app must
+not show a proxy as active until applying the settings and verifying both
+traffic paths. Web-proxy reachability alone is not proof that Steam CM traffic
+uses the proxy. The configured WebSocket-only transport may reduce connection
+fallback options, so report it clearly in the UI.
+
+Proxy credentials must not be embedded in the proxy URI, logs, GitHub, or
+diagnostic summaries. The model returns secrets only in the explicit ASF
+configuration payload. Before the UI stores credentials, implement protected
+local secret storage and ensure secrets are never serialized into ordinary
+settings or logs.
+
 ## Scope and safeguards
 
 The Python adapter currently provides a small HTTP transport and process/bot
