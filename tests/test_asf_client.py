@@ -71,6 +71,22 @@ class ASFClientTests(unittest.TestCase):
                 },
             }),
             FakeResponse({"Success": True, "Result": {"bot-a": True}}),
+            FakeResponse({
+                "Success": True,
+                "Result": {
+                    "bot-a": {
+                        "BotConfig": {
+                            "AcceptGifts": True,
+                            "Enabled": True,
+                            "SteamLogin": "account-name",
+                            "SteamTradeToken": "tradetoken",
+                            "WebProxy": "socks5://proxy.example:1080",
+                            "WebProxyUsername": "user",
+                        },
+                        "BotName": "bot-a",
+                    }
+                },
+            }),
         ]
         client = ASFClient()
         summary = client.apply_proxy_settings("bot-a", {
@@ -79,6 +95,7 @@ class ASFClientTests(unittest.TestCase):
             "WebProxyPassword": "secret",
         })
         self.assertTrue(summary["saved"])
+        self.assertTrue(summary["verified"])
         posted = json.loads(urlopen.call_args_list[1].args[0].data.decode("utf-8"))
         config = posted["BotConfig"]
         self.assertTrue(config["AcceptGifts"])
