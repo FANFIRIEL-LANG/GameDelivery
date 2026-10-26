@@ -81,6 +81,22 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.assertIn("Инвентарь получен", self.widget.status.text())
         dialog_exec.assert_called_once()
 
+    @patch("app.asf_management.QFileDialog.getSaveFileName")
+    def test_inventory_export_saves_last_inventory_as_json(self, choose_path):
+        with tempfile.TemporaryDirectory() as temp:
+            target = str(Path(temp) / "inventory.json")
+            choose_path.return_value = (target, "JSON (*.json)")
+            self.widget._last_inventory = {"items": [{"assetid": "42"}]}
+            self.widget._last_inventory_bot = "card-bot"
+            self.widget.export_inventory()
+            saved = json.loads(Path(target).read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"items": [{"assetid": "42"}]})
+        self.assertIn("сохранён в JSON", self.widget.status.text())
+
+    def test_inventory_export_requires_loaded_inventory(self):
+        self.widget.export_inventory()
+        self.assertIn("Сначала загрузи инвентарь", self.widget.status.text())
+
     @patch("app.asf_management.ASFClient.get_bot_inventory")
     def test_inventory_requires_selected_bot(self, get_inventory):
         self.widget.show_inventory()
