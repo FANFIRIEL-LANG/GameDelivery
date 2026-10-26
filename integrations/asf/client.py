@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -46,8 +46,24 @@ class ASFClient:
             raise ValueError("Разрешены только пути ASF API, начинающиеся с /Api/")
         if "://" in path or "\n" in path or "\r" in path:
             raise ValueError("Некорректный путь ASF API")
-        if not self.base_url.startswith("http://127.0.0.1") and not self.base_url.startswith("http://localhost"):
-            raise ValueError("ASF IPC должен оставаться доступным только через localhost")
+        try:
+            parsed_base = urlsplit(self.base_url)
+            local_host = parsed_base.hostname in {"127.0.0.1", "localhost", "::1"}
+            valid_port = parsed_base.port in {None, 1242}
+        except ValueError:
+            local_host = False
+            valid_port = False
+        if (
+            parsed_base.scheme != "http"
+            or not local_host
+            or not valid_port
+            or parsed_base.username is not None
+            or parsed_base.password is not None
+            or parsed_base.path not in {"", "/"}
+            or parsed_base.query
+            or parsed_base.fragment
+        ):
+            raise ValueError("ASF IPC должен оставаться доступным только через localhost:1242")
 
         url = self.base_url.rstrip("/") + path
         headers = {"Accept": "application/json"}
