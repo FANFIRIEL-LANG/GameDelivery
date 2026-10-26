@@ -34,11 +34,14 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._orders_tab(), "Заказы")
-        self.tabs.addTab(self._inventory_tab(), "Инвентарь")
+        self.inventory_panel = self._inventory_tab()
+        self.tabs.addTab(self.inventory_panel, "Инвентарь")
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
-        self.tabs.addTab(ASFManagementWidget(), "ASF-боты")
+        self.asf_management = ASFManagementWidget()
+        self.asf_management.inventory_snapshot_updated.connect(self.inventory_panel.select_bot_snapshot)
+        self.tabs.addTab(self.asf_management, "ASF-боты")
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
         self.setStyleSheet("""
