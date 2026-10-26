@@ -98,9 +98,10 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.widget._last_inventory_export_payload = self.widget._sanitize_inventory(self.widget._last_inventory)
             self.widget._last_inventory_bot = "card-bot"
             self.widget.export_inventory()
-            saved = json.loads(Path(target).read_text(encoding="utf-8"))
+            saved_text = Path(target).read_text(encoding="utf-8")
+            saved = json.loads(saved_text)
+            self.assertNotIn("must-not-export", saved_text)
         self.assertEqual(saved, {"items": [{"assetid": "42"}]})
-        self.assertNotIn("must-not-export", Path(target).read_text(encoding="utf-8"))
         self.assertIn("сохранён в JSON", self.widget.status.text())
 
     def test_inventory_export_requires_loaded_inventory(self):
