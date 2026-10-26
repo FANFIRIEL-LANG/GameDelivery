@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._orders_tab(), "Заказы")
         self.marketplace_panel = MarketplacePanel()
         self.marketplace_panel.connection_status_changed.connect(self.platform_status.setText)
+        self.marketplace_panel.order_import_requested.connect(self._import_marketplace_order)
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
@@ -111,16 +112,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
 
         AssetReservationStore(self._database_path)
-        with sqlite3.connect(self._database_path) as db:
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS delivery_orders (
-                    order_id TEXT PRIMARY KEY,
-                    recipient_trade_url TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    asset_count INTEGER NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-                )
-            """)
+        self._ensure_delivery_order_schema()
         self.orders = QTableWidget(0, 5)
         self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Предметы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
@@ -145,6 +137,90 @@ class MainWindow(QMainWindow):
     @property
     def _database_path(self):
         return Path.home() / ".gamedelivery" / "gamedelivery.sqlite3"
+
+    def _ensure_delivery_order_schema(self):
+        """Create or migrate local orders while preserving existing rows."""
+        with sqlite3.connect(self._database_path) as db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_orders (
+                    order_id TEXT PRIMARY KEY,
+                    recipient_trade_url TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    asset_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    source_platform TEXT NOT NULL DEFAULT 'manual',
+                    source_order_id TEXT,
+                    source_title TEXT NOT NULL DEFAULT '',
+                    source_buyer TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            columns = {
+                row[1] for row in db.execute("PRAGMA table_info(delivery_orders)").fetchall()
+            }
+            migrations = {
+                "source_platform": "TEXT NOT NULL DEFAULT 'manual'",
+                "source_order_id": "TEXT",
+                "source_title": "TEXT NOT NULL DEFAULT ''",
+                "source_buyer": "TEXT NOT NULL DEFAULT ''",
+            }
+            for name, definition in migrations.items():
+                if name not in columns:
+                    db.execute(f"ALTER TABLE delivery_orders ADD COLUMN {name} {definition}")
+            db.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_external_order
+                ON delivery_orders (source_platform, source_order_id)
+                WHERE source_order_id IS NOT NULL AND source_order_id <> ''
+            """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_order_assets (
+                    order_id TEXT NOT NULL,
+                    bot_name TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    PRIMARY KEY (order_id, bot_name, asset_id),
+                    FOREIGN KEY (order_id) REFERENCES delivery_orders(order_id)
+                )
+            """)
+
+    def _import_marketplace_order(self, marketplace_order):
+        platform = str(marketplace_order.get("platform") or "").strip().lower()
+        external_id = str(marketplace_order.get("order_id") or "").strip()
+        title = str(marketplace_order.get("title") or "Заказ с торговой площадки").strip()
+        buyer = str(marketplace_order.get("buyer") or "").strip()
+        if platform != "playerok" or not external_id:
+            self.statusBar().showMessage("Не удалось импортировать заказ: нет поддерживаемого источника или ID.")
+            return
+        local_order_id = f"GD-{uuid4().hex[:12].upper()}"
+        try:
+            self._ensure_delivery_order_schema()
+            with sqlite3.connect(self._database_path) as db:
+                existing = db.execute(
+                    "SELECT order_id FROM delivery_orders WHERE source_platform = ? AND source_order_id = ?",
+                    (platform, external_id),
+                ).fetchone()
+                if existing:
+                    self.statusBar().showMessage(
+                        f"Сделка {external_id} уже импортирована как {existing[0]}."
+                    )
+                    self.tabs.setCurrentIndex(0)
+                    return
+                db.execute("""
+                    INSERT INTO delivery_orders
+                        (order_id, recipient_trade_url, status, asset_count,
+                         source_platform, source_order_id, source_title, source_buyer)
+                    VALUES (?, '', 'imported — ожидание подготовки', 0, ?, ?, ?, ?)
+                """, (local_order_id, platform, external_id, title, buyer))
+            self._load_saved_orders()
+            self.tabs.setCurrentIndex(0)
+            for row in range(self.orders.rowCount()):
+                if self.orders.item(row, 0).text() == local_order_id:
+                    self.orders.selectRow(row)
+                    break
+            self.statusBar().showMessage(
+                f"Сделка Playerok {external_id} добавлена как {local_order_id}. "
+                "Укажи trade URL покупателя и выбери активы для подготовки."
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self.statusBar().showMessage(f"Не удалось импортировать заказ Playerok: {exc}")
 
     def _load_order_bots(self, *_):
         current = self.order_bot.currentData() if hasattr(self, "order_bot") else None
