@@ -4,11 +4,27 @@ import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
 class ASFError(RuntimeError):
     """Raised when ASF IPC cannot complete a request."""
+
+
+def _find_key(mapping: dict[str, Any], key: str) -> str | None:
+    wanted = key.casefold()
+    return next((actual for actual in mapping if actual.casefold() == wanted), None)
+
+
+def _unwrap_result(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        raise ASFError("ASF вернул ответ неожиданного формата")
+    success_key = _find_key(payload, "Success")
+    if success_key is not None and payload[success_key] is False:
+        raise ASFError("ASF не подтвердил выполнение операции")
+    result_key = _find_key(payload, "Result")
+    return payload[result_key] if result_key is not None else payload
 
 
 @dataclass(frozen=True)
@@ -30,6 +46,8 @@ class ASFClient:
             raise ValueError("Разрешены только пути ASF API, начинающиеся с /Api/")
         if "://" in path or "\n" in path or "\r" in path:
             raise ValueError("Некорректный путь ASF API")
+        if not self.base_url.startswith("http://127.0.0.1") and not self.base_url.startswith("http://localhost"):
+            raise ValueError("ASF IPC должен оставаться доступным только через localhost")
 
         url = self.base_url.rstrip("/") + path
         headers = {"Accept": "application/json"}
@@ -51,34 +69,72 @@ class ASFClient:
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise ASFError("ASF вернул ответ не в формате JSON") from exc
         except HTTPError as exc:
-            # Do not include request headers or URL query strings in the error.
             if exc.code == 401:
                 raise ASFError("ASF IPC отклонил авторизацию; проверь IPCPassword") from None
             if exc.code == 403:
                 raise ASFError("ASF IPC временно заблокировал запросы или запретил доступ") from None
             raise ASFError(f"ASF IPC вернул HTTP {exc.code}") from None
-        except (URLError, TimeoutError, OSError) as exc:
+        except (URLError, TimeoutError, OSError):
             raise ASFError("ASF IPC недоступен на локальном компьютере") from None
 
     def get_status(self) -> Any:
-        """Read ASF process status using its documented API endpoint."""
         return self.request("/Api/ASF")
 
     def get_bot(self, bot_name: str) -> Any:
-        """Read one bot's status; the name is URL-encoded as a single path segment."""
-        from urllib.parse import quote
-
         if not bot_name.strip():
             raise ValueError("Имя бота не должно быть пустым")
         return self.request("/Api/Bot/" + quote(bot_name, safe=""))
 
-    def send_command(self, command: str) -> Any:
-        """Send a permitted ASF command through IPC.
+    def get_bot_config(self, bot_name: str) -> dict[str, Any]:
+        """Read the bot config from the official bot object returned by ASF IPC."""
+        payload = _unwrap_result(self.get_bot(bot_name))
+        if not isinstance(payload, dict):
+            raise ASFError("ASF не вернул объект бота")
+        actual_bot_key = _find_key(payload, bot_name)
+        if actual_bot_key is None:
+            raise ASFError("ASF не вернул запрошенного бота")
+        bot = payload[actual_bot_key]
+        if not isinstance(bot, dict):
+            raise ASFError("ASF вернул некорректный объект бота")
+        config_key = _find_key(bot, "BotConfig")
+        if config_key is None or not isinstance(bot[config_key], dict):
+            raise ASFError("ASF не предоставил BotConfig; настройки не изменены")
+        config = dict(bot[config_key])
+        if not config:
+            raise ASFError("ASF вернул пустую конфигурацию; настройки не изменены")
+        return config
 
-        This is a low-level primitive, not an automatic trade sender. Callers
-        must validate commands and require an explicit confirmation for actions
-        that move items. Consult the running ASF /swagger for exact API schemas.
+    def apply_proxy_settings(self, bot_name: str, proxy_settings: dict[str, Any]) -> dict[str, Any]:
+        """Merge only proxy fields into a fetched BotConfig, then save it via ASF IPC.
+
+        The response from ASF may contain account secrets; this method never
+        returns or logs the config. ASF's BotPost endpoint writes the supplied
+        complete config, so fail closed if the existing config cannot be read.
         """
+        if not bot_name.strip():
+            raise ValueError("Имя бота не должно быть пустым")
+        allowed = {"WebProxy", "WebProxyUsername", "WebProxyPassword", "SteamProtocols"}
+        if set(proxy_settings) != allowed:
+            raise ValueError("Переданы неполные или неожиданные параметры прокси")
+        config = self.get_bot_config(bot_name)
+        config.update(proxy_settings)
+        payload = self.request(
+            "/Api/Bot/" + quote(bot_name, safe=""),
+            method="POST",
+            body={"BotConfig": config},
+        )
+        result = _unwrap_result(payload)
+        if result is False:
+            raise ASFError("ASF не подтвердил сохранение конфигурации прокси")
+        if isinstance(result, dict):
+            bot_key = _find_key(result, bot_name)
+            if bot_key is not None and result[bot_key] is False:
+                raise ASFError("ASF не сохранил конфигурацию прокси")
+        # Deliberately return only a safe summary; never expose BotConfig.
+        return {"bot_name": bot_name, "settings_submitted": sorted(allowed), "saved": True}
+
+    def send_command(self, command: str) -> Any:
+        """Low-level command primitive; not an automatic trade sender."""
         if not command.strip():
             raise ValueError("Команда ASF не должна быть пустой")
         return self.request("/Api/Command", method="POST", body={"Command": command})
