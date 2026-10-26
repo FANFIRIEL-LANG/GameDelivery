@@ -21,18 +21,12 @@ Keep ASF IPC bound to localhost and protect it with `IPCPassword`. Never commit 
 
 ### Playerok
 
-- Вкладка «Площадки» поддерживает вход по коду из e-mail и дополнительный шаг 2FA.
-- Для загрузки активных продаж используется сторонний пакет `PlayerokAPI`. Это **неофициальный клиент**, а не официальный публичный API Playerok; схема и доступность запросов могут изменяться.
-- Сессионный токен не сохраняется в SQLite и не выводится в интерфейсе. Приложение использует системное хранилище учётных данных через `keyring`; если оно недоступно, вход обозначается как временный и не обещается сохранённым.
-- После входа доступна загрузка активных продаж в режиме чтения (статусы PAID/SENT). Выбранную сделку можно импортировать в очередь GameDelivery; повторный импорт не создаёт дубликат. Сохраняются ID сделки, товар, покупатель, статус/сумма площадки и ссылка на сделку.
-- Импортированный заказ получает локальный ID GameDelivery. Для подготовки оператор вручную указывает Steam trade URL покупателя и выбирает активы ASF; резервы связываются с тем же локальным заказом. Фактическая отправка Steam-обмена отключена. Поиск значка покупателя и полностью автоматическая доставка ещё не реализованы.
-- Перед реальным использованием проверь клиент Playerok и правила площадки. Сессионный токен даёт доступ к аккаунту, поэтому не копируй его в переписку, логи или GitHub.
-
-## ASF integration
-
-GameDelivery communicates with the locally running ASF IPC interface. See [integrations/asf/README.md](integrations/asf/README.md). The inventory tab has an explicit, on-demand refresh for one already-configured ASF bot using the Steam Community inventory endpoint. It validates the response and saves a per-bot local snapshot only after parsing succeeds. This import path has automated tests, but has not yet been verified against the user's live ASF instance. Full inventory pagination, recipient badge lookup, trade offer construction, and outgoing trade delivery are not implemented.
-
-Keep ASF IPC bound to localhost and protect it with `IPCPassword`. Never commit Steam credentials, ASF passwords, cookies, or session tokens.
+- Адаптер использует собственные HTTPS-запросы на стандартной библиотеке Python `urllib`; сторонний клиент PlayerokAPI из зависимостей удалён.
+- У Playerok нет документированного публичного API для разработчиков. Используемые здесь приватные веб-эндпоинты могут измениться или перестать работать. Это собственная реализация протокола, а не официальная интеграция.
+- Вкладка «Площадки» поддерживает вход по коду из e-mail и дополнительный шаг 2FA. Токен хранится в системном хранилище учётных данных через `keyring`, а не в SQLite. Если системное хранилище недоступно, сессия остаётся временной только в памяти процесса.
+- Разрешены только вход/выход и чтение профиля/списка продаж в статусах PAID/SENT. Код не предоставляет операций вывода денег, покупок, изменения статуса сделки, редактирования/создания товара или отправки сообщения.
+- Выбранную сделку можно импортировать в очередь GameDelivery; повторный импорт не создаёт дубликат. Для подготовки оператор вручную указывает Steam trade URL покупателя и выбирает активы ASF; резервы связываются с тем же локальным заказом. Фактическая отправка Steam-обмена отключена.
+- Токен сессии даёт доступ к аккаунту. Не копируй его в переписку, логи или GitHub. Перед реальным использованием проверь актуальность эндпоинтов и правила площадки; автоматизированные тесты не заменяют проверку на тестовом аккаунте.
 
 ## Запуск Windows
 
@@ -44,4 +38,3 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 python -m app
 ```
-
