@@ -286,5 +286,5 @@ class ASFClient:
         """Return (filename, JSON text) for user-reviewed manual ASF import."""
         name = bot_name.strip()
         config = ASFClient.build_new_bot_config(name, steam_login=steam_login, enabled=False)
-        return name + ".json", json.dumps(config, ensure_ascii=False, indent=2) + "\\n"
+        return name + ".json", json.dumps(config, ensure_ascii=False, indent=2) + "\n"
 \n
