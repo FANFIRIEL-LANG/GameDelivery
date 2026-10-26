@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 from app.inventory_panel import InventoryPanel
 from app.proxy_settings import ProxySettingsWidget
+from app.asf_management import ASFManagementWidget
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
+        self.tabs.addTab(ASFManagementWidget(), "ASF-боты")
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
         self.setStyleSheet("""
