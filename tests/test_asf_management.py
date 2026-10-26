@@ -126,6 +126,18 @@ class ASFManagementWidgetTests(unittest.TestCase):
             controller.return_value.refresh.assert_called_once_with("card-bot", "local-ipc-secret")
         self.assertIn("Элементов: 12", self.widget.status.text())
 
+    def test_successful_snapshot_refresh_emits_bot_name_for_inventory_tab(self):
+        from PySide6.QtWidgets import QTableWidgetItem
+        emitted = []
+        self.widget.inventory_snapshot_updated.connect(emitted.append)
+        self.widget.table.setRowCount(1)
+        self.widget.table.setItem(0, 0, QTableWidgetItem("card-bot"))
+        self.widget.table.selectRow(0)
+        with patch("app.asf_management.ASFInventoryController") as controller:
+            controller.return_value.refresh.return_value = {"item_count": 12}
+            self.widget.refresh_inventory_snapshot()
+        self.assertEqual(emitted, ["card-bot"])
+
     @patch("app.asf_management.QMessageBox.warning")
     def test_export_rejects_invalid_name_before_file_dialog(self, warning):
         with patch("app.asf_management.QFileDialog.getSaveFileName") as choose_path:
