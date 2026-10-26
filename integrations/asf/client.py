@@ -247,4 +247,4 @@ class ASFClient:
         if confirmed is not True:
             raise ValueError("Перезапуск ASF требует явного подтверждения")
         return self.request("/Api/ASF/Restart", method="POST", body={})
-\n
+
