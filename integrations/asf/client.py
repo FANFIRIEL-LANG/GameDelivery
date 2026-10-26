@@ -231,3 +231,20 @@ class ASFClient:
         if not command.strip():
             raise ValueError("Команда ASF не должна быть пустой")
         return self.request("/Api/Command", method="POST", body={"Command": command})
+
+    def get_bots(self) -> dict[str, Any]:
+        """Return the active ASF bot map without exposing it to logs."""
+        payload = _unwrap_result(self.get_status())
+        if not isinstance(payload, dict):
+            raise ASFError("ASF не вернул список ботов")
+        bots_key = _find_key(payload, "Bots")
+        if bots_key is None or not isinstance(payload[bots_key], dict):
+            raise ASFError("ASF не предоставил список активных ботов")
+        return dict(payload[bots_key])
+
+    def restart(self, *, confirmed: bool = False) -> Any:
+        """Restart ASF only after explicit user confirmation."""
+        if confirmed is not True:
+            raise ValueError("Перезапуск ASF требует явного подтверждения")
+        return self.request("/Api/ASF/Restart", method="POST", body={})
+\n
