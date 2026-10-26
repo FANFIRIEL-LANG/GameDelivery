@@ -91,6 +91,37 @@ class ASFClientTests(unittest.TestCase):
         self.assertTrue(summary["steam_connection_proxy_requires_global_setting"])
         self.assertNotIn("secret", str(summary))
 
+
+    def test_global_protocol_change_requires_explicit_confirmation(self):
+        with self.assertRaises(ValueError):
+            ASFClient().apply_global_steam_protocols()
+    
+    @patch("integrations.asf.client.urlopen")
+    def test_global_protocol_change_preserves_other_settings_and_verifies(self, urlopen):
+        original = {
+            "IPC": True,
+            "SteamProtocols": 7,
+            "WebProxy": "http://global-proxy.example:8080",
+            "WebProxyUsername": "global-user",
+            "Debug": False,
+        }
+        updated = dict(original, SteamProtocols=4)
+        urlopen.side_effect = [
+            FakeResponse({"Success": True, "Result": {"GlobalConfig": original}}),
+            FakeResponse({"Success": True}),
+            FakeResponse({"Success": True, "Result": {"GlobalConfig": updated}}),
+        ]
+        summary = ASFClient().apply_global_steam_protocols(confirmed_instance_wide_change=True)
+        self.assertTrue(summary["saved"])
+        self.assertEqual(summary["scope"], "all ASF bots")
+        posted = json.loads(urlopen.call_args_list[1].args[0].data.decode("utf-8"))
+        config = posted["GlobalConfig"]
+        self.assertEqual(config["SteamProtocols"], 4)
+        self.assertTrue(config["IPC"])
+        self.assertEqual(config["WebProxy"], original["WebProxy"])
+        self.assertEqual(config["WebProxyUsername"], original["WebProxyUsername"])
+        self.assertFalse(config["Debug"])
+
     @patch("integrations.asf.client.urlopen")
     def test_refuses_to_write_when_bot_config_missing(self, urlopen):
         urlopen.return_value = FakeResponse({"Success": True, "Result": {"bot-a": {"BotName": "bot-a"}}})
