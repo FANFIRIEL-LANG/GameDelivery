@@ -82,6 +82,20 @@ class InventoryPanel(QWidget):
         self.bot_list.itemSelectionChanged.connect(self.render_inventory)
         self.refresh()
 
+    def select_bot_snapshot(self, bot_name: str):
+        """Refresh local inventory and select one bot after an ASF snapshot update."""
+        self.refresh()
+        for index in range(self.bot_list.count()):
+            item = self.bot_list.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) == bot_name:
+                self.bot_list.clearSelection()
+                item.setSelected(True)
+                self.summary.setText(
+                    f"Выбран снимок {bot_name}. Данные разделены по владельцам; "
+                    "общий режим не меняет фактического владельца предметов."
+                )
+                return
+
     def fetch_from_asf(self):
         bot_name = self.bot_name_input.text().strip()
         if not bot_name:
