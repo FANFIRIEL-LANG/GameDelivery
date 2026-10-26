@@ -106,6 +106,16 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
 
         AssetReservationStore(self._database_path)
+        with sqlite3.connect(self._database_path) as db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_orders (
+                    order_id TEXT PRIMARY KEY,
+                    recipient_trade_url TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    asset_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                )
+            """)
         self.orders = QTableWidget(0, 5)
         self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Предметы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
@@ -252,9 +262,8 @@ class MainWindow(QMainWindow):
                 self.orders.insertRow(row)
                 for col, value in enumerate((order_id, "Steam trade URL", str(count), status, created)):
                     self.orders.setItem(row, col, QTableWidgetItem(str(value)))
-        except sqlite3.Error:
-            # Older databases may not have order storage until the first draft is prepared.
-            pass
+        except sqlite3.Error as exc:
+            self.statusBar().showMessage(f"Не удалось загрузить сохранённые заказы: {exc}")
 
     def _inventory_tab(self):
         return InventoryPanel()
