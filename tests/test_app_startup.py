@@ -54,6 +54,11 @@ class AppStartupSmokeTests(unittest.TestCase):
                     self.assertEqual(order[0], 1)
                     self.assertIn("не отправлен", order[1])
                     self.assertEqual(reservation, ("Bot A", "asset-123"))
+                    with sqlite3.connect(database) as db:
+                        order_asset = db.execute(
+                            "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"
+                        ).fetchone()
+                    self.assertEqual(order_asset[1:], ("Bot A", "asset-123"))
                     window._load_saved_orders()
                     self.assertEqual(window.orders.rowCount(), 1)
                 finally:
