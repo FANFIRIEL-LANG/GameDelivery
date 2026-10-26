@@ -138,6 +138,26 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.widget.refresh_inventory_snapshot()
         self.assertEqual(emitted, ["card-bot"])
 
+    @patch("app.asf_management.ASFClient.get_bots")
+    def test_failed_bot_refresh_clears_stale_state_and_export(self, get_bots):
+        from PySide6.QtWidgets import QTableWidgetItem
+        self.widget.table.setRowCount(1)
+        self.widget.table.setItem(0, 0, QTableWidgetItem("old-bot"))
+        self.widget._last_inventory = {"items": [{"assetid": "1"}]}
+        self.widget._last_inventory_bot = "old-bot"
+        self.widget._last_inventory_export_payload = {"items": [{"assetid": "1"}]}
+        self.widget.export_inventory_button.setEnabled(True)
+        get_bots.side_effect = OSError("IPC unavailable")
+
+        self.widget.refresh_bots()
+
+        self.assertEqual(self.widget.table.rowCount(), 0)
+        self.assertIsNone(self.widget._last_inventory)
+        self.assertIsNone(self.widget._last_inventory_bot)
+        self.assertIsNone(self.widget._last_inventory_export_payload)
+        self.assertFalse(self.widget.export_inventory_button.isEnabled())
+        self.assertIn("актуальное состояние не подтверждено", self.widget.status.text())
+
     @patch("app.asf_management.QMessageBox.warning")
     def test_export_rejects_invalid_name_before_file_dialog(self, warning):
         with patch("app.asf_management.QFileDialog.getSaveFileName") as choose_path:
