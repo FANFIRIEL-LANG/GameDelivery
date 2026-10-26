@@ -113,7 +113,7 @@ class ASFClient:
         """
         if not bot_name.strip():
             raise ValueError("Имя бота не должно быть пустым")
-        allowed = {"WebProxy", "WebProxyUsername", "WebProxyPassword", "SteamProtocols"}
+        allowed = {"WebProxy", "WebProxyUsername", "WebProxyPassword"}
         if set(proxy_settings) != allowed:
             raise ValueError("Переданы неполные или неожиданные параметры прокси")
         config = self.get_bot_config(bot_name)
@@ -131,7 +131,12 @@ class ASFClient:
             if bot_key is not None and result[bot_key] is False:
                 raise ASFError("ASF не сохранил конфигурацию прокси")
         # Deliberately return only a safe summary; never expose BotConfig.
-        return {"bot_name": bot_name, "settings_submitted": sorted(allowed), "saved": True}
+        return {
+            "bot_name": bot_name,
+            "settings_submitted": sorted(allowed),
+            "saved": True,
+            "steam_connection_proxy_requires_global_setting": True,
+        }
 
     def send_command(self, command: str) -> Any:
         """Low-level command primitive; not an automatic trade sender."""
