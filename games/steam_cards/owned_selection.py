@@ -24,11 +24,10 @@ def select_owned_complete_sets(
     game_name: str,
     sets_needed: int,
 ) -> list[OwnedSet]:
-    """Select exact normal card sets without ever losing the source bot.
+    """Select normal sets while retaining exact account ownership.
 
-    Each set contains one copy of every distinct normal trading-card name.
-    Cards from different bots may contribute to a shared order, but ownership
-    remains explicit so downstream code can create separate per-bot offers.
+    Foil cards do not count toward sets, but their card names help establish
+    the game's card-type list when no normal copy of that type is available.
     """
     if isinstance(sets_needed, bool) or not isinstance(sets_needed, int) or sets_needed < 1:
         raise ValueError("sets_needed должен быть целым числом больше нуля")
@@ -37,8 +36,9 @@ def select_owned_complete_sets(
         raise ValueError("Название игры не должно быть пустым")
 
     by_name: dict[str, list[OwnedAsset]] = {}
-    seen: set[tuple[str, str]] = set()
+    all_card_names: set[str] = set()
     actual_game = target
+    seen: set[tuple[str, str]] = set()
     for bot, cards in inventories.items():
         owner = bot.strip()
         if not owner:
@@ -48,21 +48,27 @@ def select_owned_complete_sets(
             name = card.card_name.strip()
             if not asset or not name or card.game_name.strip().casefold() != target.casefold():
                 continue
-            if not card.is_trading_card or card.is_foil or (owner, asset) in seen:
+            if not card.is_trading_card:
+                continue
+            actual_game = card.game_name.strip()
+            all_card_names.add(name)
+            if card.is_foil or (owner, asset) in seen:
                 continue
             seen.add((owner, asset))
-            actual_game = card.game_name.strip()
             by_name.setdefault(name, []).append(OwnedAsset(owner, asset))
 
-    if not by_name:
-        raise ValueError("В выбранных инвентарях нет обычных карточек этой игры")
-    count = min(len(items) for items in by_name.values())
+    if not all_card_names:
+        raise ValueError("В выбранных инвентарях нет карточек этой игры")
+    if any(not by_name.get(name) for name in all_card_names):
+        raise ValueError("Недостаточно полных наборов карточек для заказа")
+
+    count = min(len(by_name[name]) for name in all_card_names)
     if count < sets_needed:
         raise ValueError("Недостаточно полных наборов карточек для заказа")
 
-    sets: list[OwnedSet] = []
-    names = sorted(by_name, key=str.casefold)
+    names = sorted(all_card_names, key=str.casefold)
+    result = []
     for index in range(sets_needed):
         assets = tuple(by_name[name][index] for name in names)
-        sets.append(OwnedSet(actual_game, len(names), assets))
-    return sets
+        result.append(OwnedSet(actual_game, len(names), assets))
+    return result
