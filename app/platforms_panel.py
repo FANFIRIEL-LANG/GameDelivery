@@ -159,9 +159,16 @@ class MarketplacePanel(QWidget):
         self._set_busy(True)
         worker = _MarketplaceTask(action, operation, self)
         worker.completed.connect(self._task_completed)
-        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._worker_finished)
         self._worker = worker
         worker.start()
+
+    def _worker_finished(self) -> None:
+        worker = self.sender()
+        self._worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._update_button_state()
 
     def _request_code(self) -> None:
         email = self.email_input.text().strip()
