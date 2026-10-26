@@ -27,13 +27,13 @@ one ASF bot and builds the documented bot settings:
   ASF instance and may reduce connection fallback options.
 
 The app must never write `SteamProtocols` into a bot config or silently change
-the global setting. Applying a per-bot proxy profile only configures the web
-proxy; the UI must explicitly show that Steam CM proxying still requires the
-global setting and must not call both paths active. Before adding a global
-setting workflow, it must fetch the complete current global config, preserve
-all unrelated values, require clear user consent to the instance-wide effect,
-write through the official IPC endpoint, and verify the saved value. A web
-proxy check alone is not proof that Steam CM traffic uses the proxy.
+the global setting. The client now has a separate opt-in method that reads the
+current global config, changes only `SteamProtocols`, posts it through the
+official `POST /Api/ASF` endpoint, then reads the value back for verification.
+The method refuses to run unless the caller explicitly confirms the instance-
+wide effect. The UI still must not call both traffic paths active until real
+connection behavior has been verified. A web proxy check alone is not proof
+that Steam CM traffic uses the proxy.
 
 Proxy credentials must not be embedded in the proxy URI, logs, GitHub, or
 diagnostic summaries. The model returns secrets only in the explicit ASF
