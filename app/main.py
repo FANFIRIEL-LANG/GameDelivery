@@ -1,5 +1,6 @@
 import sys
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame
+from app.proxy_settings import ProxySettingsWidget
 
 
 class MainWindow(QMainWindow):
@@ -36,6 +37,7 @@ class MainWindow(QMainWindow):
             QPushButton { background: #2e654b; border: 0; border-radius: 7px; padding: 9px 13px; font-weight: 600; }
             QPushButton:hover { background: #397b5b; }
             QTableWidget, QTextEdit { background: #1e242d; border: 1px solid #303846; border-radius: 7px; gridline-color: #303846; }
+            QLineEdit, QComboBox, QSpinBox { background: #1e242d; border: 1px solid #303846; border-radius: 6px; padding: 6px; }
             QHeaderView::section { background: #252d38; color: #cbd5e1; border: 0; padding: 8px; }
             QFrame#card { background: #202731; border: 1px solid #303846; border-radius: 10px; }
         """)
@@ -68,14 +70,17 @@ class MainWindow(QMainWindow):
         layout.addStretch(); return page
     def _logs_tab(self):
         page = QWidget(); layout = QVBoxLayout(page); log = QTextEdit(); log.setReadOnly(True)
-        log.setPlainText("GameDelivery: тестовый режим.\nPlayerok не подключён.\nSteam API не используется.\nРеальная отправка предметов отключена.")
+        log.setPlainText("GameDelivery: тестовый режим.\\nPlayerok не подключён.\\nSteam API не используется.\\nРеальная отправка предметов отключена.")
         layout.addWidget(log); return page
     def _settings_tab(self):
         page = QWidget(); layout = QVBoxLayout(page)
-        layout.addWidget(QLabel("Playerok: интеграция требует технической проверки."))
+        layout.addWidget(QLabel("Steam-аккаунты и прокси"))
+        self.proxy_settings = ProxySettingsWidget()
+        layout.addWidget(self.proxy_settings, 1)
         telegram = QLabel("Telegram: только уведомления и статистика."); telegram.setObjectName("muted"); layout.addWidget(telegram)
-        warning = QLabel("Не вставляйте пароли, cookie или токены в журнал и не отправляйте их в чат.")
-        warning.setWordWrap(True); warning.setStyleSheet("color: #f2c879;"); layout.addWidget(warning); layout.addStretch(); return page
+        warning = QLabel("Профили прокси сохраняются локально. Они пока не применяются к работающему ASF, и реальная отправка предметов отключена.")
+        warning.setWordWrap(True); warning.setStyleSheet("color: #f2c879;"); layout.addWidget(warning)
+        return page
 
 def main():
     app = QApplication(sys.argv); window = MainWindow(); window.show(); sys.exit(app.exec())
