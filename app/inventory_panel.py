@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QLineEdit,
 )
 
 from games.steam_cards.inventory_views import build_inventory_view
@@ -25,6 +25,7 @@ class InventoryPanel(QWidget):
         self.database_path = app_data / "gamedelivery.sqlite3"
         self.snapshots = InventorySnapshotStore(self.database_path)
         self.reservations = AssetReservationStore(self.database_path)
+        self.asf_controller = ASFInventoryController(self.database_path)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -36,7 +37,18 @@ class InventoryPanel(QWidget):
         layout.addWidget(intro)
 
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Боты / профили"))
+        controls.addWidget(QLabel("Имя бота ASF"))
+        self.bot_name_input = QLineEdit()
+        self.bot_name_input.setPlaceholderText("Имя бота, уже настроенного в ASF")
+        controls.addWidget(self.bot_name_input, 1)
+        controls.addWidget(QLabel("IPC-пароль"))
+        self.ipc_password_input = QLineEdit()
+        self.ipc_password_input.setPlaceholderText("Если задан в ASF")
+        self.ipc_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        controls.addWidget(self.ipc_password_input, 1)
+        self.fetch_button = QPushButton("Загрузить из ASF")
+        controls.addWidget(self.fetch_button)
+        controls.addWidget(QLabel("Снимки"))
         self.bot_list = QListWidget()
         self.bot_list.setMaximumHeight(100)
         self.bot_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
@@ -65,9 +77,37 @@ class InventoryPanel(QWidget):
         layout.addWidget(self.table, 1)
 
         self.refresh_button.clicked.connect(self.refresh)
+        self.fetch_button.clicked.connect(self.fetch_from_asf)
         self.mode.currentIndexChanged.connect(self.render_inventory)
         self.bot_list.itemSelectionChanged.connect(self.render_inventory)
         self.refresh()
+
+    def fetch_from_asf(self):
+        bot_name = self.bot_name_input.text().strip()
+        if not bot_name:
+            self.summary.setText("Укажи имя бота, который уже настроен в ASF.")
+            return
+        self.fetch_button.setEnabled(False)
+        self.summary.setText(f"Запрашиваю инвентарь {bot_name} через локальный ASF IPC…")
+        try:
+            result = self.asf_controller.refresh(
+                bot_name, self.ipc_password_input.text()
+            )
+            self.refresh()
+            for index in range(self.bot_list.count()):
+                item = self.bot_list.item(index)
+                if item.data(Qt.ItemDataRole.UserRole) == bot_name:
+                    item.setSelected(True)
+            self.summary.setText(
+                f"Снимок обновлён: {bot_name} · {result['item_count']} предметов · "
+                f"{result['updated_at']}. Обмены не отправлялись."
+            )
+        except Exception as exc:
+            self.summary.setText(
+                f"Не удалось обновить инвентарь ASF: {exc}. Старый снимок сохранён."
+            )
+        finally:
+            self.fetch_button.setEnabled(True)
 
     def refresh(self):
         try:
