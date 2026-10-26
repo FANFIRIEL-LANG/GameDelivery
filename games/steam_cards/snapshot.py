@@ -163,5 +163,5 @@ class InventorySnapshotStore:
                 SELECT updated_at, item_count FROM steam_inventory_snapshot_meta WHERE bot_name = ?
             """, (bot,)).fetchone()
         if row is None:
-            return {"bot_name": bot, "updated_at": None, "item_count": 0, "stale": True}
-        return {"bot_name": bot, "updated_at": row["updated_at"], "item_count": row["item_count"], "stale": False}
+            return {"updated_at": None, "item_count": 0, "stale": True}
+        return {"updated_at": row["updated_at"], "item_count": row["item_count"], "stale": False}
