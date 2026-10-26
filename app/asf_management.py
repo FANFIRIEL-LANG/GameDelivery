@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -14,6 +15,8 @@ from integrations.asf.client import ASFClient, ASFError
 
 class ASFManagementWidget(QWidget):
     """Read active ASF bots and export a disabled, reviewable bot config."""
+
+    inventory_snapshot_updated = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -224,3 +227,4 @@ class ASFManagementWidget(QWidget):
             f"Снимок инвентаря ASF обновлён для {bot_name}. Элементов: {count}. "
             "Снимок сохранён раздельно для этого бота."
         )
+        self.inventory_snapshot_updated.emit(bot_name)
