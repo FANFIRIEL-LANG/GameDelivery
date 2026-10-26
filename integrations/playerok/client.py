@@ -12,6 +12,7 @@ import re
 import urllib.error
 import urllib.request
 from http.cookies import SimpleCookie
+from urllib.request import HTTPRedirectHandler, build_opener
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -53,6 +54,13 @@ def _token_from_headers(headers: Any) -> str | None:
         except Exception:
             continue
     return None
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    """Prevent urllib from forwarding session headers across HTTP redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class PlayerokAdapter(MarketplaceAdapter):
@@ -103,6 +111,8 @@ class PlayerokAdapter(MarketplaceAdapter):
     ) -> tuple[Any, str | None]:
         if not self._request_url_is_allowed(url):
             raise ValueError("Разрешены только HTTPS-запросы к доменам Playerok.")
+        if token and any(character in token for character in "\r\n;"):
+            raise RuntimeError("Токен сессии содержит недопустимые символы.")
 
         if self._request_func is not None:
             return self._request_func(
@@ -126,7 +136,7 @@ class PlayerokAdapter(MarketplaceAdapter):
 
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+            with build_opener(_RejectRedirects).open(request, timeout=_TIMEOUT_SECONDS) as response:
                 raw = response.read()
                 cookie_token = _token_from_headers(response.headers)
         except urllib.error.HTTPError as exc:
