@@ -12,6 +12,12 @@ class AppStartupSmokeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_trade_url_validation_accepts_steam_url_and_rejects_other_hosts(self):
+        valid = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+        self.assertEqual(MainWindow._validate_trade_url(valid), valid)
+        with self.assertRaises(ValueError):
+            MainWindow._validate_trade_url("https://evil.example/tradeoffer/new/?partner=1&token=abcdef")
+
     def test_main_window_constructs_with_expected_tabs(self):
         window = MainWindow()
         try:
