@@ -239,7 +239,10 @@ class MarketplacePanel(QWidget):
             self.status_label.setText("Не удалось прочитать выбранную сделку.")
             return
         self.order_import_requested.emit(dict(order))
-        self.status_label.setText(f"Заказ {order['order_id']} передан в очередь GameDelivery.")
+        self.status_label.setText(
+            f"Передаю сделку {order['order_id']} в очередь GameDelivery. "
+            "Итог импорта отображается в статусной строке главного окна."
+        )
 
     def _task_completed(self, action: str, ok: bool, payload: Any) -> None:
         self._set_busy(False)
