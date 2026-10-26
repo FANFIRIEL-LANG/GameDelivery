@@ -22,7 +22,7 @@ class ASFInventoryTests(unittest.TestCase):
                         {"assetid": "102", "classid": "12", "instanceid": "0"},
                     ],
                     "Descriptions": [
-                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card"},
+                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card"},
                         {"classid": "12", "instanceid": "0", "name": "Background", "type": "Profile Background"},
                     ],
@@ -33,6 +33,7 @@ class ASFInventoryTests(unittest.TestCase):
         self.assertEqual(len(cards), 3)
         self.assertEqual((cards[0].asset_id, cards[0].card_name, cards[0].is_trading_card, cards[0].is_foil),
                          ("100", "Card A", True, False))
+        self.assertEqual(cards[0].game_name, "Tagged Game")
         self.assertEqual((cards[1].asset_id, cards[1].card_name, cards[1].is_trading_card, cards[1].is_foil),
                          ("101", "Card B", True, True))
         self.assertFalse(cards[2].is_trading_card)
@@ -40,6 +41,10 @@ class ASFInventoryTests(unittest.TestCase):
     def test_parser_does_not_treat_failed_response_as_empty_inventory(self):
         with self.assertRaises(ASFError):
             parse_bot_inventory({"Success": False}, "Bot A", "Game")
+
+    def test_incomplete_inventory_response_is_not_treated_as_empty(self):
+        with self.assertRaises(ASFError):
+            parse_bot_inventory({"Success": True, "Result": {"Bot A": {}}}, "Bot A", "Game")
 
     def test_parser_requires_requested_bot_to_be_present(self):
         with self.assertRaises(ASFError):
