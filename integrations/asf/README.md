@@ -51,8 +51,10 @@ when applying the selected bot's proxy.
 The Python adapter provides local IPC transport, process/bot status calls,
 per-bot proxy configuration with read-back verification, and an explicitly
 confirmed global `SteamProtocols` update with read-back verification. The UI's
-`ASF-боты` tab lists currently loaded bots and exports a minimal new-bot JSON
-configuration for manual review/import. Export does not create a bot; ASF loads
+`ASF-боты` tab lists currently loaded bots, exports a minimal new-bot JSON
+configuration for manual review/import, and can refresh the selected bot's local
+inventory snapshot. A successful refresh signals the main `Инвентарь` tab to
+reload and select that bot so the user can inspect the synchronized snapshot. Export does not create a bot; ASF loads
 new bots from configuration files, while `POST /Api/Bot/{name}` updates an
 existing bot. New configs default to `Enabled: false` and never include a Steam
 password. Inventory pagination, item selection, trade offer construction, and
