@@ -271,8 +271,8 @@ class PlayerokAdapter(MarketplaceAdapter):
             return {"requires_second_factor": True}
 
         token = self._session_token_from_payload(payload, cookie_token)
-        saved = self._save_token(token)
-        result = self._profile(token, saved)
+        result = self._profile(token, False)
+        result["session_saved"] = self._save_token(token)
         self._pending_second_factor_session = None
         return result
 
@@ -292,8 +292,8 @@ class PlayerokAdapter(MarketplaceAdapter):
         )
         payload = self._raise_api_errors(_unwrap_envelope(payload))
         token = self._session_token_from_payload(payload, cookie_token)
-        saved = self._save_token(token)
-        result = self._profile(token, saved)
+        result = self._profile(token, False)
+        result["session_saved"] = self._save_token(token)
         self._pending_second_factor_session = None
         return result
 
@@ -305,6 +305,7 @@ class PlayerokAdapter(MarketplaceAdapter):
 
     def disconnect(self) -> dict[str, Any]:
         token = self._saved_token()
+        was_persisted = self._session_persisted
         remote_error = None
         if token:
             try:
@@ -325,7 +326,7 @@ class PlayerokAdapter(MarketplaceAdapter):
             self._keyring().delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
         except Exception as exc:
             # keyring backends commonly signal that there was no stored entry.
-            if token:
+            if was_persisted:
                 keyring_error = str(exc)
         messages = []
         if remote_error:
@@ -352,10 +353,9 @@ class PlayerokAdapter(MarketplaceAdapter):
               node {
                 id
                 status
-                url
                 createdAt
                 item { id name }
-                user { id username name }
+                user { id username }
                 transaction { value }
               }
             }
@@ -408,6 +408,6 @@ class PlayerokAdapter(MarketplaceAdapter):
                 "status": str(status or "—"),
                 "amount": str(transaction.get("value") or "—"),
                 "created_at": str(created),
-                "url": str(deal.get("url") or ""),
+                "url": "https://playerok.com/deal/" + str(deal.get("id") or ""),
             })
         return result
