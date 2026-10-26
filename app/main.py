@@ -1,8 +1,16 @@
 import sys
+import sqlite3
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame,
+    QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox,
 )
+from games.steam_cards.snapshot import InventorySnapshotStore
+from games.steam_cards.reservations import AssetReservationStore
 from app.inventory_panel import InventoryPanel
 from app.proxy_settings import ProxySettingsWidget
 from app.asf_management import ASFManagementWidget
@@ -63,27 +71,193 @@ class MainWindow(QMainWindow):
     def _orders_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        note = QLabel("Демонстрационный режим: реальные обмены отключены.")
+        note = QLabel(
+            "Подготовка доставки: выбери бота и конкретные активы из локального снимка ASF. "
+            "Резервирование локальное; обмены не отправляются."
+        )
         note.setObjectName("muted")
+        note.setWordWrap(True)
         layout.addWidget(note)
+
+        form = QHBoxLayout()
+        self.order_recipient = QLineEdit()
+        self.order_recipient.setPlaceholderText("HTTPS trade URL получателя")
+        self.order_bot = QComboBox()
+        self.order_bot.setMinimumWidth(160)
+        self.order_bot.currentIndexChanged.connect(self._load_order_assets)
+        form.addWidget(self.order_recipient, 2)
+        form.addWidget(self.order_bot, 1)
+        self.order_refresh = QPushButton("Обновить активы")
+        self.order_refresh.clicked.connect(self._load_order_assets)
+        form.addWidget(self.order_refresh)
+        layout.addLayout(form)
+
+        self.order_assets = QListWidget()
+        self.order_assets.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        layout.addWidget(QLabel("Доступные активы (выдели конкретные карточки для резерва):"))
+        layout.addWidget(self.order_assets, 2)
+
+        actions = QHBoxLayout()
+        self.prepare_order_button = QPushButton("Проверить и зарезервировать")
+        self.prepare_order_button.clicked.connect(self._prepare_delivery_order)
+        actions.addWidget(self.prepare_order_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+
         self.orders = QTableWidget(0, 5)
-        self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Товар", "Статус", "Обновлено"])
+        self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Предметы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.orders)
-        buttons = QHBoxLayout()
-        add_demo = QPushButton("Добавить тестовый заказ")
-        add_demo.clicked.connect(self._add_demo_order)
-        buttons.addWidget(add_demo)
-        buttons.addStretch()
-        layout.addLayout(buttons)
+        layout.addWidget(self.orders, 2)
+        self._load_order_bots()
+        self._load_saved_orders()
         return page
 
-    def _add_demo_order(self):
-        row = self.orders.rowCount()
-        self.orders.insertRow(row)
-        values = [f"DEMO-{row+1:04d}", "Playerok (демо)", "Steam-карточки", "Тест: не отправлено", "Локально"]
-        for col, value in enumerate(values):
-            self.orders.setItem(row, col, QTableWidgetItem(value))
+    @property
+    def _database_path(self):
+        return Path.home() / ".gamedelivery" / "gamedelivery.sqlite3"
+
+    def _load_order_bots(self, *_):
+        current = self.order_bot.currentData() if hasattr(self, "order_bot") else None
+        self.order_bot.clear()
+        try:
+            for bot in sorted(InventorySnapshotStore(self._database_path).load_all(), key=str.casefold):
+                status = InventorySnapshotStore(self._database_path).status(bot)
+                label = f"{bot} · {status['item_count']} · {status['updated_at'] or 'без даты'}"
+                self.order_bot.addItem(label, bot)
+            if current:
+                index = self.order_bot.findData(current)
+                if index >= 0:
+                    self.order_bot.setCurrentIndex(index)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self.order_bot.addItem("Ошибка чтения снимков", "")
+            self.statusBar().showMessage(f"Не удалось загрузить снимки: {exc}")
+        self._load_order_assets()
+
+    def _load_order_assets(self, *_):
+        self.order_assets.clear()
+        bot = self.order_bot.currentData()
+        if not bot:
+            return
+        try:
+            store = InventorySnapshotStore(self._database_path)
+            status = store.status(bot)
+            if status["stale"] or not status["updated_at"]:
+                self.order_assets.addItem("Нет подтверждённого снимка — сначала обнови инвентарь через ASF.")
+                return
+            reserved = {
+                (entry["bot_name"], entry["asset_id"])
+                for order in AssetReservationStore(self._database_path).list_for_order("")
+                for entry in [order]
+            }
+            with sqlite3.connect(self._database_path) as db:
+                rows = db.execute(
+                    "SELECT asset_id, game_name, card_name, is_trading_card, is_foil "
+                    "FROM steam_inventory_snapshot WHERE bot_name = ? ORDER BY game_name, card_name, asset_id",
+                    (bot,),
+                ).fetchall()
+                existing = db.execute(
+                    "SELECT asset_id FROM steam_asset_reservations WHERE bot_name = ?", (bot,)
+                ).fetchall()
+            reserved_ids = {row[0] for row in existing}
+            for asset_id, game, name, is_card, is_foil in rows:
+                kind = "Foil" if is_foil else ("Карточка" if is_card else "Предмет")
+                label = f"{game} — {name} [{kind}] · asset {asset_id}"
+                if asset_id in reserved_ids:
+                    label += " · УЖЕ ЗАРЕЗЕРВИРОВАН"
+                    item = QListWidgetItem(label)
+                    item.setFlags(item.flags() & ~item.flags().__class__.ItemIsSelectable)
+                else:
+                    item = QListWidgetItem(label)
+                item.setData(256, (bot, asset_id))
+                self.order_assets.addItem(item)
+            if not rows:
+                self.order_assets.addItem("В снимке нет предметов.")
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self.order_assets.clear()
+            self.order_assets.addItem(f"Ошибка чтения инвентаря: {exc}")
+
+    @staticmethod
+    def _validate_trade_url(value):
+        url = value.strip()
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        partner = params.get("partner", [""])[0]
+        token = params.get("token", [""])[0]
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"steamcommunity.com", "www.steamcommunity.com"}
+            or parsed.path.rstrip("/") != "/tradeoffer/new"
+            or not partner.isdigit()
+            or not token
+            or len(token) > 128
+            or not token.isalnum()
+        ):
+            raise ValueError("Укажи корректную HTTPS-ссылку Steam tradeoffer/new с partner и token.")
+        return url
+
+    def _prepare_delivery_order(self):
+        try:
+            recipient = self._validate_trade_url(self.order_recipient.text())
+            selected = [
+                item.data(256) for item in self.order_assets.selectedItems()
+                if item.data(256) is not None
+            ]
+            if not selected:
+                raise ValueError("Выбери хотя бы один незарезервированный актив.")
+            order_id = f"GD-{uuid4().hex[:12].upper()}"
+            result = AssetReservationStore(self._database_path).reserve(order_id, selected)
+            if not result["reserved"]:
+                raise ValueError("Конфликт резерва: " + ", ".join(
+                    f"{x['bot_name']} / {x['asset_id']} → {x['reserved_by']}"
+                    for x in result["conflicts"]
+                ))
+            try:
+                with sqlite3.connect(self._database_path) as db:
+                    db.execute("""
+                        CREATE TABLE IF NOT EXISTS delivery_orders (
+                            order_id TEXT PRIMARY KEY,
+                            recipient_trade_url TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            asset_count INTEGER NOT NULL,
+                            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                        )
+                    """)
+                    db.execute(
+                        "INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count) "
+                        "VALUES (?, ?, 'reserved — не отправлен', ?)",
+                        (order_id, recipient, len(selected)),
+                    )
+            except Exception:
+                AssetReservationStore(self._database_path).release(order_id)
+                raise
+            self._load_saved_orders()
+            self._load_order_assets()
+            QMessageBox.information(
+                self, "Заказ подготовлен",
+                f"Заказ {order_id} создан. Активов зарезервировано: {len(selected)}. "
+                "Обмен не отправлялся."
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            QMessageBox.warning(self, "Не удалось подготовить заказ", str(exc))
+
+    def _load_saved_orders(self):
+        if not hasattr(self, "orders"):
+            return
+        self.orders.setRowCount(0)
+        try:
+            with sqlite3.connect(self._database_path) as db:
+                rows = db.execute(
+                    "SELECT order_id, recipient_trade_url, asset_count, status, created_at "
+                    "FROM delivery_orders ORDER BY created_at DESC"
+                ).fetchall()
+            for order_id, recipient, count, status, created in rows:
+                row = self.orders.rowCount()
+                self.orders.insertRow(row)
+                for col, value in enumerate((order_id, "Steam trade URL", str(count), status, created)):
+                    self.orders.setItem(row, col, QTableWidgetItem(str(value)))
+        except sqlite3.Error:
+            # Older databases may not have order storage until the first draft is prepared.
+            pass
 
     def _inventory_tab(self):
         return InventoryPanel()
