@@ -206,18 +206,22 @@ class MainWindow(QMainWindow):
         try:
             recipient = self._validate_trade_url(self.order_recipient.text())
             selected = [
-                item.data(Qt.ItemDataRole.UserRole) for item in self.order_assets.selectedItems()
+                item.data(Qt.ItemDataRole.UserRole)
+                for item in self.order_assets.selectedItems()
                 if item.data(Qt.ItemDataRole.UserRole) is not None
             ]
             if not selected:
                 raise ValueError("Выбери хотя бы один незарезервированный актив.")
+
             order_id = f"GD-{uuid4().hex[:12].upper()}"
-            result = AssetReservationStore(self._database_path).reserve(order_id, selected)
+            reservations = AssetReservationStore(self._database_path)
+            result = reservations.reserve(order_id, selected)
             if not result["reserved"]:
                 raise ValueError("Конфликт резерва: " + ", ".join(
                     f"{x['bot_name']} / {x['asset_id']} → {x['reserved_by']}"
                     for x in result["conflicts"]
                 ))
+
             try:
                 with sqlite3.connect(self._database_path) as db:
                     db.execute("""
@@ -230,26 +234,27 @@ class MainWindow(QMainWindow):
                         )
                     """)
                     db.execute("""
-                    CREATE TABLE IF NOT EXISTS delivery_order_assets (
-                        order_id TEXT NOT NULL,
-                        bot_name TEXT NOT NULL,
-                        asset_id TEXT NOT NULL,
-                        PRIMARY KEY (order_id, bot_name, asset_id),
-                        FOREIGN KEY (order_id) REFERENCES delivery_orders(order_id)
+                        CREATE TABLE IF NOT EXISTS delivery_order_assets (
+                            order_id TEXT NOT NULL,
+                            bot_name TEXT NOT NULL,
+                            asset_id TEXT NOT NULL,
+                            PRIMARY KEY (order_id, bot_name, asset_id),
+                            FOREIGN KEY (order_id) REFERENCES delivery_orders(order_id)
+                        )
+                    """)
+                    db.execute(
+                        "INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count) "
+                        "VALUES (?, ?, 'reserved — не отправлен', ?)",
+                        (order_id, recipient, len(selected)),
                     )
-                """)
-                db.execute(
-                    "INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count) "
-                    "VALUES (?, ?, 'reserved — не отправлен', ?)",
-                    (order_id, recipient, len(selected)),
-                )
-                db.executemany(
-                    "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
-                    [(order_id, bot_name, asset_id) for bot_name, asset_id in selected],
-                )
+                    db.executemany(
+                        "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
+                        [(order_id, bot_name, asset_id) for bot_name, asset_id in selected],
+                    )
             except Exception:
-                AssetReservationStore(self._database_path).release(order_id)
+                reservations.release(order_id)
                 raise
+
             self._load_saved_orders()
             self._load_order_assets()
             QMessageBox.information(
