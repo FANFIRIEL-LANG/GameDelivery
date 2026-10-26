@@ -41,6 +41,18 @@ class ASFClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ASFClient(base_url="http://192.168.1.10:1242").get_status()
 
+    def test_rejects_localhost_prefix_spoofing_and_nonstandard_ports(self):
+        for base_url in (
+            "http://localhost.evil:1242",
+            "http://127.0.0.1.evil:1242",
+            "http://localhost:8080",
+            "https://localhost:1242",
+            "http://user@localhost:1242",
+        ):
+            with self.subTest(base_url=base_url):
+                with self.assertRaises(ValueError):
+                    ASFClient(base_url=base_url).get_status()
+
     @patch("integrations.asf.client.urlopen")
     def test_unauthorized_response_does_not_expose_secret(self, urlopen):
         from urllib.error import HTTPError
