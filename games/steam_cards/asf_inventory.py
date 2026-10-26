@@ -85,9 +85,23 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
         normalized_type = item_type.casefold()
         is_card = "trading card" in normalized_type
         is_foil = is_card and "foil" in normalized_type
+        actual_game_name = game_name.strip()
+        tags_key = _key(description, "tags")
+        tags = description.get(tags_key, []) if tags_key else []
+        if isinstance(tags, list):
+            for tag in tags:
+                if not isinstance(tag, dict):
+                    continue
+                category_key = _key(tag, "category")
+                game_tag_key = _key(tag, "localized_tag_name")
+                if category_key and game_tag_key and str(tag[category_key]).casefold() == "game":
+                    tagged_game = str(tag[game_tag_key]).strip()
+                    if tagged_game:
+                        actual_game_name = tagged_game
+                        break
         cards.append(CardCopy(
             asset_id=asset_id,
-            game_name=game_name.strip(),
+            game_name=actual_game_name,
             card_name=item_name or (f"Unknown item {asset_id}"),
             is_trading_card=is_card,
             is_foil=is_foil,
