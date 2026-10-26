@@ -81,16 +81,26 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.assertIn("Инвентарь получен", self.widget.status.text())
         dialog_exec.assert_called_once()
 
+    def test_inventory_sanitization_removes_nested_secrets(self):
+        source = {
+            "items": [{"assetid": "42", "name": "Card", "metadata": {"api_key": "hidden"}}],
+            "authorization": "bearer-secret",
+        }
+        safe = self.widget._sanitize_inventory(source)
+        self.assertEqual(safe, {"items": [{"assetid": "42", "name": "Card", "metadata": {}}]})
+
     @patch("app.asf_management.QFileDialog.getSaveFileName")
     def test_inventory_export_saves_last_inventory_as_json(self, choose_path):
         with tempfile.TemporaryDirectory() as temp:
             target = str(Path(temp) / "inventory.json")
             choose_path.return_value = (target, "JSON (*.json)")
-            self.widget._last_inventory = {"items": [{"assetid": "42"}]}
+            self.widget._last_inventory = {"items": [{"assetid": "42", "password": "must-not-export"}]}
+            self.widget._last_inventory_export_payload = self.widget._sanitize_inventory(self.widget._last_inventory)
             self.widget._last_inventory_bot = "card-bot"
             self.widget.export_inventory()
             saved = json.loads(Path(target).read_text(encoding="utf-8"))
         self.assertEqual(saved, {"items": [{"assetid": "42"}]})
+        self.assertNotIn("must-not-export", Path(target).read_text(encoding="utf-8"))
         self.assertIn("сохранён в JSON", self.widget.status.text())
 
     def test_inventory_export_requires_loaded_inventory(self):
