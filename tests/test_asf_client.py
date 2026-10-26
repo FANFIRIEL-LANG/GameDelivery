@@ -248,6 +248,23 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF/Restart")
         self.assertEqual(request.get_method(), "POST")
 
+    def test_build_new_bot_config_defaults_to_disabled_and_has_no_password(self):
+        config = ASFClient.build_new_bot_config("new-bot", steam_login=" steam-user ")
+        self.assertEqual(config, {"Enabled": False, "SteamLogin": "steam-user"})
+        self.assertNotIn("SteamPassword", config)
+
+    def test_build_new_bot_config_rejects_reserved_and_unsafe_names(self):
+        for name in ("", "ASF", ".hidden", "../bot", "bot/name", "bot\\\\name", "bot."):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    ASFClient.build_new_bot_config(name)
+
+    def test_serialize_new_bot_config_returns_json_filename_and_content(self):
+        filename, content = ASFClient.serialize_new_bot_config("card-bot", steam_login="user")
+        self.assertEqual(filename, "card-bot.json")
+        self.assertEqual(json.loads(content), {"Enabled": False, "SteamLogin": "user"})
+        self.assertTrue(content.endswith("\\n"))
+
 
 if __name__ == "__main__":
     unittest.main()
