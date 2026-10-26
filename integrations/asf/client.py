@@ -138,6 +138,41 @@ class ASFClient:
             "steam_connection_proxy_requires_global_setting": True,
         }
 
+
+    def get_global_config(self) -> dict[str, Any]:
+        """Read the full public global config returned by ASF's /Api/ASF endpoint."""
+        payload = _unwrap_result(self.get_status())
+        if not isinstance(payload, dict):
+            raise ASFError("ASF не вернул общую конфигурацию")
+        config_key = _find_key(payload, "GlobalConfig")
+        if config_key is None or not isinstance(payload[config_key], dict) or not payload[config_key]:
+            raise ASFError("ASF не предоставил GlobalConfig; настройки не изменены")
+        return dict(payload[config_key])
+
+    def apply_global_steam_protocols(self, *, confirmed_instance_wide_change: bool = False) -> dict[str, Any]:
+        """Opt-in global change: SteamProtocols=4 affects every bot in this ASF instance."""
+        if confirmed_instance_wide_change is not True:
+            raise ValueError(
+                "Изменение затронет все боты ASF; требуется явное подтверждение пользователя"
+            )
+        config = self.get_global_config()
+        protocol_key = _find_key(config, "SteamProtocols")
+        if protocol_key is None:
+            raise ASFError("ASF не вернул SteamProtocols; общая конфигурация не изменена")
+        previous_value = config[protocol_key]
+        if previous_value == 4:
+            return {"saved": True, "steam_protocols": 4, "changed": False, "scope": "all ASF bots"}
+        config[protocol_key] = 4
+        payload = self.request("/Api/ASF", method="POST", body={"GlobalConfig": config})
+        result = _unwrap_result(payload)
+        if result is False:
+            raise ASFError("ASF не подтвердил сохранение общей конфигурации")
+        verified = self.get_global_config()
+        verified_key = _find_key(verified, "SteamProtocols")
+        if verified_key is None or verified[verified_key] != 4:
+            raise ASFError("ASF не подтвердил SteamProtocols=4 после сохранения")
+        return {"saved": True, "steam_protocols": 4, "changed": True, "scope": "all ASF bots"}
+
     def send_command(self, command: str) -> Any:
         """Low-level command primitive; not an automatic trade sender."""
         if not command.strip():
