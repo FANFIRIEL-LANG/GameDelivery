@@ -97,7 +97,16 @@ class ASFManagementWidget(QWidget):
                 self.table.setItem(row, 1, QTableWidgetItem(state))
             self.status.setText(f"Получено ботов: {len(bots)}. Секреты в таблицу не выводятся.")
         except (ASFError, ValueError, OSError) as exc:
-            self.status.setText(f"Не удалось получить список ASF: {exc}")
+            # Clear the last successful list so failed IPC cannot masquerade as live state.
+            self.table.setRowCount(0)
+            self._last_inventory = None
+            self._last_inventory_bot = None
+            self._last_inventory_export_payload = None
+            self.export_inventory_button.setEnabled(False)
+            self.status.setText(
+                f"Не удалось получить список ASF: {exc}. "
+                "Список очищен, актуальное состояние не подтверждено."
+            )
         finally:
             self.refresh_button.setEnabled(True)
 
