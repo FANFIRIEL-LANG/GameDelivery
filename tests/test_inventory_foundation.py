@@ -59,8 +59,10 @@ class OwnedSetSelectionTests(unittest.TestCase):
         }
         result = select_owned_complete_sets(inventories, "Game", 2)
         self.assertEqual(len(result), 2)
-        self.assertEqual({asset.bot_name for asset in result[0].asset_ids}, {"Bot A", "Bot B"})
+        self.assertEqual({asset.bot_name for asset in result[0].asset_ids}, {"Bot A"})
         self.assertEqual({asset.asset_id for asset in result[0].asset_ids}, {"a1", "a2"})
+        self.assertEqual({asset.bot_name for asset in result[1].asset_ids}, {"Bot B"})
+        self.assertEqual({asset.asset_id for asset in result[1].asset_ids}, {"b1", "b2"})
 
     def test_shared_selection_blocks_insufficient_sets_and_ignores_foil(self):
         inventories = {
