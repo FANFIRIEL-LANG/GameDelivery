@@ -157,7 +157,7 @@ class PlayerokAdapterTests(unittest.TestCase):
             self.adapter._request("https://attacker.example/auth/send-otp")
         with self.assertRaises(RuntimeError):
             self.adapter._request(
-                "https://playerok.com/rest-api/public/viewer", token="token\\r\\nInjected: true"
+                "https://playerok.com/rest-api/public/viewer", token="token\r\nInjected: true"
             )
 
 
