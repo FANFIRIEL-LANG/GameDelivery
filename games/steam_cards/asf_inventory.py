@@ -27,10 +27,8 @@ def _items(payload: Any) -> dict[str, Any]:
 def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[CardCopy]:
     """Normalize ASF BotInventoryResponse into local card records.
 
-    This endpoint returns the whole inventory for the requested app/context.
-    ASF response descriptions are matched by classid + instanceid. Only items
-    whose description type explicitly identifies a trading card are classified
-    as cards; unknown or unrelated items are retained as non-card inventory rows.
+    Reject incomplete asset descriptions and cards without an authoritative game
+    tag, rather than silently saving an incomplete or incorrectly grouped snapshot.
     """
     if not bot_name.strip() or not game_name.strip():
         raise ValueError("Имя бота и игры не должны быть пустыми")
@@ -66,21 +64,26 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
     seen_asset_ids: set[str] = set()
     for asset in assets:
         if not isinstance(asset, dict):
-            continue
+            raise ASFError("ASF вернул некорректный предмет; существующий снимок сохранён")
         asset_key = _key(asset, "assetid") or _key(asset, "id")
         class_key = _key(asset, "classid")
         instance_key = _key(asset, "instanceid")
         if asset_key is None or class_key is None:
-            continue
+            raise ASFError("ASF вернул предмет без asset ID или class ID; снимок не обновлён")
         asset_id = str(asset[asset_key]).strip()
-        if not asset_id or asset_id in seen_asset_ids:
-            continue
+        if not asset_id:
+            raise ASFError("ASF вернул пустой asset ID; снимок не обновлён")
+        if asset_id in seen_asset_ids:
+            raise ASFError("ASF вернул повторяющийся asset ID; снимок не обновлён")
         seen_asset_ids.add(asset_id)
         identity = (
             str(asset[class_key]),
             str(asset[instance_key]) if instance_key else "0",
         )
-        description = description_by_identity.get(identity, {})
+        description = description_by_identity.get(identity)
+        if description is None:
+            raise ASFError(f"Для предмета {asset_id} не найдены данные описания; старый снимок сохранён")
+
         name_key, type_key = _key(description, "name"), _key(description, "type")
         item_name = str(description.get(name_key, "")).strip() if name_key else ""
         item_type = str(description.get(type_key, "")).strip() if type_key else ""
@@ -88,6 +91,7 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
         is_card = "trading card" in normalized_type
         is_foil = is_card and "foil" in normalized_type
         actual_game_name = game_name.strip()
+        has_game_tag = False
         tags_key = _key(description, "tags")
         tags = description.get(tags_key, []) if tags_key else []
         if isinstance(tags, list):
@@ -100,11 +104,17 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
                     tagged_game = str(tag[game_tag_key]).strip()
                     if tagged_game:
                         actual_game_name = tagged_game
+                        has_game_tag = True
                         break
+        if is_card and not has_game_tag:
+            raise ASFError(
+                f"Для карточки {item_name or asset_id} ASF не вернул тег игры; "
+                "старый снимок сохранён"
+            )
         cards.append(CardCopy(
             asset_id=asset_id,
             game_name=actual_game_name,
-            card_name=item_name or (f"Unknown item {asset_id}"),
+            card_name=item_name or f"Unknown item {asset_id}",
             is_trading_card=is_card,
             is_foil=is_foil,
         ))
