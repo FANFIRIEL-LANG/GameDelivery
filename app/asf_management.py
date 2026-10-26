@@ -43,10 +43,14 @@ class ASFManagementWidget(QWidget):
         self.export_button = QPushButton("Сохранить конфигурацию нового бота")
         self.restart_button = QPushButton("Перезапустить ASF…")
         self.inventory_button = QPushButton("Показать инвентарь выбранного бота")
+        self.export_inventory_button = QPushButton("Экспорт инвентаря JSON")
+        self._last_inventory = None
+        self._last_inventory_bot = None
         buttons.addWidget(self.refresh_button)
         buttons.addWidget(self.export_button)
         buttons.addWidget(self.restart_button)
         buttons.addWidget(self.inventory_button)
+        buttons.addWidget(self.export_inventory_button)
         buttons.addStretch()
         root.addLayout(buttons)
 
@@ -63,6 +67,8 @@ class ASFManagementWidget(QWidget):
         self.export_button.clicked.connect(self.export_config)
         self.restart_button.clicked.connect(self.restart_asf)
         self.inventory_button.clicked.connect(self.show_inventory)
+        self.export_inventory_button.clicked.connect(self.export_inventory)
+        self.export_inventory_button.setEnabled(False)
 
     def _client(self) -> ASFClient:
         return ASFClient(ipc_password=self.ipc_password.text() or None)
@@ -141,6 +147,9 @@ class ASFManagementWidget(QWidget):
         self.inventory_button.setEnabled(False)
         try:
             payload = self._client().get_bot_inventory(bot_name)
+            self._last_inventory = payload
+            self._last_inventory_bot = bot_name
+            self.export_inventory_button.setEnabled(True)
             if isinstance(payload, dict):
                 safe_payload = dict(payload)
                 for key in list(safe_payload):
@@ -160,3 +169,21 @@ class ASFManagementWidget(QWidget):
             self.status.setText(f"Не удалось получить инвентарь {bot_name}: {exc}")
         finally:
             self.inventory_button.setEnabled(True)
+
+    def export_inventory(self):
+        if self._last_inventory is None or not self._last_inventory_bot:
+            self.status.setText("Сначала загрузи инвентарь выбранного бота.")
+            return
+        default_name = f"{self._last_inventory_bot}-inventory.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт инвентаря ASF", str(Path.home() / default_name), "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            payload = json.dumps(self._last_inventory, ensure_ascii=False, indent=2)
+            Path(path).write_text(payload, encoding="utf-8")
+        except (OSError, TypeError, ValueError) as exc:
+            QMessageBox.warning(self, "Экспорт инвентаря", f"Не удалось сохранить JSON: {exc}")
+            return
+        self.status.setText(f"Инвентарь бота {self._last_inventory_bot} сохранён в JSON.")
