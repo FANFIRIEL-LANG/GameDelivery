@@ -119,7 +119,19 @@ class MainWindow(QMainWindow):
         self.orders = QTableWidget(0, 5)
         self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Предметы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
+        self.orders.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.orders.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.orders.cellDoubleClicked.connect(self._show_order_details)
         layout.addWidget(self.orders, 2)
+        order_actions = QHBoxLayout()
+        self.order_details_button = QPushButton("Состав заказа")
+        self.order_details_button.clicked.connect(self._show_selected_order_details)
+        self.cancel_order_button = QPushButton("Отменить заказ и снять резерв")
+        self.cancel_order_button.clicked.connect(self._cancel_selected_order)
+        order_actions.addWidget(self.order_details_button)
+        order_actions.addWidget(self.cancel_order_button)
+        order_actions.addStretch()
+        layout.addLayout(order_actions)
         self._load_order_bots()
         self._load_saved_orders()
         return page
@@ -282,6 +294,75 @@ class MainWindow(QMainWindow):
                     self.orders.setItem(row, col, QTableWidgetItem(str(value)))
         except sqlite3.Error as exc:
             self.statusBar().showMessage(f"Не удалось загрузить сохранённые заказы: {exc}")
+
+    def _selected_order_id(self):
+        row = self.orders.currentRow()
+        if row < 0:
+            raise ValueError("Сначала выбери заказ в таблице.")
+        item = self.orders.item(row, 0)
+        if item is None or not item.text().strip():
+            raise ValueError("Не удалось определить выбранный заказ.")
+        return item.text().strip()
+
+    def _show_selected_order_details(self):
+        try:
+            self._show_order_details(self.orders.currentRow(), 0)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            QMessageBox.warning(self, "Состав заказа", str(exc))
+
+    def _show_order_details(self, row, _column=0):
+        if row < 0:
+            return
+        order_id = self.orders.item(row, 0).text()
+        with sqlite3.connect(self._database_path) as db:
+            order = db.execute(
+                "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+            assets = db.execute(
+                "SELECT bot_name, asset_id FROM delivery_order_assets WHERE order_id = ? "
+                "ORDER BY bot_name, asset_id",
+                (order_id,),
+            ).fetchall()
+        if order is None:
+            raise ValueError("Заказ не найден в базе данных.")
+        lines = [f"Заказ: {order_id}", f"Статус: {order[1]}", f"Trade URL: {order[0]}", "", "Активы:"]
+        lines.extend(f"• {bot} — asset {asset}" for bot, asset in assets)
+        if not assets:
+            lines.append("Состав не сохранён (старый заказ).")
+        QMessageBox.information(self, "Состав заказа", "\\n".join(lines))
+
+    def _cancel_selected_order(self):
+        try:
+            order_id = self._selected_order_id()
+            with sqlite3.connect(self._database_path) as db:
+                row = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                ).fetchone()
+            if row is None:
+                raise ValueError("Заказ не найден в базе данных.")
+            if row[0] != "reserved — не отправлен":
+                raise ValueError("Снять резерв можно только у заказа в статусе «reserved — не отправлен».")
+            answer = QMessageBox.question(
+                self, "Отменить заказ",
+                f"Отменить {order_id} и освободить его активы? Это не отправляет обмен.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            with sqlite3.connect(self._database_path) as db:
+                db.execute(
+                    "UPDATE delivery_orders SET status = 'cancelled — резерв снят' WHERE order_id = ? "
+                    "AND status = 'reserved — не отправлен'",
+                    (order_id,),
+                )
+            AssetReservationStore(self._database_path).release(order_id)
+            self._load_saved_orders()
+            self._load_order_assets()
+            self.statusBar().showMessage(f"Заказ {order_id} отменён; резерв снят.")
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            QMessageBox.warning(self, "Не удалось отменить заказ", str(exc))
 
     def _inventory_tab(self):
         return InventoryPanel()
