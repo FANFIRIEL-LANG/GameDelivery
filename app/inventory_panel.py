@@ -149,8 +149,16 @@ class InventoryPanel(QWidget):
             )
             self.render_inventory()
         except Exception as exc:
-            self.summary.setText(f"Не удалось прочитать локальную базу: {exc}")
+            # Fail closed: never leave the previous in-memory snapshot looking current.
+            self.inventories = {}
+            self.statuses = {}
+            self.reservation_rows = {}
+            self.bot_list.clear()
             self.table.setRowCount(0)
+            self.summary.setText(
+                f"Не удалось прочитать локальную базу: {exc}. "
+                "Отображение очищено; данные не подтверждены как актуальные."
+            )
 
     def _load_reservations(self):
         import sqlite3
