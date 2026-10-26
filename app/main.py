@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
             or not partner.isdigit()
             or not token
             or len(token) > 128
-            or not token.isalnum()
+            or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in token)
         ):
             raise ValueError("Укажи корректную HTTPS-ссылку Steam tradeoffer/new с partner и token.")
         return url
