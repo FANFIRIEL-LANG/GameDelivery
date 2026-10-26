@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.asf_inventory_controller import ASFInventoryController
 from integrations.asf.client import ASFClient, ASFError
 
 
@@ -47,11 +48,13 @@ class ASFManagementWidget(QWidget):
         self._last_inventory = None
         self._last_inventory_bot = None
         self._last_inventory_export_payload = None
+        self.snapshot_button = QPushButton("Обновить снимок в GameDelivery")
         buttons.addWidget(self.refresh_button)
         buttons.addWidget(self.export_button)
         buttons.addWidget(self.restart_button)
         buttons.addWidget(self.inventory_button)
         buttons.addWidget(self.export_inventory_button)
+        buttons.addWidget(self.snapshot_button)
         buttons.addStretch()
         root.addLayout(buttons)
 
@@ -69,6 +72,7 @@ class ASFManagementWidget(QWidget):
         self.restart_button.clicked.connect(self.restart_asf)
         self.inventory_button.clicked.connect(self.show_inventory)
         self.export_inventory_button.clicked.connect(self.export_inventory)
+        self.snapshot_button.clicked.connect(self.refresh_inventory_snapshot)
         self.export_inventory_button.setEnabled(False)
 
     def _client(self) -> ASFClient:
@@ -199,3 +203,24 @@ class ASFManagementWidget(QWidget):
             QMessageBox.warning(self, "Экспорт инвентаря", f"Не удалось сохранить JSON: {exc}")
             return
         self.status.setText(f"Инвентарь бота {self._last_inventory_bot} сохранён в JSON.")
+
+    def refresh_inventory_snapshot(self):
+        row = self.table.currentRow()
+        if row < 0 or self.table.item(row, 0) is None:
+            self.status.setText("Сначала выбери бота в списке.")
+            return
+        bot_name = self.table.item(row, 0).text()
+        self.snapshot_button.setEnabled(False)
+        try:
+            controller = ASFInventoryController(Path.home() / ".gamedelivery" / "gamedelivery.sqlite3")
+            result = controller.refresh(bot_name, self.ipc_password.text() or None)
+        except (ASFError, ValueError, RuntimeError, OSError) as exc:
+            self.status.setText(f"Снимок инвентаря не обновлён для {bot_name}: {exc}")
+            return
+        finally:
+            self.snapshot_button.setEnabled(True)
+        count = result.get("item_count", result.get("count", "неизвестно")) if isinstance(result, dict) else "неизвестно"
+        self.status.setText(
+            f"Снимок инвентаря ASF обновлён для {bot_name}. Элементов: {count}. "
+            "Снимок сохранён раздельно для этого бота."
+        )
