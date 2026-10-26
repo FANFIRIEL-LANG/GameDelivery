@@ -44,8 +44,10 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
 
     assets_key = _key(inventory, "Assets")
     descriptions_key = _key(inventory, "Descriptions")
-    assets = inventory.get(assets_key, []) if assets_key else []
-    descriptions = inventory.get(descriptions_key, []) if descriptions_key else []
+    if assets_key is None or descriptions_key is None:
+        raise ASFError("ASF не подтвердил полный ответ инвентаря; существующий снимок сохранён")
+    assets = inventory[assets_key]
+    descriptions = inventory[descriptions_key]
     if assets is None or descriptions is None or not isinstance(assets, list) or not isinstance(descriptions, list):
         raise ASFError("ASF вернул некорректные Assets/Descriptions")
 
