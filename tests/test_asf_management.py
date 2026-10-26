@@ -114,6 +114,20 @@ class ASFManagementWidgetTests(unittest.TestCase):
         get_inventory.assert_not_called()
         self.assertIn("выбери бота", self.widget.status.text())
 
+    @patch("app.asf_management.ASFInventoryController.refresh")
+    def test_snapshot_refresh_uses_selected_bot_and_ipc_password(self, refresh):
+        refresh.return_value = {"item_count": 12, "updated_at": "2026-10-27T00:00:00+00:00"}
+        from PySide6.QtWidgets import QTableWidgetItem
+        self.widget.table.setRowCount(1)
+        self.widget.table.setItem(0, 0, QTableWidgetItem("card-bot"))
+        self.widget.table.selectRow(0)
+        self.widget.ipc_password.setText("local-ipc-secret")
+        with patch("app.asf_management.ASFInventoryController") as controller:
+            controller.return_value.refresh.return_value = {"item_count": 12}
+            self.widget.refresh_inventory_snapshot()
+            controller.return_value.refresh.assert_called_once_with("card-bot", "local-ipc-secret")
+        self.assertIn("Элементов: 12", self.widget.status.text())
+
     @patch("app.asf_management.QMessageBox.warning")
     def test_export_rejects_invalid_name_before_file_dialog(self, warning):
         with patch("app.asf_management.QFileDialog.getSaveFileName") as choose_path:
