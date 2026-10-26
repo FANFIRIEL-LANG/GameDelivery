@@ -30,13 +30,16 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(request.get_header("Authentication"), "local-secret")
 
     def test_rejects_non_api_path(self):
-        client = ASFClient()
         with self.assertRaises(ValueError):
-            client.request("http://example.com/")
+            ASFClient().request("http://example.com/")
 
     def test_empty_bot_name_rejected(self):
         with self.assertRaises(ValueError):
             ASFClient().get_bot(" ")
+
+    def test_rejects_non_local_ipc(self):
+        with self.assertRaises(ValueError):
+            ASFClient(base_url="http://192.168.1.10:1242").get_status()
 
     @patch("integrations.asf.client.urlopen")
     def test_unauthorized_response_does_not_expose_secret(self, urlopen):
@@ -48,6 +51,57 @@ class ASFClientTests(unittest.TestCase):
             ASFClient(ipc_password="do-not-print").get_status()
         self.assertNotIn("do-not-print", str(raised.exception))
         self.assertIn("авторизацию", str(raised.exception))
+
+    @patch("integrations.asf.client.urlopen")
+    def test_apply_proxy_preserves_existing_bot_settings(self, urlopen):
+        existing = {
+            "AcceptGifts": True,
+            "Enabled": True,
+            "SteamLogin": "account-name",
+            "SteamTradeToken": "tradetoken",
+            "WebProxy": None,
+            "WebProxyUsername": None,
+            "WebProxyPassword": None,
+            "SteamProtocols": 7,
+        }
+        urlopen.side_effect = [
+            FakeResponse({
+                "Success": True,
+                "Result": {
+                    "bot-a": {"BotConfig": existing, "BotName": "bot-a"}
+                },
+            }),
+            FakeResponse({"Success": True, "Result": {"bot-a": True}}),
+        ]
+        client = ASFClient()
+        summary = client.apply_proxy_settings("bot-a", {
+            "WebProxy": "socks5://proxy.example:1080",
+            "WebProxyUsername": "user",
+            "WebProxyPassword": "secret",
+            "SteamProtocols": 4,
+        })
+        self.assertTrue(summary["saved"])
+        posted = json.loads(urlopen.call_args_list[1].args[0].data.decode("utf-8"))
+        config = posted["BotConfig"]
+        self.assertTrue(config["AcceptGifts"])
+        self.assertTrue(config["Enabled"])
+        self.assertEqual(config["SteamLogin"], "account-name")
+        self.assertEqual(config["SteamTradeToken"], "tradetoken")
+        self.assertEqual(config["WebProxy"], "socks5://proxy.example:1080")
+        self.assertEqual(config["SteamProtocols"], 4)
+        self.assertNotIn("secret", str(summary))
+
+    @patch("integrations.asf.client.urlopen")
+    def test_refuses_to_write_when_bot_config_missing(self, urlopen):
+        urlopen.return_value = FakeResponse({"Success": True, "Result": {"bot-a": {"BotName": "bot-a"}}})
+        with self.assertRaises(ASFError):
+            ASFClient().apply_proxy_settings("bot-a", {
+                "WebProxy": "http://proxy.example:8080",
+                "WebProxyUsername": None,
+                "WebProxyPassword": None,
+                "SteamProtocols": 4,
+            })
+        self.assertEqual(urlopen.call_count, 1)
 
 
 if __name__ == "__main__":
