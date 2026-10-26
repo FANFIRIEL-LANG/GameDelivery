@@ -4,13 +4,14 @@ from integrations.asf.proxy_config import SteamProxy, parse_proxy_uri
 
 
 class ProxyConfigTests(unittest.TestCase):
-    def test_proxy_applies_to_web_and_steam_connection(self):
+    def test_bot_settings_only_contain_per_bot_proxy_fields(self):
         proxy = SteamProxy("SOCKS5", "proxy.example", 1080, "proxy-user", "secret")
         settings = proxy.asf_bot_settings()
         self.assertEqual(settings["WebProxy"], "socks5://proxy.example:1080")
         self.assertEqual(settings["WebProxyUsername"], "proxy-user")
         self.assertEqual(settings["WebProxyPassword"], "secret")
-        self.assertEqual(settings["SteamProtocols"], 4)
+        self.assertNotIn("SteamProtocols", settings)
+        self.assertIn("requires global ASF SteamProtocols=4", str(proxy.safe_summary()))
         self.assertNotIn("secret", proxy.uri)
         self.assertNotIn("secret", str(proxy.safe_summary()))
 
@@ -19,7 +20,7 @@ class ProxyConfigTests(unittest.TestCase):
         self.assertEqual(settings["WebProxy"], "http://127.0.0.1:8888")
         self.assertIsNone(settings["WebProxyUsername"])
         self.assertIsNone(settings["WebProxyPassword"])
-        self.assertEqual(settings["SteamProtocols"], 4)
+        self.assertNotIn("SteamProtocols", settings)
 
     def test_parse_proxy_uri(self):
         proxy = parse_proxy_uri("socks5://proxy.example:1080", "u", "p")
