@@ -121,6 +121,7 @@ class MainWindow(QMainWindow):
         self.orders.horizontalHeader().setStretchLastSection(True)
         self.orders.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.orders.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.orders.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.orders.cellDoubleClicked.connect(self._show_order_details)
         layout.addWidget(self.orders, 2)
         order_actions = QHBoxLayout()
@@ -352,12 +353,19 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
             with sqlite3.connect(self._database_path) as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                ).fetchone()
+                if current is None or current[0] != "reserved — не отправлен":
+                    raise ValueError("Статус заказа изменился. Обнови список и повтори действие.")
                 db.execute(
-                    "UPDATE delivery_orders SET status = 'cancelled — резерв снят' WHERE order_id = ? "
-                    "AND status = 'reserved — не отправлен'",
+                    "UPDATE delivery_orders SET status = 'cancelled — резерв снят' WHERE order_id = ?",
                     (order_id,),
                 )
-            AssetReservationStore(self._database_path).release(order_id)
+                db.execute(
+                    "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
+                )
             self._load_saved_orders()
             self._load_order_assets()
             self.statusBar().showMessage(f"Заказ {order_id} отменён; резерв снят.")
