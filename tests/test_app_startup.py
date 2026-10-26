@@ -7,7 +7,7 @@ from unittest.mock import PropertyMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 from app.main import MainWindow
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
@@ -61,6 +61,55 @@ class AppStartupSmokeTests(unittest.TestCase):
                     self.assertEqual(order_asset[1:], ("Bot A", "asset-123"))
                     window._load_saved_orders()
                     self.assertEqual(window.orders.rowCount(), 1)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+    def test_cancel_order_releases_only_its_reservations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            reservations = __import__(
+                "games.steam_cards.reservations", fromlist=["AssetReservationStore"]
+            ).AssetReservationStore(database)
+            reservations.reserve("GD-TEST", [("Bot A", "asset-123")])
+            with sqlite3.connect(database) as db:
+                db.execute("""
+                    CREATE TABLE delivery_orders (
+                        order_id TEXT PRIMARY KEY, recipient_trade_url TEXT NOT NULL,
+                        status TEXT NOT NULL, asset_count INTEGER NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                db.execute("""
+                    INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count)
+                    VALUES ('GD-TEST', 'https://steamcommunity.com/tradeoffer/new/?partner=1&token=abc',
+                            'reserved — не отправлен', 1)
+                """)
+                db.execute("""
+                    CREATE TABLE delivery_order_assets (
+                        order_id TEXT NOT NULL, bot_name TEXT NOT NULL, asset_id TEXT NOT NULL
+                    )
+                """)
+                db.execute(
+                    "INSERT INTO delivery_order_assets VALUES ('GD-TEST', 'Bot A', 'asset-123')"
+                )
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
+                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                window = MainWindow()
+                try:
+                    window._load_saved_orders()
+                    window.orders.selectRow(0)
+                    window._cancel_selected_order()
+                    with sqlite3.connect(database) as db:
+                        status = db.execute(
+                            "SELECT status FROM delivery_orders WHERE order_id = 'GD-TEST'"
+                        ).fetchone()[0]
+                        remaining = db.execute(
+                            "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id = 'GD-TEST'"
+                        ).fetchone()[0]
+                    self.assertEqual(status, "cancelled — резерв снят")
+                    self.assertEqual(remaining, 0)
                 finally:
                     window.close()
                     window.deleteLater()
