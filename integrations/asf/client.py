@@ -248,3 +248,43 @@ class ASFClient:
             raise ValueError("Перезапуск ASF требует явного подтверждения")
         return self.request("/Api/ASF/Restart", method="POST", body={})
 
+    @staticmethod
+    def build_new_bot_config(
+        bot_name: str,
+        *,
+        steam_login: str | None = None,
+        enabled: bool = False,
+    ) -> dict[str, Any]:
+        """Build a minimal safe config payload for a new ASF bot.
+
+        ASF creates bots by loading BotName.json from its config directory;
+        IPC BotPost only updates an already-existing bot. This method never
+        accepts or stores Steam passwords or session secrets.
+        """
+        name = bot_name.strip()
+        if (
+            not name
+            or name.casefold() == "asf"
+            or name.startswith(".")
+            or any(char in name for char in '/\\\\<>:"|?*')
+            or any(ord(char) < 32 for char in name)
+            or name.endswith(".")
+        ):
+            raise ValueError("Недопустимое имя бота ASF")
+        if steam_login is not None and (
+            not steam_login.strip()
+            or any(ord(char) < 32 for char in steam_login)
+        ):
+            raise ValueError("Некорректный SteamLogin")
+        config: dict[str, Any] = {"Enabled": bool(enabled)}
+        if steam_login is not None:
+            config["SteamLogin"] = steam_login.strip()
+        return config
+
+    @staticmethod
+    def serialize_new_bot_config(bot_name: str, *, steam_login: str | None = None) -> tuple[str, str]:
+        """Return (filename, JSON text) for user-reviewed manual ASF import."""
+        name = bot_name.strip()
+        config = ASFClient.build_new_bot_config(name, steam_login=steam_login, enabled=False)
+        return name + ".json", json.dumps(config, ensure_ascii=False, indent=2) + "\\n"
+\n
