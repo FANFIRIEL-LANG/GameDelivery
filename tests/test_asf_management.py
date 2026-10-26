@@ -50,6 +50,24 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.assertNotIn("SteamPassword", payload)
         self.assertIn("Enabled=false", self.widget.status.text())
 
+    @patch("app.asf_management.ASFClient.restart")
+    @patch("app.asf_management.QMessageBox.question")
+    def test_restart_requires_confirmation_before_calling_asf(self, question, restart):
+        from PySide6.QtWidgets import QMessageBox
+        question.return_value = QMessageBox.StandardButton.No
+        self.widget.restart_asf()
+        restart.assert_not_called()
+        self.assertIn("отменён", self.widget.status.text())
+
+    @patch("app.asf_management.ASFClient.restart")
+    @patch("app.asf_management.QMessageBox.question")
+    def test_confirmed_restart_sends_explicit_confirmation(self, question, restart):
+        from PySide6.QtWidgets import QMessageBox
+        question.return_value = QMessageBox.StandardButton.Yes
+        self.widget.restart_asf()
+        restart.assert_called_once_with(confirmed=True)
+        self.assertIn("отправлена", self.widget.status.text())
+
     @patch("app.asf_management.QMessageBox.warning")
     def test_export_rejects_invalid_name_before_file_dialog(self, warning):
         with patch("app.asf_management.QFileDialog.getSaveFileName") as choose_path:
