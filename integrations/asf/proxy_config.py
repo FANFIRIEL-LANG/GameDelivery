@@ -9,7 +9,7 @@ SUPPORTED_PROXY_SCHEMES = frozenset({"http", "https", "socks4", "socks4a", "sock
 
 @dataclass(frozen=True)
 class SteamProxy:
-    """Proxy settings for one ASF bot; credentials are kept out of the proxy URI."""
+    """Proxy settings for one ASF bot; credentials stay out of the proxy URI."""
 
     scheme: str
     host: str
@@ -40,23 +40,16 @@ class SteamProxy:
         return f"{self.scheme}://{host}:{self.port}"
 
     def asf_bot_settings(self) -> dict[str, object]:
-        """Return bot settings that route web requests and Steam CMs through this proxy.
+        """Return per-bot WebProxy fields only.
 
-        ASF documents SteamProtocols=4 (WebSocket only) as required when WebProxy
-        must also proxy Steam client connections. This intentionally restricts
-        transport protocols for the configured bot.
+        SteamProtocols is an ASF global setting, not a bot setting. It must be
+        handled separately because changing it affects every ASF bot.
         """
-        settings: dict[str, object] = {
+        return {
             "WebProxy": self.uri,
-            "SteamProtocols": 4,
+            "WebProxyUsername": self.username,
+            "WebProxyPassword": self.password,
         }
-        if self.username is not None:
-            settings["WebProxyUsername"] = self.username
-            settings["WebProxyPassword"] = self.password
-        else:
-            settings["WebProxyUsername"] = None
-            settings["WebProxyPassword"] = None
-        return settings
 
     def safe_summary(self) -> dict[str, object]:
         """Safe display/log summary that never exposes proxy credentials."""
@@ -65,7 +58,7 @@ class SteamProxy:
             "host": self.host,
             "port": self.port,
             "authentication": self.username is not None,
-            "steam_protocols": "WebSocket only (4)",
+            "steam_connection_proxy": "requires global ASF SteamProtocols=4",
         }
 
 
