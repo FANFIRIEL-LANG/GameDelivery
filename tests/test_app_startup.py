@@ -115,6 +115,53 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.deleteLater()
                     self.app.processEvents()
 
+    def test_cancel_order_does_not_release_another_orders_assets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            from games.steam_cards.reservations import AssetReservationStore
+            reservations = AssetReservationStore(database)
+            reservations.reserve("GD-ONE", [("Bot A", "asset-1")])
+            reservations.reserve("GD-TWO", [("Bot A", "asset-2")])
+            with sqlite3.connect(database) as db:
+                db.execute("""
+                    CREATE TABLE delivery_orders (
+                        order_id TEXT PRIMARY KEY, recipient_trade_url TEXT NOT NULL,
+                        status TEXT NOT NULL, asset_count INTEGER NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                db.executemany(
+                    "INSERT INTO delivery_orders (order_id, recipient_trade_url, status, asset_count) "
+                    "VALUES (?, 'https://steamcommunity.com/tradeoffer/new/?partner=1&token=abc', "
+                    "'reserved — не отправлен', 1)",
+                    [("GD-ONE",), ("GD-TWO",)],
+                )
+                db.execute("""
+                    CREATE TABLE delivery_order_assets (
+                        order_id TEXT NOT NULL, bot_name TEXT NOT NULL, asset_id TEXT NOT NULL
+                    )
+                """)
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
+                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                window = MainWindow()
+                try:
+                    window._load_saved_orders()
+                    target_row = next(
+                        row for row in range(window.orders.rowCount())
+                        if window.orders.item(row, 0).text() == "GD-ONE"
+                    )
+                    window.orders.selectRow(target_row)
+                    window._cancel_selected_order()
+                    self.assertEqual(reservations.list_for_order("GD-ONE"), [])
+                    self.assertEqual(
+                        reservations.list_for_order("GD-TWO"),
+                        [{"bot_name": "Bot A", "asset_id": "asset-2"}],
+                    )
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
     def test_main_window_constructs_with_expected_tabs(self):
         window = MainWindow()
         try:
