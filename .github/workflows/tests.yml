@@ -15,4 +15,6 @@ jobs:
       - name: Compile Python files
         run: python -m compileall -q app core integrations games notifications tests
       - name: Run unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
