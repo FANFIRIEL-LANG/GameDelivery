@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame,
@@ -104,6 +105,7 @@ class MainWindow(QMainWindow):
         actions.addStretch()
         layout.addLayout(actions)
 
+        AssetReservationStore(self._database_path)
         self.orders = QTableWidget(0, 5)
         self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Предметы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
@@ -144,11 +146,6 @@ class MainWindow(QMainWindow):
             if status["stale"] or not status["updated_at"]:
                 self.order_assets.addItem("Нет подтверждённого снимка — сначала обнови инвентарь через ASF.")
                 return
-            reserved = {
-                (entry["bot_name"], entry["asset_id"])
-                for order in AssetReservationStore(self._database_path).list_for_order("")
-                for entry in [order]
-            }
             with sqlite3.connect(self._database_path) as db:
                 rows = db.execute(
                     "SELECT asset_id, game_name, card_name, is_trading_card, is_foil "
@@ -165,10 +162,10 @@ class MainWindow(QMainWindow):
                 if asset_id in reserved_ids:
                     label += " · УЖЕ ЗАРЕЗЕРВИРОВАН"
                     item = QListWidgetItem(label)
-                    item.setFlags(item.flags() & ~item.flags().__class__.ItemIsSelectable)
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
                 else:
                     item = QListWidgetItem(label)
-                item.setData(256, (bot, asset_id))
+                item.setData(Qt.ItemDataRole.UserRole, (bot, asset_id))
                 self.order_assets.addItem(item)
             if not rows:
                 self.order_assets.addItem("В снимке нет предметов.")
@@ -199,7 +196,7 @@ class MainWindow(QMainWindow):
         try:
             recipient = self._validate_trade_url(self.order_recipient.text())
             selected = [
-                item.data(256) for item in self.order_assets.selectedItems()
+                item.data(Qt.ItemDataRole.UserRole) for item in self.order_assets.selectedItems()
                 if item.data(256) is not None
             ]
             if not selected:
