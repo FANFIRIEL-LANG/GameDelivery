@@ -49,7 +49,7 @@ class ASFClient:
         try:
             parsed_base = urlsplit(self.base_url)
             local_host = parsed_base.hostname in {"127.0.0.1", "localhost", "::1"}
-            valid_port = parsed_base.port in {None, 1242}
+            valid_port = parsed_base.port == 1242
         except ValueError:
             local_host = False
             valid_port = False
