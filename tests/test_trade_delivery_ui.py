@@ -188,11 +188,14 @@ class TradeDeliveryUITests(unittest.TestCase):
                     ).fetchall()
                 self.assertEqual(before, [("Bot A", "1234567890")])
 
-                with patch(
-                    "app.main.QMessageBox.question",
-                    return_value=QMessageBox.StandardButton.Yes,
-                ), patch("app.main.QMessageBox.warning") as warning, \\
-                     patch("app.main.ASFClient.send_trade_offer") as send:
+                with (
+                    patch(
+                        "app.main.QMessageBox.question",
+                        return_value=QMessageBox.StandardButton.Yes,
+                    ),
+                    patch("app.main.QMessageBox.warning") as warning,
+                    patch("app.main.ASFClient.send_trade_offer") as send,
+                ):
                     window._cancel_selected_order()
 
                 warning.assert_not_called()
