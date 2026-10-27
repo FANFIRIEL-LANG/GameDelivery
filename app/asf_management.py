@@ -17,6 +17,10 @@ from app.asf_inventory_controller import ASFInventoryController
 from integrations.asf.client import ASFClient, ASFError
 
 
+ASF_IPC_KEYRING_SERVICE = "GameDelivery.ASFIPC"
+ASF_IPC_KEYRING_ACCOUNT = "localhost:1242"
+
+
 class ASFOutputReader(QThread):
     line_received = Signal(str)
 
@@ -75,6 +79,9 @@ class ASFManagementWidget(QWidget):
         self.ipc_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.ipc_password.setPlaceholderText("IPCPassword из локальной конфигурации ASF")
         form.addRow("Пароль ASF IPC", self.ipc_password)
+        self.remember_ipc_password = QCheckBox("Сохранять пароль в системном хранилище")
+        self._load_saved_ipc_password()
+        form.addRow("", self.remember_ipc_password)
         root.addLayout(form)
 
         import_row = QHBoxLayout()
@@ -176,6 +183,8 @@ class ASFManagementWidget(QWidget):
         self.stop_asf_button.clicked.connect(self.stop_asf)
         self.asf_console_button.clicked.connect(self.show_asf_console)
         self.auto_start_asf_checkbox.toggled.connect(lambda enabled: self._settings.setValue("asf/auto_start", enabled))
+        self.remember_ipc_password.toggled.connect(self._set_remember_ipc_password)
+        self.ipc_password.editingFinished.connect(self._save_ipc_password_if_enabled)
         self.import_button.clicked.connect(self.import_accounts)
         self.restart_button.clicked.connect(self.restart_asf)
         self.inventory_button.clicked.connect(self.show_inventory)
@@ -588,6 +597,68 @@ class ASFManagementWidget(QWidget):
             )
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Импорт не выполнен", str(exc))
+
+    @staticmethod
+    def _keyring_backend():
+        try:
+            import keyring
+        except ImportError as exc:
+            raise RuntimeError("Пакет keyring недоступен; IPCPassword не сохранён") from exc
+        try:
+            backend = keyring.get_keyring()
+            if not getattr(backend, "priority", 0) or backend.priority < 1:
+                raise RuntimeError("Системное хранилище учётных данных недоступно")
+        except RuntimeError:
+            raise
+        except Exception:
+            raise RuntimeError("Не удалось открыть системное хранилище учётных данных") from None
+        return keyring
+
+    def _load_saved_ipc_password(self):
+        try:
+            keyring = self._keyring_backend()
+            saved = keyring.get_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT)
+        except Exception:
+            return
+        if saved:
+            self.ipc_password.setText(saved)
+            self.remember_ipc_password.setChecked(True)
+
+    def _save_ipc_password_if_enabled(self):
+        if not self.remember_ipc_password.isChecked():
+            return
+        try:
+            keyring = self._keyring_backend()
+            password = self.ipc_password.text()
+            if password:
+                keyring.set_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT, password)
+            else:
+                try:
+                    keyring.delete_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT)
+                except Exception:
+                    if keyring.get_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT) is not None:
+                        raise
+        except Exception:
+            self.status.setText(
+                "Не удалось сохранить IPCPassword в системном хранилище; пароль остаётся только в памяти."
+            )
+
+    def _set_remember_ipc_password(self, enabled: bool):
+        if enabled:
+            self._save_ipc_password_if_enabled()
+            return
+        try:
+            keyring = self._keyring_backend()
+            try:
+                keyring.delete_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT)
+            except Exception:
+                if keyring.get_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT) is not None:
+                    raise
+        except Exception:
+            self.status.setText("Не удалось удалить IPCPassword из системного хранилища.")
+            self.remember_ipc_password.blockSignals(True)
+            self.remember_ipc_password.setChecked(True)
+            self.remember_ipc_password.blockSignals(False)
 
     def _client(self) -> ASFClient:
         return ASFClient(ipc_password=self.ipc_password.text() or None)
