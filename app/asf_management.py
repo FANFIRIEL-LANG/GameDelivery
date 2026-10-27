@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.asf_inventory_controller import ASFInventoryController
-from app.bot_selector import discover_asf_roots
+from app.bot_selector import discover_asf_roots, is_asf_config_dir
 from integrations.asf.client import ASFClient, ASFError
 
 
@@ -206,7 +206,7 @@ class ASFManagementWidget(QWidget):
                     break
         if not self.config_path.text().strip():
             for candidate_dir in discover_asf_roots():
-                if any(candidate_dir.glob("*.json")):
+                if is_asf_config_dir(candidate_dir):
                     self.config_path.setText(str(candidate_dir))
                     self._settings.setValue("asf/config_path", str(candidate_dir))
                     break
