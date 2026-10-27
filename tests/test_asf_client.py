@@ -377,13 +377,10 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF/Restart")
         self.assertEqual(request.get_method(), "POST")
 
-    @patch("integrations.asf.client.urlopen")
-    def test_exit_uses_official_local_endpoint(self, urlopen):
-        urlopen.return_value = FakeResponse({"Success": True})
-        self.assertEqual(ASFClient().exit(), {"Success": True})
-        request = urlopen.call_args.args[0]
-        self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF/Exit")
-        self.assertEqual(request.get_method(), "POST")
+    @patch.object(ASFClient, "send_command", return_value={"Success": True, "Result": "OK"})
+    def test_exit_uses_documented_owner_command(self, send_command):
+        self.assertEqual(ASFClient().exit(), {"Success": True, "Result": "OK"})
+        send_command.assert_called_once_with("exit")
 
     def test_build_new_bot_config_defaults_to_disabled_and_has_no_password(self):
         config = ASFClient.build_new_bot_config("new-bot", steam_login=" steam-user ")
