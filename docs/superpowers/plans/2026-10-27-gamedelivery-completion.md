@@ -126,6 +126,7 @@
 - [x] Скачать Windows artifact `12751767921`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `cd1c41e236a02ab375886434cfba781a03de8c939e08bd4fe19ba9606aa8c0e2`.
 - [x] Скачать plugin artifact `12752222885`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `db864eebe51fcf05e8ee1bec575a2be168f9dfc4c25242a9017258c0986eac77`.
 - [x] Проверить корень Windows ZIP: `GameDelivery.exe`, `_internal/`, `PACKAGE_README.txt`, `BUILD_INFO.txt`; вложенного ZIP больше нет.
+- [x] Последняя проверка после блоков SQLite: Windows artifact `12758057800`, digest `498cf9a69ac5ef30c98c97f030d720bdd78da022d9c5899d13e05d001396562e`; ASF plugin artifact `12757084527`, digest `5cba89769be112bc1b7c9aed9e36c40f98712b97be7e1102d479ba6dcacdbb81`. Оба ZIP проверены, целостность и SHA-256 подтверждены на SHA `b31a4f7b9035d148c7b4677dc96dd9e59eaf8dd5`.
 - [x] Проверить Windows `BUILD_INFO.txt`: он указывает merge commit `7a6f0cf144ed642c522a2c7d0949b706fd119758`, а GitHub Actions metadata подтверждает feature source SHA `a681fab2e5fea9a68efc8202e9f2efd45a9de77f`.
 - [x] Проверить содержимое пакета: не обнаружены конфиги ASF, локальная БД, maFiles или пользовательские логи.
 - [ ] Проверить запуск из распакованной папки на отдельной чистой Windows-машине/VM без установленного Python.
