@@ -24,12 +24,21 @@ class SteamCardSelectionTests(unittest.TestCase):
     def test_ignores_foil_and_non_cards(self):
         inventory = cards("Game A", ["A", "B"])
         inventory += [
-            CardCopy("foil-c", "Game A", "C", is_foil=True),
+            CardCopy("foil-a", "Game A", "A", is_foil=True),
             CardCopy("item-d", "Game A", "D", is_trading_card=False),
         ]
         result = find_available_sets(inventory)
         self.assertEqual(result[0].cards_per_set, 2)
         self.assertEqual(result[0].available_sets, 1)
+
+    def test_nontradable_card_type_blocks_false_complete_set(self):
+        inventory = [
+            CardCopy("a", "Game A", "A", is_tradable=True),
+            CardCopy("b", "Game A", "B", is_tradable=False),
+        ]
+        self.assertEqual(find_available_sets(inventory), [])
+        with self.assertRaisesRegex(ValueError, "полных наборов"):
+            select_complete_sets(inventory, 1)
 
     def test_duplicate_asset_id_counted_once(self):
         inventory = [
