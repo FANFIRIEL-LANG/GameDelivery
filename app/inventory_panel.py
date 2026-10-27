@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPushButton, QTableWidget, QTableWidgetItem,
@@ -46,6 +47,7 @@ class InventoryPanel(QWidget):
         self.ipc_password_input = QLineEdit()
         self.ipc_password_input.setPlaceholderText("Если задан в ASF")
         self.ipc_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ipc_password_input.setText(self._load_saved_ipc_password())
         controls.addWidget(self.ipc_password_input, 1)
         self.fetch_button = QPushButton("Загрузить из ASF")
         controls.addWidget(self.fetch_button)
@@ -82,6 +84,34 @@ class InventoryPanel(QWidget):
         self.mode.currentIndexChanged.connect(self.render_inventory)
         self.bot_list.itemSelectionChanged.connect(self.render_inventory)
         self.refresh()
+
+    @staticmethod
+    def _load_saved_ipc_password() -> str:
+        """Reuse the ASF IPC credential saved by ASF management or read ASF.json."""
+        try:
+            import keyring
+            backend = keyring.get_keyring()
+            if getattr(backend, "priority", 0) >= 1:
+                saved = keyring.get_password("GameDelivery.ASFIPC", "localhost:1242")
+                if saved:
+                    return saved
+        except Exception:
+            # The credential store is optional; fall back to the selected ASF config.
+            pass
+
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        config_text = str(settings.value("asf/config_path", "") or "").strip()
+        if not config_text:
+            return ""
+        try:
+            payload = json.loads((Path(config_text) / "ASF.json").read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return ""
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if str(key).casefold() == "ipcpassword" and isinstance(value, str):
+                    return value
+        return ""
 
     def select_bot_snapshot(self, bot_name: str):
         """Refresh local inventory and select one bot after an ASF snapshot update."""
