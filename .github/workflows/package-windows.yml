@@ -1,66 +1,95 @@
-name: Package Windows Source Bundle
+name: Build GameDelivery Windows executable
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - feature/steam-card-set-selection
+    paths:
+      - app/**
+      - core/**
+      - games/**
+      - integrations/**
+      - notifications/**
+      - tests/**
+      - requirements.txt
+      - .github/workflows/package-windows.yml
   push:
     branches:
       - feature/steam-card-set-selection
+    paths:
+      - app/**
+      - core/**
+      - games/**
+      - integrations/**
+      - notifications/**
+      - tests/**
+      - requirements.txt
+      - .github/workflows/package-windows.yml
+
+permissions:
+  contents: read
 
 jobs:
-  package:
-    runs-on: ubuntu-latest
+  build-windows:
+    runs-on: windows-latest
     steps:
-      - name: Install Qt runtime libraries
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0
-      - uses: actions/checkout@v4
-        with:
-          ref: feature/steam-card-set-selection
-      - uses: actions/setup-python@v5
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install application and packaging dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
       - name: Compile Python files
         run: python -m compileall -q app core integrations games notifications tests
+
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
-      - name: Create source bundle
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Build Windows GUI executable
+        run: >
+          pyinstaller --noconfirm --clean --windowed --onedir --name GameDelivery
+          --collect-all PySide6 --collect-all keyring --copy-metadata keyring
+          --collect-submodules app --collect-submodules core --collect-submodules games
+          --collect-submodules integrations --collect-submodules notifications
+          app\__main__.py
+
+      - name: Smoke test packaged executable
+        shell: pwsh
         run: |
-          mkdir -p dist/GameDelivery
-          git archive --format=tar HEAD | tar -xf - -C dist/GameDelivery
-          printf '%s\n' 'GameDelivery source bundle' 'Python 3.11+ required' 'Run install_and_start.bat on Windows.' 'Steam trades are disabled.' > dist/GameDelivery/PACKAGE_README.txt
-          cat > dist/GameDelivery/install_and_start.bat <<'EOF'
-          @echo off
-          cd /d %~dp0
-          where py >nul 2>nul
-          if errorlevel 1 (
-            echo Python launcher was not found. Install Python 3.11 or newer from python.org and enable Add Python to PATH.
-            pause
-            exit /b 1
-          )
-          py -3 -m venv .venv
-          if errorlevel 1 (
-            echo Could not create virtual environment.
-            pause
-            exit /b 1
-          )
-          call .venv\Scripts\activate.bat
-          python -m pip install --upgrade pip
-          if errorlevel 1 goto failed
-          python -m pip install -r requirements.txt
-          if errorlevel 1 goto failed
-          python -m app
-          if errorlevel 1 goto failed
-          exit /b 0
-          :failed
-          echo Setup or startup failed. Review the error above.
-          pause
-          exit /b 1
-          EOF
-          cd dist && zip -r GameDelivery-Windows-Source.zip GameDelivery
-      - uses: actions/upload-artifact@v4
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          .\dist\GameDelivery\GameDelivery.exe --self-test
+
+      - name: Add package instructions
+        shell: pwsh
+        run: |
+          @'
+          GameDelivery — Windows x64
+          Start the application with GameDelivery.exe.
+          The local database is stored in %USERPROFILE%\.gamedelivery\gamedelivery.sqlite3.
+          The application is packaged with its Python and Qt runtime dependencies.
+          ASF must be installed and running separately for ASF-based inventory functions.
+          The ASF preview plugin is a separate component and must match the installed ASF version.
+          Real Steam trade sending is disabled.
+          '@ | Set-Content -Encoding utf8 dist\GameDelivery\PACKAGE_README.txt
+
+      - name: Create distributable ZIP
+        shell: pwsh
+        run: Compress-Archive -Path dist\GameDelivery -DestinationPath dist\GameDelivery-Windows-x64.zip -Force
+
+      - name: Upload Windows executable package
+        uses: actions/upload-artifact@v4
         with:
-          name: GameDelivery-Windows-Source
-          path: dist/GameDelivery-Windows-Source.zip
+          name: GameDelivery-Windows-x64
+          path: dist/GameDelivery-Windows-x64.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
