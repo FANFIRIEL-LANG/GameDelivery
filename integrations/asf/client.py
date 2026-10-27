@@ -436,9 +436,18 @@ class ASFClient:
         if not isinstance(payload, dict):
             raise ASFError("ASF не вернул список ботов")
         bots_key = _find_key(payload, "Bots")
-        if bots_key is None or not isinstance(payload[bots_key], dict):
-            raise ASFError("ASF не предоставил список активных ботов")
-        return dict(payload[bots_key])
+        if bots_key is None:
+            raise ASFError(
+                "ASF не предоставил поле Bots в /Api/ASF. Проверь версию ASF и схему IPC."
+            )
+        bots_value = payload[bots_key]
+        if isinstance(bots_value, dict):
+            return dict(bots_value)
+        if isinstance(bots_value, list):
+            # Some ASF builds expose bot names as an array rather than a map.
+            names = [str(name).strip() for name in bots_value if str(name).strip()]
+            return {name: {} for name in names}
+        raise ASFError("ASF вернул список Bots в неподдерживаемом формате")
 
     def send_trade_offer(
         self,
