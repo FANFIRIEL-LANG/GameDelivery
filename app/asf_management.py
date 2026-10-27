@@ -624,9 +624,9 @@ class ASFManagementWidget(QWidget):
             self.ipc_password.setText(saved)
             self.remember_ipc_password.setChecked(True)
 
-    def _save_ipc_password_if_enabled(self):
+    def _save_ipc_password_if_enabled(self) -> bool:
         if not self.remember_ipc_password.isChecked():
-            return
+            return True
         try:
             keyring = self._keyring_backend()
             password = self.ipc_password.text()
@@ -638,14 +638,19 @@ class ASFManagementWidget(QWidget):
                 except Exception:
                     if keyring.get_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT) is not None:
                         raise
+            return True
         except Exception:
             self.status.setText(
                 "Не удалось сохранить IPCPassword в системном хранилище; пароль остаётся только в памяти."
             )
+            return False
 
     def _set_remember_ipc_password(self, enabled: bool):
         if enabled:
-            self._save_ipc_password_if_enabled()
+            if not self._save_ipc_password_if_enabled():
+                self.remember_ipc_password.blockSignals(True)
+                self.remember_ipc_password.setChecked(False)
+                self.remember_ipc_password.blockSignals(False)
             return
         try:
             keyring = self._keyring_backend()
