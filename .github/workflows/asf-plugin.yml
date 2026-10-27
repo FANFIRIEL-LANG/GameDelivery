@@ -56,12 +56,12 @@ jobs:
           mkdir -p dist/GameDelivery.ASFPlugin
           cp "$plugin_dll" dist/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll
           cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
-          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nMode: preview-only; trade sending disabled\n' "$GITHUB_SHA" "ASF 6.3.10.6 commit c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nModes: live preview and explicitly confirmed guarded trade sending\n' "$GITHUB_SHA" "ASF 6.3.10.6 commit c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
 
       - name: Upload installable plugin package
         uses: actions/upload-artifact@v4
         with:
-          name: GameDelivery-ASFPlugin-preview-only
+          name: GameDelivery-ASFPlugin
           path: dist/
           if-no-files-found: error
           retention-days: 30
