@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Composition;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Plugins.Interfaces;
@@ -163,7 +162,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             AssetCount = previewAssets.Count,
             Assets = previewAssets,
             Message = "ASF подтвердил состав черновика. Торговое предложение не создавалось и не отправлялось."
-        });
+        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
     }
 
     private static string Failure(string message) => JsonSerializer.Serialize(new
