@@ -29,7 +29,7 @@ class AppStartupSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
             InventorySnapshotStore(database).replace(
-                [CardCopy("asset-123", "Example Game", "Trading Card")],
+                [CardCopy("123", "Example Game", "Trading Card")],
                 bot_name="Bot A",
             )
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
@@ -54,12 +54,12 @@ class AppStartupSmokeTests(unittest.TestCase):
                         ).fetchone()
                     self.assertEqual(order[0], 1)
                     self.assertIn("не отправлен", order[1])
-                    self.assertEqual(reservation, ("Bot A", "asset-123"))
+                    self.assertEqual(reservation, ("Bot A", "123"))
                     with sqlite3.connect(database) as db:
                         order_asset = db.execute(
                             "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"
                         ).fetchone()
-                    self.assertEqual(order_asset[1:], ("Bot A", "asset-123"))
+                    self.assertEqual(order_asset[1:], ("Bot A", "123"))
                     window._load_saved_orders()
                     self.assertEqual(window.orders.rowCount(), 1)
                 finally:
@@ -71,7 +71,7 @@ class AppStartupSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
             InventorySnapshotStore(database).replace(
-                [CardCopy("asset-preview-1", "Example Game", "Trading Card")],
+                [CardCopy("234", "Example Game", "Trading Card")],
                 bot_name="Bot A",
             )
             trade_url = (
@@ -98,7 +98,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                         "targetSteamId64": 76561197960389184,
                         "assetCount": 1,
                         "assets": [{
-                            "assetId": "asset-preview-1",
+                            "assetId": "234",
                             "name": "Trading Card",
                             "tradable": True,
                         }],
@@ -110,7 +110,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                         order_id=order_id,
                         bot_name="Bot A",
                         trade_url=trade_url,
-                        asset_ids=["asset-preview-1"],
+                        asset_ids=["234"],
                     )
                     warning.assert_not_called()
                     displayed = info.call_args.args[2]
@@ -126,7 +126,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                             (order_id,),
                         ).fetchall()
                     self.assertEqual(status, "reserved — не отправлен")
-                    self.assertEqual(assets, [("Bot A", "asset-preview-1")])
+                    self.assertEqual(assets, [("Bot A", "234")])
                 finally:
                     window.close()
                     window.deleteLater()
@@ -137,9 +137,9 @@ class AppStartupSmokeTests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
             InventorySnapshotStore(database).replace(
                 [
-                    CardCopy("asset-allowed", "Example Game", "Trading Card"),
+                    CardCopy("345", "Example Game", "Trading Card"),
                     CardCopy(
-                        "asset-blocked", "Other Game", "Trading Card",
+                        "456", "Other Game", "Trading Card",
                         is_tradable=False,
                     ),
                 ],
@@ -153,7 +153,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                         window.order_assets.item(index)
                         for index in range(window.order_assets.count())
                         if window.order_assets.item(index).data(Qt.ItemDataRole.UserRole)
-                        == ("Bot A", "asset-blocked")
+                        == ("Bot A", "456")
                     )
                     self.assertFalse(
                         bool(blocked_item.flags() & Qt.ItemFlag.ItemIsSelectable)
@@ -186,7 +186,7 @@ class AppStartupSmokeTests(unittest.TestCase):
             reservations = __import__(
                 "games.steam_cards.reservations", fromlist=["AssetReservationStore"]
             ).AssetReservationStore(database)
-            reservations.reserve("GD-TEST", [("Bot A", "asset-123")])
+            reservations.reserve("GD-TEST", [("Bot A", "123")])
             with sqlite3.connect(database) as db:
                 db.execute("""
                     CREATE TABLE delivery_orders (
@@ -206,7 +206,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     )
                 """)
                 db.execute(
-                    "INSERT INTO delivery_order_assets VALUES ('GD-TEST', 'Bot A', 'asset-123')"
+                    "INSERT INTO delivery_order_assets VALUES ('GD-TEST', 'Bot A', '123')"
                 )
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
                  patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
@@ -234,8 +234,8 @@ class AppStartupSmokeTests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
             from games.steam_cards.reservations import AssetReservationStore
             reservations = AssetReservationStore(database)
-            reservations.reserve("GD-ONE", [("Bot A", "asset-1")])
-            reservations.reserve("GD-TWO", [("Bot A", "asset-2")])
+            reservations.reserve("GD-ONE", [("Bot A", "789")])
+            reservations.reserve("GD-TWO", [("Bot A", "890")])
             with sqlite3.connect(database) as db:
                 db.execute("""
                     CREATE TABLE delivery_orders (
@@ -269,7 +269,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     self.assertEqual(reservations.list_for_order("GD-ONE"), [])
                     self.assertEqual(
                         reservations.list_for_order("GD-TWO"),
-                        [{"bot_name": "Bot A", "asset_id": "asset-2"}],
+                        [{"bot_name": "Bot A", "asset_id": "890"}],
                     )
                 finally:
                     window.close()
@@ -281,8 +281,8 @@ class AppStartupSmokeTests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
             InventorySnapshotStore(database).replace(
                 [
-                    CardCopy("asset-playerok-1", "Example Game", "Trading Card"),
-                    CardCopy("asset-playerok-2", "Other Game", "Another Card"),
+                    CardCopy("567", "Example Game", "Trading Card"),
+                    CardCopy("678", "Other Game", "Another Card"),
                 ],
                 bot_name="Bot A",
             )
@@ -336,7 +336,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                             "https://playerok.com/deal/deal-123",
                         ),
                     )
-                    self.assertEqual(reserved_assets, [("Bot A", "asset-playerok-1")])
+                    self.assertEqual(reserved_assets, [("Bot A", "567")])
                     with sqlite3.connect(database) as db:
                         order_assets = db.execute(
                             "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"
@@ -344,7 +344,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                         local_order_count = db.execute(
                             "SELECT COUNT(*) FROM delivery_orders"
                         ).fetchone()[0]
-                    self.assertEqual(order_assets, [(local_order_id, "Bot A", "asset-playerok-1")])
+                    self.assertEqual(order_assets, [(local_order_id, "Bot A", "567")])
                     self.assertEqual(local_order_count, 1)
                     self.assertEqual(window.orders.rowCount(), 1)
 
@@ -363,7 +363,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                             (local_order_id,),
                         ).fetchall()
                     self.assertEqual(local_order_count, 1)
-                    self.assertEqual(reserved_assets_after_repeat, [("Bot A", "asset-playerok-1")])
+                    self.assertEqual(reserved_assets_after_repeat, [("Bot A", "567")])
                 finally:
                     window.close()
                     window.deleteLater()
