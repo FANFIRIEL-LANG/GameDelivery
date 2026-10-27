@@ -29,6 +29,90 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF")
         self.assertEqual(request.get_header("Authentication"), "local-secret")
 
+    @patch.object(ASFClient, "request")
+    def test_preview_trade_offer_uses_plugin_and_does_not_send_trade_token(self, request):
+        request.return_value = {
+            "Success": True,
+            "Result": json.dumps({
+                "success": True,
+                "mode": "preview-only",
+                "sendEnabled": False,
+                "orderId": "GD-ABC",
+                "botName": "Bot A",
+                "targetSteamId64": 76561197960389184,
+                "assetCount": 2,
+                "assets": [
+                    {"assetId": "100", "name": "Card A", "tradable": True},
+                    {"assetId": "200", "name": "Card B", "tradable": True},
+                ],
+            }),
+        }
+
+        preview = ASFClient().preview_trade_offer(
+            order_id="GD-ABC",
+            bot_name="Bot A",
+            trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123456&token=private-trade-token",
+            asset_ids=["100", "200"],
+        )
+
+        request.assert_called_once()
+        path = request.call_args.args[0]
+        kwargs = request.call_args.kwargs
+        self.assertEqual(path, "/Api/Command")
+        self.assertEqual(kwargs["method"], "POST")
+        command = kwargs["body"]["Command"]
+        self.assertTrue(command.startswith("gamedelivery-preview "))
+        self.assertNotIn("private-trade-token", command)
+        import base64
+        encoded = command.split(" ", 1)[1]
+        decoded = base64.urlsafe_b64decode(encoded + "=" * ((4 - len(encoded) % 4) % 4))
+        payload = json.loads(decoded.decode("utf-8"))
+        self.assertEqual(payload["OrderId"], "GD-ABC")
+        self.assertEqual(payload["BotName"], "Bot A")
+        self.assertEqual(payload["TargetSteamId64"], 76561197960389184)
+        self.assertEqual(payload["AssetIds"], ["100", "200"])
+        self.assertEqual(preview["assetCount"], 2)
+        self.assertFalse(preview["sendEnabled"])
+
+    @patch.object(ASFClient, "request")
+    def test_preview_trade_offer_fails_closed_if_plugin_reply_enables_sending(self, request):
+        request.return_value = {
+            "Success": True,
+            "Result": json.dumps({
+                "success": True,
+                "mode": "preview-only",
+                "sendEnabled": True,
+                "orderId": "GD-ABC",
+                "botName": "Bot A",
+                "targetSteamId64": 76561197960389184,
+                "assets": [{"assetId": "100"}],
+            }),
+        }
+        with self.assertRaisesRegex(ASFError, "некорректное подтверждение"):
+            ASFClient().preview_trade_offer(
+                order_id="GD-ABC",
+                bot_name="Bot A",
+                trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123456&token=abc",
+                asset_ids=["100"],
+            )
+
+    def test_preview_trade_offer_rejects_duplicate_assets_and_bad_trade_urls(self):
+        client = ASFClient()
+        with self.assertRaisesRegex(ValueError, "повторяющиеся"):
+            client.preview_trade_offer(
+                order_id="GD-ABC",
+                bot_name="Bot A",
+                trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123456&token=abc",
+                asset_ids=["100", "100"],
+            )
+        with self.assertRaises(ValueError):
+            client.preview_trade_offer(
+                order_id="GD-ABC",
+                bot_name="Bot A",
+                trade_url="https://evil.example/tradeoffer/new/?partner=123456&token=abc",
+                asset_ids=["100"],
+            )
+
     def test_rejects_non_api_path(self):
         with self.assertRaises(ValueError):
             ASFClient().request("http://example.com/")
