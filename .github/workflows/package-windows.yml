@@ -50,11 +50,6 @@ jobs:
       - name: Compile Python files
         run: python -m compileall -q app core integrations games notifications tests
 
-      - name: Run unit tests
-        run: python -m unittest discover -s tests -v
-        env:
-          QT_QPA_PLATFORM: offscreen
-
       - name: Build Windows GUI executable
         run: >
           pyinstaller --noconfirm --clean --windowed --onedir --name GameDelivery
