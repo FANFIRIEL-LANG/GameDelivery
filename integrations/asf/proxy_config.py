@@ -82,7 +82,7 @@ def parse_proxy_uri(uri: str, username: str | None = None, password: str | None 
 
 
 def parse_proxy_list_text(text: str) -> list[SteamProxy]:
-    """Parse TXT lines as URI or URI;username;password, ignoring blank/comment lines."""
+    """Parse proxy TXT rows using common separators."""
     if not isinstance(text, str):
         raise ValueError("Список прокси должен быть текстом")
     proxies: list[SteamProxy] = []
@@ -90,22 +90,29 @@ def parse_proxy_list_text(text: str) -> list[SteamProxy]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        parts = [part.strip() for part in line.split(";")]
-        if len(parts) == 1:
-            try:
-                proxy = parse_proxy_uri(parts[0])
-            except ValueError as exc:
-                raise ValueError(f"Строка {line_no}: {exc}") from None
-        elif len(parts) == 3:
-            uri, username, password = parts
-            if not username or not password:
-                raise ValueError(f"Строка {line_no}: для прокси с авторизацией нужны URI;логин;пароль")
-            try:
-                proxy = parse_proxy_uri(uri, username, password)
-            except ValueError as exc:
-                raise ValueError(f"Строка {line_no}: {exc}") from None
+        separator = next((sep for sep in (";", "|", "\t", ",") if sep in line), None)
+        if separator:
+            parts = [part.strip() for part in line.split(separator)]
+            if len(parts) == 1:
+                uri, username, password = parts[0], None, None
+            elif len(parts) == 3 and parts[1] and parts[2]:
+                uri, username, password = parts
+            else:
+                raise ValueError(f"Строка {line_no}: ожидается URI или URI + логин + пароль через ;, |, запятую или TAB")
         else:
-            raise ValueError(f"Строка {line_no}: ожидается URI или URI;логин;пароль")
+            uri, username, password = line, None, None
+            tail = line.rsplit(":", 2)
+            if len(tail) == 3 and tail[1] and tail[2]:
+                try:
+                    parse_proxy_uri(tail[0])
+                except ValueError:
+                    pass
+                else:
+                    uri, username, password = tail[0], tail[1], tail[2]
+        try:
+            proxy = parse_proxy_uri(uri, username, password)
+        except ValueError as exc:
+            raise ValueError(f"Строка {line_no}: {exc}") from None
         proxies.append(proxy)
     if not proxies:
         raise ValueError("В TXT не найдено ни одного прокси")
