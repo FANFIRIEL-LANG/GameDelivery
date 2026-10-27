@@ -58,16 +58,24 @@ sent only in authenticated local ASF IPC requests.
 The Python adapter provides local IPC transport, process/bot status calls,
 per-bot proxy configuration with read-back verification, an explicitly
 confirmed global `SteamProtocols` update with read-back verification, and
-graceful process shutdown via local IPC. The `ASF-боты` tab can start ASF,
-optionally auto-start it with GameDelivery, display its console and forward
-console input, restart it with IPC reconnect, and stop a process started by
-GameDelivery when the app exits. Configured accounts are merged with the IPC bot
-map so disabled bot JSON files remain visible. New configs default to
-`Enabled: false` and never include a Steam password. A process started with
-`--process-required` remains available for IPC when all bots are disabled.
-Inventory pagination, item selection, trade offer construction, and automatic
-sending are not implemented yet; these require verifying exact IPC endpoints
-and request schemas for the selected ASF version.
+graceful process shutdown via the ASF Owner `exit` command. The `ASF-боты`
+tab can start ASF, optionally auto-start it with GameDelivery, display its
+console and forward console input, restart it with IPC reconnect, and stop a
+process started by GameDelivery when the app exits. Configured accounts are
+merged with the IPC bot map so disabled bot JSON files remain visible. New
+configs default to `Enabled: false` and never include a Steam password. A
+process started with `--process-required` remains available for IPC when all
+bots are disabled.
+
+The optional ASF plugin exposes both a no-send `gamedelivery-preview` command
+and a separately confirmed `gamedelivery-send` command. Sending rechecks the
+live card inventory, uses a one-time local secret file for the trade token, and
+persists an order fingerprint and offer IDs to block duplicate sends. Unknown
+outcomes are treated as a hard stop: the operator must inspect outgoing offers
+before any manual resolution. Sending is implemented in the branch but still
+requires a live controlled test against the user's installed ASF and Steam
+accounts before it can be considered production-verified. The recipient's
+acceptance is not automatic.
 
 Inventory data must be cached locally with per-bot ownership and refreshed from
 ASF; stale inventory must not be treated as available stock. Before any outgoing
