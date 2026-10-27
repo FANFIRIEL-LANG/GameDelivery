@@ -153,11 +153,9 @@ class PlayerokAdapter(MarketplaceAdapter):
         except urllib.error.HTTPError as exc:
             # Do not include response bodies, request data, tokens, or cookies in errors.
             raise RuntimeError(f"Playerok вернул HTTP {exc.code}.") from None
-        except urllib.error.URLError as exc:
-            reason = getattr(exc, "reason", None)
+        except urllib.error.URLError:
             raise RuntimeError(
                 "Не удалось установить HTTPS-соединение с Playerok."
-                + (f" Причина: {reason}" if reason else "")
             ) from None
         except TimeoutError:
             raise RuntimeError("Истекло время ожидания ответа Playerok.") from None
@@ -178,6 +176,12 @@ class PlayerokAdapter(MarketplaceAdapter):
                 first = errors[0]
                 message = first.get("message") if isinstance(first, dict) else None
                 safe_message = re.sub(r"[\r\n\t]+", " ", str(message or "неизвестная ошибка"))
+                # Avoid surfacing server-provided request/credential data in UI messages.
+                safe_message = re.sub(
+                    r"(?i)(token|password|cookie|authorization|secret)\s*[:=]\s*[^\s,;]+",
+                    r"\1=[скрыто]",
+                    safe_message,
+                )
                 raise RuntimeError("Ошибка API Playerok: " + safe_message[:240])
         return payload
 
@@ -338,7 +342,7 @@ class PlayerokAdapter(MarketplaceAdapter):
         token = self._saved_token()
         was_persisted = self._session_persisted
         keyring_state_unknown = self._keyring_read_failed
-        remote_error = None
+        remote_logout_failed = False
         if token:
             try:
                 self._request(
@@ -347,30 +351,34 @@ class PlayerokAdapter(MarketplaceAdapter):
                     token=token,
                     bearer=True,
                 )
-            except Exception as exc:
-                remote_error = str(exc)
+            except Exception:
+                remote_logout_failed = True
 
         self._session_token = None
         self._session_persisted = False
         self._pending_second_factor_session = None
-        keyring_error = None
+        keyring_error = False
         try:
             self._keyring().delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
             self._keyring_read_failed = False
-        except Exception as exc:
+        except Exception:
             # Ignore a missing entry only when reading the keyring had succeeded.
             if was_persisted or keyring_state_unknown:
-                keyring_error = str(exc)
+                keyring_error = True
         messages = []
-        if remote_error:
-            messages.append("Playerok не подтвердил удалённый выход: " + remote_error)
+        if remote_logout_failed:
+            messages.append(
+                "Playerok не подтвердил удалённый выход. Проверь соединение и сессию."
+            )
         if keyring_error:
-            messages.append("Не удалось удалить токен из системного хранилища: " + keyring_error)
+            messages.append(
+                "Не удалось удалить токен из системного хранилища."
+            )
         if not messages:
             messages.append("Локальная сессия удалена.")
         return {
             "connected": False,
-            "local_session_cleared": keyring_error is None,
+            "local_session_cleared": not keyring_error,
             "message": " ".join(messages),
         }
 
