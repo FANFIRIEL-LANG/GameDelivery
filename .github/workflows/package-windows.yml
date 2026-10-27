@@ -72,7 +72,7 @@ jobs:
           Start the application with GameDelivery.exe.
           The local database is stored in %USERPROFILE%\.gamedelivery\gamedelivery.sqlite3.
           The application is packaged with its Python and Qt runtime dependencies.
-          ASF must be installed and running separately for ASF-based inventory functions.
+          Install ASF once, then select its executable and config directory in the GameDelivery ASF-bots tab. GameDelivery can launch, stop and restart ASF and provides its console in-app.
           The ASF preview plugin is a separate component and must match the installed ASF version.
           Real Steam trade sending is disabled.
           '@ | Set-Content -Encoding utf8 dist\GameDelivery\PACKAGE_README.txt
