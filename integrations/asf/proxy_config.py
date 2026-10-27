@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 SUPPORTED_PROXY_SCHEMES = frozenset({"http", "https", "socks4", "socks4a", "socks5"})
@@ -67,8 +67,13 @@ def parse_proxy_uri(uri: str, username: str | None = None, password: str | None 
     parsed = urlsplit(uri.strip())
     if parsed.scheme.lower() not in SUPPORTED_PROXY_SCHEMES:
         raise ValueError("Укажи поддерживаемый тип прокси: HTTP(S) или SOCKS4/4a/5")
+    # Accept standard proxy URIs with userinfo, but keep credentials separate from the URI.
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError("Логин и пароль вводятся в отдельных полях, не в адресе прокси")
+        if username is not None or password is not None:
+            raise ValueError("Логин и пароль указаны дважды: в адресе и отдельных полях")
+        if parsed.username is None or parsed.password is None:
+            raise ValueError("В адресе прокси должны быть указаны и логин, и пароль")
+        username, password = unquote(parsed.username), unquote(parsed.password)
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         raise ValueError("Адрес прокси не должен содержать путь, параметры или фрагмент")
     try:
