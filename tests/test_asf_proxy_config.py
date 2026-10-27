@@ -29,7 +29,6 @@ class ProxyConfigTests(unittest.TestCase):
     def test_rejects_unsupported_or_ambiguous_proxy_uris(self):
         for uri in (
             "ftp://proxy.example:21",
-            "http://user:password@proxy.example:8080",
             "http://proxy.example",
             "http://proxy.example:8080/path",
             "http://proxy.example:70000",
@@ -37,6 +36,12 @@ class ProxyConfigTests(unittest.TestCase):
             with self.subTest(uri=uri):
                 with self.assertRaises(ValueError):
                     parse_proxy_uri(uri)
+
+    def test_parse_proxy_uri_extracts_embedded_credentials(self):
+        proxy = parse_proxy_uri("socks5://proxy-user:secret@proxy.example:1080")
+        self.assertEqual(proxy.username, "proxy-user")
+        self.assertEqual(proxy.password, "secret")
+        self.assertEqual(proxy.uri, "socks5://proxy.example:1080")
 
     def test_parse_proxy_list_text_accepts_authenticated_and_plain_proxy_rows(self):
         proxies = parse_proxy_list_text("\n".join([
