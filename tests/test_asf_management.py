@@ -482,6 +482,30 @@ class ASFManagementWidgetTests(unittest.TestCase):
         ])
 
 
+    def test_shutdown_requests_reader_interruption_before_waiting_and_closing_log(self):
+        process = unittest.mock.Mock()
+        process.poll.return_value = 0
+        reader = unittest.mock.Mock()
+        reader.isRunning.return_value = True
+        log_handle = unittest.mock.Mock()
+        events = []
+        reader.requestInterruption.side_effect = lambda: events.append("interrupt")
+        reader.wait.side_effect = lambda timeout: events.append("wait")
+        log_handle.close.side_effect = lambda: events.append("close")
+        self.widget._asf_process = process
+        self.widget._asf_output_reader = reader
+        self.widget._asf_log_handle = log_handle
+
+        with patch.object(self.widget, "_client") as client:
+            client.return_value.exit.return_value = None
+            self.widget.shutdown_managed_asf()
+
+        reader.requestInterruption.assert_called_once_with()
+        reader.wait.assert_called_once_with(1500)
+        log_handle.close.assert_called_once()
+        self.assertEqual(events, ["interrupt", "wait", "close"])
+
+
 
 if __name__ == "__main__":
     unittest.main()
