@@ -17,6 +17,7 @@ on:
       - app/main.py
       - tests/test_asf_client.py
       - .github/workflows/asf-plugin.yml
+      - integrations/asf_plugin/README.md
 
 permissions:
   contents: read
