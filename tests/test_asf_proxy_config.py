@@ -39,11 +39,11 @@ class ProxyConfigTests(unittest.TestCase):
                     parse_proxy_uri(uri)
 
     def test_parse_proxy_list_text_accepts_authenticated_and_plain_proxy_rows(self):
-        proxies = parse_proxy_list_text(
-            "# main list\\n"
-            "socks5://proxy-one.example:1080;proxy-user;secret\\n"
-            "http://proxy-two.example:8080\\n"
-        )
+        proxies = parse_proxy_list_text("\n".join([
+            "# main list",
+            "socks5://proxy-one.example:1080;proxy-user;secret",
+            "http://proxy-two.example:8080",
+        ]))
         self.assertEqual(len(proxies), 2)
         self.assertEqual(proxies[0].scheme, "socks5")
         self.assertEqual(proxies[0].username, "proxy-user")
@@ -52,7 +52,10 @@ class ProxyConfigTests(unittest.TestCase):
 
     def test_parse_proxy_list_text_reports_line_without_exposing_proxy_password(self):
         with self.assertRaisesRegex(ValueError, "Строка 2"):
-            parse_proxy_list_text("http://ok.example:8080\\nhttp://proxy.example:8080;user\\n")
+            parse_proxy_list_text("\n".join([
+                "http://ok.example:8080",
+                "http://proxy.example:8080;user",
+            ]))
 
     def test_rejects_invalid_port_and_partial_auth(self):
         with self.assertRaises(ValueError):
