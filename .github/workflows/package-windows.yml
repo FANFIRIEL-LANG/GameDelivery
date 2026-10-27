@@ -53,7 +53,7 @@ jobs:
       - name: Build Windows GUI executable
         run: >
           pyinstaller --noconfirm --clean --windowed --onedir --name GameDelivery
-          --collect-all PySide6 --collect-all keyring --copy-metadata keyring
+          --collect-all keyring --copy-metadata keyring
           --collect-submodules app --collect-submodules core --collect-submodules games
           --collect-submodules integrations --collect-submodules notifications
           app\__main__.py
