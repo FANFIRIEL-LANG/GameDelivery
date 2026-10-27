@@ -164,6 +164,46 @@ class DeliverySendFlowTests(unittest.TestCase):
             self.assertEqual(warning.call_count, 1)
             client.send_trade_offer.assert_called_once()
 
+    def test_unknown_result_persists_known_offer_ids_for_manual_inspection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            window = self._fake_window(db_path)
+            client = MagicMock()
+            client.preview_trade_offer.return_value = self._preview(
+                self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
+            )
+            client.send_trade_offer.return_value = {
+                "success": False,
+                "mode": "send",
+                "sendEnabled": True,
+                "resultUnknown": True,
+                "orderId": self.ORDER_ID,
+                "botName": self.BOT_NAME,
+                "targetSteamId64": self.STEAM_ID64,
+                "assetCount": 1,
+                "assets": [{"assetId": self.ASSET_ID}],
+                "offerIds": ["456789", "123456"],
+                "error": "ASF could not confirm full success.",
+            }
+
+            with patch("app.main.ASFClient", return_value=client):
+                with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                    with patch("app.main.QMessageBox.warning"):
+                        MainWindow._send_selected_order_with_asf(window)
+
+            with sqlite3.connect(db_path) as db:
+                row = db.execute(
+                    "SELECT status, trade_offer_id, trade_confirmation_status "
+                    "FROM delivery_orders WHERE order_id = ?",
+                    (self.ORDER_ID,),
+                ).fetchone()
+            self.assertEqual(
+                row,
+                ("неизвестен результат отправки — проверь исходящие Steam", "123456, 456789", "unknown"),
+            )
+            client.send_trade_offer.assert_called_once()
+
     def test_cancel_confirmation_does_not_send_or_change_order(self):
         with tempfile.TemporaryDirectory() as temp:
             db_path = Path(temp) / "delivery.sqlite3"
