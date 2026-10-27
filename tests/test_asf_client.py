@@ -419,14 +419,14 @@ class ASFClientTests(unittest.TestCase):
                     }),
                 }
 
-            with patch.dict(os.environ, {"LOCALAPPDATA": temp}), \\
-                 patch.object(ASFClient, "send_command", side_effect=fake_send_command) as send_command:
-                result = ASFClient().send_trade_offer(
-                    order_id="GD-SEND-1",
-                    bot_name="card-bot",
-                    trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
-                    asset_ids=["123"],
-                )
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                with patch.object(ASFClient, "send_command", side_effect=fake_send_command) as send_command:
+                    result = ASFClient().send_trade_offer(
+                        order_id="GD-SEND-1",
+                        bot_name="card-bot",
+                        trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                        asset_ids=["123"],
+                    )
             send_command.assert_called_once()
             self.assertTrue(result["success"])
             self.assertEqual(result["offerIds"], ["456789"])
