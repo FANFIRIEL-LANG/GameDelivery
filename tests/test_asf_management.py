@@ -24,9 +24,10 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.widget.deleteLater()
         self.app.processEvents()
 
+    @patch("app.asf_management.ASFClient.get_status", return_value={"Success": True})
     @patch("app.asf_management.ASFClient.start_bot")
     @patch("app.asf_management.QMessageBox.question")
-    def test_start_selected_sends_command_only_for_selected_bot(self, question, start_bot):
+    def test_start_selected_sends_command_only_for_selected_bot(self, question, start_bot, get_status):
         question.return_value = QMessageBox.StandardButton.Yes
         self.widget.table.setRowCount(2)
         self.widget.table.setItem(0, 0, QTableWidgetItem("bot-a"))
@@ -205,6 +206,39 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertEqual(self.widget.table.item(0, 0).text(), "bot-a")
             self.assertIn("статусы активности неизвестны", self.widget.status.text())
 
+
+    def test_refresh_merges_disabled_configs_with_active_ipc_bots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)
+            (config / "bot-disabled.json").write_text(
+                json.dumps({"Enabled": False}), encoding="utf-8"
+            )
+            (config / "bot-active.json").write_text(
+                json.dumps({"Enabled": True}), encoding="utf-8"
+            )
+            self.widget.config_path.setText(str(config))
+            with patch("app.asf_management.ASFClient.get_bots", return_value={"bot-active": True}):
+                self.widget.refresh_bots()
+            self.assertEqual(self.widget.table.rowCount(), 2)
+            rows = {
+                self.widget.table.item(row, 0).text(): self.widget.table.item(row, 1).text()
+                for row in range(self.widget.table.rowCount())
+            }
+            self.assertEqual(rows["bot-disabled"], "Отключён (config)")
+            self.assertEqual(rows["bot-active"], "Запущен")
+            self.assertIn("всего конфигураций: 2", self.widget.status.text())
+
+    @patch("app.asf_management.QMessageBox.question")
+    def test_start_all_queues_configured_bots_and_launches_asf_when_ipc_is_down(self, question):
+        question.return_value = QMessageBox.StandardButton.Yes
+        with tempfile.TemporaryDirectory() as temp:
+            Path(temp, "bot-a.json").write_text(json.dumps({"Enabled": False}), encoding="utf-8")
+            self.widget.config_path.setText(temp)
+            with patch("app.asf_management.ASFClient.get_bots", side_effect=OSError("IPC unavailable")), \
+                 patch.object(self.widget, "start_asf") as start_asf:
+                self.widget.start_all_bots()
+                self.assertEqual(self.widget._pending_start_bot_names, ["bot-a"])
+                start_asf.assert_called_once_with()
 
 if __name__ == "__main__":
     unittest.main()
