@@ -73,8 +73,9 @@ jobs:
           The local database is stored in %USERPROFILE%\.gamedelivery\gamedelivery.sqlite3.
           The application is packaged with its Python and Qt runtime dependencies.
           Install ASF once, then select its executable and config directory in the GameDelivery ASF-bots tab. GameDelivery can launch, stop and restart ASF and provides its console in-app.
-          The ASF preview plugin is a separate component and must match the installed ASF version.
-          Real Steam trade sending is disabled.
+          The ASF plugin is a separate component and must match the installed ASF version.
+          To send a Steam offer, install the matching plugin, select a reserved order, review the exact assets, and confirm in GameDelivery.
+          A successful CI build does not replace a controlled live test. The recipient must accept the offer; unknown outcomes must be checked in Steam before manual resolution.
           '@ | Set-Content -Encoding utf8 dist\GameDelivery\PACKAGE_README.txt
 
       - name: Create distributable ZIP
