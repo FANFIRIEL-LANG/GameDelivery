@@ -430,6 +430,19 @@ class ASFManagementWidget(QWidget):
             self.status.setText(f"Не удалось передать ввод в ASF: {exc}")
 
     def _poll_asf_ipc(self):
+        process = self._asf_process
+        if process is not None:
+            return_code = process.poll()
+            if return_code is not None:
+                self._close_asf_log()
+                self._asf_process = None
+                self._asf_ipc_attempts = 0
+                self.refresh_bots()
+                self.status.setText(
+                    f"ASF завершился до готовности IPC (код выхода {return_code}). "
+                    "Проверь журнал ASF и настройки IPC."
+                )
+                return
         try:
             self._client().get_status()
         except (ASFError, ValueError, OSError):
