@@ -23,6 +23,18 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GameDelivery — локальная панель")
+        try:
+            self._ensure_delivery_order_schema()
+            self._recover_interrupted_delivery_orders()
+        except (OSError, sqlite3.Error):
+            QMessageBox.critical(
+                self,
+                "Ошибка локальной базы данных",
+                "GameDelivery не может открыть или обновить локальную базу данных. "
+                "Исходные данные не сбрасывались. Проверь доступ к файлу и сделай резервную копию "
+                "перед восстановлением.",
+            )
+            raise
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
         root = QWidget()
