@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.asf_inventory_controller import ASFInventoryController
+from app.bot_selector import discover_asf_roots
 from integrations.asf.client import ASFClient, ASFError
 
 
@@ -197,12 +198,27 @@ class ASFManagementWidget(QWidget):
         self.enable_selected_button.clicked.connect(self.enable_selected_bots)
         self.enable_all_button.clicked.connect(self.enable_all_configured_bots)
         self.export_inventory_button.setEnabled(False)
-        if not self.asf_executable_path.text().strip() and self.config_path.text().strip():
-            self._autodetect_asf_executable(Path(self.config_path.text().strip()))
+        # Try previously saved paths first, then discover standard ASF locations.
+        if not self.asf_executable_path.text().strip():
+            for candidate_dir in discover_asf_roots():
+                self._autodetect_asf_executable(candidate_dir)
+                if self.asf_executable_path.text().strip():
+                    break
+        if not self.config_path.text().strip():
+            for candidate_dir in discover_asf_roots():
+                if any(candidate_dir.glob("*.json")):
+                    self.config_path.setText(str(candidate_dir))
+                    self._settings.setValue("asf/config_path", str(candidate_dir))
+                    break
         if self.auto_start_asf_checkbox.isChecked() and self.asf_executable_path.text().strip():
             QTimer.singleShot(700, self.start_asf)
         elif self.config_path.text().strip():
             QTimer.singleShot(250, self.refresh_bots)
+        else:
+            self.status.setText(
+                "ASF автоматически не найден. Установи ASF в стандартную папку или укажи его один раз; "
+                "после этого GameDelivery запомнит расположение."
+            )
 
     def choose_txt(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выбрать список аккаунтов", "", "Text (*.txt);;All files (*)")
