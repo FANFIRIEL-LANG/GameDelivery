@@ -488,34 +488,52 @@ class ASFManagementWidget(QWidget):
 
     def refresh_bots(self):
         self.refresh_button.setEnabled(False)
+        configured = self._configured_bots_from_disk()
+        ipc_error = None
         try:
             bots = self._client().get_bots()
-            if not bots:
-                configured = self._configured_bots_from_disk()
-                if configured:
-                    self._show_bot_rows({name: {"_local_state": state} for name, state in configured.items()})
-                    self.status.setText(
-                        f"Активных ботов в ASF: 0. Найдено конфигураций: {len(configured)}. "
-                        "Показаны из папки config; для применения изменений перезапусти ASF."
-                    )
-                    return
-            self._show_bot_rows(bots)
-            self.status.setText(f"Получено ботов ASF: {len(bots)}. Секреты в таблицу не выводятся.")
         except (ASFError, ValueError, OSError) as exc:
-            configured = self._configured_bots_from_disk()
-            if configured:
-                self._show_bot_rows({name: {"_local_state": state} for name, state in configured.items()})
+            bots = {}
+            ipc_error = exc
+        try:
+            merged = {
+                name: {"_local_state": state}
+                for name, state in configured.items()
+            }
+            for name, details in bots.items():
+                canonical = next(
+                    (known for known in merged if known.casefold() == str(name).casefold()),
+                    str(name),
+                )
+                merged[canonical] = details
+            if merged:
+                self._show_bot_rows(merged)
+            if ipc_error:
+                if configured:
+                    self.status.setText(
+                        f"IPC ASF недоступен или не вернул список ({ipc_error}). "
+                        f"Показаны конфигурации из папки config: {len(configured)}; статусы активности неизвестны."
+                    )
+                else:
+                    self.table.setRowCount(0)
+                    self._last_inventory = None
+                    self._last_inventory_bot = None
+                    self._last_inventory_export_payload = None
+                    self.export_inventory_button.setEnabled(False)
+                    self.status.setText(f"Не удалось получить список ASF: {ipc_error}. Список очищен.")
+            elif bots:
                 self.status.setText(
-                    f"IPC ASF недоступен или не вернул ботов ({exc}). "
-                    f"Показаны конфигурации из папки config: {len(configured)}; статусы активности неизвестны."
+                    f"Получено ботов: {len(bots)} из ASF; всего конфигураций: {len(merged)}. "
+                    "Секреты в таблицу не выводятся."
+                )
+            elif configured:
+                self.status.setText(
+                    f"Активных ботов в ASF: 0. Найдено конфигураций: {len(configured)}. "
+                    "Показаны из папки config; для применения изменений перезапусти ASF."
                 )
             else:
                 self.table.setRowCount(0)
-                self._last_inventory = None
-                self._last_inventory_bot = None
-                self._last_inventory_export_payload = None
-                self.export_inventory_button.setEnabled(False)
-                self.status.setText(f"Не удалось получить список ASF: {exc}. Список очищен.")
+                self.status.setText("ASF не вернул ботов, а конфигурации ботов в выбранной папке не найдены.")
         finally:
             self.refresh_button.setEnabled(True)
 
@@ -557,34 +575,58 @@ class ASFManagementWidget(QWidget):
         answer = QMessageBox.question(
             self, "Запуск выбранных ботов",
             f"Отправить ASF команду запуска для ботов: {len(bot_names)}? "
-            "Для входа могут потребоваться Steam Guard и подтверждения в Steam.",
+            "Для входа могут потребоваться Steam Guard и подтверждения.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             self.status.setText("Запуск выбранных ботов отменён.")
             return
-        self._start_bots(bot_names)
+        self._start_or_launch_asf(bot_names)
 
     def start_all_bots(self):
+        configured = self._configured_bots_from_disk()
+        ipc_error = None
         try:
             bot_map = self._client().get_bots()
         except (ASFError, ValueError, OSError) as exc:
-            self.status.setText(f"Не удалось получить список ASF для запуска: {exc}")
-            return
-        bot_names = sorted((str(name) for name in bot_map), key=str.casefold)
+            bot_map = {}
+            ipc_error = exc
+        names = {name.casefold(): name for name in configured}
+        for name in bot_map:
+            names.setdefault(str(name).casefold(), str(name))
+        bot_names = sorted(names.values(), key=str.casefold)
         if not bot_names:
-            self.status.setText("ASF не вернул ботов для запуска.")
+            if ipc_error:
+                self.status.setText(
+                    f"Не удалось получить список ASF: {ipc_error}. "
+                    "Проверь папку config ASF — без списка аккаунтов запуск невозможен."
+                )
+            else:
+                self.status.setText("В конфигурации ASF не найдено ботов для запуска.")
             return
         answer = QMessageBox.question(
             self, "Запуск всех ботов",
-            f"Отправить ASF команду запуска для всех ботов ({len(bot_names)})? "
-            "Могут потребоваться Steam Guard и подтверждения.",
+            f"Отправить ASF команду запуска для всех известных ботов ({len(bot_names)})? "
+            "При недоступном IPC GameDelivery сначала попробует запустить ASF.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             self.status.setText("Запуск всех ботов отменён.")
+            return
+        if ipc_error:
+            self._pending_start_bot_names = bot_names
+            self.start_asf()
+        else:
+            self._start_bots(bot_names)
+
+    def _start_or_launch_asf(self, bot_names: list[str]):
+        try:
+            self._client().get_status()
+        except (ASFError, ValueError, OSError):
+            self._pending_start_bot_names = list(bot_names)
+            self.start_asf()
             return
         self._start_bots(bot_names)
 
