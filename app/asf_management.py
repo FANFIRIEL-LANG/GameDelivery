@@ -216,10 +216,14 @@ class ASFManagementWidget(QWidget):
 
     def choose_config(self):
         path = QFileDialog.getExistingDirectory(self, "Выбрать папку config ASF")
-        if path:
-            self.config_path.setText(path)
-            self._settings.setValue("asf/config_path", path)
-            self._autodetect_asf_executable(Path(path))
+        if not path:
+            return
+        self.config_path.setText(path)
+        self._settings.setValue("asf/config_path", path)
+        self._autodetect_asf_executable(Path(path))
+        if self.auto_start_asf_checkbox.isChecked() and self.asf_executable_path.text().strip():
+            QTimer.singleShot(150, self.start_asf)
+        else:
             self.refresh_bots()
 
     def choose_asf_executable(self):
@@ -228,9 +232,18 @@ class ASFManagementWidget(QWidget):
             self, "Выбрать исполняемый файл ASF", start_dir,
             "ASF executable (*.exe);;All files (*)",
         )
-        if path:
-            self.asf_executable_path.setText(path)
-            self._settings.setValue("asf/executable_path", path)
+        if not path:
+            return
+        executable = Path(path)
+        self.asf_executable_path.setText(str(executable))
+        self._settings.setValue("asf/executable_path", str(executable))
+        if not self.config_path.text().strip():
+            default_config = executable.parent / "config"
+            if default_config.is_dir():
+                self.config_path.setText(str(default_config))
+                self._settings.setValue("asf/config_path", str(default_config))
+        if self.auto_start_asf_checkbox.isChecked():
+            QTimer.singleShot(150, self.start_asf)
             self._autodetect_config_dir(Path(path).parent)
             if self.config_path.text().strip():
                 self.refresh_bots()
