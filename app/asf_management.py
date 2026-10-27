@@ -324,7 +324,28 @@ class ASFManagementWidget(QWidget):
         self.status.setText("GameDelivery запустил ASF и ожидает готовности IPC…")
         QTimer.singleShot(500, self._poll_asf_ipc)
 
+    @staticmethod
+    def _sanitize_asf_output_line(line: str) -> str:
+        """Redact common credential fields and authenticated proxy URIs from ASF output."""
+        safe = re.sub(
+            r"""(?ix)
+            (\b(?:IPCPassword|SteamPassword|WebProxyPassword|SteamTradeToken|AccessToken|
+                RefreshToken|Authorization|Cookie|Password|Token)\b["']?\s*[:=]\s*["']?)
+            ([^"']*?)
+            (?=["']|[,;}]|\s*$)
+            """,
+            r"\1[REDACTED]",
+            line,
+        )
+        safe = re.sub(
+            r"(?i)\b((?:https?|socks4a?|socks5)://)[^/@\s:]+:[^/@\s]+@",
+            r"\1[REDACTED]@",
+            safe,
+        )
+        return safe
+
     def _on_asf_output_line(self, line: str):
+        line = self._sanitize_asf_output_line(str(line))
         self._asf_console_lines.append(line)
         if len(self._asf_console_lines) > 2000:
             self._asf_console_lines = self._asf_console_lines[-2000:]
