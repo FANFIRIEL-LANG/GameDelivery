@@ -175,5 +175,29 @@ class DeliverySendFlowTests(unittest.TestCase):
             self.assertEqual(status, "reserved — не отправлен")
 
 
+    def test_local_secret_file_failure_leaves_order_retryable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            window = self._fake_window(db_path)
+            client = MagicMock()
+            client.preview_trade_offer.return_value = self._preview(
+                self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
+            )
+            client.send_trade_offer.side_effect = OSError("Cannot write local one-use secret")
+
+            with patch("app.main.ASFClient", return_value=client):
+                with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                    with patch("app.main.QMessageBox.warning"):
+                        MainWindow._send_selected_order_with_asf(window)
+
+            with sqlite3.connect(db_path) as db:
+                status = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?",
+                    (self.ORDER_ID,),
+                ).fetchone()[0]
+            self.assertEqual(status, "reserved — не отправлен")
+            client.send_trade_offer.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()
