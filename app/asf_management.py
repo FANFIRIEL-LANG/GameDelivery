@@ -1021,7 +1021,11 @@ class ASFManagementWidget(QWidget):
             self.status.setText("Команда перезапуска отправлена ASF. GameDelivery автоматически восстановит IPC.")
             QTimer.singleShot(1000, self._poll_asf_ipc)
         except (ASFError, ValueError, OSError) as exc:
-            self.status.setText(f"Не удалось перезапустить ASF: {exc}")
+            if not self._ipc_port_is_open():
+                self.status.setText("ASF сейчас не запущен. Запускаю его через GameDelivery…")
+                self.start_asf()
+            else:
+                self.status.setText(f"Не удалось перезапустить ASF: {exc}")
         finally:
             self.restart_button.setEnabled(True)
 
