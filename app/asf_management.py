@@ -231,6 +231,20 @@ class ASFManagementWidget(QWidget):
         if path:
             self.asf_executable_path.setText(path)
             self._settings.setValue("asf/executable_path", path)
+            self._autodetect_config_dir(Path(path).parent)
+            if self.config_path.text().strip():
+                self.refresh_bots()
+
+    def _autodetect_config_dir(self, asf_home: Path):
+        current = self.config_path.text().strip()
+        if current and Path(current).is_dir():
+            return
+        for name in ("config", "Config"):
+            candidate = asf_home / name
+            if candidate.is_dir():
+                self.config_path.setText(str(candidate))
+                self._settings.setValue("asf/config_path", str(candidate))
+                return
 
     def _autodetect_asf_executable(self, config_dir: Path):
         current = self.asf_executable_path.text().strip()
@@ -284,6 +298,7 @@ class ASFManagementWidget(QWidget):
                 "Не найден ArchiSteamFarm.exe. Выбери файл ASF один раз кнопкой «Файл ASF.exe…»."
             )
             return
+        self._autodetect_config_dir(executable.parent)
         if self._asf_process is not None and self._asf_process.poll() is None:
             self._asf_ipc_attempts = 0
             self.status.setText("ASF уже запущен GameDelivery; ожидаю готовности IPC…")
