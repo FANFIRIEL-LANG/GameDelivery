@@ -17,8 +17,8 @@ from app.bot_selector import populate_bot_combo
 
 
 def _database_path() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    folder = base / "GameDelivery"
+    """Use the same per-user database file as orders, inventory, and reservations."""
+    folder = Path.home() / ".gamedelivery"
     folder.mkdir(parents=True, exist_ok=True)
     return folder / "gamedelivery.sqlite3"
 
