@@ -31,7 +31,7 @@ class ASFSnapshotSyncTests(unittest.TestCase):
                     "Bot A": {
                         "Assets": [{"assetid": "new", "classid": "1", "instanceid": "0"}],
                         "Descriptions": [{"classid": "1", "instanceid": "0", "name": "New Card",
-                                          "type": "Trading Card", "tags": [{"category": "Game",
+                                          "type": "Trading Card", "tradable": 1, "tags": [{"category": "Game",
                                           "localized_tag_name": "Example Game"}]}],
                     }
                 },
