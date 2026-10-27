@@ -79,6 +79,19 @@ class ASFManagementWidgetTests(unittest.TestCase):
         restart.assert_called_once_with(confirmed=True)
         self.assertIn("отправлена", self.widget.status.text())
 
+    @patch("app.asf_management.QTimer.singleShot")
+    @patch("app.asf_management.ASFClient.restart", side_effect=OSError("IPC unavailable"))
+    @patch("app.asf_management.QMessageBox.question")
+    def test_restart_action_launches_asf_when_not_running(self, question, restart, single_shot):
+        from PySide6.QtWidgets import QMessageBox
+        question.return_value = QMessageBox.StandardButton.Yes
+        with patch.object(self.widget, "_ipc_port_is_open", return_value=False), \
+             patch.object(self.widget, "start_asf") as start_asf:
+            self.widget.restart_asf()
+        restart.assert_called_once_with(confirmed=True)
+        start_asf.assert_called_once_with()
+        self.assertIn("Запускаю его через GameDelivery", self.widget.status.text())
+
     @patch("app.asf_management.QMessageBox.exec")
     @patch("app.asf_management.ASFClient.get_bot_inventory")
     def test_inventory_uses_selected_bot_and_displays_response(self, get_inventory, dialog_exec):
