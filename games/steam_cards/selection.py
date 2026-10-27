@@ -14,6 +14,8 @@ class CardCopy:
     card_name: str
     is_trading_card: bool = True
     is_foil: bool = False
+    # None means the source did not confirm tradability; selection must fail closed.
+    is_tradable: bool | None = True
 
 
 @dataclass(frozen=True)
@@ -44,7 +46,7 @@ def find_available_sets(cards: Iterable[CardCopy]) -> list[AvailableSet]:
         if asset_id in seen_asset_ids:
             continue
         seen_asset_ids.add(asset_id)
-        if not card.is_trading_card or card.is_foil:
+        if not card.is_trading_card or card.is_foil or card.is_tradable is not True:
             continue
         by_game[game_name][card_name].append(asset_id)
 
