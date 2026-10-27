@@ -4,8 +4,8 @@ from games.steam_cards.inventory_views import build_inventory_view
 from games.steam_cards.selection import CardCopy
 
 
-def card(asset_id, name="Card A", game="Game", foil=False):
-    return CardCopy(asset_id, game, name, is_foil=foil)
+def card(asset_id, name="Card A", game="Game", foil=False, tradable=True):
+    return CardCopy(asset_id, game, name, is_foil=foil, is_tradable=tradable)
 
 
 class InventoryViewTests(unittest.TestCase):
@@ -50,6 +50,20 @@ class InventoryViewTests(unittest.TestCase):
         )
         self.assertEqual(view.selected_bots, ("Bot A",))
         self.assertTrue(all(dict(row.assets_by_bot).keys() == {"Bot A"} for row in view.rows))
+
+    def test_inventory_view_keeps_tradability_distinct(self):
+        inventories = {
+            "Bot A": [
+                card("tradable", tradable=True),
+                card("nontradable", tradable=False),
+                card("unknown", tradable=None),
+            ],
+        }
+        view = build_inventory_view(inventories, ["Bot A"], mode="separate")
+        by_transferability = {row.is_tradable: row for row in view.rows}
+        self.assertEqual(by_transferability[True].quantity, 1)
+        self.assertEqual(by_transferability[False].quantity, 1)
+        self.assertEqual(by_transferability[None].quantity, 1)
 
     def test_invalid_mode_rejected(self):
         with self.assertRaises(ValueError):
