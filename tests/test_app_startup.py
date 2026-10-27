@@ -224,13 +224,19 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.deleteLater()
                     self.app.processEvents()
 
-    def test_corrupt_saved_database_fails_with_database_error(self):
+    def test_corrupt_saved_database_reports_safe_error_and_does_not_reset_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "corrupt.sqlite3"
-            database.write_bytes(b"this is not a sqlite database")
-            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+            original = b"this is not a sqlite database"
+            database.write_bytes(original)
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
+                 patch("app.main.QMessageBox.critical") as critical:
                 with self.assertRaises(sqlite3.DatabaseError):
                     MainWindow()
+                critical.assert_called_once()
+                self.assertIn("базу данных", critical.call_args.args[2].lower())
+                self.assertIn("не были автоматически сброшены", critical.call_args.args[2].lower())
+            self.assertEqual(database.read_bytes(), original)
 
     def test_cancel_order_releases_only_its_reservations(self):
         with tempfile.TemporaryDirectory() as temp_dir:
