@@ -53,6 +53,31 @@ def discover_asf_roots() -> list[Path]:
     return unique
 
 
+
+def is_asf_config_dir(config_dir: Path) -> bool:
+    """Return True only when a directory contains ASF.json or a recognizable bot config."""
+    if not config_dir.is_dir():
+        return False
+    global_config = config_dir / "ASF.json"
+    if global_config.is_file():
+        try:
+            payload = json.loads(global_config.read_text(encoding="utf-8-sig"))
+            if isinstance(payload, dict):
+                return True
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+    for path in config_dir.glob("*.json"):
+        if path.name.casefold() == "asf.json":
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and any(str(key).casefold() in _BOT_KEYS for key in payload):
+            return True
+    return False
+
+
 def configured_bot_names() -> list[str]:
     """Read bot names from saved ASF config or automatically discovered config folders."""
     settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
