@@ -90,9 +90,11 @@ class AssetReservationStoreTests(unittest.TestCase):
             self.store.reserve(" ", [("Bot A", "123")])
         with self.assertRaisesRegex(ValueError, "непустой список"):
             self.store.reserve("GD-1", [])
+        with self.assertRaisesRegex(ValueError, "непустой список"):
+            self.store.reserve("GD-1", [("Bot A", "  ")])
 
     def test_non_numeric_or_non_positive_asset_ids_are_rejected(self):
-        for asset_id in ("abc", "0", "-1", "1.5", "  "):
+        for asset_id in ("abc", "0", "-1", "1.5"):
             with self.subTest(asset_id=asset_id):
                 with self.assertRaisesRegex(ValueError, "положительным целым числом"):
                     self.store.reserve("GD-1", [("Bot A", asset_id)])
