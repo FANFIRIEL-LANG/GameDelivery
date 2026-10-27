@@ -237,7 +237,7 @@ class ASFClient:
     def start_bot(self, bot_name: str) -> dict[str, Any]:
         """Ask ASF to start one configured bot, including a bot disabled in JSON."""
         name = bot_name.strip()
-        if not name or any(char in name for char in "\\r\\n") or "," in name or any(ord(char) < 32 for char in name):
+        if not name or "," in name or any(ord(char) < 32 for char in name):
             raise ValueError("Некорректное имя бота ASF для команды запуска")
         response = self.send_command("start " + name)
         result = _unwrap_result(response)
