@@ -78,9 +78,10 @@
 **Критерий:** ручное подтверждение обязательно; timeout не вызывает автоматический повтор; результат сверяется в Steam.
 
 ### Блок H — Windows-кандидат и комплект релиза 🟡
-- [x] CI tests, Windows build + `--self-test`, ASF plugin build прошли на актуальном HEAD `3b38301c17e820e75cd271c5385dc7de93908639`.
-- [x] Windows и ASF plugin ZIP опубликованы; предыдущие проверенные ZIP прошли проверку целостности и SHA-256.
-- [ ] Повторно скачать артефакты текущего HEAD, сверить digest и `unzip -t`; проверить `BUILD_INFO.txt`, структуру папки и отсутствие локальных секретов/БД.
+- [x] CI tests, Windows build + `--self-test`, ASF plugin build прошли на точном HEAD `6b59c5492c862553debac3cad744cde9e60c8c2a`: Tests `40554305850` / `40554296990`, Windows `40554306110`, ASF Plugin `40554307333`.
+- [x] Скачать Windows artifact `12756377480`; `zipfile.testzip()` не обнаружил повреждений, SHA-256 `abad31207af3efb52b63aaf7a21f9b3d1443d1ef35d94fd8234d2bcceff4d429` совпал с GitHub digest. Архив содержит 269 файлов, включая `GameDelivery.exe`, `_internal/`, `PACKAGE_README.txt`, `BUILD_INFO.txt`.
+- [x] Скачать plugin artifact `12756900709`; `zipfile.testzip()` не обнаружил повреждений, SHA-256 `2846f3783acc632fb479afd7f078967c61dd3d3e5a6845f87bb7faabd56acb69` совпал с GitHub digest. Архив содержит DLL, README и BUILD_INFO.
+- [x] Текущие упаковочные артефакты проверены на отсутствие очевидных конфигов ASF, SQLite/DB, maFiles и логов по именам и содержимому дерева ZIP; это не заменяет секретный scan всей Git-истории.
 - [ ] Установить/запустить на отдельной чистой Windows 10/11 x64 VM без Python.
 **Критерий:** доступен точный ZIP текущего HEAD, digest совпадает, smoke на чистой VM пройден.
 
