@@ -1,0 +1,45 @@
+name: ASF plugin
+
+on:
+  pull_request:
+    paths:
+      - integrations/asf_plugin/**
+      - integrations/asf/client.py
+      - app/main.py
+      - tests/test_asf_client.py
+  push:
+    branches:
+      - feature/steam-card-set-selection
+    paths:
+      - integrations/asf_plugin/**
+      - integrations/asf/client.py
+      - app/main.py
+      - tests/test_asf_client.py
+
+permissions:
+  contents: read
+
+jobs:
+  build-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Checkout matching ASF source contract
+        uses: actions/checkout@v4
+        with:
+          repository: JustArchiNET/ArchiSteamFarm
+          ref: 06d6109ed781740bf5e9e20bc9bb588ec8a1c879
+          path: .asf-src
+
+      - name: Build ASF API assemblies
+        run: dotnet build .asf-src/ArchiSteamFarm/ArchiSteamFarm.csproj --configuration Release
+
+      - name: Build GameDelivery ASF plugin
+        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$GITHUB_WORKSPACE/.asf-src/ArchiSteamFarm/bin/Release/net10.0
