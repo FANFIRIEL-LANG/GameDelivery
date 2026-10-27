@@ -207,7 +207,6 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertIn("статусы активности неизвестны", self.widget.status.text())
 
 
-    @patch("app.asf_management.ASFClient.get_bots", return_value={})
     @patch("app.asf_management.QFileDialog.getOpenFileName")
     def test_selecting_asf_executable_auto_detects_sibling_config(self, choose_file):
         with tempfile.TemporaryDirectory() as temp:
@@ -222,6 +221,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertEqual(self.widget.asf_executable_path.text(), str(executable))
             self.assertEqual(self.widget.config_path.text(), str(config))
 
+    @patch("app.asf_management.ASFClient.get_bots", return_value={})
     def test_config_scan_ignores_non_bot_json_and_asf_global_config(self, get_bots):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp)
