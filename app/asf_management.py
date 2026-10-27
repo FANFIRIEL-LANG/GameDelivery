@@ -309,6 +309,7 @@ class ASFManagementWidget(QWidget):
             self._asf_ipc_attempts = 0
             self.status.setText("Команда остановки отправлена ASF.")
             QTimer.singleShot(1200, self._verify_asf_stopped)
+            return
         except (ASFError, ValueError, OSError) as exc:
             if self._asf_process is not None and self._asf_process.poll() is None:
                 try:
@@ -320,20 +321,21 @@ class ASFManagementWidget(QWidget):
                 except OSError as terminate_error:
                     self.status.setText(f"Не удалось остановить ASF: {terminate_error}")
                     return
-                self.status.setText("Процесс ASF, запущенный GameDelivery, остановлен.")
                 self._close_asf_log()
+                message = "Процесс ASF, запущенный GameDelivery, остановлен."
             else:
-                self.status.setText(
+                message = (
                     f"Не удалось остановить ASF через IPC ({exc}). "
                     "Внешний процесс не завершаю принудительно."
                 )
             self.refresh_bots()
+            self.status.setText(message)
 
     def _verify_asf_stopped(self):
         if not self._ipc_port_is_open():
-            self.status.setText("ASF остановлен; порт IPC больше не отвечает.")
-            self.refresh_bots()
             self._close_asf_log()
+            self.refresh_bots()
+            self.status.setText("ASF остановлен; порт IPC больше не отвечает.")
             return
         self._asf_ipc_attempts += 1
         if self._asf_ipc_attempts < 10:
