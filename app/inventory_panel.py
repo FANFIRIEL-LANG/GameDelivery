@@ -14,6 +14,7 @@ from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
 from integrations.asf.client import ASFError
+from app.bot_selector import populate_bot_combo
 
 
 class InventoryPanel(QWidget):
@@ -37,9 +38,9 @@ class InventoryPanel(QWidget):
         layout.addWidget(intro)
 
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Имя бота ASF"))
-        self.bot_name_input = QLineEdit()
-        self.bot_name_input.setPlaceholderText("Имя бота, уже настроенного в ASF")
+        controls.addWidget(QLabel("Бот ASF"))
+        self.bot_name_input = QComboBox()
+        self.bot_name_input.setMinimumWidth(180)
         controls.addWidget(self.bot_name_input, 1)
         controls.addWidget(QLabel("IPC-пароль"))
         self.ipc_password_input = QLineEdit()
@@ -97,7 +98,7 @@ class InventoryPanel(QWidget):
                 return
 
     def fetch_from_asf(self):
-        bot_name = self.bot_name_input.text().strip()
+        bot_name = str(self.bot_name_input.currentData() or "").strip()
         if not bot_name:
             self.summary.setText("Укажи имя бота, который уже настроен в ASF.")
             return
@@ -126,6 +127,7 @@ class InventoryPanel(QWidget):
     def refresh(self):
         try:
             self.inventories = self.snapshots.load_all()
+            populate_bot_combo(self.bot_name_input, self.inventories.keys())
             self.statuses = {
                 bot: self.snapshots.status(bot) for bot in self.inventories
             }
@@ -154,6 +156,7 @@ class InventoryPanel(QWidget):
             self.statuses = {}
             self.reservation_rows = {}
             self.bot_list.clear()
+            populate_bot_combo(self.bot_name_input)
             self.table.setRowCount(0)
             self.summary.setText(
                 f"Не удалось прочитать локальную базу: {exc}. "
