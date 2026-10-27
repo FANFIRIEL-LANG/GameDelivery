@@ -207,6 +207,24 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertIn("статусы активности неизвестны", self.widget.status.text())
 
 
+    @patch("app.asf_management.ASFClient.get_bots", return_value={})
+    def test_config_scan_ignores_non_bot_json_and_asf_global_config(self, get_bots):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)
+            (config / "bot-a.json").write_text(
+                json.dumps({"Enabled": False, "SteamLogin": "user-a"}), encoding="utf-8"
+            )
+            (config / "ASF.json").write_text(
+                json.dumps({"IPCPassword": "must-not-list"}), encoding="utf-8"
+            )
+            (config / "notes.json").write_text(
+                json.dumps({"description": "not an ASF bot"}), encoding="utf-8"
+            )
+            self.widget.config_path.setText(temp)
+            self.widget.refresh_bots()
+            self.assertEqual(self.widget.table.rowCount(), 1)
+            self.assertEqual(self.widget.table.item(0, 0).text(), "bot-a")
+
     def test_refresh_merges_disabled_configs_with_active_ipc_bots(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp)
