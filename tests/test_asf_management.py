@@ -243,7 +243,8 @@ class ASFManagementWidgetTests(unittest.TestCase):
     @patch("app.asf_management.QTimer.singleShot")
     @patch("app.asf_management.subprocess.Popen")
     @patch("app.asf_management.ASFClient.get_status", side_effect=OSError("IPC unavailable"))
-    def test_start_asf_launches_process_with_process_required(self, get_status, popen, single_shot):
+    @patch("app.asf_management.ASFOutputReader.start")
+    def test_start_asf_launches_process_with_process_required(self, reader_start, get_status, popen, single_shot):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
             executable = home / "ArchiSteamFarm.exe"
