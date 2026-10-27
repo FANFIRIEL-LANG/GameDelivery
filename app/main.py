@@ -22,21 +22,6 @@ from integrations.asf.client import ASFClient, ASFError
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        try:
-            self._initialize_window()
-        except sqlite3.DatabaseError as exc:
-            QMessageBox.critical(
-                self,
-                "Ошибка локальной базы GameDelivery",
-                "Не удалось открыть локальную базу данных GameDelivery. "
-                "Данные не были автоматически сброшены или перезаписаны. "
-                "Закрой приложение и проверь файл базы данных.\n\n"
-                f"Подробности: {type(exc).__name__}",
-            )
-            raise
-
-    def _initialize_window(self):
-
         self.setWindowTitle("GameDelivery — локальная панель")
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
