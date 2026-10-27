@@ -383,7 +383,7 @@ class ASFClientTests(unittest.TestCase):
         self.assertNotIn("SteamPassword", config)
 
     def test_build_new_bot_config_rejects_reserved_and_unsafe_names(self):
-        for name in ("", "bot-a" + chr(10) + "start all", "bot-a,bot-b"):
+        for name in ("", "ASF", ".hidden", "../bot", "bot/name", "bot\\name", "bot."):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     ASFClient.build_new_bot_config(name)

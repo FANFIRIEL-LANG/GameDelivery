@@ -195,7 +195,7 @@ class ProxyStore:
             rows = connection.execute(
                 """
                 SELECT proxy_id, scheme, host, port, username, updated_at
-                FROM steam_proxy_pool ORDER BY updated_at, proxy_id
+                FROM steam_proxy_pool ORDER BY rowid
                 """
             ).fetchall()
         return [dict(row) for row in rows]

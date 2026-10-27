@@ -79,11 +79,14 @@ class ProxySettingsWidget(QWidget):
         self.apply_button.clicked.connect(self.apply_selected)
         self.apply_all_button = QPushButton("Применить все назначения к ASF")
         self.apply_all_button.clicked.connect(self.apply_all_profiles)
+        self.enable_cm_button = QPushButton("Включить прокси Steam CM…")
+        self.enable_cm_button.clicked.connect(self.enable_steam_cm_proxy)
         delete = QPushButton("Удалить назначение")
         delete.clicked.connect(self.delete_selected)
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.apply_button)
         buttons.addWidget(self.apply_all_button)
+        buttons.addWidget(self.enable_cm_button)
         buttons.addWidget(clear)
         buttons.addStretch()
         buttons.addWidget(delete)
@@ -397,6 +400,61 @@ class ProxySettingsWidget(QWidget):
                 "Steam CM и фактическая маршрутизация отдельно не подтверждены."
             )
 
+    def enable_steam_cm_proxy(self):
+        ipc_password, accepted = self._ask_ipc_password()
+        if not accepted:
+            return
+        self._confirm_steam_cm_proxy(ASFClient(ipc_password=ipc_password))
+
+    def _confirm_steam_cm_proxy(self, client: ASFClient, bot_name: str | None = None):
+        answer = QMessageBox.question(
+            self,
+            "Глобальная настройка ASF",
+            "Чтобы прокси использовался и для Steam CM, нужно установить SteamProtocols=4. "
+            "Это глобальная настройка и повлияет на ВСЕ боты этого экземпляра ASF; "
+            "возможности переподключения могут измениться. Включить её сейчас?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            if bot_name:
+                self.status.setText(
+                    f"Веб-прокси применён к {bot_name}. Глобальная настройка не менялась; "
+                    "прокси Steam CM не подтверждён."
+                )
+            else:
+                self.status.setText("SteamProtocols не менялся. Прокси Steam CM не включён.")
+            return
+        confirm = QMessageBox.warning(
+            self,
+            "Подтверди изменение для всех ботов",
+            "Последнее подтверждение: SteamProtocols=4 изменит транспорт для всех ботов ASF. "
+            "Продолжить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            self.status.setText("Глобальная настройка ASF не менялась.")
+            return
+        try:
+            result = client.apply_global_steam_protocols(confirmed_instance_wide_change=True)
+        except (ValueError, RuntimeError, OSError, ASFError) as exc:
+            QMessageBox.warning(
+                self, "Не удалось изменить глобальную настройку ASF",
+                "Веб-прокси бота сохранён, но SteamProtocols=4 не подтверждён.\n" + str(exc),
+            )
+            self.status.setText("Глобальная настройка SteamProtocols=4 не подтверждена.")
+            return
+        self.status.setText(
+            "SteamProtocols=4 сохранён и прочитан обратно. Это глобальная настройка для всех ботов; "
+            "фактический маршрут Steam CM ещё нужно проверить."
+        )
+        QMessageBox.information(
+            self, "Конфигурация ASF сохранена",
+            "Глобальный SteamProtocols=4 сохранён и прочитан обратно. "
+            "Это подтверждает конфигурацию, но не доказывает фактический маршрут трафика Steam CM.",
+        )
+
     def apply_selected(self):
         row = self.table.currentRow()
         if row < 0 or self.table.item(row, 0) is None:
@@ -419,7 +477,8 @@ class ProxySettingsWidget(QWidget):
         except (ValueError, RuntimeError, OSError, ASFError, KeyError) as exc:
             QMessageBox.warning(self, "Не удалось применить прокси", str(exc))
             return
-        self.status.setText(f"Веб-прокси сохранён и проверен ASF для {bot_name}. Steam CM отдельно не подтверждён.")
+        self.status.setText(f"Веб-прокси сохранён и проверен ASF для {bot_name}.")
+        self._confirm_steam_cm_proxy(client, bot_name)
 
     def load_selected(self):
         row = self.table.currentRow()
