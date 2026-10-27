@@ -440,5 +440,47 @@ class ASFManagementWidgetTests(unittest.TestCase):
             warning.assert_called_once()
             self.assertEqual(target.read_bytes(), original)
 
+    def test_shutdown_managed_asf_terminates_process_and_joins_reader(self):
+        process = unittest.mock.Mock()
+        process.poll.side_effect = [None, None, 0]
+        reader = unittest.mock.Mock()
+        reader.isRunning.side_effect = [True, False]
+        log_handle = unittest.mock.Mock()
+        self.widget._asf_process = process
+        self.widget._asf_output_reader = reader
+        self.widget._asf_log_handle = log_handle
+
+        with patch.object(self.widget, "_client") as client:
+            client.return_value.exit.side_effect = OSError("IPC unavailable")
+            self.widget.shutdown_managed_asf()
+
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=3)
+        reader.wait.assert_called_once_with(1500)
+        log_handle.close.assert_called_once()
+        self.assertIsNone(self.widget._asf_log_handle)
+
+    def test_shutdown_managed_asf_kills_process_if_graceful_termination_times_out(self):
+        process = unittest.mock.Mock()
+        process.poll.side_effect = [None, None, None, 0]
+        process.wait.side_effect = [subprocess.TimeoutExpired(cmd="ASF", timeout=3), None]
+        reader = unittest.mock.Mock()
+        reader.isRunning.return_value = False
+        self.widget._asf_process = process
+        self.widget._asf_output_reader = reader
+
+        with patch.object(self.widget, "_client") as client:
+            client.return_value.exit.side_effect = OSError("IPC unavailable")
+            self.widget.shutdown_managed_asf()
+
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_args_list, [
+            unittest.mock.call(timeout=3),
+            unittest.mock.call(timeout=2),
+        ])
+
+
+
 if __name__ == "__main__":
     unittest.main()
