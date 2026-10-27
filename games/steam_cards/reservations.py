@@ -34,28 +34,60 @@ class AssetReservationStore:
         order = order_id.strip()
         if not order:
             raise ValueError("order_id не должен быть пустым")
-        normalized = list(dict.fromkeys((bot.strip(), str(asset).strip()) for bot, asset in assets))
+        normalized: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for raw_bot, raw_asset in assets:
+            bot, asset = raw_bot.strip(), str(raw_asset).strip()
+            key = (bot.casefold(), asset)
+            if key not in seen:
+                seen.add(key)
+                normalized.append((bot, asset))
         if not normalized or any(not bot or not asset for bot, asset in normalized):
             raise ValueError("Нужен непустой список корректных (bot_name, asset_id)")
         if any(not asset.isdigit() or int(asset) <= 0 for _bot, asset in normalized):
             raise ValueError("Steam Asset ID должен быть положительным целым числом")
+
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             conflicts = []
+            matches_by_asset: dict[tuple[str, str], list[sqlite3.Row]] = {}
             for bot, asset in normalized:
-                row = connection.execute(
-                    "SELECT order_id FROM steam_asset_reservations WHERE bot_name = ? AND asset_id = ?",
-                    (bot, asset),
-                ).fetchone()
-                if row is not None and row["order_id"] != order:
-                    conflicts.append({"bot_name": bot, "asset_id": asset, "reserved_by": row["order_id"]})
+                matches = [
+                    row for row in connection.execute(
+                        "SELECT bot_name, asset_id, order_id FROM steam_asset_reservations WHERE asset_id = ?",
+                        (asset,),
+                    ).fetchall()
+                    if str(row["bot_name"]).casefold() == bot.casefold()
+                ]
+                matches_by_asset[(bot.casefold(), asset)] = matches
+                other_orders = sorted({
+                    str(row["order_id"]) for row in matches if str(row["order_id"]) != order
+                })
+                if other_orders:
+                    conflicts.append({
+                        "bot_name": bot,
+                        "asset_id": asset,
+                        "reserved_by": ", ".join(other_orders),
+                    })
             if conflicts:
                 return {"reserved": False, "order_id": order, "assets": [], "conflicts": conflicts}
-            connection.executemany("""
-                INSERT INTO steam_asset_reservations (bot_name, asset_id, order_id)
-                VALUES (?, ?, ?)
-                ON CONFLICT(bot_name, asset_id) DO NOTHING
-            """, [(bot, asset, order) for bot, asset in normalized])
+
+            # ASF bot names are matched case-insensitively. Collapse any legacy
+            # case variants for this order, then persist one row with the latest
+            # display spelling so order assets and reservations remain comparable.
+            for bot, asset in normalized:
+                matches = matches_by_asset[(bot.casefold(), asset)]
+                for row in matches:
+                    connection.execute(
+                        "DELETE FROM steam_asset_reservations "
+                        "WHERE bot_name = ? AND asset_id = ? AND order_id = ?",
+                        (row["bot_name"], asset, order),
+                    )
+                connection.execute(
+                    "INSERT INTO steam_asset_reservations (bot_name, asset_id, order_id) "
+                    "VALUES (?, ?, ?)",
+                    (bot, asset, order),
+                )
         return {"reserved": True, "order_id": order, "assets": normalized, "conflicts": []}
 
     def release(self, order_id: str) -> int:
