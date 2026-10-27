@@ -67,6 +67,71 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.deleteLater()
                     self.app.processEvents()
 
+    def test_asf_trade_preview_uses_saved_order_assets_and_does_not_change_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            InventorySnapshotStore(database).replace(
+                [CardCopy("asset-preview-1", "Example Game", "Trading Card")],
+                bot_name="Bot A",
+            )
+            trade_url = (
+                "https://steamcommunity.com/tradeoffer/new/"
+                "?partner=123456&token=private-preview-token"
+            )
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
+                 patch("app.main.QMessageBox.information") as info, \
+                 patch("app.main.QMessageBox.warning") as warning, \
+                 patch("app.main.ASFClient.preview_trade_offer") as preview:
+                window = MainWindow()
+                try:
+                    window.order_recipient.setText(trade_url)
+                    window.order_assets.item(0).setSelected(True)
+                    window._prepare_delivery_order()
+                    order_id = window.orders.item(0, 0).text()
+                    window.orders.selectRow(0)
+                    preview.return_value = {
+                        "success": True,
+                        "mode": "preview-only",
+                        "sendEnabled": False,
+                        "orderId": order_id,
+                        "botName": "Bot A",
+                        "targetSteamId64": 76561197960389184,
+                        "assetCount": 1,
+                        "assets": [{
+                            "assetId": "asset-preview-1",
+                            "name": "Trading Card",
+                            "tradable": True,
+                        }],
+                    }
+
+                    window._preview_selected_order_with_asf()
+
+                    preview.assert_called_once_with(
+                        order_id=order_id,
+                        bot_name="Bot A",
+                        trade_url=trade_url,
+                        asset_ids=["asset-preview-1"],
+                    )
+                    warning.assert_not_called()
+                    displayed = info.call_args.args[2]
+                    self.assertIn("НЕ создавалось и НЕ отправлялось", displayed)
+                    self.assertNotIn("private-preview-token", displayed)
+                    with sqlite3.connect(database) as db:
+                        status = db.execute(
+                            "SELECT status FROM delivery_orders WHERE order_id = ?",
+                            (order_id,),
+                        ).fetchone()[0]
+                        assets = db.execute(
+                            "SELECT bot_name, asset_id FROM delivery_order_assets WHERE order_id = ?",
+                            (order_id,),
+                        ).fetchall()
+                    self.assertEqual(status, "reserved — не отправлен")
+                    self.assertEqual(assets, [("Bot A", "asset-preview-1")])
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
     def test_untradable_asset_cannot_be_reserved_even_if_ui_selection_is_forced(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
