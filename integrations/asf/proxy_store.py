@@ -97,13 +97,16 @@ class ProxyStore:
         except Exception:
             raise RuntimeError("Не удалось проверить системное хранилище учётных данных") from None
 
-        # Store the secret first. If the database write fails, restore the prior
-        # secret so the profile and its credential cannot silently diverge.
+        # Keep keyring and SQLite consistent across the update. When removing
+        # authentication, delete the old secret before changing metadata; if SQLite
+        # fails, restore the previous secret below. This fails closed on keyring errors.
         if proxy.password is not None:
             try:
                 keyring.set_password(SERVICE_NAME, password_key, proxy.password)
             except Exception:
                 raise RuntimeError("Не удалось сохранить пароль прокси в системном хранилище") from None
+        else:
+            self._delete_secret(keyring, password_key)
 
         try:
             with self._connect() as connection:
@@ -129,9 +132,6 @@ class ProxyStore:
                 # Preserve the original DB error; no credential value is included.
                 pass
             raise
-
-        if proxy.password is None:
-            self._delete_secret(keyring, password_key)
 
     def list_profiles(self) -> list[dict[str, object]]:
         with self._connect() as connection:
