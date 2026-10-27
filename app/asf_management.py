@@ -638,7 +638,13 @@ class ASFManagementWidget(QWidget):
                     try:
                         shutil.copy2(ma_path, target_ma)
                     except Exception:
-                        target_json.unlink(missing_ok=True)
+                        # copy2 may create a partial destination before raising;
+                        # remove both files for this account before rolling back prior accounts.
+                        for partial_path in (target_json, target_ma):
+                            try:
+                                partial_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
                         raise
                     created.extend([target_json, target_ma])
             except Exception:
