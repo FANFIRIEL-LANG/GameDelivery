@@ -361,8 +361,12 @@ class ASFClient:
         return self.request("/Api/ASF/Restart", method="POST", body={})
 
     def exit(self) -> Any:
-        """Request a graceful ASF shutdown through its local IPC API."""
-        return self.request("/Api/ASF/Exit", method="POST", body={})
+        """Request a graceful ASF shutdown through the documented Owner command."""
+        response = self.send_command("exit")
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду остановки")
+        return response
 
     @staticmethod
     def build_new_bot_config(
