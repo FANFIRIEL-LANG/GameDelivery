@@ -17,6 +17,56 @@ class ASFError(RuntimeError):
     """Raised when ASF IPC cannot complete a request."""
 
 
+def _restrict_pending_trade_permissions(path: Path, *, directory: bool = False) -> None:
+    """Restrict temporary trade-token storage to its owner and SYSTEM.
+
+    On Windows, use a protected DACL instead of relying on inherited permissions.
+    On POSIX, remove all group/other access. Fail closed if hardening fails.
+    """
+    if os.name != "nt":
+        path.chmod(0o700 if directory else 0o600)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    sddl = (
+        "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"
+        if directory
+        else "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
+    )
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    descriptor = ctypes.c_void_p()
+    descriptor_size = wintypes.DWORD()
+
+    convert = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    convert.restype = wintypes.BOOL
+
+    set_file_security = advapi32.SetFileSecurityW
+    set_file_security.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p)
+    set_file_security.restype = wintypes.BOOL
+
+    local_free = kernel32.LocalFree
+    local_free.argtypes = (ctypes.c_void_p,)
+    local_free.restype = ctypes.c_void_p
+
+    if not convert(sddl, 1, ctypes.byref(descriptor), ctypes.byref(descriptor_size)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # DACL_SECURITY_INFORMATION. Do not alter owner/group metadata.
+        if not set_file_security(str(path), 0x00000004, descriptor):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        local_free(descriptor)
+
+
 def _find_key(mapping: dict[str, Any], key: str) -> str | None:
     wanted = key.casefold()
     return next((actual for actual in mapping if actual.casefold() == wanted), None)
@@ -407,6 +457,7 @@ class ASFClient:
             local_app_data = str(Path.home() / "AppData" / "Local")
         secret_dir = Path(local_app_data) / "GameDelivery" / "pending_trade_requests"
         secret_dir.mkdir(parents=True, exist_ok=True)
+        _restrict_pending_trade_permissions(secret_dir, directory=True)
         secret_path = secret_dir / (nonce + ".json")
 
         secret_payload = {
@@ -430,6 +481,7 @@ class ASFClient:
 
         try:
             with secret_path.open("x", encoding="utf-8") as handle:
+                _restrict_pending_trade_permissions(secret_path)
                 json.dump(secret_payload, handle, ensure_ascii=True, separators=(",", ":"))
             response = self.send_command("gamedelivery-send " + encoded_payload)
             result = _unwrap_result(response)
