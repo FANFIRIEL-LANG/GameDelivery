@@ -310,11 +310,13 @@ class ASFClient:
         if not isinstance(preview, dict) or preview.get("success") is not True:
             message = preview.get("error") if isinstance(preview, dict) else None
             raise ASFError(str(message or "ASF не подтвердил черновик обмена")[:240])
+        preview_bot = preview.get("botName")
         if (
             preview.get("mode") != "preview-only"
             or preview.get("sendEnabled") is not False
             or preview.get("orderId") != order
-            or preview.get("botName", "").casefold() != bot.casefold()
+            or not isinstance(preview_bot, str)
+            or preview_bot.casefold() != bot.casefold()
             or preview.get("targetSteamId64") != steam_id64
         ):
             raise ASFError("ASF вернул некорректное подтверждение черновика обмена")
