@@ -38,6 +38,8 @@ class AssetReservationStore:
         seen: set[tuple[str, str]] = set()
         for raw_bot, raw_asset in assets:
             bot, asset = raw_bot.strip(), str(raw_asset).strip()
+            if asset.isdigit() and int(asset) > 0:
+                asset = str(int(asset))
             key = (bot.casefold(), asset)
             if key not in seen:
                 seen.add(key)
