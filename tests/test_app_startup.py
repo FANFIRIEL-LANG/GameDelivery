@@ -7,6 +7,7 @@ from unittest.mock import PropertyMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 from app.main import MainWindow
 from games.steam_cards.selection import CardCopy
@@ -61,6 +62,54 @@ class AppStartupSmokeTests(unittest.TestCase):
                     self.assertEqual(order_asset[1:], ("Bot A", "asset-123"))
                     window._load_saved_orders()
                     self.assertEqual(window.orders.rowCount(), 1)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+    def test_untradable_asset_cannot_be_reserved_even_if_ui_selection_is_forced(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            InventorySnapshotStore(database).replace(
+                [
+                    CardCopy("asset-allowed", "Example Game", "Trading Card"),
+                    CardCopy(
+                        "asset-blocked", "Other Game", "Trading Card",
+                        is_tradable=False,
+                    ),
+                ],
+                bot_name="Bot A",
+            )
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
+                 patch("app.main.QMessageBox.warning") as warning:
+                window = MainWindow()
+                try:
+                    blocked_item = next(
+                        window.order_assets.item(index)
+                        for index in range(window.order_assets.count())
+                        if window.order_assets.item(index).data(Qt.ItemDataRole.UserRole)
+                        == ("Bot A", "asset-blocked")
+                    )
+                    self.assertFalse(
+                        bool(blocked_item.flags() & Qt.ItemFlag.ItemIsSelectable)
+                    )
+                    # Bypass the visual guard to verify preparation rechecks the database.
+                    blocked_item.setFlags(
+                        blocked_item.flags() | Qt.ItemFlag.ItemIsSelectable
+                    )
+                    blocked_item.setSelected(True)
+                    window.order_recipient.setText(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+                    )
+                    window._prepare_delivery_order()
+                    warning.assert_called_once()
+                    with sqlite3.connect(database) as db:
+                        rows = db.execute(
+                            "SELECT bot_name, asset_id FROM steam_asset_reservations"
+                        ).fetchall()
+                        orders = db.execute("SELECT COUNT(*) FROM delivery_orders").fetchone()[0]
+                    self.assertEqual(rows, [])
+                    self.assertEqual(orders, 0)
                 finally:
                     window.close()
                     window.deleteLater()
