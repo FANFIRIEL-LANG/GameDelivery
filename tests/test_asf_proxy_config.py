@@ -95,6 +95,20 @@ class ProxyConfigTests(unittest.TestCase):
             self.assertNotIn(secret, proxy.uri)
             self.assertNotIn(secret, str(proxy.safe_summary()))
 
+    def test_parse_proxy_list_handles_ipv6_uri_with_embedded_credentials(self):
+        proxy = parse_proxy_list_text("socks5://user:pass@[2001:db8::10]:1080")[0]
+        self.assertEqual((proxy.scheme, proxy.host, proxy.port), ("socks5", "2001:db8::10", 1080))
+        self.assertEqual((proxy.username, proxy.password), ("user", "pass"))
+        self.assertEqual(proxy.uri, "socks5://[2001:db8::10]:1080")
+        self.assertNotIn("user", proxy.uri)
+        self.assertNotIn("pass", proxy.uri)
+
+    def test_parse_proxy_list_handles_ipv6_uri_with_separate_credentials(self):
+        proxy = parse_proxy_list_text("socks5://[2001:db8::11]:1080;ipv6-user;ipv6-pass")[0]
+        self.assertEqual((proxy.host, proxy.port), ("2001:db8::11", 1080))
+        self.assertEqual((proxy.username, proxy.password), ("ipv6-user", "ipv6-pass"))
+        self.assertEqual(proxy.uri, "socks5://[2001:db8::11]:1080")
+
     def test_parse_proxy_list_accepts_colon_records_without_scheme(self):
         proxies = parse_proxy_list_text("\n".join([
             "proxy.example:8080",
