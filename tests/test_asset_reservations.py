@@ -50,6 +50,21 @@ class AssetReservationStoreTests(unittest.TestCase):
         self.assertTrue(second["reserved"])
         self.assertEqual(len(self.store.list_for_order("GD-1")), 2)
 
+    def test_bot_name_case_variants_do_not_bypass_asset_reservations(self):
+        self.store.reserve("GD-1", [("Bot A", "123")])
+
+        conflict = self.store.reserve("GD-2", [("bot a", "123")])
+        same_order = self.store.reserve("GD-1", [("BOT A", "00123")])
+
+        self.assertFalse(conflict["reserved"])
+        self.assertEqual(conflict["conflicts"][0]["reserved_by"], "GD-1")
+        self.assertTrue(same_order["reserved"])
+        self.assertEqual(
+            self.store.list_for_order("GD-1"),
+            [{"bot_name": "BOT A", "asset_id": "123"}],
+        )
+        self.assertEqual(self.store.list_for_order("GD-2"), [])
+
     def test_same_asset_id_on_different_bots_is_a_separate_reservation(self):
         first = self.store.reserve("GD-1", [("Bot A", "123")])
         second = self.store.reserve("GD-2", [("Bot B", "123")])
