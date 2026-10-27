@@ -338,5 +338,43 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.widget._close_asf_log()
             self.widget._asf_process = None
 
+    def test_import_rolls_back_partial_mafile_and_prior_accounts_on_copy_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            txt = root / "accounts.txt"
+            mafiles = root / "maFiles"
+            config = root / "config"
+            mafiles.mkdir()
+            config.mkdir()
+            txt.write_text("login1:password1\nlogin2:password2\n", encoding="utf-8")
+            (mafiles / "login1.maFile").write_text('{"account_name":"login1"}', encoding="utf-8")
+            (mafiles / "login2.maFile").write_text('{"account_name":"login2"}', encoding="utf-8")
+
+            self.widget.txt_path.setText(str(txt))
+            self.widget.mafiles_path.setText(str(mafiles))
+            self.widget.config_path.setText(str(config))
+
+            def copy_with_partial_failure(source, destination):
+                source_path = Path(source)
+                destination_path = Path(destination)
+                destination_path.write_bytes(source_path.read_bytes())
+                if source_path.name == "login2.maFile":
+                    raise OSError("simulated copy error")
+
+            with patch(
+                "app.asf_management.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ), patch("app.asf_management.QMessageBox.warning") as warning, patch(
+                "app.asf_management.QMessageBox.information"
+            ), patch(
+                "app.asf_management.shutil.copy2",
+                side_effect=copy_with_partial_failure,
+            ):
+                self.widget.import_accounts()
+
+            warning.assert_called_once()
+            self.assertEqual(list(config.iterdir()), [])
+            self.assertIn("Импорт не выполнен", warning.call_args.args[1])
+
 if __name__ == "__main__":
     unittest.main()
