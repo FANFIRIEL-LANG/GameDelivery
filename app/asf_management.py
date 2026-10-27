@@ -670,13 +670,24 @@ class ASFManagementWidget(QWidget):
     def _client(self) -> ASFClient:
         return ASFClient(ipc_password=self.ipc_password.text() or None)
 
-    def _configured_bots_from_disk(self) -> dict[str, str]:
-        """Read bot names and Enabled flags from config JSON without exposing secrets."""
+    @staticmethod
+    def _is_bot_config(payload: dict) -> bool:
+        """Recognize ASF bot configs without treating arbitrary JSON files as bots."""
+        known_bot_keys = {
+            "enabled", "steamlogin", "steampassword", "steamtradetoken",
+            "webproxy", "webproxyusername", "webproxypassword",
+            "botbehaviour", "steamuserpermissions", "steamparentalsettings",
+            "customizedtags", "gamesplayedwhileidle", "lootabletypes",
+        }
+        return any(str(key).casefold() in known_bot_keys for key in payload)
+
+    def _configured_bot_paths(self) -> dict[str, Path]:
+        """Return validated per-bot JSON paths from the selected ASF config directory."""
         config_text = self.config_path.text().strip()
         config_dir = Path(config_text) if config_text else None
         if config_dir is None or not config_dir.is_dir():
             return {}
-        configured = {}
+        paths = {}
         for path in config_dir.glob("*.json"):
             if path.name.casefold() == "asf.json":
                 continue
@@ -684,11 +695,22 @@ class ASFManagementWidget(QWidget):
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
-            if not isinstance(payload, dict):
+            if not isinstance(payload, dict) or not self._is_bot_config(payload):
+                continue
+            paths[path.stem] = path
+        return paths
+
+    def _configured_bots_from_disk(self) -> dict[str, str]:
+        """Read bot names and Enabled flags without exposing config secrets."""
+        configured = {}
+        for name, path in self._configured_bot_paths().items():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
             enabled = payload.get("Enabled", True)
             state = "Отключён (config)" if enabled is False else "В конфигурации ASF"
-            configured[path.stem] = state
+            configured[name] = state
         return configured
 
     def refresh_bots(self):
@@ -900,13 +922,7 @@ class ASFManagementWidget(QWidget):
         if config_dir is None or not config_dir.is_dir():
             QMessageBox.warning(self, "Включение всех ботов", "Сначала укажи папку config установленного ASF.")
             return
-        bot_names = sorted(
-            (
-                p.stem for p in config_dir.glob("*.json")
-                if p.is_file() and p.name.casefold() != "asf.json"
-            ),
-            key=str.casefold,
-        )
+        bot_names = sorted(self._configured_bot_paths(), key=str.casefold)
         self._set_bots_enabled(bot_names)
 
     def _start_bots(self, bot_names: list[str]):
