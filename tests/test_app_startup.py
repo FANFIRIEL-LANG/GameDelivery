@@ -166,7 +166,10 @@ class AppStartupSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
             InventorySnapshotStore(database).replace(
-                [CardCopy("asset-playerok-1", "Example Game", "Trading Card")],
+                [
+                    CardCopy("asset-playerok-1", "Example Game", "Trading Card"),
+                    CardCopy("asset-playerok-2", "Other Game", "Another Card"),
+                ],
                 bot_name="Bot A",
             )
             source_order = {
@@ -220,7 +223,33 @@ class AppStartupSmokeTests(unittest.TestCase):
                         ),
                     )
                     self.assertEqual(reserved_assets, [("Bot A", "asset-playerok-1")])
+                    with sqlite3.connect(database) as db:
+                        order_assets = db.execute(
+                            "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"
+                        ).fetchall()
+                        local_order_count = db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders"
+                        ).fetchone()[0]
+                    self.assertEqual(order_assets, [(local_order_id, "Bot A", "asset-playerok-1")])
+                    self.assertEqual(local_order_count, 1)
                     self.assertEqual(window.orders.rowCount(), 1)
+
+                    # Re-importing a prepared Playerok sale must not create a separate manual order.
+                    window._import_marketplace_order(source_order)
+                    self.assertEqual(window.orders.rowCount(), 1)
+                    window.order_assets.item(1).setSelected(True)
+                    window._prepare_delivery_order()
+                    warning.assert_called_once()
+                    with sqlite3.connect(database) as db:
+                        local_order_count = db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders"
+                        ).fetchone()[0]
+                        reserved_assets_after_repeat = db.execute(
+                            "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
+                            (local_order_id,),
+                        ).fetchall()
+                    self.assertEqual(local_order_count, 1)
+                    self.assertEqual(reserved_assets_after_repeat, [("Bot A", "asset-playerok-1")])
                 finally:
                     window.close()
                     window.deleteLater()
