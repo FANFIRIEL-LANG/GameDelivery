@@ -255,37 +255,80 @@ class ASFManagementWidget(QWidget):
     def _client(self) -> ASFClient:
         return ASFClient(ipc_password=self.ipc_password.text() or None)
 
+    def _configured_bots_from_disk(self) -> dict[str, str]:
+        """Read bot names and Enabled flags from config JSON without exposing secrets."""
+        config_text = self.config_path.text().strip()
+        config_dir = Path(config_text) if config_text else None
+        if config_dir is None or not config_dir.is_dir():
+            return {}
+        configured = {}
+        for path in config_dir.glob("*.json"):
+            if path.name.casefold() == "asf.json":
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            enabled = payload.get("Enabled", True)
+            state = "Отключён (config)" if enabled is False else "В конфигурации ASF"
+            configured[path.stem] = state
+        return configured
+
     def refresh_bots(self):
         self.refresh_button.setEnabled(False)
         try:
             bots = self._client().get_bots()
-            self.table.setRowCount(0)
-            for name, details in sorted(bots.items(), key=lambda pair: pair[0].casefold()):
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                self.table.setItem(row, 0, QTableWidgetItem(str(name)))
-                if isinstance(details, bool):
-                    state = "Запущен" if details else "Отключён"
-                elif isinstance(details, dict):
-                    connected = details.get("IsConnected")
-                    if isinstance(connected, bool):
-                        state = "Подключён" if connected else "Не подключён"
-                    else:
-                        running = details.get("KeepRunning", details.get("IsRunning"))
-                        state = ("Запущен" if running else "Отключён") if isinstance(running, bool) else "Загружен"
-                else:
-                    state = "Загружен"
-                self.table.setItem(row, 1, QTableWidgetItem(state))
-            self.status.setText(f"Получено ботов: {len(bots)}. Секреты в таблицу не выводятся.")
+            if not bots:
+                configured = self._configured_bots_from_disk()
+                if configured:
+                    self._show_bot_rows({name: {"_local_state": state} for name, state in configured.items()})
+                    self.status.setText(
+                        f"Активных ботов в ASF: 0. Найдено конфигураций: {len(configured)}. "
+                        "Показаны из папки config; для применения изменений перезапусти ASF."
+                    )
+                    return
+            self._show_bot_rows(bots)
+            self.status.setText(f"Получено ботов ASF: {len(bots)}. Секреты в таблицу не выводятся.")
         except (ASFError, ValueError, OSError) as exc:
-            self.table.setRowCount(0)
-            self._last_inventory = None
-            self._last_inventory_bot = None
-            self._last_inventory_export_payload = None
-            self.export_inventory_button.setEnabled(False)
-            self.status.setText(f"Не удалось получить список ASF: {exc}. Список очищен.")
+            configured = self._configured_bots_from_disk()
+            if configured:
+                self._show_bot_rows({name: {"_local_state": state} for name, state in configured.items()})
+                self.status.setText(
+                    f"IPC ASF недоступен или не вернул ботов ({exc}). "
+                    f"Показаны конфигурации из папки config: {len(configured)}; статусы активности неизвестны."
+                )
+            else:
+                self.table.setRowCount(0)
+                self._last_inventory = None
+                self._last_inventory_bot = None
+                self._last_inventory_export_payload = None
+                self.export_inventory_button.setEnabled(False)
+                self.status.setText(f"Не удалось получить список ASF: {exc}. Список очищен.")
         finally:
             self.refresh_button.setEnabled(True)
+
+    def _show_bot_rows(self, bots):
+        self.table.setRowCount(0)
+        for name, details in sorted(bots.items(), key=lambda pair: pair[0].casefold()):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(str(name)))
+            if isinstance(details, dict) and "_local_state" in details:
+                state = details["_local_state"]
+            elif isinstance(details, bool):
+                state = "Запущен" if details else "Отключён"
+            elif isinstance(details, dict):
+                connected = details.get("IsConnected")
+                if isinstance(connected, bool):
+                    state = "Подключён" if connected else "Не подключён"
+                else:
+                    running = details.get("KeepRunning", details.get("IsRunning"))
+                    state = ("Запущен" if running else "Отключён") if isinstance(running, bool) else "Загружен"
+            else:
+                state = "Загружен"
+            self.table.setItem(row, 1, QTableWidgetItem(state))
 
     def _selected_bot_names(self) -> list[str]:
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
