@@ -266,13 +266,11 @@ class ProxySettingsWidget(QWidget):
         if not pool:
             QMessageBox.information(self, "Автораспределение", "Сначала импортируй список прокси.")
             return
-        ipc_password, accepted = QInputDialog.getText(
-            self, "Авторизация ASF IPC", "Введи IPCPassword из локальной конфигурации ASF:", QLineEdit.EchoMode.Password
-        )
+        ipc_password, accepted = self._ask_ipc_password()
         if not accepted:
             return
         try:
-            bots = ASFClient(ipc_password=ipc_password or None).get_bots()
+            bots = ASFClient(ipc_password=ipc_password).get_bots()
         except (ASFError, ValueError, OSError) as exc:
             QMessageBox.warning(self, "Автораспределение", f"Не удалось получить список ASF: {exc}")
             return
