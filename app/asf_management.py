@@ -7,7 +7,7 @@ import socket
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QThread, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QSettings, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -49,6 +49,9 @@ class ASFManagementWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown_managed_asf)
         self._asf_process = None
         self._asf_log_handle = None
         self._asf_output_reader = None
@@ -436,6 +439,32 @@ class ASFManagementWidget(QWidget):
             QTimer.singleShot(500, self._verify_asf_stopped)
         else:
             self.status.setText("Команда остановки отправлена, но IPC всё ещё отвечает. Проверь состояние ASF.")
+
+    def shutdown_managed_asf(self):
+        """Stop ASF started by GameDelivery so its piped console has no orphaned process."""
+        process = self._asf_process
+        if process is None:
+            return
+        try:
+            self._client().exit()
+        except (ASFError, ValueError, OSError):
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+        if process.poll() is None:
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        if self._asf_output_reader is not None and self._asf_output_reader.isRunning():
+            self._asf_output_reader.wait(1500)
+        self._close_asf_log()
 
     def _close_asf_log(self):
         if self._asf_output_reader is not None and self._asf_output_reader.isRunning():
