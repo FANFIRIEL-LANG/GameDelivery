@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import socket
+import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSettings, QTimer, Signal
 from PySide6.QtWidgets import (
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QCheckBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -22,6 +24,11 @@ class ASFManagementWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        self._asf_process = None
+        self._asf_log_handle = None
+        self._asf_ipc_attempts = 0
+        self._pending_start_bot_names: list[str] = []
         root = QVBoxLayout(self)
         intro = QLabel(
             "Массовый импорт аккаунтов: TXT с логином и паролем + папка maFiles + "
@@ -62,11 +69,29 @@ class ASFManagementWidget(QWidget):
         self.config_path = QLineEdit()
         self.config_path.setReadOnly(True)
         self.config_path.setPlaceholderText("Папка config установленного ASF")
+        self.config_path.setText(str(self._settings.value("asf/config_path", "")))
         self.config_button = QPushButton("Папка config ASF…")
         self.config_button.clicked.connect(self.choose_config)
         config_row.addWidget(self.config_path, 1)
         config_row.addWidget(self.config_button)
         root.addLayout(config_row)
+
+        asf_process_row = QHBoxLayout()
+        self.asf_executable_path = QLineEdit()
+        self.asf_executable_path.setReadOnly(True)
+        self.asf_executable_path.setPlaceholderText("ArchiSteamFarm.exe — путь сохраняется в GameDelivery")
+        self.asf_executable_path.setText(str(self._settings.value("asf/executable_path", "")))
+        self.asf_executable_button = QPushButton("Файл ASF.exe…")
+        self.start_asf_button = QPushButton("Запустить ASF")
+        self.stop_asf_button = QPushButton("Остановить ASF")
+        self.auto_start_asf_checkbox = QCheckBox("Запускать ASF вместе с GameDelivery")
+        self.auto_start_asf_checkbox.setChecked(bool(self._settings.value("asf/auto_start", True, type=bool)))
+        asf_process_row.addWidget(self.asf_executable_path, 1)
+        asf_process_row.addWidget(self.asf_executable_button)
+        asf_process_row.addWidget(self.start_asf_button)
+        asf_process_row.addWidget(self.stop_asf_button)
+        root.addLayout(asf_process_row)
+        root.addWidget(self.auto_start_asf_checkbox)
 
         buttons = QHBoxLayout()
         self.import_button = QPushButton("Проверить TXT и импортировать аккаунты")
@@ -112,6 +137,10 @@ class ASFManagementWidget(QWidget):
         self._last_inventory_bot = None
         self._last_inventory_export_payload = None
         self.refresh_button.clicked.connect(self.refresh_bots)
+        self.asf_executable_button.clicked.connect(self.choose_asf_executable)
+        self.start_asf_button.clicked.connect(self.start_asf)
+        self.stop_asf_button.clicked.connect(self.stop_asf)
+        self.auto_start_asf_checkbox.toggled.connect(lambda enabled: self._settings.setValue("asf/auto_start", enabled))
         self.import_button.clicked.connect(self.import_accounts)
         self.restart_button.clicked.connect(self.restart_asf)
         self.inventory_button.clicked.connect(self.show_inventory)
@@ -123,6 +152,12 @@ class ASFManagementWidget(QWidget):
         self.enable_selected_button.clicked.connect(self.enable_selected_bots)
         self.enable_all_button.clicked.connect(self.enable_all_configured_bots)
         self.export_inventory_button.setEnabled(False)
+        if not self.asf_executable_path.text().strip() and self.config_path.text().strip():
+            self._autodetect_asf_executable(Path(self.config_path.text().strip()))
+        if self.auto_start_asf_checkbox.isChecked() and self.asf_executable_path.text().strip():
+            QTimer.singleShot(700, self.start_asf)
+        elif self.config_path.text().strip():
+            QTimer.singleShot(250, self.refresh_bots)
 
     def choose_txt(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выбрать список аккаунтов", "", "Text (*.txt);;All files (*)")
@@ -138,6 +173,181 @@ class ASFManagementWidget(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Выбрать папку config ASF")
         if path:
             self.config_path.setText(path)
+            self._settings.setValue("asf/config_path", path)
+            self._autodetect_asf_executable(Path(path))
+            self.refresh_bots()
+
+    def choose_asf_executable(self):
+        start_dir = str(Path(self.config_path.text()).parent) if self.config_path.text().strip() else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выбрать исполняемый файл ASF", start_dir,
+            "ASF executable (*.exe);;All files (*)",
+        )
+        if path:
+            self.asf_executable_path.setText(path)
+            self._settings.setValue("asf/executable_path", path)
+
+    def _autodetect_asf_executable(self, config_dir: Path):
+        current = self.asf_executable_path.text().strip()
+        if current and Path(current).is_file():
+            return
+        for name in ("ArchiSteamFarm.exe", "ASF.exe"):
+            candidate = config_dir.parent / name
+            if candidate.is_file():
+                self.asf_executable_path.setText(str(candidate))
+                self._settings.setValue("asf/executable_path", str(candidate))
+                return
+
+    @staticmethod
+    def _ipc_port_is_open() -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", 1242), timeout=0.35):
+                return True
+        except OSError:
+            return False
+
+    def start_asf(self):
+        try:
+            self._client().get_status()
+        except (ASFError, ValueError, OSError):
+            if self._ipc_port_is_open():
+                self._pending_start_bot_names.clear()
+                self.status.setText(
+                    "На порту ASF IPC уже есть процесс, но запрос не прошёл. "
+                    "Проверь IPCPassword и настройки ASF; второй экземпляр не запускаю."
+                )
+                return
+        else:
+            self.status.setText("ASF уже запущен; подключение IPC подтверждено.")
+            if self._pending_start_bot_names:
+                pending = self._pending_start_bot_names[:]
+                self._pending_start_bot_names.clear()
+                self._start_bots(pending)
+            else:
+                self.refresh_bots()
+            return
+
+        executable = Path(self.asf_executable_path.text().strip()) if self.asf_executable_path.text().strip() else None
+        if executable is None or not executable.is_file():
+            config_dir = Path(self.config_path.text().strip()) if self.config_path.text().strip() else None
+            if config_dir and config_dir.is_dir():
+                self._autodetect_asf_executable(config_dir)
+                candidate = self.asf_executable_path.text().strip()
+                executable = Path(candidate) if candidate else None
+        if executable is None or not executable.is_file():
+            self.status.setText(
+                "Не найден ArchiSteamFarm.exe. Выбери файл ASF один раз кнопкой «Файл ASF.exe…»."
+            )
+            return
+        if self._asf_process is not None and self._asf_process.poll() is None:
+            self._asf_ipc_attempts = 0
+            self.status.setText("ASF уже запущен GameDelivery; ожидаю готовности IPC…")
+            QTimer.singleShot(500, self._poll_asf_ipc)
+            return
+        try:
+            log_dir = Path.home() / ".gamedelivery"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_handle = (log_dir / "asf-supervisor.log").open("ab")
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            try:
+                process = subprocess.Popen(
+                    [str(executable), "--process-required"],
+                    cwd=str(executable.parent),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    creationflags=flags,
+                    close_fds=True,
+                )
+            except Exception:
+                log_handle.close()
+                raise
+        except (OSError, ValueError) as exc:
+            self.status.setText(f"Не удалось запустить ASF: {exc}")
+            return
+        self._asf_process = process
+        self._asf_log_handle = log_handle
+        self._settings.setValue("asf/executable_path", str(executable))
+        self._asf_ipc_attempts = 0
+        self.status.setText("GameDelivery запустил ASF и ожидает готовности IPC…")
+        QTimer.singleShot(500, self._poll_asf_ipc)
+
+    def _poll_asf_ipc(self):
+        try:
+            self._client().get_status()
+        except (ASFError, ValueError, OSError):
+            self._asf_ipc_attempts += 1
+            if self._asf_ipc_attempts < 30:
+                QTimer.singleShot(500, self._poll_asf_ipc)
+                return
+            self.status.setText(
+                "ASF запущен, но IPC не стал доступен за 15 секунд. "
+                "Проверь, что IPC включён в ASF.json и IPCPassword указан верно."
+            )
+            return
+        self._asf_ipc_attempts = 0
+        self.status.setText("ASF готов: локальный IPC доступен.")
+        if self._pending_start_bot_names:
+            pending = self._pending_start_bot_names[:]
+            self._pending_start_bot_names.clear()
+            self._start_bots(pending)
+        else:
+            self.refresh_bots()
+
+    def stop_asf(self):
+        answer = QMessageBox.question(
+            self, "Остановить ASF",
+            "Остановить весь экземпляр ASF? Все работающие боты будут отключены.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status.setText("Остановка ASF отменена.")
+            return
+        try:
+            self._client().exit()
+            self._asf_ipc_attempts = 0
+            self.status.setText("Команда остановки отправлена ASF.")
+            QTimer.singleShot(1200, self._verify_asf_stopped)
+        except (ASFError, ValueError, OSError) as exc:
+            if self._asf_process is not None and self._asf_process.poll() is None:
+                try:
+                    self._asf_process.terminate()
+                    self._asf_process.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    self._asf_process.kill()
+                    self._asf_process.wait(timeout=2)
+                except OSError as terminate_error:
+                    self.status.setText(f"Не удалось остановить ASF: {terminate_error}")
+                    return
+                self.status.setText("Процесс ASF, запущенный GameDelivery, остановлен.")
+                self._close_asf_log()
+            else:
+                self.status.setText(
+                    f"Не удалось остановить ASF через IPC ({exc}). "
+                    "Внешний процесс не завершаю принудительно."
+                )
+            self.refresh_bots()
+
+    def _verify_asf_stopped(self):
+        if not self._ipc_port_is_open():
+            self.status.setText("ASF остановлен; порт IPC больше не отвечает.")
+            self.refresh_bots()
+            self._close_asf_log()
+            return
+        self._asf_ipc_attempts += 1
+        if self._asf_ipc_attempts < 10:
+            QTimer.singleShot(500, self._verify_asf_stopped)
+        else:
+            self.status.setText("Команда остановки отправлена, но IPC всё ещё отвечает. Проверь состояние ASF.")
+
+    def _close_asf_log(self):
+        if self._asf_log_handle is not None:
+            try:
+                self._asf_log_handle.close()
+            except OSError:
+                pass
+            self._asf_log_handle = None
 
     @staticmethod
     def _safe_bot_name(login: str) -> str:
