@@ -41,7 +41,7 @@ class ASFManagementWidget(QWidget):
         import_row = QHBoxLayout()
         self.txt_path = QLineEdit()
         self.txt_path.setReadOnly(True)
-        self.txt_path.setPlaceholderText("TXT: одна строка login;password")
+        self.txt_path.setPlaceholderText("TXT: login:password, login;password, login|password или TAB")
         self.txt_button = QPushButton("Выбрать TXT…")
         self.txt_button.clicked.connect(self.choose_txt)
         import_row.addWidget(self.txt_path, 1)
@@ -90,6 +90,10 @@ class ASFManagementWidget(QWidget):
         launch_buttons.addWidget(self.start_selected_button)
         launch_buttons.addWidget(self.start_all_button)
         launch_buttons.addWidget(self.select_all_button)
+        self.enable_selected_button = QPushButton("Включить выбранных")
+        self.enable_all_button = QPushButton("Включить всех в config ASF")
+        launch_buttons.addWidget(self.enable_selected_button)
+        launch_buttons.addWidget(self.enable_all_button)
         launch_buttons.addStretch()
         root.addLayout(launch_buttons)
 
@@ -116,6 +120,8 @@ class ASFManagementWidget(QWidget):
         self.start_selected_button.clicked.connect(self.start_selected_bots)
         self.start_all_button.clicked.connect(self.start_all_bots)
         self.select_all_button.clicked.connect(self.table.selectAll)
+        self.enable_selected_button.clicked.connect(self.enable_selected_bots)
+        self.enable_all_button.clicked.connect(self.enable_all_configured_bots)
         self.export_inventory_button.setEnabled(False)
 
     def choose_txt(self):
@@ -166,10 +172,12 @@ class ASFManagementWidget(QWidget):
                 line = raw.strip()
                 if not line or line.startswith("#"):
                     continue
-                parts = line.split(";")
-                if len(parts) != 2:
-                    raise ValueError(f"Строка {line_no}: ожидается формат login;password")
-                login, password = (part.strip() for part in parts)
+                separator = next((sep for sep in (";", "|", "\t", ":") if sep in line), None)
+                if separator is None:
+                    raise ValueError(
+                        f"Строка {line_no}: используй login:password, login;password, login|password или TAB"
+                    )
+                login, password = (part.strip() for part in line.split(separator, 1))
                 if not login or not password:
                     raise ValueError(f"Строка {line_no}: логин и пароль обязательны")
                 bot_name = self._safe_bot_name(login)
@@ -326,6 +334,74 @@ class ASFManagementWidget(QWidget):
             self.status.setText("Запуск всех ботов отменён.")
             return
         self._start_bots(bot_names)
+
+    def _set_bots_enabled(self, bot_names: list[str]):
+        config_text = self.config_path.text().strip()
+        config_dir = Path(config_text) if config_text else None
+        if config_dir is None or not config_dir.is_dir():
+            QMessageBox.warning(self, "Включение ботов", "Сначала укажи папку config установленного ASF.")
+            return
+        targets = []
+        try:
+            for bot_name in bot_names:
+                path = config_dir / f"{bot_name}.json"
+                if not path.is_file():
+                    raise ValueError(f"Не найден файл конфигурации для бота {bot_name}.")
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                if not isinstance(payload, dict):
+                    raise ValueError(f"Конфигурация бота {bot_name} имеет неверный формат.")
+                targets.append((bot_name, path, payload))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            QMessageBox.warning(self, "Включение ботов остановлено", str(exc))
+            return
+        if not targets:
+            self.status.setText("Нет ботов для включения.")
+            return
+        answer = QMessageBox.question(
+            self, "Включить ботов",
+            f"Установить Enabled=true в конфигурациях {len(targets)} ботов? После этого потребуется перезапустить ASF.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status.setText("Включение ботов отменено.")
+            return
+        originals = {path: path.read_bytes() for _, path, _ in targets}
+        written = []
+        try:
+            for bot_name, path, payload in targets:
+                payload["Enabled"] = True
+                path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                written.append(path)
+        except (OSError, TypeError, ValueError):
+            for path in reversed(written):
+                try:
+                    path.write_bytes(originals[path])
+                except OSError:
+                    pass
+            QMessageBox.warning(self, "Включение ботов", "Не удалось изменить все конфигурации; выполнен откат, где это удалось.")
+            return
+        self.status.setText(f"Enabled=true записан для {len(targets)} ботов. Перезапусти ASF и обнови список.")
+        QMessageBox.information(
+            self, "Боты включены в конфигурации",
+            f"Обновлено конфигураций: {len(targets)}.\nЭто разрешает ASF запускать ботов при загрузке; фактический вход проверь после перезапуска.",
+        )
+
+    def enable_selected_bots(self):
+        bot_names = self._selected_bot_names()
+        if not bot_names:
+            self.status.setText("Выбери одного или нескольких ботов в таблице.")
+            return
+        self._set_bots_enabled(bot_names)
+
+    def enable_all_configured_bots(self):
+        config_text = self.config_path.text().strip()
+        config_dir = Path(config_text) if config_text else None
+        if config_dir is None or not config_dir.is_dir():
+            QMessageBox.warning(self, "Включение всех ботов", "Сначала укажи папку config установленного ASF.")
+            return
+        bot_names = sorted((p.stem for p in config_dir.glob("*.json") if p.is_file()), key=str.casefold)
+        self._set_bots_enabled(bot_names)
 
     def _start_bots(self, bot_names: list[str]):
         self.start_selected_button.setEnabled(False)
