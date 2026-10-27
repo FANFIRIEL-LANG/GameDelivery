@@ -192,7 +192,8 @@ class AppStartupSmokeTests(unittest.TestCase):
                 )
 
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
-                 patch("app.main.QMessageBox.warning") as warning:
+                 patch("app.main.QMessageBox.warning") as warning, \
+                 patch("app.main.QMessageBox.information") as information:
                 window = MainWindow()
                 try:
                     self.assertEqual(window.order_assets.count(), 1)
@@ -208,6 +209,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window._prepare_delivery_order()
 
                     warning.assert_called_once()
+                    information.assert_not_called()
                     with sqlite3.connect(database) as db:
                         reservation_count = db.execute(
                             "SELECT COUNT(*) FROM steam_asset_reservations"
