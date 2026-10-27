@@ -48,11 +48,11 @@ def select_owned_complete_sets(
             name = card.card_name.strip()
             if not asset or not name or card.game_name.strip().casefold() != target.casefold():
                 continue
-            if not card.is_trading_card or card.is_tradable is not True:
+            if not card.is_trading_card:
                 continue
             actual_game = card.game_name.strip()
             all_card_names.add(name)
-            if card.is_foil or (owner, asset) in seen:
+            if card.is_foil or card.is_tradable is not True or (owner, asset) in seen:
                 continue
             seen.add((owner, asset))
             by_name.setdefault(name, []).append(OwnedAsset(owner, asset))
