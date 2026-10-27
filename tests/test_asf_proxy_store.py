@@ -167,6 +167,40 @@ class ProxyStoreTests(unittest.TestCase):
         self.assertEqual(self.store.list_pool(), [])
         self.assertEqual(self.keyring.passwords, {})
 
+    def test_profile_delete_fails_closed_when_keyring_delete_fails(self):
+        self.store.save(
+            "bot-a",
+            SteamProxy("socks5", "proxy.example", 1080, "proxy-user", "secret"),
+        )
+        self.keyring.fail_delete = True
+
+        with self.assertRaisesRegex(RuntimeError, "удалить пароль прокси"):
+            self.store.delete("bot-a")
+
+        self.assertEqual(len(self.store.list_profiles()), 1)
+        self.assertEqual(self.store.get_password("bot-a"), "secret")
+
+    def test_pool_delete_restores_secret_when_database_delete_fails(self):
+        ids = self.store.add_pool_proxies([
+            SteamProxy("socks5", "pool.example", 1080, "pool-user", "pool-secret")
+        ])
+        proxy_id = ids[0]
+        original_connect = self.store._connect
+        calls = [0]
+
+        def fail_second_database_connection():
+            calls[0] += 1
+            if calls[0] == 2:
+                raise sqlite3.OperationalError("disk full")
+            return original_connect()
+
+        with patch.object(self.store, "_connect", side_effect=fail_second_database_connection):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "disk full"):
+                self.store.delete_pool_proxy(proxy_id)
+
+        self.assertEqual(len(self.store.list_pool()), 1)
+        self.assertEqual(self.store.get_pool_password(proxy_id), "pool-secret")
+
     def test_get_password_requires_existing_profile(self):
         with self.assertRaisesRegex(KeyError, "не найден"):
             self.store.get_password("missing-bot")
