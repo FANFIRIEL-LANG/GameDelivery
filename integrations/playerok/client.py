@@ -129,6 +129,16 @@ class PlayerokAdapter(MarketplaceAdapter):
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        if url == _GRAPHQL:
+            headers["apollo-require-preflight"] = "true"
+            operation_name = (
+                payload.get("operationName")
+                if isinstance(payload, dict)
+                else None
+            )
+            headers["x-gql-op"] = str(operation_name or "anonymous")
+            if operation_name:
+                headers["x-apollo-operation-name"] = str(operation_name)
         if token:
             headers["Cookie"] = "token=" + token
             if bearer:
