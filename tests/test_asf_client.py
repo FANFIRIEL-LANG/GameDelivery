@@ -433,6 +433,34 @@ class ASFClientTests(unittest.TestCase):
             secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
             self.assertEqual(list(secret_dir.iterdir()), [])
 
+    def test_send_trade_offer_fails_closed_when_secret_file_acl_cannot_be_applied(self):
+        with tempfile.TemporaryDirectory() as temp:
+            secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                with patch(
+                    "integrations.asf.client._restrict_pending_trade_permissions",
+                    side_effect=[None, PermissionError("ACL denied")],
+                ) as restrict_permissions:
+                    with patch.object(ASFClient, "send_command") as send_command:
+                        with self.assertRaisesRegex(PermissionError, "ACL denied"):
+                            ASFClient().send_trade_offer(
+                                order_id="GD-ACL-1",
+                                bot_name="card-bot",
+                                trade_url=(
+                                    "https://steamcommunity.com/tradeoffer/new/"
+                                    "?partner=12345&token=Tok-abc_1"
+                                ),
+                                asset_ids=["123"],
+                            )
+
+            send_command.assert_not_called()
+            self.assertTrue(secret_dir.is_dir())
+            self.assertEqual(list(secret_dir.iterdir()), [])
+            self.assertEqual(restrict_permissions.call_count, 2)
+            self.assertEqual(restrict_permissions.call_args_list[0].args[0], secret_dir)
+            self.assertEqual(restrict_permissions.call_args_list[0].kwargs, {"directory": True})
+            self.assertEqual(restrict_permissions.call_args_list[1].args[0].parent, secret_dir)
+
     def test_send_trade_offer_rejects_invalid_trade_url_before_dispatch(self):
         with patch.object(ASFClient, "send_command") as send_command:
             with self.assertRaises(ValueError):
