@@ -11,6 +11,25 @@ def _key(mapping: dict[str, Any], name: str) -> str | None:
     return next((key for key in mapping if key.casefold() == wanted), None)
 
 
+def _optional_flag(mapping: dict[str, Any], name: str, asset_label: str) -> bool | None:
+    """Read a Steam item flag without treating missing data as permission."""
+    key = _key(mapping, name)
+    if key is None:
+        return None
+    value = mapping[key]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true"}:
+            return True
+        if normalized in {"0", "false"}:
+            return False
+    raise ASFError(f"ASF вернул некорректный флаг {name} у предмета {asset_label}")
+
+
 def _items(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ASFError("ASF вернул ответ инвентаря неожиданного формата")
@@ -111,11 +130,18 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
                 f"Для карточки {item_name or asset_id} ASF не вернул тег игры; "
                 "старый снимок сохранён"
             )
+        is_tradable = _optional_flag(description, "tradable", item_name or asset_id)
+        if is_card and is_tradable is None:
+            raise ASFError(
+                f"Для карточки {item_name or asset_id} ASF не подтвердил передаваемость; "
+                "старый снимок сохранён"
+            )
         cards.append(CardCopy(
             asset_id=asset_id,
             game_name=actual_game_name,
             card_name=item_name or f"Unknown item {asset_id}",
             is_trading_card=is_card,
             is_foil=is_foil,
+            is_tradable=is_tradable,
         ))
     return cards
