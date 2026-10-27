@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from integrations.asf.client import ASFClient, ASFError
 from integrations.asf.proxy_config import SteamProxy, parse_proxy_list_text
 from integrations.asf.proxy_store import ProxyStore
+from app.bot_selector import populate_bot_combo
 
 
 def _database_path() -> Path:
@@ -48,8 +49,7 @@ class ProxySettingsWidget(QWidget):
         root.addWidget(intro)
 
         form = QFormLayout()
-        self.bot_name = QLineEdit()
-        self.bot_name.setPlaceholderText("Имя бота из ASF")
+        self.bot_name = QComboBox()
         self.scheme = QComboBox()
         self.scheme.addItems(["http", "https", "socks4", "socks4a", "socks5"])
         self.host = QLineEdit()
@@ -62,7 +62,7 @@ class ProxySettingsWidget(QWidget):
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.password.setPlaceholderText("Необязательно")
-        form.addRow("Steam-аккаунт / ASF bot", self.bot_name)
+        form.addRow("Бот ASF", self.bot_name)
         form.addRow("Тип прокси", self.scheme)
         form.addRow("Сервер", self.host)
         form.addRow("Порт", self.port)
@@ -135,8 +135,7 @@ class ProxySettingsWidget(QWidget):
         pool_root.addLayout(file_row)
 
         assignment_row = QHBoxLayout()
-        self.pool_bot_name = QLineEdit()
-        self.pool_bot_name.setPlaceholderText("Имя бота для ручного назначения")
+        self.pool_bot_name = QComboBox()
         self.assign_pool_button = QPushButton("Назначить выбранный прокси боту")
         self.assign_pool_button.clicked.connect(self.assign_selected_pool_proxy)
         self.auto_distribute_button = QPushButton("Автораспределить по всем ботам")
@@ -212,12 +211,14 @@ class ProxySettingsWidget(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, str(proxy["proxy_id"]))
                 self.pool_table.setItem(row, column, item)
         self.pool_status.setText(f"Прокси в пуле: {len(proxies)}. Пароли не отображаются.")
+        names = [str(p["bot_name"]) for p in self.store.list_profiles()]
+        populate_bot_combo(self.pool_bot_name, names)
 
     def load_selected_pool_proxy(self):
         row = self.pool_table.currentRow()
         if row >= 0 and self.pool_table.item(row, 0) is not None:
             self.pool_status.setText(
-                f"Выбран прокси №{self.pool_table.item(row, 0).text()}. Укажи имя бота для ручного назначения."
+                f"Выбран прокси №{self.pool_table.item(row, 0).text()}. Выбери бота из списка для назначения."
             )
 
     def _selected_pool_id(self):
@@ -236,12 +237,12 @@ class ProxySettingsWidget(QWidget):
 
     def assign_selected_pool_proxy(self):
         proxy_id = self._selected_pool_id()
-        bot_name = self.pool_bot_name.text().strip()
+        bot_name = str(self.pool_bot_name.currentData() or "").strip()
         if not proxy_id:
             QMessageBox.information(self, "Назначение прокси", "Сначала выбери прокси в списке.")
             return
         if not bot_name:
-            QMessageBox.information(self, "Назначение прокси", "Введи имя бота ASF для назначения.")
+            QMessageBox.information(self, "Назначение прокси", "Выбери бота ASF из списка.")
             return
         existing = next((p for p in self.store.list_profiles() if str(p["bot_name"]).casefold() == bot_name.casefold()), None)
         if existing:
@@ -331,7 +332,10 @@ class ProxySettingsWidget(QWidget):
 
     def refresh(self):
         self.table.setRowCount(0)
-        for profile in self.store.list_profiles():
+        profiles = self.store.list_profiles()
+        populate_bot_combo(self.bot_name, [str(p["bot_name"]) for p in profiles])
+        populate_bot_combo(self.pool_bot_name, [str(p["bot_name"]) for p in profiles])
+        for profile in profiles:
             row = self.table.rowCount()
             self.table.insertRow(row)
             values = [profile["bot_name"], profile["scheme"], profile["host"], str(profile["port"]),
@@ -343,7 +347,7 @@ class ProxySettingsWidget(QWidget):
                 self.table.setItem(row, column, item)
 
     def save_profile(self):
-        bot_name = self.bot_name.text().strip()
+        bot_name = str(self.bot_name.currentData() or "").strip()
         username = self.username.text().strip() or None
         password = self.password.text() or None
         if bool(username) != bool(password):
@@ -492,7 +496,9 @@ class ProxySettingsWidget(QWidget):
         profile = next((p for p in self.store.list_profiles() if p["bot_name"] == profile_name), None)
         if not profile:
             return
-        self.bot_name.setText(str(profile["bot_name"]))
+        index = self.bot_name.findData(str(profile["bot_name"]))
+        if index >= 0:
+            self.bot_name.setCurrentIndex(index)
         self.scheme.setCurrentText(str(profile["scheme"]))
         self.host.setText(str(profile["host"]))
         self.port.setValue(int(profile["port"]))
@@ -522,7 +528,7 @@ class ProxySettingsWidget(QWidget):
         self.status.setText("Назначение удалено локально. Настройки работающего ASF не изменялись.")
 
     def clear_fields(self):
-        self.bot_name.clear()
+        self.bot_name.setCurrentIndex(0)
         self.scheme.setCurrentText("http")
         self.host.clear()
         self.port.setValue(1080)
