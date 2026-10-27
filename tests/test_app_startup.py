@@ -385,5 +385,52 @@ class AppStartupSmokeTests(unittest.TestCase):
             self.app.processEvents()
 
 
+    def test_startup_marks_interrupted_sending_order_as_unknown_and_locks_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            with sqlite3.connect(database) as db:
+                db.execute("""
+                    CREATE TABLE delivery_orders (
+                        order_id TEXT PRIMARY KEY,
+                        recipient_trade_url TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL,
+                        asset_count INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL DEFAULT '',
+                        source_platform TEXT NOT NULL DEFAULT 'manual',
+                        source_order_id TEXT,
+                        source_title TEXT NOT NULL DEFAULT '',
+                        source_buyer TEXT NOT NULL DEFAULT '',
+                        source_status TEXT NOT NULL DEFAULT '',
+                        source_amount TEXT NOT NULL DEFAULT '',
+                        source_url TEXT NOT NULL DEFAULT '',
+                        trade_offer_id TEXT NOT NULL DEFAULT '',
+                        trade_confirmation_status TEXT NOT NULL DEFAULT ''
+                    )
+                """)
+                db.execute(
+                    "INSERT INTO delivery_orders (order_id, status, asset_count) VALUES (?, ?, ?)",
+                    ("GD-INTERRUPTED", "sending — запрос ASF", 1),
+                )
+
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                try:
+                    with sqlite3.connect(database) as db:
+                        status = db.execute(
+                            "SELECT status, trade_confirmation_status FROM delivery_orders WHERE order_id = ?",
+                            ("GD-INTERRUPTED",),
+                        ).fetchone()
+                    self.assertEqual(
+                        status,
+                        ("неизвестен результат отправки — проверь исходящие Steam", "unknown"),
+                    )
+                    window.orders.selectRow(0)
+                    self.assertFalse(window.send_offer_button.isEnabled())
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+
 if __name__ == "__main__":
     unittest.main()
