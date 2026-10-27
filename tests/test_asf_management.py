@@ -398,7 +398,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 "app.asf_management.QMessageBox.question",
                 return_value=QMessageBox.StandardButton.Yes,
             ), patch(
-                "pathlib.Path.write_text", side_effect=write_with_partial_failure
+                "pathlib.Path.write_text", autospec=True, side_effect=write_with_partial_failure
             ), patch("app.asf_management.QMessageBox.warning") as warning:
                 self.widget._set_bots_enabled(["bot-a"])
 
