@@ -176,6 +176,41 @@ class TradeDeliveryUITests(unittest.TestCase):
 
             self._run_with_window(database, exercise)
 
+    def test_cancel_reserved_order_releases_assets_without_sending_trade(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+
+            def exercise(window):
+                with sqlite3.connect(database) as db:
+                    before = db.execute(
+                        "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchall()
+                self.assertEqual(before, [("Bot A", "1234567890")])
+
+                with patch(
+                    "app.main.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ), patch("app.main.QMessageBox.warning") as warning, \\
+                     patch("app.main.ASFClient.send_trade_offer") as send:
+                    window._cancel_selected_order()
+
+                warning.assert_not_called()
+                send.assert_not_called()
+                with sqlite3.connect(database) as db:
+                    status = db.execute(
+                        "SELECT status FROM delivery_orders WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                    reservations = db.execute(
+                        "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchall()
+                self.assertEqual(status, "cancelled — резерв снят")
+                self.assertEqual(reservations, [])
+
+            self._run_with_window(database, exercise)
+
     def test_user_cancellation_does_not_send_offer_or_change_order_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
