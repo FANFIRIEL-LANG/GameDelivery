@@ -70,13 +70,13 @@ jobs:
       - name: Add build information and package instructions
         shell: pwsh
         run: |
-          @'
+          @"
           GameDelivery Windows x64
           Build commit: $env:GITHUB_SHA
           Python runtime: 3.12
           Package type: onedir
           Live ASF/Steam delivery has not been verified by CI.
-          '@ | Set-Content -Encoding utf8 dist\GameDelivery\BUILD_INFO.txt
+          "@ | Set-Content -Encoding utf8 dist\GameDelivery\BUILD_INFO.txt
 
           @'
           GameDelivery — Windows x64
