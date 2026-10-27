@@ -8,7 +8,7 @@ from unittest.mock import PropertyMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QListWidgetItem
 from app.main import MainWindow
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
@@ -175,6 +175,48 @@ class AppStartupSmokeTests(unittest.TestCase):
                         orders = db.execute("SELECT COUNT(*) FROM delivery_orders").fetchone()[0]
                     self.assertEqual(rows, [])
                     self.assertEqual(orders, 0)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+    def test_stale_snapshot_asset_cannot_be_reserved_even_if_ui_selection_is_forced(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            store = InventorySnapshotStore(database)
+            store.replace([CardCopy("789", "Example Game", "Trading Card")], bot_name="Bot A")
+            with store._connect() as db:
+                db.execute(
+                    "UPDATE steam_inventory_snapshot_meta SET updated_at = ? WHERE bot_name = ?",
+                    ("2020-01-01T00:00:00+00:00", "Bot A"),
+                )
+
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
+                 patch("app.main.QMessageBox.warning") as warning:
+                window = MainWindow()
+                try:
+                    self.assertEqual(window.order_assets.count(), 1)
+                    self.assertIn("Нет подтверждённого снимка", window.order_assets.item(0).text())
+                    forced_item = QListWidgetItem("Forced stale card")
+                    forced_item.setData(Qt.ItemDataRole.UserRole, ("Bot A", "789"))
+                    window.order_assets.addItem(forced_item)
+                    forced_item.setSelected(True)
+                    window.order_recipient.setText(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+                    )
+
+                    window._prepare_delivery_order()
+
+                    warning.assert_called_once()
+                    with sqlite3.connect(database) as db:
+                        reservation_count = db.execute(
+                            "SELECT COUNT(*) FROM steam_asset_reservations"
+                        ).fetchone()[0]
+                        order_count = db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders"
+                        ).fetchone()[0]
+                    self.assertEqual(reservation_count, 0)
+                    self.assertEqual(order_count, 0)
                 finally:
                     window.close()
                     window.deleteLater()
