@@ -961,8 +961,9 @@ class ASFManagementWidget(QWidget):
         try:
             for bot_name, path, payload in targets:
                 payload["Enabled"] = True
-                path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                # Include this path before writing: write_text can leave a partial file on failure.
                 written.append(path)
+                path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except (OSError, TypeError, ValueError):
             for path in reversed(written):
                 try:
