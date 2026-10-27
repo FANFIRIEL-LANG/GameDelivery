@@ -626,7 +626,8 @@ class ASFManagementWidget(QWidget):
                 line = raw.strip()
                 if not line or line.startswith("#"):
                     continue
-                separator = next((sep for sep in (";", "|", "\t", ":") if sep in line), None)
+                separators = [sep for sep in (";", "|", "\t", ":") if sep in line]
+                separator = min(separators, key=line.find) if separators else None
                 if separator is None:
                     raise ValueError(
                         f"Строка {line_no}: используй login:password, login;password, login|password или TAB"
