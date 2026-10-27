@@ -42,6 +42,7 @@ class InventorySnapshotStore:
                         card_name TEXT NOT NULL,
                         is_trading_card INTEGER NOT NULL,
                         is_foil INTEGER NOT NULL,
+                        is_tradable INTEGER,
                         PRIMARY KEY (bot_name, asset_id)
                     )
                 """)
@@ -61,9 +62,20 @@ class InventorySnapshotStore:
                         card_name TEXT NOT NULL,
                         is_trading_card INTEGER NOT NULL,
                         is_foil INTEGER NOT NULL,
+                        is_tradable INTEGER,
                         PRIMARY KEY (bot_name, asset_id)
                     )
                 """)
+
+            snapshot_columns = {
+                row["name"] for row in connection.execute(
+                    "PRAGMA table_info(steam_inventory_snapshot)"
+                ).fetchall()
+            }
+            if "is_tradable" not in snapshot_columns:
+                connection.execute(
+                    "ALTER TABLE steam_inventory_snapshot ADD COLUMN is_tradable INTEGER"
+                )
 
             meta_columns = {
                 row["name"] for row in connection.execute(
@@ -104,7 +116,10 @@ class InventorySnapshotStore:
                 continue
             normalized.setdefault(
                 asset_id,
-                CardCopy(asset_id, game_name, card_name, card.is_trading_card, card.is_foil),
+                CardCopy(
+                    asset_id, game_name, card_name,
+                    card.is_trading_card, card.is_foil, card.is_tradable,
+                ),
             )
         return normalized
 
@@ -120,10 +135,14 @@ class InventorySnapshotStore:
             connection.execute("DELETE FROM steam_inventory_snapshot WHERE bot_name = ?", (bot,))
             connection.executemany("""
                 INSERT INTO steam_inventory_snapshot
-                    (bot_name, asset_id, game_name, card_name, is_trading_card, is_foil)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (bot_name, asset_id, game_name, card_name, is_trading_card, is_foil, is_tradable)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, [
-                (bot, c.asset_id, c.game_name, c.card_name, int(c.is_trading_card), int(c.is_foil))
+                (
+                    bot, c.asset_id, c.game_name, c.card_name,
+                    int(c.is_trading_card), int(c.is_foil),
+                    None if c.is_tradable is None else int(c.is_tradable),
+                )
                 for c in normalized.values()
             ])
             connection.execute("""
@@ -140,13 +159,14 @@ class InventorySnapshotStore:
             raise ValueError("bot_name не должен быть пустым")
         with self._connect() as connection:
             rows = connection.execute("""
-                SELECT asset_id, game_name, card_name, is_trading_card, is_foil
+                SELECT asset_id, game_name, card_name, is_trading_card, is_foil, is_tradable
                 FROM steam_inventory_snapshot WHERE bot_name = ?
                 ORDER BY game_name, card_name, asset_id
             """, (bot,)).fetchall()
         return [CardCopy(
             asset_id=row["asset_id"], game_name=row["game_name"], card_name=row["card_name"],
             is_trading_card=bool(row["is_trading_card"]), is_foil=bool(row["is_foil"]),
+            is_tradable=None if row["is_tradable"] is None else bool(row["is_tradable"]),
         ) for row in rows]
 
     def load_all(self) -> dict[str, list[CardCopy]]:
