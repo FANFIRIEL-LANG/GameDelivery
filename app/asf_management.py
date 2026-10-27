@@ -49,6 +49,7 @@ class ASFManagementWidget(QWidget):
     """Manage ASF bots and import account lists from a local TXT file."""
 
     inventory_snapshot_updated = Signal(str)
+    log_line = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -335,6 +336,7 @@ class ASFManagementWidget(QWidget):
                 pass
         if self._asf_console_output is not None:
             self._asf_console_output.appendPlainText(line)
+        self.log_line.emit(line)
 
     def show_asf_console(self):
         if self._asf_console_dialog is None:
