@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 from app.main import MainWindow
+from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
 
@@ -70,6 +71,9 @@ class TradeDeliveryUITests(unittest.TestCase):
                 "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
                 ("GD-ORDER-1", "Bot A", "1234567890"),
             )
+        AssetReservationStore(database).reserve(
+            "GD-ORDER-1", [("Bot A", "1234567890")]
+        )
         window._load_saved_orders()
         window.orders.selectRow(0)
 
@@ -122,7 +126,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                         ("GD-ORDER-1",),
                     ).fetchall()
                 self.assertEqual(row, ("sent — ожидание покупателя", "9876543210", "handled"))
-                self.assertEqual(reservation, [])
+                self.assertEqual(reservation, [("Bot A", "1234567890")])
 
             self._run_with_window(database, exercise)
 
