@@ -490,7 +490,7 @@ class MainWindow(QMainWindow):
                 "Черновик проверен по актуальному инвентарю ASF.",
                 "Торговое предложение НЕ создавалось и НЕ отправлялось.",
             ])
-            QMessageBox.information(self, "Черновик проверен через ASF", "\\n".join(lines))
+            QMessageBox.information(self, "Черновик проверен через ASF", "\n".join(lines))
         except (OSError, sqlite3.Error, ValueError, ASFError) as exc:
             QMessageBox.warning(self, "Проверка черновика через ASF", str(exc))
 
@@ -568,7 +568,7 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Подтвердить реальную отправку Steam",
-                "\\n".join(confirmation_lines),
+                "\n".join(confirmation_lines),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -612,7 +612,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(
                     self,
                     "Результат отправки не подтверждён",
-                    f"{exc}\\n\\nПроверь исходящие предложения Steam. Не отправляй этот заказ повторно.",
+                    f"{exc}\n\nПроверь исходящие предложения Steam. Не отправляй этот заказ повторно.",
                 )
                 return
 
@@ -638,8 +638,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "Предложение Steam создано",
-                    f"Заказ: {order_id}\\nБот ASF: {bot_name}\\nID предложения: {offer_id_text}\\n"
-                    f"Подтверждение: {confirmation_status}\\n\\n"
+                    f"Заказ: {order_id}\nБот ASF: {bot_name}\nID предложения: {offer_id_text}\n"
+                    f"Подтверждение: {confirmation_status}\n\n"
                     "Предложение создано, но это не подтверждает принятие обмена покупателем.",
                 )
                 return
@@ -657,7 +657,7 @@ class MainWindow(QMainWindow):
                 )
             self._load_saved_orders()
             if outcome.get("resultUnknown") is True:
-                QMessageBox.warning(self, "Результат отправки неизвестен", user_message + "\\n\\nПроверь исходящие предложения Steam; повторная отправка запрещена.")
+                QMessageBox.warning(self, "Результат отправки неизвестен", user_message + "\n\nПроверь исходящие предложения Steam; повторная отправка запрещена.")
             else:
                 QMessageBox.warning(self, "ASF не отправил предложение", user_message)
 
@@ -684,9 +684,9 @@ class MainWindow(QMainWindow):
             with sqlite3.connect(self._database_path) as db:
                 rows = db.execute(
                     "SELECT order_id, asset_count, status, created_at, source_platform, "
-                    "source_title, source_buyer FROM delivery_orders ORDER BY created_at DESC"
+                    "source_title, source_buyer, trade_offer_id FROM delivery_orders ORDER BY created_at DESC"
                 ).fetchall()
-            for order_id, count, status, created, platform, title, buyer in rows:
+            for order_id, count, status, created, platform, title, buyer, trade_offer_id in rows:
                 if platform == "playerok":
                     source = "Playerok" + (f" · {buyer}" if buyer else "")
                     items = title or "Заказ Playerok"
@@ -695,6 +695,8 @@ class MainWindow(QMainWindow):
                 else:
                     source = "Ручной заказ"
                     items = f"{count} активов"
+                if trade_offer_id:
+                    items += f" · offer {trade_offer_id}"
                 row = self.orders.rowCount()
                 self.orders.insertRow(row)
                 for col, value in enumerate((order_id, source, items, status, created)):
@@ -750,7 +752,7 @@ class MainWindow(QMainWindow):
         lines.extend(f"• {bot} — asset {asset}" for bot, asset in assets)
         if not assets:
             lines.append("Состав не сохранён (старый заказ).")
-        QMessageBox.information(self, "Состав заказа", "\\n".join(lines))
+        QMessageBox.information(self, "Состав заказа", "\n".join(lines))
 
     def _cancel_selected_order(self):
         try:
