@@ -579,8 +579,10 @@ class ASFManagementWidget(QWidget):
                     process.wait(timeout=2)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
-        if self._asf_output_reader is not None and self._asf_output_reader.isRunning():
-            self._asf_output_reader.wait(1500)
+        if self._asf_output_reader is not None:
+            if self._asf_output_reader.isRunning():
+                self._asf_output_reader.requestInterruption()
+                self._asf_output_reader.wait(1500)
         self._close_asf_log()
 
     def _close_asf_log(self):
