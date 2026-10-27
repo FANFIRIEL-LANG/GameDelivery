@@ -7,14 +7,38 @@ import socket
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QTimer, Signal
+from PySide6.QtCore import QSettings, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.asf_inventory_controller import ASFInventoryController
 from integrations.asf.client import ASFClient, ASFError
+
+
+class ASFOutputReader(QThread):
+    line_received = Signal(str)
+
+    def __init__(self, process):
+        super().__init__()
+        self.process = process
+
+    def run(self):
+        stream = getattr(self.process, "stdout", None)
+        if stream is None:
+            return
+        while True:
+            try:
+                line = stream.readline()
+            except (OSError, ValueError):
+                return
+            if line:
+                self.line_received.emit(str(line).rstrip("\r\n"))
+                continue
+            if self.process.poll() is not None or self.isInterruptionRequested():
+                return
+            self.msleep(50)
 
 
 class ASFManagementWidget(QWidget):
@@ -27,6 +51,11 @@ class ASFManagementWidget(QWidget):
         self._settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
         self._asf_process = None
         self._asf_log_handle = None
+        self._asf_output_reader = None
+        self._asf_console_dialog = None
+        self._asf_console_output = None
+        self._asf_console_input = None
+        self._asf_console_lines: list[str] = []
         self._asf_ipc_attempts = 0
         self._pending_start_bot_names: list[str] = []
         root = QVBoxLayout(self)
@@ -84,12 +113,14 @@ class ASFManagementWidget(QWidget):
         self.asf_executable_button = QPushButton("Файл ASF.exe…")
         self.start_asf_button = QPushButton("Запустить ASF")
         self.stop_asf_button = QPushButton("Остановить ASF")
+        self.asf_console_button = QPushButton("Консоль ASF")
         self.auto_start_asf_checkbox = QCheckBox("Запускать ASF вместе с GameDelivery")
         self.auto_start_asf_checkbox.setChecked(bool(self._settings.value("asf/auto_start", True, type=bool)))
         asf_process_row.addWidget(self.asf_executable_path, 1)
         asf_process_row.addWidget(self.asf_executable_button)
         asf_process_row.addWidget(self.start_asf_button)
         asf_process_row.addWidget(self.stop_asf_button)
+        asf_process_row.addWidget(self.asf_console_button)
         root.addLayout(asf_process_row)
         root.addWidget(self.auto_start_asf_checkbox)
 
@@ -140,6 +171,7 @@ class ASFManagementWidget(QWidget):
         self.asf_executable_button.clicked.connect(self.choose_asf_executable)
         self.start_asf_button.clicked.connect(self.start_asf)
         self.stop_asf_button.clicked.connect(self.stop_asf)
+        self.asf_console_button.clicked.connect(self.show_asf_console)
         self.auto_start_asf_checkbox.toggled.connect(lambda enabled: self._settings.setValue("asf/auto_start", enabled))
         self.import_button.clicked.connect(self.import_accounts)
         self.restart_button.clicked.connect(self.restart_asf)
@@ -253,9 +285,13 @@ class ASFManagementWidget(QWidget):
                 process = subprocess.Popen(
                     [str(executable), "--process-required"],
                     cwd=str(executable.parent),
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_handle,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
                     creationflags=flags,
                     close_fds=True,
                 )
@@ -267,10 +303,68 @@ class ASFManagementWidget(QWidget):
             return
         self._asf_process = process
         self._asf_log_handle = log_handle
+        self._asf_output_reader = ASFOutputReader(process)
+        self._asf_output_reader.line_received.connect(self._on_asf_output_line)
+        self._asf_output_reader.start()
         self._settings.setValue("asf/executable_path", str(executable))
         self._asf_ipc_attempts = 0
         self.status.setText("GameDelivery запустил ASF и ожидает готовности IPC…")
         QTimer.singleShot(500, self._poll_asf_ipc)
+
+    def _on_asf_output_line(self, line: str):
+        self._asf_console_lines.append(line)
+        if len(self._asf_console_lines) > 2000:
+            self._asf_console_lines = self._asf_console_lines[-2000:]
+        if self._asf_log_handle is not None:
+            try:
+                self._asf_log_handle.write((line + "\n").encode("utf-8", errors="replace"))
+                self._asf_log_handle.flush()
+            except OSError:
+                pass
+        if self._asf_console_output is not None:
+            self._asf_console_output.appendPlainText(line)
+
+    def show_asf_console(self):
+        if self._asf_console_dialog is None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Консоль ASF — GameDelivery")
+            dialog.resize(820, 560)
+            layout = QVBoxLayout(dialog)
+            output = QPlainTextEdit()
+            output.setReadOnly(True)
+            output.setPlaceholderText("Вывод ArchiSteamFarm появится здесь.")
+            output.setPlainText("\n".join(self._asf_console_lines[-1000:]))
+            layout.addWidget(output, 1)
+            input_row = QHBoxLayout()
+            command_input = QLineEdit()
+            command_input.setPlaceholderText("Команда ASF или запрошенный код подтверждения")
+            send_button = QPushButton("Отправить ввод")
+            input_row.addWidget(command_input, 1)
+            input_row.addWidget(send_button)
+            layout.addLayout(input_row)
+            send_button.clicked.connect(self.send_asf_console_input)
+            command_input.returnPressed.connect(self.send_asf_console_input)
+            self._asf_console_dialog = dialog
+            self._asf_console_output = output
+            self._asf_console_input = command_input
+        self._asf_console_dialog.show()
+        self._asf_console_dialog.raise_()
+        self._asf_console_dialog.activateWindow()
+
+    def send_asf_console_input(self):
+        process = self._asf_process
+        command = self._asf_console_input.text() if self._asf_console_input is not None else ""
+        if process is None or process.poll() is not None or process.stdin is None:
+            self.status.setText("Нет процесса ASF, запущенного GameDelivery, для ввода команды.")
+            return
+        if not command:
+            return
+        try:
+            process.stdin.write(command + "\n")
+            process.stdin.flush()
+            self._asf_console_input.clear()
+        except (OSError, ValueError) as exc:
+            self.status.setText(f"Не удалось передать ввод в ASF: {exc}")
 
     def _poll_asf_ipc(self):
         try:
@@ -344,6 +438,8 @@ class ASFManagementWidget(QWidget):
             self.status.setText("Команда остановки отправлена, но IPC всё ещё отвечает. Проверь состояние ASF.")
 
     def _close_asf_log(self):
+        if self._asf_output_reader is not None and self._asf_output_reader.isRunning():
+            self._asf_output_reader.wait(1000)
         if self._asf_log_handle is not None:
             try:
                 self._asf_log_handle.close()
