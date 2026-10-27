@@ -95,6 +95,19 @@ class TradeDeliveryUITests(unittest.TestCase):
                 window.deleteLater()
                 self.app.processEvents()
 
+    def test_send_button_starts_disabled_without_selected_reserved_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            self._make_database(database)
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                try:
+                    self.assertFalse(window.send_offer_button.isEnabled())
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
     def test_successful_send_persists_offer_id_and_pending_recipient_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
@@ -127,6 +140,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                     ).fetchall()
                 self.assertEqual(row, ("sent — ожидание покупателя", "9876543210", "handled"))
                 self.assertEqual(reservation, [("Bot A", "1234567890")])
+                self.assertFalse(window.send_offer_button.isEnabled())
 
             self._run_with_window(database, exercise)
 
@@ -158,6 +172,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                         ("GD-ORDER-1",),
                     ).fetchone()[0]
                 self.assertEqual(status, "неизвестен результат отправки — проверь исходящие Steam")
+                self.assertFalse(window.send_offer_button.isEnabled())
 
             self._run_with_window(database, exercise)
 
