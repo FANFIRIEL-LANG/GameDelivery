@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import secrets
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
@@ -353,6 +356,119 @@ class ASFClient:
         if bots_key is None or not isinstance(payload[bots_key], dict):
             raise ASFError("ASF не предоставил список активных ботов")
         return dict(payload[bots_key])
+
+    def send_trade_offer(
+        self,
+        *,
+        order_id: str,
+        bot_name: str,
+        trade_url: str,
+        asset_ids: Iterable[str],
+    ) -> dict[str, Any]:
+        """Send one reviewed card offer via ASF; the trade token is passed only in a one-use local file."""
+        order = order_id.strip()
+        bot = bot_name.strip()
+        if not order or len(order) > 128 or any(ord(ch) < 32 for ch in order):
+            raise ValueError("Некорректный ID заказа для отправки")
+        if not bot:
+            raise ValueError("Нужно имя ASF-бота")
+
+        parsed_url = urlsplit(trade_url.strip())
+        params = parse_qs(parsed_url.query, keep_blank_values=True)
+        partners = params.get("partner", [])
+        tokens = params.get("token", [])
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.hostname not in {"steamcommunity.com", "www.steamcommunity.com"}
+            or parsed_url.path.rstrip("/") != "/tradeoffer/new"
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.fragment
+            or len(partners) != 1
+            or not partners[0].isdigit()
+            or not 1 <= int(partners[0]) <= 4294967295
+            or len(tokens) != 1
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tokens[0])
+        ):
+            raise ValueError("Укажи корректную HTTPS trade URL получателя Steam")
+
+        normalized_ids = [str(value).strip() for value in asset_ids]
+        if not normalized_ids or len(normalized_ids) > 255:
+            raise ValueError("Для отправки нужно от 1 до 255 asset ID")
+        if any(not value.isdigit() or int(value) <= 0 for value in normalized_ids):
+            raise ValueError("Asset ID должны быть положительными целыми числами")
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ValueError("В составе заказа найдены повторяющиеся asset ID")
+
+        target_steam_id64 = 76561197960265728 + int(partners[0])
+        nonce = secrets.token_hex(32)
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            local_app_data = str(Path.home() / "AppData" / "Local")
+        secret_dir = Path(local_app_data) / "GameDelivery" / "pending_trade_requests"
+        secret_dir.mkdir(parents=True, exist_ok=True)
+        secret_path = secret_dir / (nonce + ".json")
+
+        secret_payload = {
+            "CredentialNonce": nonce,
+            "OrderId": order,
+            "BotName": bot,
+            "TargetSteamId64": target_steam_id64,
+            "AssetIds": normalized_ids,
+            "TradeToken": tokens[0],
+        }
+        command_payload = {
+            "OrderId": order,
+            "BotName": bot,
+            "TargetSteamId64": target_steam_id64,
+            "AssetIds": normalized_ids,
+            "CredentialNonce": nonce,
+        }
+        encoded_payload = base64.urlsafe_b64encode(
+            json.dumps(command_payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+
+        try:
+            with secret_path.open("x", encoding="utf-8") as handle:
+                json.dump(secret_payload, handle, ensure_ascii=True, separators=(",", ":"))
+            response = self.send_command("gamedelivery-send " + encoded_payload)
+            result = _unwrap_result(response)
+            if not isinstance(result, str):
+                raise ASFError("ASF не вернул структурированный результат отправки.")
+            try:
+                outcome = json.loads(result)
+            except json.JSONDecodeError:
+                raise ASFError("ASF вернул некорректный результат отправки.") from None
+            if not isinstance(outcome, dict):
+                raise ASFError("ASF вернул некорректный результат отправки.")
+
+            if outcome.get("success") is True:
+                if (
+                    outcome.get("mode") != "sent"
+                    or outcome.get("sendEnabled") is not True
+                    or outcome.get("orderId") != order
+                    or str(outcome.get("botName", "")).casefold() != bot.casefold()
+                    or outcome.get("targetSteamId64") != target_steam_id64
+                    or outcome.get("assetCount") != len(normalized_ids)
+                    or not isinstance(outcome.get("offerIds"), list)
+                    or not outcome["offerIds"]
+                    or any(not str(value).isdigit() for value in outcome["offerIds"])
+                ):
+                    raise ASFError("ASF не подтвердил отправку ожидаемого состава заказа.")
+                returned_assets = outcome.get("assets")
+                if not isinstance(returned_assets, list) or [
+                    str(item.get("assetId", "")) for item in returned_assets if isinstance(item, dict)
+                ] != normalized_ids:
+                    raise ASFError("Состав активов в ответе ASF не совпадает с заказом.")
+                return outcome
+
+            # Preserve the structured uncertainty flag so the UI can lock this order if needed.
+            return outcome
+        finally:
+            try:
+                secret_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def restart(self, *, confirmed: bool = False) -> Any:
         """Restart ASF only after explicit user confirmation."""
