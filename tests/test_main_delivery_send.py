@@ -35,6 +35,14 @@ class DeliverySendFlowTests(unittest.TestCase):
                     asset_id TEXT NOT NULL
                 )
             """)
+            db.execute("""
+                CREATE TABLE steam_asset_reservations (
+                    bot_name TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    order_id TEXT NOT NULL,
+                    PRIMARY KEY (bot_name, asset_id)
+                )
+            """)
             db.execute(
                 "INSERT INTO delivery_orders "
                 "(order_id, recipient_trade_url, status) VALUES (?, ?, ?)",
@@ -43,6 +51,10 @@ class DeliverySendFlowTests(unittest.TestCase):
             db.execute(
                 "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
                 (self.ORDER_ID, self.BOT_NAME, self.ASSET_ID),
+            )
+            db.execute(
+                "INSERT INTO steam_asset_reservations (bot_name, asset_id, order_id) VALUES (?, ?, ?)",
+                (self.BOT_NAME, self.ASSET_ID, self.ORDER_ID),
             )
 
     def _fake_window(self, path: Path):
@@ -174,6 +186,68 @@ class DeliverySendFlowTests(unittest.TestCase):
                 ).fetchone()[0]
             self.assertEqual(status, "reserved — не отправлен")
 
+
+    def test_missing_reservation_blocks_send_before_live_preview(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            with sqlite3.connect(db_path) as db:
+                db.execute(
+                    "DELETE FROM steam_asset_reservations WHERE order_id = ?",
+                    (self.ORDER_ID,),
+                )
+            window = self._fake_window(db_path)
+            client = MagicMock()
+
+            with patch("app.main.ASFClient", return_value=client):
+                with patch("app.main.QMessageBox.warning") as warning:
+                    MainWindow._send_selected_order_with_asf(window)
+
+            client.preview_trade_offer.assert_not_called()
+            client.send_trade_offer.assert_not_called()
+            warning.assert_called_once()
+            with sqlite3.connect(db_path) as db:
+                status = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?",
+                    (self.ORDER_ID,),
+                ).fetchone()[0]
+            self.assertEqual(status, "reserved — не отправлен")
+
+    def test_reservation_removed_after_confirmation_blocks_send(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            window = self._fake_window(db_path)
+            client = MagicMock()
+            client.preview_trade_offer.return_value = self._preview(
+                self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
+            )
+
+            def remove_reservation_then_confirm(*args, **kwargs):
+                with sqlite3.connect(db_path) as db:
+                    db.execute(
+                        "DELETE FROM steam_asset_reservations WHERE order_id = ?",
+                        (self.ORDER_ID,),
+                    )
+                return QMessageBox.StandardButton.Yes
+
+            with patch("app.main.ASFClient", return_value=client):
+                with patch(
+                    "app.main.QMessageBox.question",
+                    side_effect=remove_reservation_then_confirm,
+                ):
+                    with patch("app.main.QMessageBox.warning") as warning:
+                        MainWindow._send_selected_order_with_asf(window)
+
+            client.preview_trade_offer.assert_called_once()
+            client.send_trade_offer.assert_not_called()
+            warning.assert_called_once()
+            with sqlite3.connect(db_path) as db:
+                status = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?",
+                    (self.ORDER_ID,),
+                ).fetchone()[0]
+            self.assertEqual(status, "reserved — не отправлен")
 
     def test_local_secret_file_failure_leaves_order_retryable(self):
         with tempfile.TemporaryDirectory() as temp:
