@@ -16,6 +16,7 @@ from app.inventory_panel import InventoryPanel
 from app.proxy_settings import ProxySettingsWidget
 from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
+from integrations.asf.client import ASFClient, ASFError
 
 
 class MainWindow(QMainWindow):
@@ -108,7 +109,10 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         self.prepare_order_button = QPushButton("Проверить и зарезервировать")
         self.prepare_order_button.clicked.connect(self._prepare_delivery_order)
+        self.preview_offer_button = QPushButton("Проверить черновик через ASF")
+        self.preview_offer_button.clicked.connect(self._preview_selected_order_with_asf)
         actions.addWidget(self.prepare_order_button)
+        actions.addWidget(self.preview_offer_button)
         actions.addStretch()
         layout.addLayout(actions)
 
@@ -420,6 +424,67 @@ class MainWindow(QMainWindow):
             )
         except (OSError, sqlite3.Error, ValueError) as exc:
             QMessageBox.warning(self, "Не удалось подготовить заказ", str(exc))
+
+    def _preview_selected_order_with_asf(self):
+        try:
+            order_id = self._selected_order_id()
+            with sqlite3.connect(self._database_path) as db:
+                order = db.execute(
+                    "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                assets = db.execute(
+                    "SELECT bot_name, asset_id FROM delivery_order_assets "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
+
+            if order is None:
+                raise ValueError("Заказ не найден в базе данных.")
+            recipient, status = order
+            if status != "reserved — не отправлен":
+                raise ValueError(
+                    "Проверить через ASF можно только подготовленный заказ, "
+                    "который ещё не отправлялся."
+                )
+            recipient = self._validate_trade_url(recipient)
+            if not assets:
+                raise ValueError("У заказа нет сохранённого состава активов.")
+            bot_names = {bot_name for bot_name, _asset_id in assets}
+            if len(bot_names) != 1:
+                raise ValueError(
+                    "Для одного предложения все активы должны принадлежать одному ASF-боту."
+                )
+
+            bot_name = next(iter(bot_names))
+            ipc_password = self.asf_management.ipc_password.text().strip() or None
+            preview = ASFClient(ipc_password=ipc_password, timeout=30.0).preview_trade_offer(
+                order_id=order_id,
+                bot_name=bot_name,
+                trade_url=recipient,
+                asset_ids=[str(asset_id) for _bot, asset_id in assets],
+            )
+
+            lines = [
+                f"Заказ: {preview['orderId']}",
+                f"ASF-бот: {preview['botName']}",
+                f"Получатель SteamID64: {preview['targetSteamId64']}",
+                f"Активов подтверждено: {preview['assetCount']}",
+                "",
+                "Проверенный состав:",
+            ]
+            lines.extend(
+                f"• {asset.get('name', 'Steam-карточка')} — asset {asset['assetId']}"
+                for asset in preview["assets"]
+            )
+            lines.extend([
+                "",
+                "Черновик проверен по актуальному инвентарю ASF.",
+                "Торговое предложение НЕ создавалось и НЕ отправлялось.",
+            ])
+            QMessageBox.information(self, "Черновик проверен через ASF", "\\n".join(lines))
+        except (OSError, sqlite3.Error, ValueError, ASFError) as exc:
+            QMessageBox.warning(self, "Проверка черновика через ASF", str(exc))
 
     def _load_saved_orders(self):
         if not hasattr(self, "orders"):
