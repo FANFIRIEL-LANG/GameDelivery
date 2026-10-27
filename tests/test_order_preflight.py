@@ -14,8 +14,8 @@ class OrderPreflightTests(unittest.TestCase):
         self.reservations = AssetReservationStore(Path(self.temp.name) / "db.sqlite")
         self.service = SteamCardOrderPreflight(self.reservations)
         self.inventories = {
-            "Bot A": [CardCopy("a1", "Game", "A"), CardCopy("a2", "Game", "B")],
-            "Bot B": [CardCopy("b1", "Game", "A"), CardCopy("b2", "Game", "B")],
+            "Bot A": [CardCopy("101", "Game", "A"), CardCopy("102", "Game", "B")],
+            "Bot B": [CardCopy("201", "Game", "A"), CardCopy("202", "Game", "B")],
         }
 
     def tearDown(self):
