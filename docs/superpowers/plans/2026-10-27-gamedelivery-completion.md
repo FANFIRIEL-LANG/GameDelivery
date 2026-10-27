@@ -48,10 +48,12 @@
 **Область:** `.gitignore`, `.github/workflows/`, настройки упаковки, Playerok/ASF/proxy code, README и Git history.
 
 - [x] Выполнить доступный поиск по публичному индексу ключевых строк (`.env`, `*.pem`, `maFile`, `steamLoginSecure`, `ghp_`, `IPCPassword`): результатов не найдено. Это не доказывает отсутствие всех возможных секретов; исторический scan остаётся отдельным release gate.
-- [ ] Перед релизом подтвердить через GitHub Security/Secret Scanning результаты для всей истории. Проверен список последних 100 заголовков коммитов без очевидных секретных файлов, но это не заменяет полный scan исторических diff/blob; alert endpoint не доступен через используемый коннектор.
+- [ ] Перед релизом подтвердить через GitHub Security/Secret Scanning результаты для всей истории. История не считается полностью проверенной: alert endpoint недоступен через используемый коннектор.
 - [x] Проверить существующие регрессионные тесты на редактирование секретов в сообщениях ASF, IPC-ошибках, proxy summary и отправке торговых данных.
 - [ ] Проверить всю историю коммитов через GitHub Secret Scanning/credential scan. API alerts недоступен через используемый коннектор; не заявлять, что история полностью очищена.
-- [x] Подтвердить свежие CI и package artifacts на SHA `d7cd3a17750f04b472c839c28375482ab504106d` (Tests `40542035038`, Windows `40542035566`, ASF Plugin `40542035045`).
+- [x] Подтвердить свежие CI и package artifacts на SHA `33faebb27039e95e44a33a70176289fee9ada2e2` (Tests `40543175113` / `40543184627`, Windows `40543184922`, ASF Plugin `40543185175`).
+- [x] TDD: тесты отключения Playerok сначала упали, потому что в сообщениях возвращался текст исключения; после фикса `client.py` не раскрывает детали исключений.
+- [x] Исправить статус снимка: пустой снимок, несоответствие количества строк, timestamp старше 24 часов или невалидный timestamp теперь считаются устаревшими; тесты проверены в CI.
 
 ### Этап 2 — запуск приложения, настройки и локальная БД 🟡
 
@@ -120,10 +122,10 @@
 **Область:** `.github/workflows/package-windows.yml`, `.github/workflows/asf-plugin.yml`, README и инструкции интеграций.
 
 - [x] Проверить сборку Windows, `GameDelivery.exe --self-test` и upload в workflow `40542035566` на source SHA `d7cd3a17750f04b472c839c28375482ab504106d`.
-- [x] Скачать Windows artifact `12750694267`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `dfa6f20e9689ed69dd6756a9b6ef437a41abf49c4a97d1cb6c17a27bda1c316e`.
-- [x] Скачать plugin artifact `12751765193`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `2cf72da16d3c97b2b1e669faf8d1fc1286c0aa8594deb593933f8b43b6054f4a`.
+- [x] Скачать Windows artifact `12752056157`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `6dfbe1a0ea57b98da94dfb8cd49ce670f5a65be861d8c0109289490fac4a5225` на SHA `33faebb27039e95e44a33a70176289fee9ada2e2`.
+- [x] Скачать plugin artifact `12752056155`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `220bfb691c7700908e578212333c3a731baee03e22fbe678e1db76c01573c5db`.
 - [x] Проверить корень Windows ZIP: `GameDelivery.exe`, `_internal/`, `PACKAGE_README.txt`, `BUILD_INFO.txt`; вложенного ZIP больше нет.
-- [x] Проверить Windows `BUILD_INFO.txt`: он содержит merge SHA `8f8ebe66941e6293c467ac6e61b225f1138954ed`; GitHub Actions run metadata подтверждает source head `d7cd3a17750f04b472c839c28375482ab504106d`.
+- [x] Проверить Windows `BUILD_INFO.txt` и metadata свежего CI: source head `33faebb27039e95e44a33a70176289fee9ada2e2`.
 - [x] Проверить содержимое пакета: не обнаружены конфиги ASF, локальная БД, maFiles или пользовательские логи.
 - [ ] Проверить запуск из распакованной папки на отдельной чистой Windows-машине/VM без установленного Python.
 
