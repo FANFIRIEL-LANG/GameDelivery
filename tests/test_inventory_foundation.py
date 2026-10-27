@@ -49,6 +49,8 @@ class InventorySnapshotMigrationTests(unittest.TestCase):
             self.assertEqual(store.load("legacy")[0].asset_id, "old-id")
             self.assertEqual(store.status("legacy")["item_count"], 1)
             self.assertEqual(store.status("legacy")["updated_at"], "2026-01-01T00:00:00+00:00")
+            # Legacy snapshots have no trustworthy tradability field and stay unverified.
+            self.assertIsNone(store.load("legacy")[0].is_tradable)
 
 
 class OwnedSetSelectionTests(unittest.TestCase):
@@ -63,6 +65,16 @@ class OwnedSetSelectionTests(unittest.TestCase):
         self.assertEqual({asset.asset_id for asset in result[0].asset_ids}, {"a1", "a2"})
         self.assertEqual({asset.bot_name for asset in result[1].asset_ids}, {"Bot B"})
         self.assertEqual({asset.asset_id for asset in result[1].asset_ids}, {"b1", "b2"})
+
+    def test_shared_selection_excludes_assets_not_confirmed_tradable(self):
+        inventories = {
+            "Bot A": [
+                CardCopy("a", "Game", "A", is_tradable=True),
+                CardCopy("b", "Game", "B", is_tradable=False),
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "полных наборов"):
+            select_owned_complete_sets(inventories, "Game", 1)
 
     def test_shared_selection_blocks_insufficient_sets_and_ignores_foil(self):
         inventories = {
