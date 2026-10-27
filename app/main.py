@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
 
         AssetReservationStore(self._database_path)
         self._ensure_delivery_order_schema()
+        self._recover_interrupted_delivery_orders()
         self.orders = QTableWidget(0, 5)
         self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Товар / активы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
@@ -201,6 +202,21 @@ class MainWindow(QMainWindow):
                     FOREIGN KEY (order_id) REFERENCES delivery_orders(order_id)
                 )
             """)
+
+    def _recover_interrupted_delivery_orders(self) -> int:
+        """Fail closed for orders whose send request was interrupted by a crash."""
+        with sqlite3.connect(self._database_path) as db:
+            cursor = db.execute(
+                "UPDATE delivery_orders "
+                "SET status = ?, trade_confirmation_status = 'unknown' "
+                "WHERE status = ?",
+                (
+                    "неизвестен результат отправки — проверь исходящие Steam",
+                    "sending — запрос ASF",
+                ),
+            )
+            return cursor.rowcount
+
 
     def _import_marketplace_order(self, marketplace_order):
         platform = str(marketplace_order.get("platform") or "").strip().lower()
