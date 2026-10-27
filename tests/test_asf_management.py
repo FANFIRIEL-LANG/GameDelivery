@@ -240,6 +240,13 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 self.assertEqual(self.widget._pending_start_bot_names, ["bot-a"])
                 start_asf.assert_called_once_with()
 
+    def test_asf_output_lines_are_published_for_main_journal(self):
+        emitted = []
+        self.widget.log_line.connect(emitted.append)
+        self.widget._on_asf_output_line("ASF ready")
+        self.assertEqual(emitted, ["ASF ready"])
+        self.assertIn("ASF ready", self.widget._asf_console_lines)
+
     @patch("app.asf_management.QTimer.singleShot")
     @patch("app.asf_management.subprocess.Popen")
     @patch("app.asf_management.ASFClient.get_status", side_effect=OSError("IPC unavailable"))
