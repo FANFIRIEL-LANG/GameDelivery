@@ -21,6 +21,7 @@ class FakeKeyring:
         self.priority = priority
         self.passwords = {}
         self.fail_set = False
+        self.fail_delete = False
 
     def get_keyring(self):
         return self
@@ -34,6 +35,8 @@ class FakeKeyring:
         self.passwords[(service, username)] = password
 
     def delete_password(self, service, username):
+        if self.fail_delete:
+            raise RuntimeError("simulated keyring delete failure")
         key = (service, username)
         if key not in self.passwords:
             raise PasswordDeleteError("missing")
@@ -77,8 +80,6 @@ class ProxyStoreTests(unittest.TestCase):
 
     def test_failed_database_write_restores_previous_keyring_password(self):
         self.keyring.passwords[("GameDelivery.ASFProxy", "bot-a:password")] = "old-secret"
-        original_connect = self.store._connect
-
         with patch.object(self.store, "_connect", side_effect=sqlite3.OperationalError("disk full")):
             with self.assertRaisesRegex(sqlite3.OperationalError, "disk full"):
                 self.store.save(
@@ -101,6 +102,42 @@ class ProxyStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.get_password("bot-a"))
         self.assertIsNone(self.keyring.get_password("GameDelivery.ASFProxy", "bot-a:password"))
         self.assertIsNone(self.store.list_profiles()[0]["username"])
+
+    def test_failed_database_write_restores_password_when_clearing_auth(self):
+        self.store.save(
+            "bot-a",
+            SteamProxy("socks5", "proxy.example", 1080, "proxy-user", "old-secret"),
+        )
+
+        with patch.object(self.store, "_connect", side_effect=sqlite3.OperationalError("disk full")):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "disk full"):
+                self.store.save("bot-a", SteamProxy("http", "new.example", 8080))
+
+        self.assertEqual(
+            self.keyring.get_password("GameDelivery.ASFProxy", "bot-a:password"),
+            "old-secret",
+        )
+        profile = self.store.list_profiles()[0]
+        self.assertEqual(profile["host"], "proxy.example")
+        self.assertEqual(profile["username"], "proxy-user")
+
+    def test_keyring_delete_failure_prevents_clearing_profile_auth(self):
+        self.store.save(
+            "bot-a",
+            SteamProxy("socks5", "proxy.example", 1080, "proxy-user", "old-secret"),
+        )
+        self.keyring.fail_delete = True
+
+        with self.assertRaisesRegex(RuntimeError, "удалить пароль прокси"):
+            self.store.save("bot-a", SteamProxy("http", "new.example", 8080))
+
+        profile = self.store.list_profiles()[0]
+        self.assertEqual(profile["host"], "proxy.example")
+        self.assertEqual(profile["username"], "proxy-user")
+        self.assertEqual(
+            self.keyring.get_password("GameDelivery.ASFProxy", "bot-a:password"),
+            "old-secret",
+        )
 
     def test_proxy_pool_keeps_password_out_of_sqlite_and_deletes_keyring_entry(self):
         proxy = SteamProxy("socks5", "pool.example", 1081, "pool-user", "pool-secret")
