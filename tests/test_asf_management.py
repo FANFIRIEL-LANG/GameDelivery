@@ -170,5 +170,41 @@ class ASFManagementWidgetTests(unittest.TestCase):
 
 
 
+    @patch("app.asf_management.ASFClient.get_bots", return_value={})
+    def test_refresh_falls_back_to_disabled_configs_when_asf_has_no_active_bots(self, get_bots):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)
+            (config / "bot-a.json").write_text(
+                json.dumps({"Enabled": False, "SteamPassword": "never-display"}), encoding="utf-8"
+            )
+            (config / "bot-b.json").write_text(
+                json.dumps({"Enabled": True}), encoding="utf-8"
+            )
+            (config / "ASF.json").write_text(json.dumps({"IPCPassword": "secret"}), encoding="utf-8")
+            self.widget.config_path.setText(str(config))
+
+            self.widget.refresh_bots()
+
+            self.assertEqual(self.widget.table.rowCount(), 2)
+            self.assertEqual(self.widget.table.item(0, 0).text(), "bot-a")
+            self.assertEqual(self.widget.table.item(0, 1).text(), "Отключён (config)")
+            self.assertEqual(self.widget.table.item(1, 0).text(), "bot-b")
+            self.assertNotIn("never-display", self.widget.status.text())
+            self.assertNotIn("secret", self.widget.status.text())
+            self.assertIn("Найдено конфигураций: 2", self.widget.status.text())
+
+    @patch("app.asf_management.ASFClient.get_bots", side_effect=OSError("IPC unavailable"))
+    def test_refresh_falls_back_to_configs_when_ipc_fails(self, get_bots):
+        with tempfile.TemporaryDirectory() as temp:
+            Path(temp, "bot-a.json").write_text(json.dumps({"Enabled": False}), encoding="utf-8")
+            self.widget.config_path.setText(temp)
+
+            self.widget.refresh_bots()
+
+            self.assertEqual(self.widget.table.rowCount(), 1)
+            self.assertEqual(self.widget.table.item(0, 0).text(), "bot-a")
+            self.assertIn("статусы активности неизвестны", self.widget.status.text())
+
+
 if __name__ == "__main__":
     unittest.main()
