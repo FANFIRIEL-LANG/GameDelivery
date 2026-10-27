@@ -400,7 +400,13 @@ class ASFManagementWidget(QWidget):
         if config_dir is None or not config_dir.is_dir():
             QMessageBox.warning(self, "Включение всех ботов", "Сначала укажи папку config установленного ASF.")
             return
-        bot_names = sorted((p.stem for p in config_dir.glob("*.json") if p.is_file()), key=str.casefold)
+        bot_names = sorted(
+            (
+                p.stem for p in config_dir.glob("*.json")
+                if p.is_file() and p.name.casefold() != "asf.json"
+            ),
+            key=str.casefold,
+        )
         self._set_bots_enabled(bot_names)
 
     def _start_bots(self, bot_names: list[str]):
