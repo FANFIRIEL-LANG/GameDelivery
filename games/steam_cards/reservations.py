@@ -46,9 +46,6 @@ class AssetReservationStore:
                 normalized.append((bot, asset))
         if not normalized or any(not bot or not asset for bot, asset in normalized):
             raise ValueError("Нужен непустой список корректных (bot_name, asset_id)")
-        if any(not asset.isdigit() or int(asset) <= 0 for _bot, asset in normalized):
-            raise ValueError("Steam Asset ID должен быть положительным целым числом")
-
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             conflicts = []
