@@ -360,6 +360,10 @@ class ASFClient:
             raise ValueError("Перезапуск ASF требует явного подтверждения")
         return self.request("/Api/ASF/Restart", method="POST", body={})
 
+    def exit(self) -> Any:
+        """Request a graceful ASF shutdown through its local IPC API."""
+        return self.request("/Api/ASF/Exit", method="POST", body={})
+
     @staticmethod
     def build_new_bot_config(
         bot_name: str,
