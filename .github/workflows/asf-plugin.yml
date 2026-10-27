@@ -7,6 +7,7 @@ on:
       - integrations/asf/client.py
       - app/main.py
       - tests/test_asf_client.py
+      - .github/workflows/asf-plugin.yml
   push:
     branches:
       - feature/steam-card-set-selection
@@ -15,6 +16,7 @@ on:
       - integrations/asf/client.py
       - app/main.py
       - tests/test_asf_client.py
+      - .github/workflows/asf-plugin.yml
 
 permissions:
   contents: read
@@ -43,3 +45,22 @@ jobs:
 
       - name: Build GameDelivery ASF plugin
         run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$GITHUB_WORKSPACE/.asf-src/ArchiSteamFarm/bin/Release/net10.0
+
+      - name: Prepare installable plugin package
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_dll=integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll
+          test -s "$plugin_dll"
+          mkdir -p dist/GameDelivery.ASFPlugin
+          cp "$plugin_dll" dist/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll
+          cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
+          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nMode: preview-only; trade sending disabled\n' "$GITHUB_SHA" "06d6109ed781740bf5e9e20bc9bb588ec8a1c879" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+
+      - name: Upload installable plugin package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameDelivery-ASFPlugin-preview-only
+          path: dist/GameDelivery.ASFPlugin/
+          if-no-files-found: error
+          retention-days: 30
