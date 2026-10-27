@@ -482,6 +482,41 @@ class ASFManagementWidgetTests(unittest.TestCase):
         ])
 
 
+    def test_shutdown_managed_asf_is_idempotent_after_process_reference_is_cleared(self):
+        process = unittest.mock.Mock()
+        process.poll.return_value = 0
+        reader = unittest.mock.Mock()
+        reader.isRunning.return_value = False
+        log_handle = unittest.mock.Mock()
+        self.widget._asf_process = process
+        self.widget._asf_output_reader = reader
+        self.widget._asf_log_handle = log_handle
+
+        self.widget.shutdown_managed_asf()
+        self.widget.shutdown_managed_asf()
+
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+        log_handle.close.assert_called_once()
+
+    def test_shutdown_managed_asf_stops_reader_before_closing_log(self):
+        process = unittest.mock.Mock()
+        process.poll.side_effect = [None, 0]
+        reader = unittest.mock.Mock()
+        reader.isRunning.side_effect = [True, False]
+        log_handle = unittest.mock.Mock()
+        self.widget._asf_process = process
+        self.widget._asf_output_reader = reader
+        self.widget._asf_log_handle = log_handle
+
+        with patch.object(self.widget, "_client") as client:
+            client.return_value.exit.return_value = {"Success": True}
+            self.widget.shutdown_managed_asf()
+
+        reader.wait.assert_called_once_with(1500)
+        log_handle.close.assert_called_once()
+
+
 
 if __name__ == "__main__":
     unittest.main()
