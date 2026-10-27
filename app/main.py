@@ -516,6 +516,11 @@ class MainWindow(QMainWindow):
                     "WHERE order_id = ? ORDER BY bot_name, asset_id",
                     (order_id,),
                 ).fetchall()
+                reserved_assets = db.execute(
+                    "SELECT bot_name, asset_id FROM steam_asset_reservations "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
 
             if order is None:
                 raise ValueError("Заказ не найден в локальной базе.")
