@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import (
     QFileDialog, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
@@ -362,7 +362,38 @@ class ProxySettingsWidget(QWidget):
         self.refresh()
         self.status.setText("Профиль сохранён локально. Применение к ASF — отдельной кнопкой.")
 
+    def _saved_ipc_password(self) -> str | None:
+        # Reuse the same Windows credential entry as the ASF management tab.
+        try:
+            import keyring
+            backend = keyring.get_keyring()
+            if getattr(backend, "priority", 0) >= 1:
+                saved = keyring.get_password("GameDelivery.ASFIPC", "localhost:1242")
+                if saved:
+                    return saved
+        except Exception:
+            pass
+
+        # ASF installations commonly keep IPCPassword in their local ASF.json.
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        config_text = str(settings.value("asf/config_path", "") or "").strip()
+        if config_text:
+            config_file = Path(config_text) / "ASF.json"
+            try:
+                import json
+                payload = json.loads(config_file.read_text(encoding="utf-8-sig"))
+                if isinstance(payload, dict):
+                    for key, value in payload.items():
+                        if str(key).casefold() == "ipcpassword" and isinstance(value, str) and value:
+                            return value
+            except (OSError, UnicodeDecodeError, ValueError):
+                pass
+        return None
+
     def _ask_ipc_password(self):
+        saved = self._saved_ipc_password()
+        if saved:
+            return saved, True
         password, accepted = QInputDialog.getText(
             self, "Авторизация ASF IPC", "Введи IPCPassword из локальной конфигурации ASF:",
             QLineEdit.EchoMode.Password,
