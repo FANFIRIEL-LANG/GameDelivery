@@ -490,7 +490,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
         log_handle = unittest.mock.Mock()
         events = []
         reader.requestInterruption.side_effect = lambda: events.append("interrupt")
-        reader.wait.side_effect = lambda timeout: events.append("wait")
+        reader.wait.side_effect = lambda timeout: events.append(f"wait:{timeout}")
         log_handle.close.side_effect = lambda: events.append("close")
         self.widget._asf_process = process
         self.widget._asf_output_reader = reader
@@ -501,9 +501,12 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.widget.shutdown_managed_asf()
 
         reader.requestInterruption.assert_called_once_with()
-        reader.wait.assert_called_once_with(1500)
+        self.assertEqual(
+            reader.wait.call_args_list,
+            [unittest.mock.call(1500), unittest.mock.call(1000)],
+        )
         log_handle.close.assert_called_once()
-        self.assertEqual(events, ["interrupt", "wait", "close"])
+        self.assertEqual(events, ["interrupt", "wait:1500", "wait:1000", "close"])
 
 
 
