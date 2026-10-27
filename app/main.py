@@ -688,14 +688,38 @@ class MainWindow(QMainWindow):
             if outcome.get("resultUnknown") is True:
                 status_message = "неизвестен результат отправки — проверь исходящие Steam"
                 user_message = str(outcome.get("error") or "Результат отправки не подтверждён.")
+                raw_offer_ids = outcome.get("offerIds", [])
+                known_offer_ids = []
+                if isinstance(raw_offer_ids, list):
+                    for value in raw_offer_ids:
+                        text_value = str(value)
+                        if text_value.isdigit() and int(text_value) > 0 and text_value not in known_offer_ids:
+                            known_offer_ids.append(text_value)
+                known_offer_ids.sort(key=int)
+                offer_id_text = ", ".join(known_offer_ids)
             else:
                 status_message = "reserved — не отправлен"
                 user_message = str(outcome.get("error") or "ASF отклонил отправку до создания предложения.")
+                offer_id_text = ""
+
             with sqlite3.connect(self._database_path) as db:
-                db.execute(
-                    "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
-                    (status_message, order_id, "sending — запрос ASF"),
-                )
+                if outcome.get("resultUnknown") is True and offer_id_text:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, "
+                        "trade_confirmation_status = 'unknown' WHERE order_id = ? AND status = ?",
+                        (status_message, offer_id_text, order_id, "sending — запрос ASF"),
+                    )
+                elif outcome.get("resultUnknown") is True:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ?, trade_confirmation_status = 'unknown' "
+                        "WHERE order_id = ? AND status = ?",
+                        (status_message, order_id, "sending — запрос ASF"),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                        (status_message, order_id, "sending — запрос ASF"),
+                    )
             self._load_saved_orders()
             if outcome.get("resultUnknown") is True:
                 QMessageBox.warning(self, "Результат отправки неизвестен", user_message + "\n\nПроверь исходящие предложения Steam; повторная отправка запрещена.")
