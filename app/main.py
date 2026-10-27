@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         note = QLabel(
             "Playerok-заказы можно импортировать с вкладки «Площадки». Выбери импортированный заказ, "
             "введи trade URL покупателя и отметь активы ASF. Если заказ не выбран, создастся ручной черновик. "
-            "Резервирование локальное; обмены не отправляются."
+            "Резервирование локальное; отправка доступна отдельной кнопкой после проверки состава через ASF и явного подтверждения."
         )
         note.setObjectName("muted")
         note.setWordWrap(True)
@@ -113,6 +113,7 @@ class MainWindow(QMainWindow):
         self.preview_offer_button = QPushButton("Проверить черновик через ASF")
         self.preview_offer_button.clicked.connect(self._preview_selected_order_with_asf)
         self.send_offer_button = QPushButton("Отправить предложение Steam…")
+        self.send_offer_button.setEnabled(False)
         self.send_offer_button.clicked.connect(self._send_selected_order_with_asf)
         actions.addWidget(self.prepare_order_button)
         actions.addWidget(self.preview_offer_button)
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         self.orders.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.orders.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.orders.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.orders.itemSelectionChanged.connect(self._update_order_action_buttons)
         self.orders.cellDoubleClicked.connect(self._show_order_details)
         layout.addWidget(self.orders, 2)
         order_actions = QHBoxLayout()
@@ -689,6 +691,21 @@ class MainWindow(QMainWindow):
         finally:
             self._load_saved_orders()
 
+    def _update_order_action_buttons(self):
+        if not hasattr(self, "send_offer_button") or not hasattr(self, "orders"):
+            return
+        try:
+            order_id = self._selected_order_id()
+            with sqlite3.connect(self._database_path) as db:
+                row = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                ).fetchone()
+            self.send_offer_button.setEnabled(
+                row is not None and row[0] == "reserved — не отправлен"
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            self.send_offer_button.setEnabled(False)
+
     def _load_saved_orders(self):
         if not hasattr(self, "orders"):
             return
@@ -717,6 +734,8 @@ class MainWindow(QMainWindow):
                     self.orders.setItem(row, col, QTableWidgetItem(str(value)))
         except sqlite3.Error as exc:
             self.statusBar().showMessage(f"Не удалось загрузить сохранённые заказы: {exc}")
+        finally:
+            self._update_order_action_buttons()
 
     def _selected_order_id(self):
         row = self.orders.currentRow()
