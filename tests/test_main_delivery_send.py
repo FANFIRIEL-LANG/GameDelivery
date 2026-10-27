@@ -94,11 +94,11 @@ class DeliverySendFlowTests(unittest.TestCase):
                 "tradeAccepted": False,
             }
 
-            with patch("app.main.ASFClient", return_value=client), \\
-                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \\
-                 patch("app.main.QMessageBox.information"), \\
-                 patch("app.main.QMessageBox.warning") as warning:
-                MainWindow._send_selected_order_with_asf(window)
+            with patch("app.main.ASFClient", return_value=client):
+                with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                    with patch("app.main.QMessageBox.information"):
+                        with patch("app.main.QMessageBox.warning") as warning:
+                            MainWindow._send_selected_order_with_asf(window)
 
             client.preview_trade_offer.assert_called_once_with(
                 order_id=self.ORDER_ID,
@@ -138,10 +138,10 @@ class DeliverySendFlowTests(unittest.TestCase):
                 "error": "Do not retry",
             }
 
-            with patch("app.main.ASFClient", return_value=client), \\
-                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \\
-                 patch("app.main.QMessageBox.warning") as warning:
-                MainWindow._send_selected_order_with_asf(window)
+            with patch("app.main.ASFClient", return_value=client):
+                with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                    with patch("app.main.QMessageBox.warning") as warning:
+                        MainWindow._send_selected_order_with_asf(window)
 
             with sqlite3.connect(db_path) as db:
                 status = db.execute(
@@ -162,9 +162,9 @@ class DeliverySendFlowTests(unittest.TestCase):
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
 
-            with patch("app.main.ASFClient", return_value=client), \\
-                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
-                MainWindow._send_selected_order_with_asf(window)
+            with patch("app.main.ASFClient", return_value=client):
+                with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+                    MainWindow._send_selected_order_with_asf(window)
 
             client.send_trade_offer.assert_not_called()
             with sqlite3.connect(db_path) as db:
