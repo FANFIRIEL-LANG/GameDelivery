@@ -261,6 +261,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertTrue((home / ".gamedelivery" / "asf-supervisor.log").is_file())
             self.assertIn("GameDelivery запустил ASF", self.widget.status.text())
             self.widget._close_asf_log()
+            self.widget._asf_process = None
 
 if __name__ == "__main__":
     unittest.main()
