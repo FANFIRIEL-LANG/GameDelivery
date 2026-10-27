@@ -376,5 +376,34 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertEqual(list(config.iterdir()), [])
             self.assertIn("Импорт не выполнен", warning.call_args.args[1])
 
+
+    def test_enable_bots_rolls_back_current_json_when_write_is_partial(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)
+            target = config / "bot-a.json"
+            original = b'{"Enabled": false, "SteamLogin": "bot-a"}\n'
+            target.write_bytes(original)
+            self.widget.config_path.setText(str(config))
+            original_write_text = Path.write_text
+
+            def write_with_partial_failure(path, data, encoding=None, errors=None, newline=None):
+                if path == target:
+                    path.write_bytes(b'{"Enabled":')
+                    raise OSError("simulated partial write")
+                return original_write_text(
+                    path, data, encoding=encoding, errors=errors, newline=newline
+                )
+
+            with patch(
+                "app.asf_management.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ), patch(
+                "pathlib.Path.write_text", side_effect=write_with_partial_failure
+            ), patch("app.asf_management.QMessageBox.warning") as warning:
+                self.widget._set_bots_enabled(["bot-a"])
+
+            warning.assert_called_once()
+            self.assertEqual(target.read_bytes(), original)
+
 if __name__ == "__main__":
     unittest.main()
