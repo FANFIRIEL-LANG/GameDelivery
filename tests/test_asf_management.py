@@ -299,6 +299,22 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.assertEqual(emitted, ["ASF ready"])
         self.assertIn("ASF ready", self.widget._asf_console_lines)
 
+    def test_ipc_poll_stops_waiting_when_managed_asf_exits_early(self):
+        from types import SimpleNamespace
+
+        self.widget._asf_process = SimpleNamespace(poll=lambda: 17)
+        with patch.object(self.widget, "_close_asf_log") as close_log, \
+             patch.object(self.widget, "refresh_bots") as refresh_bots, \
+             patch("app.asf_management.QTimer.singleShot") as single_shot:
+            self.widget._poll_asf_ipc()
+
+        close_log.assert_called_once_with()
+        refresh_bots.assert_called_once_with()
+        single_shot.assert_not_called()
+        self.assertIsNone(self.widget._asf_process)
+        self.assertIn("код выхода 17", self.widget.status.text())
+        self.assertIn("до готовности IPC", self.widget.status.text())
+
     @patch("app.asf_management.QTimer.singleShot")
     @patch("app.asf_management.subprocess.Popen")
     @patch("app.asf_management.ASFClient.get_status", side_effect=OSError("IPC unavailable"))
