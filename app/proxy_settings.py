@@ -113,9 +113,10 @@ class ProxySettingsWidget(QWidget):
         pool_page = QWidget()
         pool_root = QVBoxLayout(pool_page)
         pool_intro = QLabel(
-            "Импорт TXT: одна прокси в строке. Форматы: socks5://host:1080 или "
-            "socks5://host:1080;логин;пароль. Пустые строки и строки с # игнорируются. "
-            "Пароли хранятся только в системном хранилище."
+            "Импорт TXT: одна прокси в строке. Форматы: socks5://host:1080; URI;логин;пароль "
+            "(разделители ; | , или TAB); host:port или host:port:логин:пароль. "
+            "Без схемы используется HTTP; для SOCKS указывай схему явно. IPv6 пиши как [2001:db8::1]:1080. "
+            "Пустые строки и строки с # игнорируются. Пароли хранятся только в системном хранилище."
         )
         pool_intro.setWordWrap(True)
         pool_intro.setObjectName("muted")
