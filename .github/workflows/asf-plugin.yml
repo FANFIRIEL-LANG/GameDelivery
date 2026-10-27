@@ -1,4 +1,4 @@
-name: ASF plugin
+name: ASF plugin — stable 6.3.10.6
 
 on:
   pull_request:
@@ -34,11 +34,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Checkout matching ASF source contract
+      - name: Checkout stable ASF 6.3.10.6 source
         uses: actions/checkout@v4
         with:
           repository: JustArchiNET/ArchiSteamFarm
-          ref: 06d6109ed781740bf5e9e20bc9bb588ec8a1c879
+          ref: c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9
           path: .asf-src
 
       - name: Build ASF API assemblies
@@ -56,7 +56,7 @@ jobs:
           mkdir -p dist/GameDelivery.ASFPlugin
           cp "$plugin_dll" dist/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll
           cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
-          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nMode: preview-only; trade sending disabled\n' "$GITHUB_SHA" "06d6109ed781740bf5e9e20bc9bb588ec8a1c879" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nMode: preview-only; trade sending disabled\n' "$GITHUB_SHA" "ASF 6.3.10.6 commit c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
 
       - name: Upload installable plugin package
         uses: actions/upload-artifact@v4
