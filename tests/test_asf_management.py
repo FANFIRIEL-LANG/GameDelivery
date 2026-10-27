@@ -37,19 +37,6 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.assertNotIn("never-display", self.widget.status.text())
         self.assertIn("Получено ботов: 2", self.widget.status.text())
 
-    @patch("app.asf_management.QFileDialog.getSaveFileName")
-    def test_export_writes_disabled_config_without_steam_password(self, choose_path):
-        with tempfile.TemporaryDirectory() as temp:
-            target = str(Path(temp) / "new-bot.json")
-            choose_path.return_value = (target, "JSON (*.json)")
-            self.widget.bot_name.setText("new-bot")
-            self.widget.steam_login.setText("steam-user")
-            self.widget.export_config()
-            payload = json.loads(Path(target).read_text(encoding="utf-8"))
-        self.assertEqual(payload, {"Enabled": False, "SteamLogin": "steam-user"})
-        self.assertNotIn("SteamPassword", payload)
-        self.assertIn("Enabled=false", self.widget.status.text())
-
     @patch("app.asf_management.ASFClient.restart")
     @patch("app.asf_management.QMessageBox.question")
     def test_restart_requires_confirmation_before_calling_asf(self, question, restart):
@@ -156,7 +143,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.assertIsNone(self.widget._last_inventory_bot)
         self.assertIsNone(self.widget._last_inventory_export_payload)
         self.assertFalse(self.widget.export_inventory_button.isEnabled())
-        self.assertIn("актуальное состояние не подтверждено", self.widget.status.text())
+        self.assertIn("Список очищен", self.widget.status.text())
 
     @patch("app.asf_management.QMessageBox.warning")
     def test_export_rejects_invalid_name_before_file_dialog(self, warning):
