@@ -67,6 +67,36 @@ class ASFClientTests(unittest.TestCase):
         self.assertIn("авторизацию", str(raised.exception))
 
     @patch("integrations.asf.client.urlopen")
+    def test_get_bot_inventory_uses_full_inventory_route_and_language(self, urlopen):
+        payload = {
+            "Success": True,
+            "Result": {
+                "bot-a": {
+                    "Assets": [{"assetid": "asset-1", "classid": "class-1", "instanceid": "0"}],
+                    "Descriptions": [{
+                        "classid": "class-1",
+                        "instanceid": "0",
+                        "name": "Trading Card",
+                        "type": "Trading Card",
+                    }],
+                }
+            },
+        }
+        urlopen.return_value = FakeResponse(payload)
+
+        result = ASFClient().get_bot_inventory(
+            "bot-a", app_id=753, context_id=6, language="english"
+        )
+
+        self.assertEqual(result, payload)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:1242/Api/Bot/bot-a/Inventory/753/6?language=english",
+        )
+        self.assertEqual(request.get_method(), "GET")
+
+    @patch("integrations.asf.client.urlopen")
     def test_apply_proxy_preserves_existing_bot_settings(self, urlopen):
         existing = {
             "AcceptGifts": True,
