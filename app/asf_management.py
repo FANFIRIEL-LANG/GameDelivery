@@ -747,7 +747,9 @@ class ASFManagementWidget(QWidget):
         self.restart_button.setEnabled(False)
         try:
             self._client().restart(confirmed=True)
-            self.status.setText("Команда перезапуска отправлена ASF. Подключение может временно пропасть.")
+            self._asf_ipc_attempts = 0
+            self.status.setText("Команда перезапуска отправлена ASF. GameDelivery автоматически восстановит IPC.")
+            QTimer.singleShot(1000, self._poll_asf_ipc)
         except (ASFError, ValueError, OSError) as exc:
             self.status.setText(f"Не удалось перезапустить ASF: {exc}")
         finally:
