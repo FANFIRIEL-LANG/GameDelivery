@@ -122,15 +122,17 @@ class ProxyStore:
                     """,
                     (bot_name, proxy.scheme, proxy.host, proxy.port, proxy.username, int(enabled)),
                 )
-        except Exception:
+        except Exception as database_error:
             try:
                 if previous_password is None:
                     self._delete_secret(keyring, password_key)
                 else:
                     keyring.set_password(SERVICE_NAME, password_key, previous_password)
             except Exception:
-                # Preserve the original DB error; no credential value is included.
-                pass
+                raise RuntimeError(
+                    "Не удалось сохранить назначение прокси и восстановить прежний пароль; "
+                    "проверь системное хранилище учётных данных"
+                ) from database_error
             raise
 
     def list_profiles(self) -> list[dict[str, object]]:
@@ -218,13 +220,56 @@ class ProxyStore:
         return password
 
     def delete_pool_proxy(self, proxy_id: str) -> None:
+        secret_name = f"pool:{proxy_id}:password"
         with self._connect() as connection:
-            cursor = connection.execute("DELETE FROM steam_proxy_pool WHERE proxy_id = ?", (proxy_id,))
-            if cursor.rowcount == 0:
-                raise KeyError("Прокси не найден")
-        self._delete_secret(self._keyring(), f"pool:{proxy_id}:password")
+            exists = connection.execute(
+                "SELECT 1 FROM steam_proxy_pool WHERE proxy_id = ?", (proxy_id,)
+            ).fetchone()
+        if exists is None:
+            raise KeyError("Прокси не найден")
+
+        keyring = self._keyring()
+        try:
+            previous_password = keyring.get_password(SERVICE_NAME, secret_name)
+        except Exception:
+            raise RuntimeError("Не удалось проверить пароль прокси в системном хранилище") from None
+        self._delete_secret(keyring, secret_name)
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM steam_proxy_pool WHERE proxy_id = ?", (proxy_id,)
+                )
+                if cursor.rowcount == 0:
+                    raise KeyError("Прокси не найден")
+        except Exception as database_error:
+            try:
+                if previous_password is not None:
+                    keyring.set_password(SERVICE_NAME, secret_name, previous_password)
+            except Exception:
+                raise RuntimeError(
+                    "Не удалось удалить прокси из списка и восстановить его пароль; "
+                    "проверь системное хранилище учётных данных"
+                ) from database_error
+            raise
 
     def delete(self, bot_name: str) -> None:
-        with self._connect() as connection:
-            connection.execute("DELETE FROM steam_proxy_profiles WHERE bot_name = ?", (bot_name,))
-        self._delete_secret(self._keyring(), f"{bot_name}:password")
+        secret_name = f"{bot_name}:password"
+        keyring = self._keyring()
+        try:
+            previous_password = keyring.get_password(SERVICE_NAME, secret_name)
+        except Exception:
+            raise RuntimeError("Не удалось проверить пароль прокси в системном хранилище") from None
+        self._delete_secret(keyring, secret_name)
+        try:
+            with self._connect() as connection:
+                connection.execute("DELETE FROM steam_proxy_profiles WHERE bot_name = ?", (bot_name,))
+        except Exception as database_error:
+            try:
+                if previous_password is not None:
+                    keyring.set_password(SERVICE_NAME, secret_name, previous_password)
+            except Exception:
+                raise RuntimeError(
+                    "Не удалось удалить назначение прокси и восстановить его пароль; "
+                    "проверь системное хранилище учётных данных"
+                ) from database_error
+            raise
