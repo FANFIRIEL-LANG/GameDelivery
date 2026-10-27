@@ -240,5 +240,26 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 self.assertEqual(self.widget._pending_start_bot_names, ["bot-a"])
                 start_asf.assert_called_once_with()
 
+    @patch("app.asf_management.QTimer.singleShot")
+    @patch("app.asf_management.subprocess.Popen")
+    @patch("app.asf_management.ASFClient.get_status", side_effect=OSError("IPC unavailable"))
+    def test_start_asf_launches_process_with_process_required(self, get_status, popen, single_shot):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            executable = home / "ArchiSteamFarm.exe"
+            executable.write_bytes(b"test executable")
+            process = popen.return_value
+            process.poll.return_value = None
+            self.widget.asf_executable_path.setText(str(executable))
+            with patch("app.asf_management.Path.home", return_value=home), \
+                 patch.object(self.widget, "_ipc_port_is_open", return_value=False):
+                self.widget.start_asf()
+            args, kwargs = popen.call_args
+            self.assertEqual(args[0], [str(executable), "--process-required"])
+            self.assertEqual(kwargs["cwd"], str(home))
+            self.assertTrue((home / ".gamedelivery" / "asf-supervisor.log").is_file())
+            self.assertIn("GameDelivery запустил ASF", self.widget.status.text())
+            self.widget._close_asf_log()
+
 if __name__ == "__main__":
     unittest.main()
