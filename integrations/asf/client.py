@@ -49,9 +49,26 @@ def _restrict_pending_trade_permissions(path: Path, *, directory: bool = False) 
     )
     convert.restype = wintypes.BOOL
 
-    set_file_security = advapi32.SetFileSecurityW
-    set_file_security.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p)
-    set_file_security.restype = wintypes.BOOL
+    get_dacl = advapi32.GetSecurityDescriptorDacl
+    get_dacl.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    )
+    get_dacl.restype = wintypes.BOOL
+
+    set_named_security_info = advapi32.SetNamedSecurityInfoW
+    set_named_security_info.argtypes = (
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    )
+    set_named_security_info.restype = wintypes.DWORD
 
     local_free = kernel32.LocalFree
     local_free.argtypes = (ctypes.c_void_p,)
@@ -60,9 +77,25 @@ def _restrict_pending_trade_permissions(path: Path, *, directory: bool = False) 
     if not convert(sddl, 1, ctypes.byref(descriptor), ctypes.byref(descriptor_size)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
-        # DACL_SECURITY_INFORMATION. Do not alter owner/group metadata.
-        if not set_file_security(str(path), 0x00000004, descriptor):
+        dacl_present = wintypes.BOOL()
+        dacl_defaulted = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        if not get_dacl(
+            descriptor,
+            ctypes.byref(dacl_present),
+            ctypes.byref(dacl),
+            ctypes.byref(dacl_defaulted),
+        ):
             raise ctypes.WinError(ctypes.get_last_error())
+        if not dacl_present.value or not dacl.value:
+            raise OSError("Не удалось создать ограниченный DACL для временного секрета")
+
+        # SE_FILE_OBJECT; DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+        result = set_named_security_info(
+            str(path), 1, 0x80000004, None, None, dacl, None
+        )
+        if result != 0:
+            raise ctypes.WinError(result)
     finally:
         local_free(descriptor)
 
