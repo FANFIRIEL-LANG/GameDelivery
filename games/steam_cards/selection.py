@@ -46,7 +46,12 @@ def find_available_sets(cards: Iterable[CardCopy]) -> list[AvailableSet]:
         if asset_id in seen_asset_ids:
             continue
         seen_asset_ids.add(asset_id)
-        if not card.is_trading_card or card.is_foil or card.is_tradable is not True:
+        if not card.is_trading_card:
+            continue
+        # Keep the card type in the set even when every physical copy is
+        # non-tradable/unknown, so it cannot disappear from the set count.
+        if card.is_foil or card.is_tradable is not True:
+            by_game[game_name].setdefault(card_name, [])
             continue
         by_game[game_name][card_name].append(asset_id)
 
