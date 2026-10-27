@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -25,6 +27,91 @@ internal static class TradeDelivery
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true
     };
+
+    [DllImport("advapi32.dll", EntryPoint = "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+        CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(
+        string securityDescriptor, uint revision, out IntPtr descriptor, out uint descriptorSize);
+
+    [DllImport("advapi32.dll", EntryPoint = "GetSecurityDescriptorDacl", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetSecurityDescriptorDacl(
+        IntPtr descriptor,
+        [MarshalAs(UnmanagedType.Bool)] out bool daclPresent,
+        out IntPtr dacl,
+        [MarshalAs(UnmanagedType.Bool)] out bool daclDefaulted);
+
+    [DllImport("advapi32.dll", EntryPoint = "SetNamedSecurityInfoW",
+        CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern uint SetNamedSecurityInfo(
+        string objectName, uint objectType, uint securityInfo,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+
+    [DllImport("kernel32.dll", EntryPoint = "LocalFree", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    private static void RestrictStoragePermissions(string path, bool isDirectory)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                string sddl = isDirectory
+                    ? "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"
+                    : "D:P(A;;FA;;;OW)(A;;FA;;;SY)";
+                if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
+                    sddl, 1, out IntPtr descriptor, out _))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+
+                try
+                {
+                    if (!GetSecurityDescriptorDacl(
+                        descriptor, out bool daclPresent, out IntPtr dacl, out _)
+                        || !daclPresent || dacl == IntPtr.Zero)
+                    {
+                        throw new Win32Exception(Marshal.GetLastWin32Error());
+                    }
+
+                    // SE_FILE_OBJECT; DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+                    uint result = SetNamedSecurityInfo(
+                        path, 1, 0x80000004, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+                    if (result != 0)
+                    {
+                        throw new Win32Exception((int) result);
+                    }
+                }
+                finally
+                {
+                    LocalFree(descriptor);
+                }
+
+                return;
+            }
+
+            if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            {
+                File.SetUnixFileMode(
+                    path,
+                    isDirectory
+                        ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                        : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                return;
+            }
+
+            throw new PlatformNotSupportedException("Unsupported ACL platform for ASF plugin storage");
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or IOException or UnauthorizedAccessException
+                or PlatformNotSupportedException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            throw new IOException(
+                "Не удалось ограничить доступ к защищённому журналу отправок ASF-плагина.",
+                exception);
+        }
+    }
 
     public static async Task<string> ProcessSendCommand(string encodedPayload)
     {
@@ -213,18 +300,30 @@ internal static class TradeDelivery
                 HashSet<ulong> allOfferIds = new();
                 if (tradeOfferIds is not null) allOfferIds.UnionWith(tradeOfferIds);
                 if (mobileTradeOfferIds is not null) allOfferIds.UnionWith(mobileTradeOfferIds);
-                if (allOfferIds.Count == 0)
-                {
-                    record.State = "unknown";
-                    record.Message = "ASF did not return a trade offer ID";
-                    record.UpdatedAtUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-                    SaveSendRecords(records);
-                    return Failure(
-                        "ASF не вернул ID предложения. Результат неизвестен; проверь исходящие предложения Steam и не повторяй отправку.",
-                        resultUnknown: true);
-                }
+                record.OfferIds = allOfferIds.Order()
+                    .Select(id => id.ToString(CultureInfo.InvariantCulture)).ToList();
 
-                record.OfferIds = allOfferIds.Order().Select(id => id.ToString(CultureInfo.InvariantCulture)).ToList();
+                // An ID alone is not enough to report success if ASF returned success=false.
+                // Preserve any known IDs and lock the order for manual inspection.
+                if (allOfferIds.Count == 0 || !success)
+                {
+                    string unknownMessage = allOfferIds.Count == 0
+                        ? "ASF не вернул ID предложения. Результат неизвестен; проверь исходящие предложения Steam и не повторяй отправку."
+                        : "ASF вернул ID предложения, но не подтвердил успешную отправку. Проверь исходящие предложения Steam и не повторяй отправку.";
+                    record.State = "unknown";
+                    record.Message = unknownMessage;
+                    record.UpdatedAtUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                    try
+                    {
+                        SaveSendRecords(records);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        record.Message = unknownMessage + " Локальный журнал тоже не удалось обновить.";
+                    }
+
+                    return UnknownFailure(record, record.Message);
+                }
                 bool confirmationPending = mobileTradeOfferIds?.Count > 0;
                 if (confirmationPending && targetBot.HasMobileAuthenticator)
                 {
@@ -245,10 +344,12 @@ internal static class TradeDelivery
                 record.State = "unknown";
                 record.Message = "Exception while sending; do not retry automatically";
                 record.UpdatedAtUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-                try { SaveSendRecords(records); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                return Failure(
-                    "Не удалось однозначно подтвердить результат отправки. Проверь исходящие предложения Steam; повторная отправка заблокирована.",
-                    resultUnknown: true);
+                try { SaveSendRecords(records); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                return UnknownFailure(
+                    record,
+                    "Не удалось однозначно подтвердить результат отправки. Проверь исходящие предложения Steam; повторная отправка заблокирована.");
             }
         }
         finally
@@ -281,11 +382,18 @@ internal static class TradeDelivery
     private static Dictionary<string, SendRecord> LoadSendRecords()
     {
         string path = GetSendRecordPath();
+        string directory = Path.GetDirectoryName(path) ?? throw new IOException("Missing data directory");
+        if (Directory.Exists(directory))
+        {
+            RestrictStoragePermissions(directory, isDirectory: true);
+        }
+
         if (!File.Exists(path))
         {
             return new Dictionary<string, SendRecord>(StringComparer.OrdinalIgnoreCase);
         }
 
+        RestrictStoragePermissions(path, isDirectory: false);
         Dictionary<string, SendRecord>? loaded = JsonSerializer.Deserialize<Dictionary<string, SendRecord>>(
             File.ReadAllText(path), JsonOptions);
         if (loaded is null)
@@ -312,11 +420,21 @@ internal static class TradeDelivery
         string path = GetSendRecordPath();
         string directory = Path.GetDirectoryName(path) ?? throw new IOException("Missing data directory");
         Directory.CreateDirectory(directory);
+        RestrictStoragePermissions(directory, isDirectory: true);
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(records, JsonOptions), new UTF8Encoding(false));
+            byte[] payload = new UTF8Encoding(false).GetBytes(JsonSerializer.Serialize(records, JsonOptions));
+            using (FileStream stream = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                // Apply the protected ACL before writing account/offer metadata to disk.
+                RestrictStoragePermissions(temporary, isDirectory: false);
+                stream.Write(payload, 0, payload.Length);
+                stream.Flush(flushToDisk: true);
+            }
+
             File.Move(temporary, path, overwrite: true);
+            RestrictStoragePermissions(path, isDirectory: false);
         }
         finally
         {
@@ -345,6 +463,21 @@ internal static class TradeDelivery
             tradeAccepted = false
         }, JsonOptions);
     }
+
+    private static string UnknownFailure(SendRecord record, string message) => JsonSerializer.Serialize(new
+    {
+        success = false,
+        mode = "send",
+        sendEnabled = true,
+        resultUnknown = true,
+        error = message,
+        orderId = record.OrderId,
+        botName = record.BotName,
+        targetSteamId64 = record.TargetSteamId64,
+        assetCount = record.AssetIds.Count,
+        assets = record.AssetIds.Select(id => new { assetId = id }).ToList(),
+        offerIds = record.OfferIds
+    }, JsonOptions);
 
     private static string Failure(string message, bool resultUnknown = false) => JsonSerializer.Serialize(new
     {
