@@ -46,6 +46,8 @@ class ASFClientTests(unittest.TestCase):
             "http://localhost.evil:1242",
             "http://127.0.0.1.evil:1242",
             "http://localhost:8080",
+            "http://localhost",
+            "http://127.0.0.1",
             "https://localhost:1242",
             "http://user@localhost:1242",
         ):
