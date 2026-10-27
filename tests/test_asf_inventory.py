@@ -22,8 +22,8 @@ class ASFInventoryTests(unittest.TestCase):
                         {"assetid": "102", "classid": "12", "instanceid": "0"},
                     ],
                     "Descriptions": [
-                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
-                        {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
+                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tradable": 1, "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
+                        {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card", "tradable": 1, "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "12", "instanceid": "0", "name": "Background", "type": "Profile Background"},
                     ],
                 }
@@ -34,9 +34,41 @@ class ASFInventoryTests(unittest.TestCase):
         self.assertEqual((cards[0].asset_id, cards[0].card_name, cards[0].is_trading_card, cards[0].is_foil),
                          ("100", "Card A", True, False))
         self.assertEqual(cards[0].game_name, "Tagged Game")
+        self.assertTrue(cards[0].is_tradable)
         self.assertEqual((cards[1].asset_id, cards[1].card_name, cards[1].is_trading_card, cards[1].is_foil),
                          ("101", "Card B", True, True))
+        self.assertTrue(cards[1].is_tradable)
         self.assertFalse(cards[2].is_trading_card)
+
+    def test_nontradable_card_flag_is_preserved(self):
+        payload = {
+            "Success": True,
+            "Result": {"Bot A": {
+                "Assets": [{"assetid": "100", "classid": "10", "instanceid": "0"}],
+                "Descriptions": [{
+                    "classid": "10", "instanceid": "0", "name": "Card A",
+                    "type": "Steam Trading Card", "tradable": 0,
+                    "tags": [{"category": "Game", "localized_tag_name": "Game"}],
+                }],
+            }},
+        }
+        cards = parse_bot_inventory(payload, "Bot A", "Game")
+        self.assertFalse(cards[0].is_tradable)
+
+    def test_card_without_tradability_flag_rejects_snapshot(self):
+        payload = {
+            "Success": True,
+            "Result": {"Bot A": {
+                "Assets": [{"assetid": "100", "classid": "10", "instanceid": "0"}],
+                "Descriptions": [{
+                    "classid": "10", "instanceid": "0", "name": "Card A",
+                    "type": "Steam Trading Card",
+                    "tags": [{"category": "Game", "localized_tag_name": "Game"}],
+                }],
+            }},
+        }
+        with self.assertRaisesRegex(ASFError, "не подтвердил передаваемость"):
+            parse_bot_inventory(payload, "Bot A", "Game")
 
     def test_parser_does_not_treat_failed_response_as_empty_inventory(self):
         with self.assertRaises(ASFError):
