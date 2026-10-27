@@ -100,6 +100,8 @@ class ProxyConfigTests(unittest.TestCase):
             "proxy.example:8080",
             "proxy-auth.example:8081:proxy-user:proxy-pass",
             "socks5://schemed.example:1082:proxy2:pass2",
+            "[2001:db8::1]:1083",
+            "[2001:db8::2]:1084:ipv6-user:ipv6-pass",
         ]))
         self.assertEqual(
             [(p.scheme, p.host, p.port, p.username, p.password) for p in proxies],
@@ -107,8 +109,14 @@ class ProxyConfigTests(unittest.TestCase):
                 ("http", "proxy.example", 8080, None, None),
                 ("http", "proxy-auth.example", 8081, "proxy-user", "proxy-pass"),
                 ("socks5", "schemed.example", 1082, "proxy2", "pass2"),
+                ("http", "2001:db8::1", 1083, None, None),
+                ("http", "2001:db8::2", 1084, "ipv6-user", "ipv6-pass"),
             ],
         )
+
+    def test_parse_proxy_list_rejects_ambiguous_unbracketed_ipv6(self):
+        with self.assertRaisesRegex(ValueError, r"Строка 1:.*IPv6"):
+            parse_proxy_list_text("2001:db8::3:1080")
 
     def test_rejects_invalid_port_and_partial_auth(self):
         with self.assertRaises(ValueError):
