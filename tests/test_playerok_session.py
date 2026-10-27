@@ -4,11 +4,14 @@ from integrations.playerok.client import PlayerokAdapter, _BFF
 
 
 class MemoryKeyring:
-    def __init__(self, token=None, fail_delete=False):
+    def __init__(self, token=None, fail_delete=False, fail_get=False):
         self.token = token
         self.fail_delete = fail_delete
+        self.fail_get = fail_get
 
     def get_password(self, service, account):
+        if self.fail_get:
+            raise RuntimeError("keyring read failed")
         return self.token
 
     def set_password(self, service, account, value):
@@ -74,6 +77,39 @@ class PlayerokSessionTests(unittest.TestCase):
         self.assertTrue(requests[0][4])
         self.assertIn("не подтвердил удалённый выход", result["message"])
         self.assertNotIn("saved-session-token", result["message"])
+
+    def test_restore_session_reports_keyring_read_failure(self):
+        keyring = MemoryKeyring("saved-session-token", fail_get=True)
+
+        adapter = PlayerokAdapter(
+            keyring_backend=keyring,
+            request_func=lambda *args, **kwargs: ({}, None),
+        )
+        with self.assertRaisesRegex(RuntimeError, "Не удалось прочитать сессию"):
+            adapter.restore_session()
+
+    def test_disconnect_does_not_claim_clear_if_keyring_read_and_delete_fail(self):
+        keyring = MemoryKeyring(
+            "saved-session-token",
+            fail_delete=True,
+            fail_get=True,
+        )
+        requests = []
+
+        def fake_request(url, *, method="GET", payload=None, token=None, bearer=False):
+            requests.append(url)
+            return ({}, None)
+
+        adapter = PlayerokAdapter(
+            keyring_backend=keyring,
+            request_func=fake_request,
+        )
+        result = adapter.disconnect()
+
+        self.assertFalse(result["local_session_cleared"])
+        self.assertEqual(keyring.token, "saved-session-token")
+        self.assertEqual(requests, [])
+        self.assertIn("Не удалось удалить токен", result["message"])
 
     def test_disconnect_reports_when_keyring_cannot_delete_saved_token(self):
         keyring = MemoryKeyring("saved-session-token", fail_delete=True)
