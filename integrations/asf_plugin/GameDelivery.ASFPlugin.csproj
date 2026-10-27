@@ -11,20 +11,20 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)..\..\ASF</ASF_BIN_DIR>
+    <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)../../ASF</ASF_BIN_DIR>
   </PropertyGroup>
 
   <ItemGroup>
     <Reference Include="ArchiSteamFarm">
-      <HintPath>$(ASF_BIN_DIR)\ArchiSteamFarm.dll</HintPath>
+      <HintPath>$(ASF_BIN_DIR)/ArchiSteamFarm.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="SteamKit2">
-      <HintPath>$(ASF_BIN_DIR)\SteamKit2.dll</HintPath>
+      <HintPath>$(ASF_BIN_DIR)/SteamKit2.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="System.Composition.AttributedModel">
-      <HintPath>$(ASF_BIN_DIR)\System.Composition.AttributedModel.dll</HintPath>
+      <HintPath>$(ASF_BIN_DIR)/System.Composition.AttributedModel.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
