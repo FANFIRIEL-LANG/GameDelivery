@@ -214,10 +214,37 @@ class ASFManagementWidget(QWidget):
             QTimer.singleShot(700, self.start_asf)
         elif self.config_path.text().strip():
             QTimer.singleShot(250, self.refresh_bots)
-        else:
+        # Locate maFiles folders near discovered ASF roots and common Steam/ASF directories.
+        if not self.mafiles_path.text().strip() or not Path(self.mafiles_path.text().strip()).is_dir():
+            ma_candidates = []
+            for root_dir in discover_asf_roots():
+                ma_candidates.extend((root_dir / "maFiles", root_dir.parent / "maFiles"))
+            ma_candidates.extend((
+                Path.home() / "maFiles",
+                Path.home() / "ASF" / "maFiles",
+                Path.home() / "ArchiSteamFarm" / "maFiles",
+            ))
+            for candidate in ma_candidates:
+                if candidate.is_dir() and any(candidate.glob("*.maFile")):
+                    self.mafiles_path.setText(str(candidate))
+                    self._settings.setValue("asf/mafiles_path", str(candidate))
+                    break
+        # If the keyring has no saved secret, reuse the local ASF.json setting.
+        if not self.ipc_password.text().strip() and self.config_path.text().strip():
+            global_config = Path(self.config_path.text().strip()) / "ASF.json"
+            try:
+                config_data = json.loads(global_config.read_text(encoding="utf-8-sig"))
+                if isinstance(config_data, dict):
+                    for key, value in config_data.items():
+                        if str(key).casefold() == "ipcpassword" and isinstance(value, str) and value:
+                            self.ipc_password.setText(value)
+                            break
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+        if not self.config_path.text().strip():
             self.status.setText(
-                "ASF автоматически не найден. Установи ASF в стандартную папку или укажи его один раз; "
-                "после этого GameDelivery запомнит расположение."
+                "ASF автоматически не найден. Установи ASF в стандартную папку; "
+                "если он находится в нестандартной папке, выбери его один раз."
             )
 
     def choose_txt(self):
@@ -229,6 +256,7 @@ class ASFManagementWidget(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Выбрать папку maFiles")
         if path:
             self.mafiles_path.setText(path)
+            self._settings.setValue("asf/mafiles_path", path)
 
     def choose_config(self):
         path = QFileDialog.getExistingDirectory(self, "Выбрать папку config ASF")
