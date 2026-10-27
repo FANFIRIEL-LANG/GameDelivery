@@ -24,6 +24,41 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.widget.deleteLater()
         self.app.processEvents()
 
+    @patch("app.asf_management.QMessageBox.question")
+    @patch("app.asf_management.QMessageBox.information")
+    @patch("app.asf_management.QMessageBox.warning")
+    def test_import_accounts_uses_first_delimiter_when_password_contains_other_separators(
+        self, warning, information, question
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            txt = root / "accounts.txt"
+            ma_dir = root / "maFiles"
+            config_dir = root / "config"
+            ma_dir.mkdir()
+            config_dir.mkdir()
+            login = "bot-account"
+            password = "pw;with|delimiters:and-more"
+            txt.write_text(f"{login}:{password}\n", encoding="utf-8")
+            (ma_dir / f"{login}.maFile").write_text(
+                json.dumps({"shared_secret": "fake-secret", "identity_secret": "fake-identity"}),
+                encoding="utf-8",
+            )
+
+            self.widget.txt_path.setText(str(txt))
+            self.widget.mafiles_path.setText(str(ma_dir))
+            self.widget.config_path.setText(str(config_dir))
+            question.return_value = QMessageBox.StandardButton.Yes
+
+            self.widget.import_accounts()
+
+            target = config_dir / f"{login}.json"
+            self.assertTrue(target.is_file(), "A valid account row must import without a warning")
+            imported = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(imported["SteamLogin"], login)
+            self.assertEqual(imported["SteamPassword"], password)
+            warning.assert_not_called()
+
     @patch("app.asf_management.ASFClient.get_status", return_value={"Success": True})
     @patch("app.asf_management.ASFClient.start_bot")
     @patch("app.asf_management.QMessageBox.question")
