@@ -100,7 +100,7 @@ class InventoryPanel(QWidget):
     def fetch_from_asf(self):
         bot_name = str(self.bot_name_input.currentData() or "").strip()
         if not bot_name:
-            self.summary.setText("Укажи имя бота, который уже настроен в ASF.")
+            self.summary.setText("Выбери бота из списка ASF. Если список пуст, сначала укажи папку config во вкладке «ASF-боты».")
             return
         self.fetch_button.setEnabled(False)
         self.summary.setText(f"Запрашиваю инвентарь {bot_name} через локальный ASF IPC…")
