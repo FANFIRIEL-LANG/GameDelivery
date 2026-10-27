@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -231,6 +233,103 @@ class ASFClient:
         if not command.strip():
             raise ValueError("Команда ASF не должна быть пустой")
         return self.request("/Api/Command", method="POST", body={"Command": command})
+
+    def preview_trade_offer(
+        self,
+        *,
+        order_id: str,
+        bot_name: str,
+        trade_url: str,
+        asset_ids: Iterable[str],
+    ) -> dict[str, Any]:
+        """Ask the installed GameDelivery ASF plugin to validate a no-send trade draft.
+
+        The recipient token is validated locally but is never sent to ASF during
+        preview. The plugin re-reads the live inventory and returns a preview only.
+        """
+        order = order_id.strip()
+        bot = bot_name.strip()
+        if not order or not bot:
+            raise ValueError("Нужны ID заказа и имя бота ASF")
+
+        parsed = urlsplit(trade_url.strip())
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        partner_values = params.get("partner", [])
+        token_values = params.get("token", [])
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"steamcommunity.com", "www.steamcommunity.com"}
+            or parsed.path.rstrip("/") != "/tradeoffer/new"
+            or len(partner_values) != 1
+            or not partner_values[0].isdigit()
+            or not 1 <= int(partner_values[0]) <= 4294967295
+            or len(token_values) != 1
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", token_values[0])
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError("Укажи корректную HTTPS trade URL получателя Steam")
+
+        normalized_ids = [str(value).strip() for value in asset_ids]
+        if not normalized_ids or len(normalized_ids) > 255:
+            raise ValueError("Для проверки нужно от 1 до 255 asset ID")
+        if any(not value.isdigit() or int(value) <= 0 for value in normalized_ids):
+            raise ValueError("Asset ID должны быть положительными целыми числами")
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ValueError("В составе заказа найдены повторяющиеся asset ID")
+
+        partner_id = int(partner_values[0])
+        steam_id64 = 76561197960265728 + partner_id
+        request_payload = {
+            "OrderId": order,
+            "BotName": bot,
+            "TargetSteamId64": steam_id64,
+            "AssetIds": normalized_ids,
+        }
+        encoded_payload = base64.urlsafe_b64encode(
+            json.dumps(request_payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        response = self.request(
+            "/Api/Command",
+            method="POST",
+            body={"Command": "gamedelivery-preview " + encoded_payload},
+        )
+        result = _unwrap_result(response)
+        if not isinstance(result, str):
+            raise ASFError(
+                "ASF не вернул ответ GameDelivery-плагина. Проверь, что плагин установлен."
+            )
+        try:
+            preview = json.loads(result)
+        except json.JSONDecodeError:
+            raise ASFError(
+                "ASF вернул неожиданный ответ команды GameDelivery. Проверь установку плагина."
+            ) from None
+
+        if not isinstance(preview, dict) or preview.get("success") is not True:
+            message = preview.get("error") if isinstance(preview, dict) else None
+            raise ASFError(str(message or "ASF не подтвердил черновик обмена")[:240])
+        if (
+            preview.get("mode") != "preview-only"
+            or preview.get("sendEnabled") is not False
+            or preview.get("orderId") != order
+            or preview.get("botName", "").casefold() != bot.casefold()
+            or preview.get("targetSteamId64") != steam_id64
+        ):
+            raise ASFError("ASF вернул некорректное подтверждение черновика обмена")
+
+        preview_assets = preview.get("assets")
+        if not isinstance(preview_assets, list):
+            raise ASFError("ASF не вернул проверенный состав черновика")
+        returned_ids = [
+            str(asset.get("assetId", ""))
+            for asset in preview_assets
+            if isinstance(asset, dict)
+        ]
+        if len(returned_ids) != len(normalized_ids) or returned_ids != normalized_ids:
+            raise ASFError("Состав черновика ASF не совпадает с активами заказа")
+        return preview
 
     def get_bots(self) -> dict[str, Any]:
         """Return the active ASF bot map without exposing it to logs."""
