@@ -17,7 +17,8 @@ namespace GameDelivery.ASFPlugin;
 [Export(typeof(IPlugin))]
 public sealed class GameDeliveryPlugin : IBotCommand2
 {
-    private const string CommandName = "gamedelivery-preview";
+    private const string PreviewCommandName = "gamedelivery-preview";
+    private const string SendCommandName = "gamedelivery-send";
     private const int MaxItemsPerPreview = 255;
 
     public string Name => nameof(GameDeliveryPlugin);
@@ -34,7 +35,14 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         string[] args,
         ulong steamID = 0)
     {
-        if (args.Length == 0 || !string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase))
+        if (args.Length == 0)
+        {
+            return null;
+        }
+
+        bool isPreview = string.Equals(args[0], PreviewCommandName, StringComparison.OrdinalIgnoreCase);
+        bool isSend = string.Equals(args[0], SendCommandName, StringComparison.OrdinalIgnoreCase);
+        if (!isPreview && !isSend)
         {
             return null;
         }
@@ -46,7 +54,12 @@ public sealed class GameDeliveryPlugin : IBotCommand2
 
         if (args.Length != 2 || args[1].Length > 16000)
         {
-            return Failure("Некорректный запрос черновика GameDelivery.");
+            return Failure("Некорректный запрос GameDelivery.");
+        }
+
+        if (isSend)
+        {
+            return await TradeDelivery.ProcessSendCommand(args[1]).ConfigureAwait(false);
         }
 
         PreviewRequest? request;
