@@ -547,6 +547,30 @@ class ASFClient:
                     raise ASFError("Состав активов в ответе ASF не совпадает с заказом.")
                 return outcome
 
+            # A known offer ID must be tied to this exact order, recipient, bot, and asset list.
+            # Older plugin failures may not include details; those remain unknown and are never retried.
+            if outcome.get("resultUnknown") is True and "offerIds" in outcome:
+                offer_ids = outcome.get("offerIds")
+                if (
+                    outcome.get("mode") != "send"
+                    or outcome.get("sendEnabled") is not True
+                    or outcome.get("orderId") != order
+                    or str(outcome.get("botName", "")).casefold() != bot.casefold()
+                    or outcome.get("targetSteamId64") != target_steam_id64
+                    or outcome.get("assetCount") != len(normalized_ids)
+                    or not isinstance(offer_ids, list)
+                    or any(
+                        not str(value).isdigit() or int(value) <= 0
+                        for value in offer_ids
+                    )
+                ):
+                    raise ASFError("ASF вернул некорректные данные для неизвестного результата отправки.")
+                returned_assets = outcome.get("assets")
+                if not isinstance(returned_assets, list) or [
+                    str(item.get("assetId", "")) for item in returned_assets if isinstance(item, dict)
+                ] != normalized_ids:
+                    raise ASFError("Состав активов в неизвестном результате ASF не совпадает с заказом.")
+
             # Preserve the structured uncertainty flag so the UI can lock this order if needed.
             return outcome
         finally:
