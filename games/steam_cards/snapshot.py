@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -12,6 +12,7 @@ class InventorySnapshotStore:
     """Per-bot local inventory snapshots; never contacts Steam by itself."""
 
     LEGACY_BOT = "legacy"
+    MAX_AGE = timedelta(hours=24)
 
     def __init__(self, database_path: str | Path):
         self.database_path = str(database_path)
@@ -151,7 +152,12 @@ class InventorySnapshotStore:
                 ON CONFLICT(bot_name) DO UPDATE SET
                     updated_at = excluded.updated_at, item_count = excluded.item_count
             """, (bot, timestamp, len(normalized)))
-        return {"bot_name": bot, "updated_at": timestamp, "item_count": len(normalized), "stale": False}
+        return {
+            "bot_name": bot,
+            "updated_at": timestamp,
+            "item_count": len(normalized),
+            "stale": not normalized,
+        }
 
     def load(self, bot_name: str = "default") -> list[CardCopy]:
         bot = bot_name.strip()
@@ -182,6 +188,29 @@ class InventorySnapshotStore:
             row = connection.execute("""
                 SELECT updated_at, item_count FROM steam_inventory_snapshot_meta WHERE bot_name = ?
             """, (bot,)).fetchone()
+            actual_count = connection.execute(
+                "SELECT COUNT(*) FROM steam_inventory_snapshot WHERE bot_name = ?",
+                (bot,),
+            ).fetchone()[0]
         if row is None:
             return {"updated_at": None, "item_count": 0, "stale": True}
-        return {"updated_at": row["updated_at"], "item_count": row["item_count"], "stale": False}
+
+        try:
+            updated_at = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00"))
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)
+            timestamp_fresh = timedelta(0) <= age <= self.MAX_AGE
+        except (TypeError, ValueError, OverflowError):
+            timestamp_fresh = False
+
+        item_count = int(row["item_count"])
+        return {
+            "updated_at": row["updated_at"],
+            "item_count": item_count,
+            "stale": (
+                item_count <= 0
+                or actual_count != item_count
+                or not timestamp_fresh
+            ),
+        }
