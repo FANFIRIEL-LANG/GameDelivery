@@ -93,11 +93,14 @@ class AssetReservationStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "непустой список"):
             self.store.reserve("GD-1", [("Bot A", "  ")])
 
-    def test_non_numeric_or_non_positive_asset_ids_are_rejected(self):
-        for asset_id in ("abc", "0", "-1", "1.5"):
-            with self.subTest(asset_id=asset_id):
-                with self.assertRaisesRegex(ValueError, "положительным целым числом"):
-                    self.store.reserve("GD-1", [("Bot A", asset_id)])
+    def test_reservations_accept_opaque_non_empty_asset_identifiers(self):
+        result = self.store.reserve("GD-1", [("Bot A", "asset-123")])
+
+        self.assertTrue(result["reserved"])
+        self.assertEqual(
+            self.store.list_for_order("GD-1"),
+            [{"bot_name": "Bot A", "asset_id": "asset-123"}],
+        )
 
     def test_bot_name_must_not_be_blank(self):
         with self.assertRaisesRegex(ValueError, "корректных"):
