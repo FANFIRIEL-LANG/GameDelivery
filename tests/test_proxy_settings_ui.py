@@ -101,6 +101,38 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertNotIn("hidden-pass-one", visible)
         self.assertNotIn("hidden-pass-three", visible)
 
+    def test_apply_selected_sends_only_proxy_fields_and_skips_global_change_when_declined(self):
+        self.widget.store.save(
+            "bot-a",
+            SteamProxy("socks5", "proxy.example", 1080, "proxy-user", "private-proxy-password"),
+        )
+        self.widget.refresh()
+        self.assertGreater(self.widget.table.rowCount(), 0)
+        self.widget.table.selectRow(0)
+        client = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+
+        with patch.object(self.widget, "_ask_ipc_password", return_value=("ipc-password", True)), \
+             patch("app.proxy_settings.ASFClient", return_value=client), \
+             patch(
+                 "app.proxy_settings.QMessageBox.question",
+                 return_value=QMessageBox.StandardButton.No,
+             ) as question, \
+             patch("app.proxy_settings.QMessageBox.warning") as warning:
+            self.widget.apply_selected()
+
+        client.apply_proxy_settings.assert_called_once_with(
+            "bot-a",
+            {
+                "WebProxy": "socks5://proxy.example:1080",
+                "WebProxyUsername": "proxy-user",
+                "WebProxyPassword": "private-proxy-password",
+            },
+        )
+        question.assert_called_once()
+        warning.assert_not_called()
+        self.assertNotIn("private-proxy-password", self.widget.status.text())
+        self.assertNotIn("private-proxy-password", self.widget.pool_status.text())
+
     def test_auto_distribute_pool_rotates_through_bots_and_preserves_credentials(self):
         proxies = [
             SteamProxy("socks5", "one.example", 1080, "proxy-one", "pass-one"),
