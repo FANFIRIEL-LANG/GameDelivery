@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
@@ -15,24 +16,61 @@ _BOT_KEYS = {
 }
 
 
+def discover_asf_roots() -> list[Path]:
+    """Find likely ASF install/config roots without asking the user to browse manually."""
+    settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+    candidates: list[Path] = []
+    saved_exe = str(settings.value("asf/executable_path", "") or "").strip()
+    saved_config = str(settings.value("asf/config_path", "") or "").strip()
+    if saved_config:
+        candidates.append(Path(saved_config))
+    if saved_exe:
+        exe = Path(saved_exe)
+        candidates.extend((exe.parent / "config", exe.parent / "Config"))
+    home = Path.home()
+    roots = [
+        home, home / "ASF", home / "ArchiSteamFarm",
+        Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")),
+        Path(os.environ.get("APPDATA", home / "AppData" / "Roaming")),
+        Path(os.environ.get("PROGRAMFILES", "C:/Program Files")),
+        Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")),
+        Path.cwd(),
+    ]
+    for root in roots:
+        candidates.extend((root / "config", root / "Config", root / "ArchiSteamFarm" / "config",
+                           root / "ASF" / "config", root / "ArchiSteamFarm" / "Config"))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        key = str(resolved).casefold()
+        if key not in seen and resolved.is_dir():
+            seen.add(key)
+            unique.append(resolved)
+    return unique
+
+
 def configured_bot_names() -> list[str]:
-    """Read bot names from the ASF config directory saved by the ASF settings page."""
+    """Read bot names from saved ASF config or automatically discovered config folders."""
     settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
     config_text = str(settings.value("asf/config_path", "") or "").strip()
-    config_dir = Path(config_text) if config_text else None
-    if config_dir is None or not config_dir.is_dir():
-        return []
-    names = []
-    for path in config_dir.glob("*.json"):
-        if path.name.casefold() == "asf.json":
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if isinstance(payload, dict) and any(str(key).casefold() in _BOT_KEYS for key in payload):
-            names.append(path.stem)
-    return sorted(set(names), key=str.casefold)
+    config_dirs = [Path(config_text)] if config_text and Path(config_text).is_dir() else []
+    config_dirs.extend(path for path in discover_asf_roots() if path not in config_dirs)
+    names: set[str] = set()
+    for config_dir in config_dirs:
+        for path in config_dir.glob("*.json"):
+            if path.name.casefold() == "asf.json":
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and any(str(key).casefold() in _BOT_KEYS for key in payload):
+                names.add(path.stem)
+    return sorted(names, key=str.casefold)
 
 
 def populate_bot_combo(combo: QComboBox, extra_names=()) -> None:
