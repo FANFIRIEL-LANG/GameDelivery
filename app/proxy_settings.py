@@ -85,12 +85,16 @@ class ProxySettingsWidget(QWidget):
         delete.clicked.connect(self.delete_selected)
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.apply_button)
-        buttons.addWidget(self.apply_all_button)
-        buttons.addWidget(self.enable_cm_button)
         buttons.addWidget(clear)
         buttons.addStretch()
-        buttons.addWidget(delete)
         root.addLayout(buttons)
+
+        bulk_buttons = QHBoxLayout()
+        bulk_buttons.addWidget(self.apply_all_button)
+        bulk_buttons.addWidget(self.enable_cm_button)
+        bulk_buttons.addStretch()
+        bulk_buttons.addWidget(delete)
+        root.addLayout(bulk_buttons)
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["ASF-бот", "Тип", "Сервер", "Порт", "Авторизация", "Режим"])
@@ -146,7 +150,7 @@ class ProxySettingsWidget(QWidget):
         pool_root.addLayout(assignment_row)
 
         self.pool_table = QTableWidget(0, 5)
-        self.pool_table.setHorizontalHeaderLabels(["Прокси ID", "Тип", "Сервер", "Порт", "Авторизация"])
+        self.pool_table.setHorizontalHeaderLabels(["№", "Тип", "Сервер", "Порт", "Авторизация"])
         self.pool_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.pool_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.pool_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
