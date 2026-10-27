@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._settings_tab(), "Настройки")
         self.asf_management = ASFManagementWidget()
         self.asf_management.inventory_snapshot_updated.connect(self.inventory_panel.select_bot_snapshot)
+        self.asf_management.log_line.connect(self._append_log_line)
         self.tabs.addTab(self.asf_management, "ASF-боты")
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
@@ -645,11 +646,34 @@ class MainWindow(QMainWindow):
     def _logs_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        log = QTextEdit()
-        log.setReadOnly(True)
-        log.setPlainText("GameDelivery: тестовый режим.\nPlayerok не подключён.\nSteam API не используется.\nРеальная отправка предметов отключена.")
-        layout.addWidget(log)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("Локальный журнал ASF и управления процессом"))
+        toolbar.addStretch()
+        refresh = QPushButton("Обновить журнал")
+        refresh.clicked.connect(self._refresh_logs)
+        toolbar.addWidget(refresh)
+        layout.addLayout(toolbar)
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setPlaceholderText("Журнал будет заполнен после запуска или подключения к ASF.")
+        layout.addWidget(self.log_view, 1)
+        self._refresh_logs()
         return page
+
+    def _refresh_logs(self):
+        log_path = Path.home() / ".gamedelivery" / "asf-supervisor.log"
+        try:
+            if not log_path.is_file():
+                content = "Локальный журнал пока пуст. Запусти ASF через вкладку «ASF-боты»."
+            else:
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                content = "\n".join(lines[-3000:]) or "Локальный журнал пока пуст."
+            self.log_view.setPlainText(content)
+        except OSError as exc:
+            self.log_view.setPlainText(f"Не удалось прочитать локальный журнал: {exc}")
+
+    def _append_log_line(self, line: str):
+        self.log_view.append(line)
 
     def _settings_tab(self):
         page = QWidget()
