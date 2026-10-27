@@ -82,6 +82,7 @@ class PlayerokAdapter(MarketplaceAdapter):
         self._request_func = request_func
         self._session_token: str | None = None
         self._session_persisted = False
+        self._keyring_read_failed = False
         self._pending_second_factor_session: Any | None = None
 
     def _keyring(self):
@@ -232,10 +233,14 @@ class PlayerokAdapter(MarketplaceAdapter):
         try:
             token = self._keyring().get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
         except Exception:
-            token = None
+            self._keyring_read_failed = True
+            self._session_persisted = False
+            return None
+
+        self._keyring_read_failed = False
+        self._session_persisted = bool(token)
         if token:
             self._session_token = token
-            self._session_persisted = True
         return token
 
     def _save_token(self, token: str | None) -> bool:
@@ -245,10 +250,12 @@ class PlayerokAdapter(MarketplaceAdapter):
         try:
             self._keyring().set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, token)
             self._session_persisted = True
+            self._keyring_read_failed = False
             return True
         except Exception:
             # Session remains in memory for this run; UI must report it was not saved.
             self._session_persisted = False
+            self._keyring_read_failed = True
             return False
 
     def request_login_code(self, email: str) -> dict[str, Any]:
@@ -319,6 +326,10 @@ class PlayerokAdapter(MarketplaceAdapter):
 
     def restore_session(self) -> dict[str, Any]:
         token = self._saved_token()
+        if not token and self._keyring_read_failed:
+            raise RuntimeError(
+                "Не удалось прочитать сессию Playerok из системного хранилища."
+            )
         if not token:
             raise ValueError("Сохранённая сессия Playerok не найдена. Выполни вход по e-mail.")
         return self._profile(token, self._session_persisted)
@@ -326,6 +337,7 @@ class PlayerokAdapter(MarketplaceAdapter):
     def disconnect(self) -> dict[str, Any]:
         token = self._saved_token()
         was_persisted = self._session_persisted
+        keyring_state_unknown = self._keyring_read_failed
         remote_error = None
         if token:
             try:
@@ -344,9 +356,10 @@ class PlayerokAdapter(MarketplaceAdapter):
         keyring_error = None
         try:
             self._keyring().delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+            self._keyring_read_failed = False
         except Exception as exc:
-            # keyring backends commonly signal that there was no stored entry.
-            if was_persisted:
+            # Ignore a missing entry only when reading the keyring had succeeded.
+            if was_persisted or keyring_state_unknown:
                 keyring_error = str(exc)
         messages = []
         if remote_error:
