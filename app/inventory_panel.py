@@ -66,9 +66,9 @@ class InventoryPanel(QWidget):
         self.summary.setObjectName("muted")
         layout.addWidget(self.summary)
 
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Игра", "Карточка", "Тип", "Количество", "Владелец / asset ID", "Резерв"]
+            ["Игра", "Карточка", "Тип", "Передача", "Количество", "Владелец / asset ID", "Резерв"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -194,10 +194,16 @@ class InventoryPanel(QWidget):
             kind = "Обычная карточка" if row_data.is_trading_card and not row_data.is_foil else (
                 "Foil" if row_data.is_foil else "Другой предмет"
             )
+            transferability = (
+                "Да" if row_data.is_tradable is True
+                else "Нет" if row_data.is_tradable is False
+                else "Не проверена"
+            )
             values = [
                 row_data.game_name,
                 row_data.card_name,
                 kind,
+                transferability,
                 str(row_data.quantity),
                 "\n".join(owners),
                 "\n".join(reservations) if reservations else "Нет",
