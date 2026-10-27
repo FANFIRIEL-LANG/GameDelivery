@@ -448,6 +448,11 @@ class MainWindow(QMainWindow):
                     "WHERE order_id = ? ORDER BY bot_name, asset_id",
                     (order_id,),
                 ).fetchall()
+                reserved_assets = db.execute(
+                    "SELECT bot_name, asset_id FROM steam_asset_reservations "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
 
             if order is None:
                 raise ValueError("Заказ не найден в базе данных.")
@@ -523,6 +528,11 @@ class MainWindow(QMainWindow):
             recipient = self._validate_trade_url(recipient)
             if not assets:
                 raise ValueError("У заказа нет сохранённого состава активов.")
+            if assets != reserved_assets:
+                raise ValueError(
+                    "Состав заказа не совпадает с действующими резервами активов. "
+                    "Обнови резерв перед отправкой; предложение не создано."
+                )
             if len(assets) > 255:
                 raise ValueError("Один черновик ASF поддерживает не более 255 выбранных активов.")
             bot_names = {bot_name for bot_name, _asset_id in assets}
@@ -585,8 +595,23 @@ class MainWindow(QMainWindow):
                     "SELECT status FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
                 ).fetchone()
+                current_assets = db.execute(
+                    "SELECT bot_name, asset_id FROM delivery_order_assets "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
+                current_reservations = db.execute(
+                    "SELECT bot_name, asset_id FROM steam_asset_reservations "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
                 if current is None or current[0] != "reserved — не отправлен":
                     raise ValueError("Статус заказа изменился во время проверки. Обнови список.")
+                if current_assets != assets or current_reservations != assets:
+                    raise ValueError(
+                        "Состав заказа или резервы изменились после проверки. "
+                        "Повтори проверку; предложение не отправлено."
+                    )
                 changed = db.execute(
                     "UPDATE delivery_orders SET status = 'sending — запрос ASF' "
                     "WHERE order_id = ? AND status = 'reserved — не отправлен'",
