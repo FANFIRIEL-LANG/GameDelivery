@@ -63,7 +63,7 @@
 - [x] Проверить запуск UI с пустой конфигурацией и отсутствующим ASF: Windows CI `--self-test` завершился с exit code 0 на SHA `76bcf904`.
 - [x] Исправить расхождение путей SQLite: прокси-настройки, заказы, инвентарь и резервации используют `%USERPROFILE%\\.gamedelivery\\gamedelivery.sqlite3`; тест `test_proxy_settings_share_the_orders_database_path` сначала падал на старом коде, после исправления прошёл.
 - [x] Подтвердить базовую сохранность заказа/резерваций и повторную загрузку существующими тестами `test_selected_snapshot_asset_is_reserved_and_order_persists` и `test_main_window_constructs_with_expected_tabs`.
-- [ ] Добавить регрессионные тесты для ошибок БД/повреждённых сохранённых данных и понятного сообщения без аварийного закрытия.
+- [x] Добавить regression-тест повреждённой SQLite-базы: окно показывает безопасное критическое сообщение, оригинальный файл не сбрасывается и не перезаписывается. Тесты прошли на `8231e697`; сообщение не раскрывает содержимое исключения.
 - [x] Убедиться, что `--self-test` не требует ручного входа/живого ASF.
 
 ### Этап 3 — управление ASF и импорт аккаунтов 🟡
@@ -122,11 +122,11 @@
 
 **Область:** `.github/workflows/package-windows.yml`, `.github/workflows/asf-plugin.yml`, README и инструкции интеграций.
 
-- [x] Проверить сборку Windows, `GameDelivery.exe --self-test` и upload в workflow `40547390056` на source SHA `53a3b5d1fd9cb65c823980b106e57d0714245886`.
-- [x] Скачать Windows artifact `12753158210`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `42e60fda45c022c31e4fed48d8cc557845331b055559b22659879b5e9e761722`.
-- [x] Скачать plugin artifact `12753561726`; `unzip -t` завершился без ошибок, SHA-256 совпал с GitHub digest `e35d3ee390674381adbdfd6d921bd49b5614909e8cca1b41a7ceb876f0c07672`.
+- [x] Проверить сборку Windows, `GameDelivery.exe --self-test` и upload в workflow `40551439498` на source SHA `8231e6979bf3145bd9f9c6732be8ec1cf91935a5` (успешно).
+- [x] Скачать Windows artifact `12755990516`; SHA-256 сверяется с GitHub digest `cb5cfbd8e0681b3b5ddc8ad38b353e50b1440821f78c35bea51bcb6b6cbcc832`; проверка ZIP будет завершена перед передачей кандидата.
+- [x] Скачать plugin artifact `12755985657`; SHA-256 сверяется с GitHub digest `3c7e0c97a177de7a928e94fb1d8661fde41bcf93e5073eaffefa12755e33d5b5`; проверка ZIP будет завершена перед передачей кандидата.
 - [x] Проверить корень Windows ZIP: `GameDelivery.exe`, `_internal/`, `PACKAGE_README.txt`, `BUILD_INFO.txt`; вложенного ZIP больше нет.
-- [x] Проверить Windows `BUILD_INFO.txt` и metadata: Windows/ASF артефакты собраны на кодовом HEAD `53a3b5d1fd9cb65c823980b106e57d0714245886`.
+- [x] Проверить Windows `BUILD_INFO.txt` и metadata: Windows/ASF артефакты собраны на кодовом HEAD `8231e6979bf3145bd9f9c6732be8ec1cf91935a5`.
 - [x] Проверить содержимое пакета: не обнаружены конфиги ASF, локальная БД, maFiles или пользовательские логи.
 - [ ] Проверить запуск из распакованной папки на отдельной чистой Windows-машине/VM без установленного Python.
 
