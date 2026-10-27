@@ -62,6 +62,39 @@ class ProxyConfigTests(unittest.TestCase):
                 "http://proxy.example:8080;user",
             ]))
 
+    def test_proxy_list_accepts_all_documented_auth_separators_and_plain_uri(self):
+        rows = [
+            "socks5://semi.example:1080;user1;pass1",
+            "socks5://pipe.example:1081|user2|pass2",
+            "socks5://comma.example:1082,user3,pass3",
+            "socks5://tab.example:1083\tuser4\tpass4",
+            "socks5://embedded:pass5@uri.example:1084",
+            "socks5://plain.example:1085",
+        ]
+        proxies = parse_proxy_list_text("\n".join(rows))
+        self.assertEqual(len(proxies), 6)
+        self.assertEqual(
+            [(proxy.username, proxy.password) for proxy in proxies],
+            [
+                ("user1", "pass1"),
+                ("user2", "pass2"),
+                ("user3", "pass3"),
+                ("user4", "pass4"),
+                ("embedded", "pass5"),
+                (None, None),
+            ],
+        )
+        for proxy, host in zip(
+            proxies,
+            ("semi.example", "pipe.example", "comma.example", "tab.example", "uri.example", "plain.example"),
+        ):
+            settings = proxy.asf_bot_settings()
+            self.assertEqual(settings["WebProxy"], f"socks5://{host}:{proxy.port}")
+            self.assertNotIn("@", settings["WebProxy"])
+        for proxy, secret in zip(proxies[:5], ("pass1", "pass2", "pass3", "pass4", "pass5")):
+            self.assertNotIn(secret, proxy.uri)
+            self.assertNotIn(secret, str(proxy.safe_summary()))
+
     def test_rejects_invalid_port_and_partial_auth(self):
         with self.assertRaises(ValueError):
             SteamProxy("http", "proxy.example", 0)
