@@ -258,6 +258,13 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 self.assertEqual(self.widget._pending_start_bot_names, ["bot-a"])
                 start_asf.assert_called_once_with()
 
+    def test_asf_log_sanitizer_redacts_credentials_and_proxy_uri(self):
+        raw = '{"SteamPassword":"steam-secret","IPCPassword":"ipc-secret"} socks5://proxy-user:proxy-secret@proxy.example:1080'
+        safe = self.widget._sanitize_asf_output_line(raw)
+        for secret in ("steam-secret", "ipc-secret", "proxy-user", "proxy-secret"):
+            self.assertNotIn(secret, safe)
+        self.assertIn("[REDACTED]", safe)
+
     def test_asf_output_lines_are_published_for_main_journal(self):
         emitted = []
         self.widget.log_line.connect(emitted.append)
