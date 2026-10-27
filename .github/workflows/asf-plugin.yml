@@ -62,6 +62,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: GameDelivery-ASFPlugin-preview-only
-          path: dist/GameDelivery.ASFPlugin/
+          path: dist/
           if-no-files-found: error
           retention-days: 30
