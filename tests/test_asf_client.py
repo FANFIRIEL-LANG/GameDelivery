@@ -1,5 +1,9 @@
+import base64
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from integrations.asf.client import ASFClient, ASFError
@@ -376,6 +380,69 @@ class ASFClientTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF/Restart")
         self.assertEqual(request.get_method(), "POST")
+
+    def test_send_trade_offer_keeps_token_out_of_ipc_command_and_deletes_one_use_secret(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def fake_send_command(command):
+                self.assertTrue(command.startswith("gamedelivery-send "))
+                encoded = command.split(" ", 1)[1]
+                payload_bytes = base64.urlsafe_b64decode(encoded + "=" * ((4 - len(encoded) % 4) % 4))
+                payload = json.loads(payload_bytes.decode("utf-8"))
+                self.assertEqual(payload["OrderId"], "GD-SEND-1")
+                self.assertEqual(payload["BotName"], "card-bot")
+                self.assertEqual(payload["AssetIds"], ["123"])
+                self.assertNotIn("TradeToken", payload)
+                self.assertNotIn("token", payload)
+                self.assertRegex(payload["CredentialNonce"], r"^[a-f0-9]{64}$")
+
+                secret_path = Path(temp) / "GameDelivery" / "pending_trade_requests" / (
+                    payload["CredentialNonce"] + ".json"
+                )
+                secret = json.loads(secret_path.read_text(encoding="utf-8"))
+                self.assertEqual(secret["TradeToken"], "Tok-abc_1")
+                self.assertEqual(secret["TargetSteamId64"], 76561197960265728 + 12345)
+                self.assertEqual(secret["AssetIds"], ["123"])
+                return {
+                    "Success": True,
+                    "Result": json.dumps({
+                        "success": True,
+                        "mode": "sent",
+                        "sendEnabled": True,
+                        "orderId": "GD-SEND-1",
+                        "botName": "card-bot",
+                        "targetSteamId64": 76561197960265728 + 12345,
+                        "assetCount": 1,
+                        "assets": [{"assetId": "123"}],
+                        "offerIds": ["456789"],
+                        "confirmationStatus": "handled",
+                        "tradeAccepted": False,
+                    }),
+                }
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}), \\
+                 patch.object(ASFClient, "send_command", side_effect=fake_send_command) as send_command:
+                result = ASFClient().send_trade_offer(
+                    order_id="GD-SEND-1",
+                    bot_name="card-bot",
+                    trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                    asset_ids=["123"],
+                )
+            send_command.assert_called_once()
+            self.assertTrue(result["success"])
+            self.assertEqual(result["offerIds"], ["456789"])
+            secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
+            self.assertEqual(list(secret_dir.iterdir()), [])
+
+    def test_send_trade_offer_rejects_invalid_trade_url_before_dispatch(self):
+        with patch.object(ASFClient, "send_command") as send_command:
+            with self.assertRaises(ValueError):
+                ASFClient().send_trade_offer(
+                    order_id="GD-SEND-2",
+                    bot_name="card-bot",
+                    trade_url="https://example.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                    asset_ids=["123"],
+                )
+            send_command.assert_not_called()
 
     @patch.object(ASFClient, "send_command", return_value={"Success": True, "Result": "OK"})
     def test_exit_uses_documented_owner_command(self, send_command):
