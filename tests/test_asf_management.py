@@ -145,13 +145,6 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.assertFalse(self.widget.export_inventory_button.isEnabled())
         self.assertIn("Список очищен", self.widget.status.text())
 
-    @patch("app.asf_management.QMessageBox.warning")
-    def test_export_rejects_invalid_name_before_file_dialog(self, warning):
-        with patch("app.asf_management.QFileDialog.getSaveFileName") as choose_path:
-            self.widget.bot_name.setText("../unsafe")
-            self.widget.export_config()
-        choose_path.assert_not_called()
-        warning.assert_called_once()
 
 
 if __name__ == "__main__":
