@@ -601,8 +601,22 @@ class MainWindow(QMainWindow):
                     trade_url=recipient,
                     asset_ids=asset_ids,
                 )
-            except (ASFError, OSError, ValueError) as exc:
-                # A transport failure can happen after ASF accepted the command; never reset and blindly retry.
+            except (OSError, ValueError) as exc:
+                # Local validation or one-use-secret file errors occur before command dispatch.
+                with sqlite3.connect(self._database_path) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                        ("reserved — не отправлен", order_id, "sending — запрос ASF"),
+                    )
+                self._load_saved_orders()
+                QMessageBox.warning(
+                    self,
+                    "Команда ASF не отправлена",
+                    f"{exc}\n\nПроверь локальные настройки и повтори проверку.",
+                )
+                return
+            except ASFError as exc:
+                # The IPC request might have reached ASF; never reset and blindly retry.
                 with sqlite3.connect(self._database_path) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
