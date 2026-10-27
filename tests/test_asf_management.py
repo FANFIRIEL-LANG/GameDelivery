@@ -208,6 +208,20 @@ class ASFManagementWidgetTests(unittest.TestCase):
 
 
     @patch("app.asf_management.ASFClient.get_bots", return_value={})
+    @patch("app.asf_management.QFileDialog.getOpenFileName")
+    def test_selecting_asf_executable_auto_detects_sibling_config(self, choose_file):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            executable = home / "ArchiSteamFarm.exe"
+            executable.write_bytes(b"test")
+            config = home / "config"
+            config.mkdir()
+            (config / "bot-a.json").write_text(json.dumps({"Enabled": False}), encoding="utf-8")
+            choose_file.return_value = (str(executable), "Executable (*.exe)")
+            self.widget.choose_asf_executable()
+            self.assertEqual(self.widget.asf_executable_path.text(), str(executable))
+            self.assertEqual(self.widget.config_path.text(), str(config))
+
     def test_config_scan_ignores_non_bot_json_and_asf_global_config(self, get_bots):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp)
