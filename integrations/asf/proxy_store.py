@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,19 @@ class ProxyStore:
                     port INTEGER NOT NULL,
                     username TEXT,
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS steam_proxy_pool (
+                    proxy_id TEXT PRIMARY KEY,
+                    scheme TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    username TEXT,
                     updated_at TEXT NOT NULL DEFAULT
                         (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 )
@@ -140,6 +154,75 @@ class ProxyStore:
             return self._keyring().get_password(SERVICE_NAME, f"{bot_name}:password")
         except Exception:
             raise RuntimeError("Не удалось прочитать пароль прокси из системного хранилища") from None
+
+    def add_pool_proxies(self, proxies: list[Any]) -> list[str]:
+        """Save a parsed proxy pool; credentials are kept only in the OS keyring."""
+        if not proxies:
+            raise ValueError("Список прокси пуст")
+        keyring = self._keyring()
+        backend = keyring.get_keyring()
+        priority = getattr(backend, "priority", 0)
+        if not priority or priority < 1:
+            raise RuntimeError("Системное хранилище учётных данных недоступно; список не сохранён")
+        records = [(uuid.uuid4().hex, proxy) for proxy in proxies]
+        secrets_saved: list[str] = []
+        try:
+            for proxy_id, proxy in records:
+                if proxy.password is not None:
+                    keyring.set_password(SERVICE_NAME, f"pool:{proxy_id}:password", proxy.password)
+                    secrets_saved.append(proxy_id)
+            with self._connect() as connection:
+                connection.executemany(
+                    """
+                    INSERT INTO steam_proxy_pool
+                        (proxy_id, scheme, host, port, username, updated_at)
+                    VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    """,
+                    [(proxy_id, proxy.scheme, proxy.host, proxy.port, proxy.username)
+                     for proxy_id, proxy in records],
+                )
+        except Exception:
+            for proxy_id in secrets_saved:
+                try:
+                    self._delete_secret(keyring, f"pool:{proxy_id}:password")
+                except Exception:
+                    pass
+            raise RuntimeError("Не удалось сохранить список прокси; проверь системное хранилище") from None
+        return [proxy_id for proxy_id, _ in records]
+
+    def list_pool(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT proxy_id, scheme, host, port, username, updated_at
+                FROM steam_proxy_pool ORDER BY updated_at, proxy_id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_pool_password(self, proxy_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT username FROM steam_proxy_pool WHERE proxy_id = ?", (proxy_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError("Прокси не найден")
+        if not row["username"]:
+            return None
+        try:
+            password = self._keyring().get_password(SERVICE_NAME, f"pool:{proxy_id}:password")
+        except Exception:
+            raise RuntimeError("Не удалось прочитать пароль прокси из системного хранилища") from None
+        if not password:
+            raise RuntimeError("Пароль выбранного прокси отсутствует в системном хранилище")
+        return password
+
+    def delete_pool_proxy(self, proxy_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM steam_proxy_pool WHERE proxy_id = ?", (proxy_id,))
+            if cursor.rowcount == 0:
+                raise KeyError("Прокси не найден")
+        self._delete_secret(self._keyring(), f"pool:{proxy_id}:password")
 
     def delete(self, bot_name: str) -> None:
         with self._connect() as connection:

@@ -1,6 +1,6 @@
 import unittest
 
-from integrations.asf.proxy_config import SteamProxy, parse_proxy_uri
+from integrations.asf.proxy_config import SteamProxy, parse_proxy_uri, parse_proxy_list_text
 
 
 class ProxyConfigTests(unittest.TestCase):
@@ -37,6 +37,22 @@ class ProxyConfigTests(unittest.TestCase):
             with self.subTest(uri=uri):
                 with self.assertRaises(ValueError):
                     parse_proxy_uri(uri)
+
+    def test_parse_proxy_list_text_accepts_authenticated_and_plain_proxy_rows(self):
+        proxies = parse_proxy_list_text(
+            "# main list\\n"
+            "socks5://proxy-one.example:1080;proxy-user;secret\\n"
+            "http://proxy-two.example:8080\\n"
+        )
+        self.assertEqual(len(proxies), 2)
+        self.assertEqual(proxies[0].scheme, "socks5")
+        self.assertEqual(proxies[0].username, "proxy-user")
+        self.assertEqual(proxies[0].password, "secret")
+        self.assertEqual(proxies[1].uri, "http://proxy-two.example:8080")
+
+    def test_parse_proxy_list_text_reports_line_without_exposing_proxy_password(self):
+        with self.assertRaisesRegex(ValueError, "Строка 2"):
+            parse_proxy_list_text("http://ok.example:8080\\nhttp://proxy.example:8080;user\\n")
 
     def test_rejects_invalid_port_and_partial_auth(self):
         with self.assertRaises(ValueError):

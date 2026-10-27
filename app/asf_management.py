@@ -83,9 +83,21 @@ class ASFManagementWidget(QWidget):
         buttons.addStretch()
         root.addLayout(buttons)
 
+        launch_buttons = QHBoxLayout()
+        self.start_selected_button = QPushButton("Запустить выбранных")
+        self.start_all_button = QPushButton("Запустить всех")
+        self.select_all_button = QPushButton("Выбрать всех")
+        launch_buttons.addWidget(self.start_selected_button)
+        launch_buttons.addWidget(self.start_all_button)
+        launch_buttons.addWidget(self.select_all_button)
+        launch_buttons.addStretch()
+        root.addLayout(launch_buttons)
+
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Имя бота", "Состояние"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self.table, 1)
         self.status = QLabel("ASF не запрашивался.")
@@ -101,6 +113,9 @@ class ASFManagementWidget(QWidget):
         self.inventory_button.clicked.connect(self.show_inventory)
         self.export_inventory_button.clicked.connect(self.export_inventory)
         self.snapshot_button.clicked.connect(self.refresh_inventory_snapshot)
+        self.start_selected_button.clicked.connect(self.start_selected_bots)
+        self.start_all_button.clicked.connect(self.start_all_bots)
+        self.select_all_button.clicked.connect(self.table.selectAll)
         self.export_inventory_button.setEnabled(False)
 
     def choose_txt(self):
@@ -241,8 +256,15 @@ class ASFManagementWidget(QWidget):
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 self.table.setItem(row, 0, QTableWidgetItem(str(name)))
-                if isinstance(details, dict):
-                    state = str(details.get("KeepRunning", details.get("IsConnected", "Загружен")))
+                if isinstance(details, bool):
+                    state = "Запущен" if details else "Отключён"
+                elif isinstance(details, dict):
+                    connected = details.get("IsConnected")
+                    if isinstance(connected, bool):
+                        state = "Подключён" if connected else "Не подключён"
+                    else:
+                        running = details.get("KeepRunning", details.get("IsRunning"))
+                        state = ("Запущен" if running else "Отключён") if isinstance(running, bool) else "Загружен"
                 else:
                     state = "Загружен"
                 self.table.setItem(row, 1, QTableWidgetItem(state))
@@ -256,6 +278,84 @@ class ASFManagementWidget(QWidget):
             self.status.setText(f"Не удалось получить список ASF: {exc}. Список очищен.")
         finally:
             self.refresh_button.setEnabled(True)
+
+    def _selected_bot_names(self) -> list[str]:
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        names = []
+        for row in rows:
+            item = self.table.item(row, 0)
+            if item is not None and item.text().strip():
+                names.append(item.text().strip())
+        return names
+
+    def start_selected_bots(self):
+        bot_names = self._selected_bot_names()
+        if not bot_names:
+            self.status.setText("Выбери одного или нескольких ботов в таблице.")
+            return
+        answer = QMessageBox.question(
+            self, "Запуск выбранных ботов",
+            f"Отправить ASF команду запуска для ботов: {len(bot_names)}? "
+            "Для входа могут потребоваться Steam Guard и подтверждения в Steam.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status.setText("Запуск выбранных ботов отменён.")
+            return
+        self._start_bots(bot_names)
+
+    def start_all_bots(self):
+        try:
+            bot_map = self._client().get_bots()
+        except (ASFError, ValueError, OSError) as exc:
+            self.status.setText(f"Не удалось получить список ASF для запуска: {exc}")
+            return
+        bot_names = sorted((str(name) for name in bot_map), key=str.casefold)
+        if not bot_names:
+            self.status.setText("ASF не вернул ботов для запуска.")
+            return
+        answer = QMessageBox.question(
+            self, "Запуск всех ботов",
+            f"Отправить ASF команду запуска для всех ботов ({len(bot_names)})? "
+            "Могут потребоваться Steam Guard и подтверждения.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status.setText("Запуск всех ботов отменён.")
+            return
+        self._start_bots(bot_names)
+
+    def _start_bots(self, bot_names: list[str]):
+        self.start_selected_button.setEnabled(False)
+        self.start_all_button.setEnabled(False)
+        started = []
+        failed = []
+        client = self._client()
+        try:
+            for bot_name in bot_names:
+                try:
+                    client.start_bot(bot_name)
+                    started.append(bot_name)
+                except (ASFError, ValueError, OSError):
+                    failed.append(bot_name)
+            self.refresh_bots()
+            if failed:
+                self.status.setText(
+                    f"Команды запуска отправлены: {len(started)} из {len(bot_names)}. "
+                    f"Не удалось отправить для: {', '.join(failed[:8])}"
+                    + ("…" if len(failed) > 8 else "")
+                    + ". Перечитай состояние после входа ASF."
+                )
+            else:
+                self.status.setText(
+                    f"Команды запуска отправлены для {len(started)} ботов. "
+                    "Фактическое подключение проверь по состояниям и журналу ASF."
+                )
+        finally:
+            self.start_selected_button.setEnabled(True)
+            self.start_all_button.setEnabled(True)
 
     def restart_asf(self):
         answer = QMessageBox.question(

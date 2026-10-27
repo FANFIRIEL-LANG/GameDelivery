@@ -234,6 +234,17 @@ class ASFClient:
             raise ValueError("Команда ASF не должна быть пустой")
         return self.request("/Api/Command", method="POST", body={"Command": command})
 
+    def start_bot(self, bot_name: str) -> dict[str, Any]:
+        """Ask ASF to start one configured bot, including a bot disabled in JSON."""
+        name = bot_name.strip()
+        if not name or any(char in name for char in "\\r\\n") or "," in name or any(ord(char) < 32 for char in name):
+            raise ValueError("Некорректное имя бота ASF для команды запуска")
+        response = self.send_command("start " + name)
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду запуска бота")
+        return {"bot_name": name, "command_sent": True}
+
     def preview_trade_offer(
         self,
         *,

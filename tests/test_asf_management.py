@@ -24,6 +24,29 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.widget.deleteLater()
         self.app.processEvents()
 
+    @patch("app.asf_management.ASFClient.start_bot")
+    @patch("app.asf_management.QMessageBox.question")
+    def test_start_selected_sends_command_only_for_selected_bot(self, question, start_bot):
+        question.return_value = QMessageBox.StandardButton.Yes
+        self.widget.table.setRowCount(2)
+        self.widget.table.setItem(0, 0, QTableWidgetItem("bot-a"))
+        self.widget.table.setItem(0, 1, QTableWidgetItem("Отключён"))
+        self.widget.table.setItem(1, 0, QTableWidgetItem("bot-b"))
+        self.widget.table.setItem(1, 1, QTableWidgetItem("Отключён"))
+        self.widget.table.selectRow(0)
+        with patch.object(self.widget, "refresh_bots"):
+            self.widget.start_selected_bots()
+        start_bot.assert_called_once_with("bot-a")
+
+    @patch("app.asf_management.ASFClient.get_bots", return_value={"bot-a": False, "bot-b": False})
+    @patch("app.asf_management.ASFClient.start_bot")
+    @patch("app.asf_management.QMessageBox.question")
+    def test_start_all_sends_start_command_for_each_bot(self, question, start_bot, get_bots):
+        question.return_value = QMessageBox.StandardButton.Yes
+        with patch.object(self.widget, "refresh_bots"):
+            self.widget.start_all_bots()
+        self.assertEqual([call.args[0] for call in start_bot.call_args_list], ["bot-a", "bot-b"])
+
     @patch("app.asf_management.ASFClient.get_bots")
     def test_refresh_lists_loaded_bots_without_secrets(self, get_bots):
         get_bots.return_value = {

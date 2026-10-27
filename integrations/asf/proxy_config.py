@@ -78,3 +78,35 @@ def parse_proxy_uri(uri: str, username: str | None = None, password: str | None 
     if not parsed.hostname or port is None:
         raise ValueError("Адрес прокси должен содержать хост и порт")
     return SteamProxy(parsed.scheme, parsed.hostname, port, username, password)
+
+
+
+def parse_proxy_list_text(text: str) -> list[SteamProxy]:
+    """Parse TXT lines as URI or URI;username;password, ignoring blank/comment lines."""
+    if not isinstance(text, str):
+        raise ValueError("Список прокси должен быть текстом")
+    proxies: list[SteamProxy] = []
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split(";")]
+        if len(parts) == 1:
+            try:
+                proxy = parse_proxy_uri(parts[0])
+            except ValueError as exc:
+                raise ValueError(f"Строка {line_no}: {exc}") from None
+        elif len(parts) == 3:
+            uri, username, password = parts
+            if not username or not password:
+                raise ValueError(f"Строка {line_no}: для прокси с авторизацией нужны URI;логин;пароль")
+            try:
+                proxy = parse_proxy_uri(uri, username, password)
+            except ValueError as exc:
+                raise ValueError(f"Строка {line_no}: {exc}") from None
+        else:
+            raise ValueError(f"Строка {line_no}: ожидается URI или URI;логин;пароль")
+        proxies.append(proxy)
+    if not proxies:
+        raise ValueError("В TXT не найдено ни одного прокси")
+    return proxies

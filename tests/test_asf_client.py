@@ -352,6 +352,19 @@ class ASFClientTests(unittest.TestCase):
         with self.assertRaises(ASFError):
             ASFClient().get_bots()
 
+    @patch.object(ASFClient, "send_command")
+    def test_start_bot_sends_official_start_command(self, send_command):
+        send_command.return_value = {"Success": True, "Result": "OK"}
+        result = ASFClient().start_bot("bot-a")
+        send_command.assert_called_once_with("start bot-a")
+        self.assertEqual(result, {"bot_name": "bot-a", "command_sent": True})
+
+    def test_start_bot_rejects_command_injection_and_ambiguous_names(self):
+        for name in ("", "bot\\nstart all", "bot-a,bot-b"):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    ASFClient().start_bot(name)
+
     def test_restart_requires_explicit_confirmation(self):
         with self.assertRaises(ValueError):
             ASFClient().restart()
