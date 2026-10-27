@@ -322,7 +322,7 @@ internal static class TradeDelivery
                         record.Message = unknownMessage + " Локальный журнал тоже не удалось обновить.";
                     }
 
-                    return UnknownFailure(record, record.Message);
+                    return UnknownFailure(record, record.Message ?? unknownMessage);
                 }
                 bool confirmationPending = mobileTradeOfferIds?.Count > 0;
                 if (confirmationPending && targetBot.HasMobileAuthenticator)
