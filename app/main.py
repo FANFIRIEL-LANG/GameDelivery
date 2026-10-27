@@ -112,8 +112,11 @@ class MainWindow(QMainWindow):
         self.prepare_order_button.clicked.connect(self._prepare_delivery_order)
         self.preview_offer_button = QPushButton("Проверить черновик через ASF")
         self.preview_offer_button.clicked.connect(self._preview_selected_order_with_asf)
+        self.send_offer_button = QPushButton("Отправить предложение Steam…")
+        self.send_offer_button.clicked.connect(self._send_selected_order_with_asf)
         actions.addWidget(self.prepare_order_button)
         actions.addWidget(self.preview_offer_button)
+        actions.addWidget(self.send_offer_button)
         actions.addStretch()
         layout.addLayout(actions)
 
@@ -160,7 +163,9 @@ class MainWindow(QMainWindow):
                     source_buyer TEXT NOT NULL DEFAULT '',
                     source_status TEXT NOT NULL DEFAULT '',
                     source_amount TEXT NOT NULL DEFAULT '',
-                    source_url TEXT NOT NULL DEFAULT ''
+                    source_url TEXT NOT NULL DEFAULT '',
+                    trade_offer_id TEXT NOT NULL DEFAULT '',
+                    trade_confirmation_status TEXT NOT NULL DEFAULT ''
                 )
             """)
             columns = {
@@ -174,6 +179,8 @@ class MainWindow(QMainWindow):
                 "source_status": "TEXT NOT NULL DEFAULT ''",
                 "source_amount": "TEXT NOT NULL DEFAULT ''",
                 "source_url": "TEXT NOT NULL DEFAULT ''",
+                "trade_offer_id": "TEXT NOT NULL DEFAULT ''",
+                "trade_confirmation_status": "TEXT NOT NULL DEFAULT ''",
             }
             for name, definition in migrations.items():
                 if name not in columns:
@@ -486,6 +493,187 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Черновик проверен через ASF", "\\n".join(lines))
         except (OSError, sqlite3.Error, ValueError, ASFError) as exc:
             QMessageBox.warning(self, "Проверка черновика через ASF", str(exc))
+
+    def _send_selected_order_with_asf(self):
+        request_started = False
+        order_id = None
+        try:
+            order_id = self._selected_order_id()
+            with sqlite3.connect(self._database_path) as db:
+                order = db.execute(
+                    "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                assets = db.execute(
+                    "SELECT bot_name, asset_id FROM delivery_order_assets "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
+
+            if order is None:
+                raise ValueError("Заказ не найден в локальной базе.")
+            recipient, status = order
+            if status != "reserved — не отправлен":
+                raise ValueError(
+                    "Отправлять можно только подготовленный заказ со статусом «reserved — не отправлен». "
+                    "Заказы с уже начатой или неизвестной отправкой повторно не запускаются."
+                )
+            recipient = self._validate_trade_url(recipient)
+            if not assets:
+                raise ValueError("У заказа нет сохранённого состава активов.")
+            if len(assets) > 255:
+                raise ValueError("Один черновик ASF поддерживает не более 255 выбранных активов.")
+            bot_names = {bot_name for bot_name, _asset_id in assets}
+            if len(bot_names) != 1:
+                raise ValueError("Все активы одного предложения должны принадлежать одному ASF-боту.")
+
+            bot_name = next(iter(bot_names))
+            asset_ids = [str(asset_id) for _bot, asset_id in assets]
+            ipc_password = self.asf_management.ipc_password.text().strip() or None
+            client = ASFClient(ipc_password=ipc_password, timeout=45.0)
+
+            # Re-check the recipient, bot, exact asset list and tradability against the live ASF inventory.
+            preview = client.preview_trade_offer(
+                order_id=order_id,
+                bot_name=bot_name,
+                trade_url=recipient,
+                asset_ids=asset_ids,
+            )
+            if (
+                preview.get("success") is not True
+                or preview.get("mode") != "preview-only"
+                or preview.get("sendEnabled") is not False
+                or preview.get("orderId") != order_id
+                or str(preview.get("botName", "")).casefold() != bot_name.casefold()
+                or preview.get("assetCount") != len(asset_ids)
+                or [str(item.get("assetId", "")) for item in preview.get("assets", []) if isinstance(item, dict)] != asset_ids
+            ):
+                raise ASFError("ASF не подтвердил точное совпадение получателя, бота и состава активов. Отправка отменена.")
+
+            confirmation_lines = [
+                "Сейчас будет создано реальное предложение обмена Steam.",
+                "",
+                f"Заказ: {order_id}",
+                f"Бот ASF: {bot_name}",
+                f"Получатель SteamID64: {preview['targetSteamId64']}",
+                f"Количество активов: {len(asset_ids)}",
+                "",
+                "Asset ID:",
+                *asset_ids,
+                "",
+                "GameDelivery повторно проверил передаваемость через ASF.",
+                "Отправка не означает, что получатель принял обмен.",
+                "При неопределённом результате повторная отправка будет заблокирована.",
+            ]
+            answer = QMessageBox.question(
+                self,
+                "Подтвердить реальную отправку Steam",
+                "\\n".join(confirmation_lines),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
+                return
+
+            # Compare-and-set prevents a second UI click from sending the same order concurrently.
+            with sqlite3.connect(self._database_path) as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                if current is None or current[0] != "reserved — не отправлен":
+                    raise ValueError("Статус заказа изменился во время проверки. Обнови список.")
+                changed = db.execute(
+                    "UPDATE delivery_orders SET status = 'sending — запрос ASF' "
+                    "WHERE order_id = ? AND status = 'reserved — не отправлен'",
+                    (order_id,),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("Заказ уже обрабатывается другой операцией.")
+
+            try:
+                request_started = True
+                outcome = ASFClient(ipc_password=ipc_password, timeout=120.0).send_trade_offer(
+                    order_id=order_id,
+                    bot_name=bot_name,
+                    trade_url=recipient,
+                    asset_ids=asset_ids,
+                )
+            except (ASFError, OSError, ValueError) as exc:
+                # A transport failure can happen after ASF accepted the command; never reset and blindly retry.
+                with sqlite3.connect(self._database_path) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                        ("неизвестен результат отправки — проверь исходящие Steam", order_id, "sending — запрос ASF"),
+                    )
+                self._load_saved_orders()
+                QMessageBox.warning(
+                    self,
+                    "Результат отправки не подтверждён",
+                    f"{exc}\\n\\nПроверь исходящие предложения Steam. Не отправляй этот заказ повторно.",
+                )
+                return
+
+            if outcome.get("success") is True:
+                offer_ids = outcome.get("offerIds", [])
+                if not offer_ids:
+                    raise ASFError("ASF вернул успех без ID предложения; статус сохранён как неопределённый.")
+                confirmation_status = str(outcome.get("confirmationStatus", "unknown"))
+                order_status = (
+                    "sent — требуется подтверждение Steam"
+                    if confirmation_status == "pending"
+                    else "sent — ожидание покупателя"
+                )
+                offer_id_text = ", ".join(str(value) for value in offer_ids)
+                with sqlite3.connect(self._database_path) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, "
+                        "trade_confirmation_status = ? WHERE order_id = ? AND status = ?",
+                        (order_status, offer_id_text, confirmation_status, order_id, "sending — запрос ASF"),
+                    )
+                self._load_saved_orders()
+                self._load_order_assets()
+                QMessageBox.information(
+                    self,
+                    "Предложение Steam создано",
+                    f"Заказ: {order_id}\\nБот ASF: {bot_name}\\nID предложения: {offer_id_text}\\n"
+                    f"Подтверждение: {confirmation_status}\\n\\n"
+                    "Предложение создано, но это не подтверждает принятие обмена покупателем.",
+                )
+                return
+
+            if outcome.get("resultUnknown") is True:
+                status_message = "неизвестен результат отправки — проверь исходящие Steam"
+                user_message = str(outcome.get("error") or "Результат отправки не подтверждён.")
+            else:
+                status_message = "reserved — не отправлен"
+                user_message = str(outcome.get("error") or "ASF отклонил отправку до создания предложения.")
+            with sqlite3.connect(self._database_path) as db:
+                db.execute(
+                    "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                    (status_message, order_id, "sending — запрос ASF"),
+                )
+            self._load_saved_orders()
+            if outcome.get("resultUnknown") is True:
+                QMessageBox.warning(self, "Результат отправки неизвестен", user_message + "\\n\\nПроверь исходящие предложения Steam; повторная отправка запрещена.")
+            else:
+                QMessageBox.warning(self, "ASF не отправил предложение", user_message)
+
+        except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            if request_started and order_id:
+                try:
+                    with sqlite3.connect(self._database_path) as db:
+                        db.execute(
+                            "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                            ("неизвестен результат отправки — проверь исходящие Steam", order_id, "sending — запрос ASF"),
+                        )
+                except sqlite3.Error:
+                    pass
+            QMessageBox.warning(self, "Отправка через ASF не завершена", str(exc))
+        finally:
+            self._load_saved_orders()
 
     def _load_saved_orders(self):
         if not hasattr(self, "orders"):
