@@ -95,6 +95,21 @@ class ProxyConfigTests(unittest.TestCase):
             self.assertNotIn(secret, proxy.uri)
             self.assertNotIn(secret, str(proxy.safe_summary()))
 
+    def test_parse_proxy_list_accepts_colon_records_without_scheme(self):
+        proxies = parse_proxy_list_text("\n".join([
+            "proxy.example:8080",
+            "proxy-auth.example:8081:proxy-user:proxy-pass",
+            "socks5://schemed.example:1082:proxy2:pass2",
+        ]))
+        self.assertEqual(
+            [(p.scheme, p.host, p.port, p.username, p.password) for p in proxies],
+            [
+                ("http", "proxy.example", 8080, None, None),
+                ("http", "proxy-auth.example", 8081, "proxy-user", "proxy-pass"),
+                ("socks5", "schemed.example", 1082, "proxy2", "pass2"),
+            ],
+        )
+
     def test_rejects_invalid_port_and_partial_auth(self):
         with self.assertRaises(ValueError):
             SteamProxy("http", "proxy.example", 0)
