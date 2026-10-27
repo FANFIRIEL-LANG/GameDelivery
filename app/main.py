@@ -370,7 +370,15 @@ class MainWindow(QMainWindow):
             if not selected:
                 raise ValueError("Выбери хотя бы один незарезервированный актив.")
 
-            # Validate against the current snapshot, not only the visual selection state.
+            # Validate snapshot freshness and every selected asset again at action time.
+            snapshot_store = InventorySnapshotStore(self._database_path)
+            for bot_name in {item[0] for item in selected}:
+                snapshot_status = snapshot_store.status(bot_name)
+                if snapshot_status["stale"] or not snapshot_status["updated_at"]:
+                    raise ValueError(
+                        f"Снимок инвентаря бота {bot_name} устарел или не подтверждён. "
+                        "Обнови инвентарь через ASF перед резервированием."
+                    )
             with sqlite3.connect(self._database_path) as db:
                 for bot_name, asset_id in selected:
                     row = db.execute(
