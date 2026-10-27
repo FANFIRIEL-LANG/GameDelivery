@@ -67,9 +67,17 @@ jobs:
           $env:QT_QPA_PLATFORM = 'offscreen'
           .\dist\GameDelivery\GameDelivery.exe --self-test
 
-      - name: Add package instructions
+      - name: Add build information and package instructions
         shell: pwsh
         run: |
+          @'
+          GameDelivery Windows x64
+          Build commit: $env:GITHUB_SHA
+          Python runtime: 3.12
+          Package type: onedir
+          Live ASF/Steam delivery has not been verified by CI.
+          '@ | Set-Content -Encoding utf8 dist\GameDelivery\BUILD_INFO.txt
+
           @'
           GameDelivery — Windows x64
           Start the application with GameDelivery.exe.
@@ -81,14 +89,10 @@ jobs:
           A successful CI build does not replace a controlled live test. The recipient must accept the offer; unknown outcomes must be checked in Steam before manual resolution.
           '@ | Set-Content -Encoding utf8 dist\GameDelivery\PACKAGE_README.txt
 
-      - name: Create distributable ZIP
-        shell: pwsh
-        run: Compress-Archive -Path dist\GameDelivery -DestinationPath dist\GameDelivery-Windows-x64.zip -Force
-
       - name: Upload Windows executable package
         uses: actions/upload-artifact@v4
         with:
           name: GameDelivery-Windows-x64
-          path: dist/GameDelivery-Windows-x64.zip
+          path: dist/GameDelivery/
           if-no-files-found: error
           retention-days: 30
