@@ -341,7 +341,12 @@ class MainWindow(QMainWindow):
                         "SELECT source_platform, status FROM delivery_orders WHERE order_id = ?",
                         (candidate_id,),
                     ).fetchone()
-                if candidate and candidate[0] == "playerok" and candidate[1] == "imported — ожидание подготовки":
+                if candidate and candidate[0] == "playerok":
+                    if candidate[1] != "imported — ожидание подготовки":
+                        raise ValueError(
+                            "Эта сделка Playerok уже не ожидает подготовки. "
+                            "Нельзя создавать отдельный ручной заказ из выбранной сделки."
+                        )
                     existing_order_id = candidate_id
 
             order_id = existing_order_id or f"GD-{uuid4().hex[:12].upper()}"
