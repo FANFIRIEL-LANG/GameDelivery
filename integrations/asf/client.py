@@ -331,6 +331,17 @@ class ASFClient:
             raise ASFError("ASF не подтвердил команду запуска бота")
         return {"bot_name": name, "command_sent": True}
 
+    def stop_bot(self, bot_name: str) -> dict[str, Any]:
+        """Ask ASF to stop one bot without stopping the ASF process itself."""
+        name = bot_name.strip()
+        if not name or "," in name or any(ord(char) < 32 for char in name):
+            raise ValueError("Некорректное имя бота ASF для команды остановки")
+        response = self.send_command("stop " + name)
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду остановки бота")
+        return {"bot_name": name, "command_sent": True}
+
     def preview_trade_offer(
         self,
         *,
