@@ -22,7 +22,7 @@ class ASFInventoryTests(unittest.TestCase):
                         {"assetid": "102", "classid": "12", "instanceid": "0"},
                     ],
                     "Descriptions": [
-                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tradable": 1, "icon_url": "https://community.cloudflare.steamstatic.com/economy/image/test-card-icon", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
+                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tradable": 1, "icon_url": "test-card-icon", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card", "tradable": 1, "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "12", "instanceid": "0", "name": "Background", "type": "Profile Background"},
                     ],
