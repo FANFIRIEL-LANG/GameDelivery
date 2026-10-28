@@ -154,9 +154,13 @@ class ASFManagementWidget(QWidget):
         launch_buttons = QHBoxLayout()
         self.start_selected_button = QPushButton("Запустить выбранных")
         self.start_all_button = QPushButton("Запустить всех")
+        self.stop_selected_button = QPushButton("Остановить выбранных")
+        self.stop_all_bots_button = QPushButton("Остановить всех")
         self.select_all_button = QPushButton("Выбрать всех")
         launch_buttons.addWidget(self.start_selected_button)
         launch_buttons.addWidget(self.start_all_button)
+        launch_buttons.addWidget(self.stop_selected_button)
+        launch_buttons.addWidget(self.stop_all_bots_button)
         launch_buttons.addWidget(self.select_all_button)
         self.enable_selected_button = QPushButton("Включить выбранных")
         self.enable_all_button = QPushButton("Включить всех в config ASF")
@@ -194,6 +198,8 @@ class ASFManagementWidget(QWidget):
         self.snapshot_button.clicked.connect(self.refresh_inventory_snapshot)
         self.start_selected_button.clicked.connect(self.start_selected_bots)
         self.start_all_button.clicked.connect(self.start_all_bots)
+        self.stop_selected_button.clicked.connect(self.stop_selected_bots)
+        self.stop_all_bots_button.clicked.connect(self.stop_all_bots)
         self.select_all_button.clicked.connect(self.table.selectAll)
         self.enable_selected_button.clicked.connect(self.enable_selected_bots)
         self.enable_all_button.clicked.connect(self.enable_all_configured_bots)
@@ -908,6 +914,69 @@ class ASFManagementWidget(QWidget):
             if item is not None and item.text().strip():
                 names.append(item.text().strip())
         return names
+
+    def stop_selected_bots(self):
+        bot_names = self._selected_bot_names()
+        if not bot_names:
+            self.status.setText("Выбери одного или нескольких ботов в таблице.")
+            return
+        answer = QMessageBox.question(
+            self, "Остановка выбранных ботов",
+            f"Остановить выбранных ботов ({len(bot_names)})? Сам ASF останется запущенным.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status.setText("Остановка выбранных ботов отменена.")
+            return
+        self._stop_bots(bot_names)
+
+    def stop_all_bots(self):
+        try:
+            bot_map = self._client().get_bots()
+        except (ASFError, ValueError, OSError) as exc:
+            self.status.setText(f"Не удалось получить активных ботов ASF: {exc}")
+            return
+        bot_names = sorted(
+            (str(name) for name, running in bot_map.items() if running is True),
+            key=str.casefold,
+        )
+        if not bot_names:
+            self.status.setText("Нет запущенных ботов для остановки.")
+            return
+        answer = QMessageBox.question(
+            self, "Остановка всех ботов",
+            f"Остановить все запущенные боты ({len(bot_names)})? Сам ASF останется запущенным.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status.setText("Остановка всех ботов отменена.")
+            return
+        self._stop_bots(bot_names)
+
+    def _stop_bots(self, bot_names: list[str]):
+        stopped = []
+        failures = []
+        try:
+            client = self._client()
+            for bot_name in bot_names:
+                try:
+                    client.stop_bot(bot_name)
+                    stopped.append(bot_name)
+                except (ASFError, ValueError, OSError) as exc:
+                    failures.append(f"{bot_name}: {exc}")
+        except (ASFError, ValueError, OSError) as exc:
+            self.status.setText(f"Не удалось подключиться к ASF: {exc}")
+            return
+        self.refresh_bots()
+        if failures:
+            self.status.setText(
+                f"Остановлено: {len(stopped)} из {len(bot_names)}. Ошибки: "
+                + " | ".join(failures[:4])
+            )
+        else:
+            self.status.setText(f"Команда остановки отправлена для {len(stopped)} ботов.")
 
     def start_selected_bots(self):
         bot_names = self._selected_bot_names()
