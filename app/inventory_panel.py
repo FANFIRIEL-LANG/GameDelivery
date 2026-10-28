@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QSize, QUrl
 from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPushButton, QTableWidget, QTableWidgetItem,
@@ -232,10 +232,10 @@ class InventoryPanel(QWidget):
         self._image_manager.get(request)
 
     def _image_loaded(self, reply):
-        url = reply.url().toString()
+        url = reply.request().url().toString()
         self._image_requests.discard(url)
         pixmap = QPixmap()
-        if reply.error() == reply.NetworkError.NoError:
+        if reply.error() == QNetworkReply.NetworkError.NoError:
             pixmap.loadFromData(bytes(reply.readAll()))
         reply.deleteLater()
         if pixmap.isNull():
