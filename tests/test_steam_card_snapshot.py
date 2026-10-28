@@ -28,6 +28,22 @@ class InventorySnapshotTests(unittest.TestCase):
             self.assertFalse(loaded[1].is_tradable)
             self.assertEqual(store.status()["updated_at"], status["updated_at"])
 
+    def test_snapshot_preserves_image_and_future_game_quality_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = InventorySnapshotStore(Path(directory) / "app.db")
+            store.replace([CardCopy(
+                "asset-cs", "Counter-Strike 2", "AK-47",
+                icon_url="https://community.cloudflare.steamstatic.com/economy/image/icon",
+                icon_url_large="https://community.cloudflare.steamstatic.com/economy/image/large",
+                market_hash_name="AK-47 | Redline (Field-Tested)",
+                item_quality="FT",
+            )], bot_name="bot-a")
+            loaded = store.load("bot-a")[0]
+            self.assertEqual(loaded.icon_url, "https://community.cloudflare.steamstatic.com/economy/image/icon")
+            self.assertEqual(loaded.icon_url_large, "https://community.cloudflare.steamstatic.com/economy/image/large")
+            self.assertEqual(loaded.market_hash_name, "AK-47 | Redline (Field-Tested)")
+            self.assertEqual(loaded.item_quality, "FT")
+
     def test_reopen_reads_saved_snapshot_without_fetching(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "app.db"
