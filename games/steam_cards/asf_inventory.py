@@ -141,8 +141,12 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
             raw = str(description.get(field_key, "") or "").strip() if field_key else ""
             if not raw:
                 return ""
+            if raw.startswith("//"):
+                return "https:" + raw
             if raw.startswith("https://") or raw.startswith("http://"):
                 return raw
+            if raw.startswith("/economy/image/"):
+                return "https://community.cloudflare.steamstatic.com" + raw
             return "https://community.cloudflare.steamstatic.com/economy/image/" + raw.lstrip("/")
 
         market_key = _key(description, "market_hash_name")
