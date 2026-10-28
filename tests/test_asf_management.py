@@ -60,6 +60,30 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertEqual(imported["SteamPassword"], password)
             warning.assert_not_called()
 
+    @patch("app.asf_management.QMessageBox.question")
+    def test_stop_selected_sends_stop_only_for_selected_bot(self, question):
+        question.return_value = QMessageBox.StandardButton.Yes
+        client = unittest.mock.Mock()
+        client.stop_bot.return_value = {"command_sent": True}
+        self.widget.table.setRowCount(2)
+        self.widget.table.setItem(0, 0, QTableWidgetItem("bot-a"))
+        self.widget.table.setItem(0, 1, QTableWidgetItem("Онлайн"))
+        self.widget.table.setItem(1, 0, QTableWidgetItem("bot-b"))
+        self.widget.table.setItem(1, 1, QTableWidgetItem("Онлайн"))
+        self.widget.table.selectRow(0)
+        with patch.object(self.widget, "_client", return_value=client), patch.object(self.widget, "refresh_bots"):
+            self.widget.stop_selected_bots()
+        client.stop_bot.assert_called_once_with("bot-a")
+
+    @patch("app.asf_management.QMessageBox.question")
+    def test_stop_all_only_stops_bots_reported_running_by_asf(self, question):
+        question.return_value = QMessageBox.StandardButton.Yes
+        client = unittest.mock.Mock()
+        client.get_bots.return_value = {"bot-a": True, "bot-b": False}
+        with patch.object(self.widget, "_client", return_value=client), patch.object(self.widget, "refresh_bots"):
+            self.widget.stop_all_bots()
+        client.stop_bot.assert_called_once_with("bot-a")
+
     @patch("app.asf_management.ASFClient.get_status", return_value={"Success": True})
     @patch("app.asf_management.ASFClient.start_bot")
     @patch("app.asf_management.QMessageBox.question")
