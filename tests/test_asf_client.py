@@ -33,6 +33,13 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF")
         self.assertEqual(request.get_header("Authentication"), "local-secret")
 
+    @patch.object(ASFClient, "send_command")
+    def test_stop_bot_sends_explicit_stop_command(self, send_command):
+        send_command.return_value = {"Success": True, "Result": True}
+        result = ASFClient().stop_bot("Bot A")
+        self.assertEqual(result, {"bot_name": "Bot A", "command_sent": True})
+        send_command.assert_called_once_with("stop Bot A")
+
     @patch.object(ASFClient, "request")
     def test_preview_trade_offer_uses_plugin_and_does_not_send_trade_token(self, request):
         request.return_value = {
