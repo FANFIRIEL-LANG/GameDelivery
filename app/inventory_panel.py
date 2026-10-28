@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, QSize, QUrl
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPushButton, QTableWidget, QTableWidgetItem,
@@ -79,10 +81,33 @@ class InventoryPanel(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table, 1)
 
+        self.item_grid = QListWidget()
+        self.item_grid.setViewMode(QListWidget.ViewMode.IconMode)
+        self.item_grid.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.item_grid.setMovement(QListWidget.Movement.Static)
+        self.item_grid.setWrapping(True)
+        self.item_grid.setWordWrap(True)
+        self.item_grid.setIconSize(QSize(76, 76))
+        self.item_grid.setGridSize(QSize(156, 132))
+        self.item_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.item_grid.setSpacing(8)
+        layout.addWidget(self.item_grid, 1)
+        self.table.hide()
+
+        self.view_mode = QComboBox()
+        self.view_mode.addItem("Карточки предметов", "cards")
+        self.view_mode.addItem("Таблица подробностей", "table")
+        controls.addWidget(self.view_mode)
+        self._image_cache: dict[str, QIcon] = {}
+        self._image_requests: set[str] = set()
+        self._image_manager = QNetworkAccessManager(self)
+        self._image_manager.finished.connect(self._image_loaded)
+
         self.refresh_button.clicked.connect(self.refresh)
         self.fetch_button.clicked.connect(self.fetch_from_asf)
         self.mode.currentIndexChanged.connect(self.render_inventory)
         self.bot_list.itemSelectionChanged.connect(self.render_inventory)
+        self.view_mode.currentIndexChanged.connect(self._toggle_view)
         self.refresh()
 
     @staticmethod
@@ -193,6 +218,38 @@ class InventoryPanel(QWidget):
                 "Отображение очищено; данные не подтверждены как актуальные."
             )
 
+    def _toggle_view(self, *_):
+        show_table = self.view_mode.currentData() == "table"
+        self.table.setVisible(show_table)
+        self.item_grid.setVisible(not show_table)
+
+    def _request_item_image(self, url: str):
+        if url in self._image_requests:
+            return
+        self._image_requests.add(url)
+        request = QNetworkRequest(QUrl(url))
+        request.setAttribute(QNetworkRequest.Attribute.FollowRedirectsAttribute, True)
+        self._image_manager.get(request)
+
+    def _image_loaded(self, reply):
+        url = reply.url().toString()
+        self._image_requests.discard(url)
+        pixmap = QPixmap()
+        if reply.error() == reply.NetworkError.NoError:
+            pixmap.loadFromData(bytes(reply.readAll()))
+        reply.deleteLater()
+        if pixmap.isNull():
+            return
+        icon = QIcon(pixmap.scaled(
+            QSize(76, 76), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
+        self._image_cache[url] = icon
+        for index in range(self.item_grid.count()):
+            item = self.item_grid.item(index)
+            if item.data(Qt.ItemDataRole.UserRole + 1) == url:
+                item.setIcon(icon)
+
     def _load_reservations(self):
         import sqlite3
         with sqlite3.connect(self.database_path) as connection:
@@ -213,6 +270,7 @@ class InventoryPanel(QWidget):
             self.inventories, selected, mode=self.mode.currentData()
         )
         self.table.setRowCount(0)
+        self.item_grid.clear()
         for row_data in view.rows:
             owners = []
             reservations = []
@@ -243,6 +301,28 @@ class InventoryPanel(QWidget):
             ]
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
+
+            owner_lines = [
+                f"{bot}: {len(asset_ids)} шт. · " + ", ".join(asset_ids)
+                for bot, asset_ids in row_data.assets_by_bot
+            ]
+            quality = f" · {row_data.item_quality}" if row_data.item_quality else ""
+            label = f"{row_data.card_name}{quality}\n×{row_data.quantity}"
+            tile = QListWidgetItem(label)
+            tile.setData(Qt.ItemDataRole.UserRole, row_data.assets_by_bot)
+            tile.setData(Qt.ItemDataRole.UserRole + 1, row_data.icon_url_large or row_data.icon_url)
+            tile.setToolTip(
+                f"{row_data.card_name}{quality}\nИгра: {row_data.game_name}\n"
+                f"Всего: {row_data.quantity}\nВладельцы:\n" + "\n".join(owner_lines)
+            )
+            icon_url = row_data.icon_url_large or row_data.icon_url
+            if icon_url and icon_url in self._image_cache:
+                tile.setIcon(self._image_cache[icon_url])
+            else:
+                tile.setIcon(QIcon())
+                if icon_url:
+                    self._request_item_image(icon_url)
+            self.item_grid.addItem(tile)
         self.table.resizeColumnsToContents()
         if not selected:
             self.summary.setText(
