@@ -29,6 +29,10 @@ class InventoryRow:
     is_tradable: bool | None
     quantity: int
     assets_by_bot: tuple[tuple[str, tuple[str, ...]], ...]
+    icon_url: str = ""
+    icon_url_large: str = ""
+    market_hash_name: str = ""
+    item_quality: str = ""
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,7 @@ def build_inventory_view(
             selected.append(name)
             seen.add(name)
 
-    grouped: dict[tuple[str, str, bool, bool, bool | None, str | None], dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    grouped: dict[tuple[str, str, bool, bool, bool | None, str | None, str, str, str, str], dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
     seen_assets: set[tuple[str, str]] = set()
     for bot in selected:
         for card in normalized[known_bots[bot]]:
@@ -75,16 +79,19 @@ def build_inventory_view(
             owner_key = None if mode == "shared" else bot
             grouped[(
                 game_name, card_name, card.is_trading_card, card.is_foil,
-                card.is_tradable, owner_key,
+                card.is_tradable, owner_key, card.icon_url, card.icon_url_large,
+                card.market_hash_name, card.item_quality,
             )][bot].append(asset_id)
 
     rows: list[InventoryRow] = []
-    for (game_name, card_name, is_card, is_foil, is_tradable, owner_key), per_bot in sorted(
+    for (game_name, card_name, is_card, is_foil, is_tradable, owner_key,
+         icon_url, icon_url_large, market_hash_name, item_quality), per_bot in sorted(
         grouped.items(),
         key=lambda item: (
             item[0][0].casefold(), item[0][1].casefold(),
             item[0][2], item[0][3], item[0][4] is not True,
-            (item[0][5] or "").casefold(),
+            (item[0][5] or "").casefold(), item[0][6], item[0][7],
+            item[0][8].casefold(), item[0][9].casefold(),
         ),
     ):
         owners = [(bot, tuple(ids)) for bot, ids in per_bot.items() if ids]
@@ -98,5 +105,9 @@ def build_inventory_view(
             is_tradable=is_tradable,
             quantity=sum(len(ids) for _, ids in owners),
             assets_by_bot=tuple(owners),
+            icon_url=icon_url,
+            icon_url_large=icon_url_large,
+            market_hash_name=market_hash_name,
+            item_quality=item_quality,
         ))
     return InventoryView(mode=mode, selected_bots=tuple(selected), rows=tuple(rows))
