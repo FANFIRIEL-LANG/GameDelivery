@@ -65,6 +65,30 @@ class InventoryViewTests(unittest.TestCase):
         self.assertEqual(by_transferability[False].quantity, 1)
         self.assertEqual(by_transferability[None].quantity, 1)
 
+    def test_shared_view_preserves_artwork_and_cs_quality_metadata(self):
+        inventories = {
+            "Bot A": [CardCopy(
+                "asset-1", "Counter-Strike 2", "AK-47 | Redline",
+                is_trading_card=False,
+                icon_url="https://community.cloudflare.steamstatic.com/economy/image/icon",
+                market_hash_name="AK-47 | Redline (Field-Tested)",
+                item_quality="FT",
+            )],
+            "Bot B": [CardCopy(
+                "asset-2", "Counter-Strike 2", "AK-47 | Redline",
+                is_trading_card=False,
+                icon_url="https://community.cloudflare.steamstatic.com/economy/image/icon",
+                market_hash_name="AK-47 | Redline (Field-Tested)",
+                item_quality="FT",
+            )],
+        }
+        view = build_inventory_view(inventories, ["Bot A", "Bot B"], mode="shared")
+        self.assertEqual(len(view.rows), 1)
+        self.assertEqual(view.rows[0].quantity, 2)
+        self.assertEqual(view.rows[0].icon_url, "https://community.cloudflare.steamstatic.com/economy/image/icon")
+        self.assertEqual(view.rows[0].market_hash_name, "AK-47 | Redline (Field-Tested)")
+        self.assertEqual(view.rows[0].item_quality, "FT")
+
     def test_invalid_mode_rejected(self):
         with self.assertRaises(ValueError):
             build_inventory_view(self.inventories, ["Bot A"], mode="merged")
