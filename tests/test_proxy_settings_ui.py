@@ -150,9 +150,11 @@ class ProxySettingsUITests(unittest.TestCase):
         settings.sync()
         self.addCleanup(lambda: settings.remove("asf/config_path"))
 
-        with patch("app.proxy_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \\
-             patch("app.proxy_settings.ASFClient") as client, \\
-             patch("app.proxy_settings.QMessageBox.warning") as warning:
+        with (
+            patch("app.proxy_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes),
+            patch("app.proxy_settings.ASFClient") as client,
+            patch("app.proxy_settings.QMessageBox.warning") as warning,
+        ):
             self.widget.auto_distribute_pool()
 
         client.assert_not_called()
@@ -185,9 +187,11 @@ class ProxySettingsUITests(unittest.TestCase):
         settings.sync()
         self.addCleanup(lambda: settings.remove("asf/config_path"))
 
-        with patch("app.proxy_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \\
-             patch("app.proxy_settings.ASFClient") as client, \\
-             patch("app.proxy_settings.QMessageBox.warning") as warning:
+        with (
+            patch("app.proxy_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes),
+            patch("app.proxy_settings.ASFClient") as client,
+            patch("app.proxy_settings.QMessageBox.warning") as warning,
+        ):
             self.widget.auto_distribute_pool()
 
         client.assert_not_called()
