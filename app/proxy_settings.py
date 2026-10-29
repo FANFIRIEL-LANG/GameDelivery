@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings
@@ -262,51 +264,100 @@ class ProxySettingsWidget(QWidget):
         self.refresh()
         self.status.setText(f"Прокси назначен локально для {bot_name}. Применение к ASF — отдельной кнопкой.")
 
+    def _asf_config_directory(self) -> Path:
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        configured = str(settings.value("asf/config_path", "") or "").strip()
+        if not configured:
+            raise RuntimeError("Сначала укажи папку config ASF во вкладке «ASF-боты».")
+        folder = Path(configured).expanduser()
+        if not folder.is_dir():
+            raise RuntimeError("Указанная папка config ASF не существует.")
+        return folder
+
+    @staticmethod
+    def _write_proxy_to_bot_config(config_path: Path, proxy: SteamProxy) -> None:
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError(f"Не удалось прочитать конфигурацию {config_path.name}.") from None
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Конфигурация {config_path.name} имеет неверный формат.")
+        backup_path = config_path.with_suffix(config_path.suffix + ".gamedelivery.bak")
+        if not backup_path.exists():
+            shutil.copy2(config_path, backup_path)
+        payload.update(proxy.asf_bot_settings())
+        temporary_path = config_path.with_suffix(config_path.suffix + ".gamedelivery.tmp")
+        try:
+            temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+            os.replace(temporary_path, config_path)
+        finally:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def auto_distribute_pool(self):
         pool = self.store.list_pool()
         if not pool:
             QMessageBox.information(self, "Автораспределение", "Сначала импортируй список прокси.")
             return
-        ipc_password, accepted = self._ask_ipc_password()
-        if not accepted:
-            return
         try:
-            bots = ASFClient(ipc_password=ipc_password).get_bots()
-        except (ASFError, ValueError, OSError) as exc:
-            QMessageBox.warning(self, "Автораспределение", f"Не удалось получить список ASF: {exc}")
+            config_dir = self._asf_config_directory()
+        except (RuntimeError, OSError) as exc:
+            QMessageBox.warning(self, "Автораспределение", str(exc))
             return
-        bot_names = sorted((str(name) for name in bots), key=str.casefold)
-        if not bot_names:
-            QMessageBox.information(self, "Автораспределение", "ASF не вернул список ботов.")
+        ignored = {"asf", "global", "example", "examplebot"}
+        bot_files = sorted(
+            (path for path in config_dir.glob("*.json") if path.stem.casefold() not in ignored),
+            key=lambda path: path.stem.casefold(),
+        )
+        if not bot_files:
+            QMessageBox.information(
+                self, "Автораспределение",
+                "В папке config ASF не найдены конфигурации ботов. Ничего не изменено."
+            )
             return
         existing = {str(p["bot_name"]).casefold() for p in self.store.list_profiles()}
-        overwrite_count = sum(name.casefold() in existing for name in bot_names)
+        overwrite_count = sum(path.stem.casefold() in existing for path in bot_files)
         answer = QMessageBox.question(
             self, "Автораспределение прокси",
-            f"Распределить прокси по кругу между {len(bot_names)} ботами? "
-            f"Существующих назначений, которые будут перезаписаны: {overwrite_count}. "
-            "Пока сохраняются только локальные назначения; для применения к ASF нажми отдельную кнопку.",
+            f"Распределить {len(pool)} прокси по кругу между {len(bot_files)} конфигурациями ASF, "
+            f"включая выключенные боты? Существующих назначений: {overwrite_count}. "
+            "Прокси будут записаны в JSON-конфигурации до запуска ботов. Для каждого файла "
+            "создаётся резервная копия .gamedelivery.bak. Сами боты запускаться не будут.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        saved, failed = 0, []
-        for index, bot_name in enumerate(bot_names):
-            proxy = pool[index % len(pool)]
+        applied, failed = [], []
+        for index, config_path in enumerate(bot_files):
+            proxy_record = pool[index % len(pool)]
+            bot_name = config_path.stem
             try:
-                self.store.save(bot_name, self._pool_proxy_object(str(proxy["proxy_id"])))
-                saved += 1
+                proxy = self._pool_proxy_object(str(proxy_record["proxy_id"]))
+                self.store.save(bot_name, proxy)
+                self._write_proxy_to_bot_config(config_path, proxy)
+                applied.append(bot_name)
             except (ValueError, RuntimeError, OSError, KeyError):
                 failed.append(bot_name)
         self.refresh()
+        self.refresh_pool()
         if failed:
             self.pool_status.setText(
-                f"Локально назначено: {saved} из {len(bot_names)}. Ошибки: "
+                f"Прокси применены до запуска к {len(applied)} из {len(bot_files)} ботов. "
+                "Ботов не запускай, пока не исправишь ошибки для: "
                 + ", ".join(failed[:8]) + ("…" if len(failed) > 8 else "")
             )
+            QMessageBox.warning(
+                self, "Автораспределение выполнено не полностью",
+                self.pool_status.text()
+            )
         else:
-            self.pool_status.setText(f"Автораспределено по кругу на {saved} ботов. Теперь примени назначения к ASF.")
+            self.pool_status.setText(
+                f"Готово: прокси записаны в конфигурации {len(applied)} ботов до запуска. "
+                "Боты не запускались. Резервные копии созданы."
+            )
 
     def delete_selected_pool_proxy(self):
         proxy_id = self._selected_pool_id()
