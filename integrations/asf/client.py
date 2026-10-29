@@ -458,20 +458,23 @@ class ASFClient:
         return preview
 
     def get_bots(self) -> dict[str, Any]:
-        """Return the active ASF bot map without exposing it to logs."""
+        """Return bot status when /Api/ASF exposes it; otherwise let callers use disk config.
+
+        The ASF status endpoint does not guarantee a top-level Bots field across
+        supported versions. Bot discovery must therefore not fail just because
+        that optional field is absent: management screens merge this result with
+        the bot JSON files discovered locally.
+        """
         payload = _unwrap_result(self.get_status())
         if not isinstance(payload, dict):
-            raise ASFError("ASF не вернул список ботов")
+            raise ASFError("ASF вернул ответ статуса в неожиданном формате")
         bots_key = _find_key(payload, "Bots")
         if bots_key is None:
-            raise ASFError(
-                "ASF не предоставил поле Bots в /Api/ASF. Проверь версию ASF и схему IPC."
-            )
+            return {}
         bots_value = payload[bots_key]
         if isinstance(bots_value, dict):
             return dict(bots_value)
         if isinstance(bots_value, list):
-            # Some ASF builds expose bot names as an array rather than a map.
             names = [str(name).strip() for name in bots_value if str(name).strip()]
             return {name: {} for name in names}
         raise ASFError("ASF вернул список Bots в неподдерживаемом формате")
