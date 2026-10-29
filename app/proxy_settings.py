@@ -143,11 +143,14 @@ class ProxySettingsWidget(QWidget):
         self.assign_pool_button.clicked.connect(self.assign_selected_pool_proxy)
         self.auto_distribute_button = QPushButton("Автораспределить по всем ботам")
         self.auto_distribute_button.clicked.connect(self.auto_distribute_pool)
+        self.audit_configs_button = QPushButton("Проверить конфиги ASF")
+        self.audit_configs_button.clicked.connect(self.audit_proxy_configs)
         self.delete_pool_button = QPushButton("Удалить прокси из списка")
         self.delete_pool_button.clicked.connect(self.delete_selected_pool_proxy)
         assignment_row.addWidget(self.pool_bot_name, 1)
         assignment_row.addWidget(self.assign_pool_button)
         assignment_row.addWidget(self.auto_distribute_button)
+        assignment_row.addWidget(self.audit_configs_button)
         assignment_row.addWidget(self.delete_pool_button)
         pool_root.addLayout(assignment_row)
 
@@ -301,6 +304,84 @@ class ProxySettingsWidget(QWidget):
                 temporary_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+    def audit_proxy_configs(self):
+        """Compare saved proxy assignments against the actual ASF JSON files without revealing secrets."""
+        try:
+            config_dir = self._asf_config_directory()
+            profiles = self.store.list_profiles()
+        except (RuntimeError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Проверка конфигураций ASF", str(exc))
+            return
+        if not profiles:
+            QMessageBox.information(
+                self, "Проверка конфигураций ASF",
+                "Нет сохранённых назначений прокси для проверки."
+            )
+            return
+        config_files = {
+            path.stem.casefold(): path
+            for path in config_dir.glob("*.json")
+            if path.stem.casefold() not in {"asf", "global", "example", "examplebot"}
+        }
+        problems: list[str] = []
+        verified = 0
+        password_verified = 0
+        for profile in profiles:
+            bot_name = str(profile["bot_name"])
+            path = config_files.get(bot_name.casefold())
+            if path is None:
+                problems.append(f"{bot_name}: JSON-конфигурация не найдена")
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                if not isinstance(payload, dict):
+                    raise ValueError
+                expected_uri = SteamProxy(
+                    str(profile["scheme"]), str(profile["host"]), int(profile["port"])
+                ).uri
+                if payload.get("WebProxy") != expected_uri:
+                    problems.append(f"{bot_name}: адрес прокси в JSON не совпадает с назначением")
+                    continue
+                expected_username = str(profile["username"]) if profile["username"] else None
+                if payload.get("WebProxyUsername") != expected_username:
+                    problems.append(f"{bot_name}: логин в JSON не совпадает с назначением")
+                    continue
+                expected_password = self.store.get_password(bot_name) if expected_username else None
+                actual_password = payload.get("WebProxyPassword")
+                if actual_password != expected_password:
+                    problems.append(
+                        f"{bot_name}: пароль отсутствует или не совпадает в JSON ASF"
+                        if expected_password
+                        else f"{bot_name}: неожиданное значение пароля в JSON ASF"
+                    )
+                    continue
+                verified += 1
+                if expected_password:
+                    password_verified += 1
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, RuntimeError, ValueError):
+                problems.append(f"{bot_name}: не удалось безопасно проверить JSON или пароль в хранилище")
+        summary = (
+            f"Проверено конфигураций: {verified} из {len(profiles)}. "
+            f"Пароли сверены с системным хранилищем: {password_verified}. "
+            "Сами пароли не отображаются. Пустое поле в ASF-ui само по себе не доказывает, "
+            "что пароль отсутствует: ориентируйся на проверку локального JSON."
+        )
+        if problems:
+            message = summary + "\\n\\nПроблемы:\\n" + "\\n".join(problems[:20])
+            if len(problems) > 20:
+                message += f"\\n…и ещё {len(problems) - 20}"
+            self.pool_status.setText(
+                f"Проверка конфигураций ASF: {verified}/{len(profiles)} корректны; "
+                f"проблем: {len(problems)}."
+            )
+            QMessageBox.warning(self, "Проверка конфигураций ASF", message)
+        else:
+            self.pool_status.setText(
+                f"Проверка конфигураций ASF: все {verified} назначений корректны; "
+                f"пароли сверены: {password_verified}."
+            )
+            QMessageBox.information(self, "Проверка конфигураций ASF", summary)
 
     def auto_distribute_pool(self):
         pool = self.store.list_pool()
