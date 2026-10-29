@@ -290,6 +290,12 @@ class ProxySettingsWidget(QWidget):
         try:
             temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(temporary_path, config_path)
+            written = json.loads(config_path.read_text(encoding="utf-8-sig"))
+            expected = proxy.asf_bot_settings()
+            if any(written.get(key) != value for key, value in expected.items()):
+                raise RuntimeError(
+                    f"ASF не сохранил все поля прокси в {config_path.name}; бот не должен запускаться."
+                )
         finally:
             try:
                 temporary_path.unlink(missing_ok=True)
