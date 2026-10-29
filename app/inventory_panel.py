@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QLineEdit,
 )
 
-from games.steam_cards.inventory_views import build_inventory_view
+from games.steam_cards.inventory_views import build_inventory_view, expand_inventory_instances
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
@@ -92,6 +92,16 @@ class InventoryPanel(QWidget):
         self.item_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.item_grid.setSpacing(8)
         layout.addWidget(self.item_grid, 1)
+        self.instance_summary = QLabel("Выбери карточку, чтобы выбрать конкретные экземпляры.")
+        self.instance_summary.setObjectName("muted")
+        layout.addWidget(self.instance_summary)
+        self.instance_list = QListWidget()
+        self.instance_list.setMaximumHeight(150)
+        self.instance_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.instance_list.itemChanged.connect(self._instance_check_changed)
+        layout.addWidget(self.instance_list)
+        self._selected_asset_keys: set[tuple[str, str]] = set()
+        self.item_grid.itemSelectionChanged.connect(self._render_instance_choices)
         self.table.hide()
 
         self.view_mode = QComboBox()
@@ -218,6 +228,44 @@ class InventoryPanel(QWidget):
                 "Отображение очищено; данные не подтверждены как актуальные."
             )
 
+    def _render_instance_choices(self):
+        self.instance_list.blockSignals(True)
+        self.instance_list.clear()
+        selected_cards = self.item_grid.selectedItems()
+        available: list[tuple[str, str]] = []
+        for card_item in selected_cards:
+            row_data = card_item.data(Qt.ItemDataRole.UserRole + 2)
+            if row_data is not None:
+                available.extend(expand_inventory_instances(row_data))
+        for bot_name, asset_id in available:
+            key = (bot_name, asset_id)
+            choice = QListWidgetItem(f"{bot_name} — {asset_id}")
+            choice.setFlags(choice.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            choice.setData(Qt.ItemDataRole.UserRole, key)
+            choice.setCheckState(
+                Qt.CheckState.Checked if key in self._selected_asset_keys else Qt.CheckState.Unchecked
+            )
+            self.instance_list.addItem(choice)
+        self.instance_list.blockSignals(False)
+        self._update_instance_summary()
+
+    def _instance_check_changed(self, item):
+        key = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(key, tuple) or len(key) != 2:
+            return
+        normalized = (str(key[0]), str(key[1]))
+        if item.checkState() == Qt.CheckState.Checked:
+            self._selected_asset_keys.add(normalized)
+        else:
+            self._selected_asset_keys.discard(normalized)
+        self._update_instance_summary()
+
+    def _update_instance_summary(self):
+        self.instance_summary.setText(
+            f"Выбрано экземпляров: {len(self._selected_asset_keys)}. "
+            "Каждый экземпляр сохраняет своего бота и asset ID."
+        )
+
     def _toggle_view(self, *_):
         show_table = self.view_mode.currentData() == "table"
         self.table.setVisible(show_table)
@@ -311,6 +359,7 @@ class InventoryPanel(QWidget):
             tile = QListWidgetItem(label)
             tile.setData(Qt.ItemDataRole.UserRole, row_data.assets_by_bot)
             tile.setData(Qt.ItemDataRole.UserRole + 1, row_data.icon_url_large or row_data.icon_url)
+            tile.setData(Qt.ItemDataRole.UserRole + 2, row_data)
             tile.setToolTip(
                 f"{row_data.card_name}{quality}\nИгра: {row_data.game_name}\n"
                 f"Всего: {row_data.quantity}\nВладельцы:\n" + "\n".join(owner_lines)
