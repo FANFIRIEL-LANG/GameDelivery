@@ -111,3 +111,12 @@ def build_inventory_view(
             item_quality=item_quality,
         ))
     return InventoryView(mode=mode, selected_bots=tuple(selected), rows=tuple(rows))
+
+
+def expand_inventory_instances(row: InventoryRow) -> tuple[tuple[str, str], ...]:
+    """Expand a grouped card into exact (bot, asset_id) instances for quantity selection."""
+    return tuple(
+        (bot_name, asset_id)
+        for bot_name, asset_ids in row.assets_by_bot
+        for asset_id in asset_ids
+    )
