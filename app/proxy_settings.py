@@ -288,7 +288,7 @@ class ProxySettingsWidget(QWidget):
         payload.update(proxy.asf_bot_settings())
         temporary_path = config_path.with_suffix(config_path.suffix + ".gamedelivery.tmp")
         try:
-            temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+            temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(temporary_path, config_path)
         finally:
             try:
