@@ -133,6 +133,64 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertNotIn("private-proxy-password", self.widget.status.text())
         self.assertNotIn("private-proxy-password", self.widget.pool_status.text())
 
+    def test_audit_proxy_configs_checks_real_json_password_without_revealing_it(self):
+        import json
+        from PySide6.QtCore import QSettings
+
+        config_dir = Path(self.temp_dir.name) / "asf-config"
+        config_dir.mkdir()
+        proxy = SteamProxy("socks5", "proxy.example", 1080, "proxy-user", "secret-password")
+        self.widget.store.save("bot-a", proxy)
+        (config_dir / "bot-a.json").write_text(json.dumps({
+            "WebProxy": proxy.uri,
+            "WebProxyUsername": proxy.username,
+            "WebProxyPassword": proxy.password,
+        }), encoding="utf-8")
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        settings.setValue("asf/config_path", str(config_dir))
+        settings.sync()
+        self.addCleanup(lambda: settings.remove("asf/config_path"))
+
+        with patch("app.proxy_settings.QMessageBox.information") as info, \\
+             patch("app.proxy_settings.QMessageBox.warning") as warning:
+            self.widget.audit_proxy_configs()
+
+        info.assert_called_once()
+        warning.assert_not_called()
+        message = info.call_args.args[2]
+        self.assertIn("bot-a", message)
+        self.assertIn("пароль сохранён", message.casefold())
+        self.assertNotIn("secret-password", message)
+
+    def test_audit_proxy_configs_reports_missing_password_on_disk(self):
+        import json
+        from PySide6.QtCore import QSettings
+
+        config_dir = Path(self.temp_dir.name) / "asf-config"
+        config_dir.mkdir()
+        proxy = SteamProxy("socks5", "proxy.example", 1080, "proxy-user", "secret-password")
+        self.widget.store.save("bot-a", proxy)
+        (config_dir / "bot-a.json").write_text(json.dumps({
+            "WebProxy": proxy.uri,
+            "WebProxyUsername": proxy.username,
+            "WebProxyPassword": None,
+        }), encoding="utf-8")
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        settings.setValue("asf/config_path", str(config_dir))
+        settings.sync()
+        self.addCleanup(lambda: settings.remove("asf/config_path"))
+
+        with patch("app.proxy_settings.QMessageBox.information") as info, \\
+             patch("app.proxy_settings.QMessageBox.warning") as warning:
+            self.widget.audit_proxy_configs()
+
+        warning.assert_called_once()
+        info.assert_not_called()
+        message = warning.call_args.args[2]
+        self.assertIn("bot-a", message)
+        self.assertIn("пароль отсутствует", message.casefold())
+        self.assertNotIn("secret-password", message)
+
     def test_auto_distribute_writes_disabled_bot_configs_before_any_bot_starts(self):
         import json
         from PySide6.QtCore import QSettings
