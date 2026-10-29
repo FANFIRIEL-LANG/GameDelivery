@@ -349,20 +349,29 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 3)
 
     @patch("integrations.asf.client.urlopen")
-    def test_get_bots_returns_bot_map_from_asf_status(self, urlopen):
-        urlopen.return_value = FakeResponse({
-            "Success": True,
-            "Result": {"Bots": {"bot-a": True, "bot-b": False}},
-        })
-        self.assertEqual(ASFClient().get_bots(), {"bot-a": True, "bot-b": False})
-        self.assertEqual(urlopen.call_args.args[0].full_url, "http://127.0.0.1:1242/Api/ASF")
+    def test_get_bots_reads_live_states_from_bot_api(self, urlopen):
+        live_bots = {
+            "bot-a": {"BotName": "bot-a", "IsConnected": True, "KeepRunning": True},
+            "bot-b": {"BotName": "bot-b", "IsConnected": False, "KeepRunning": True},
+        }
+        urlopen.return_value = FakeResponse({"Success": True, "Result": live_bots})
+
+        self.assertEqual(ASFClient().get_bots(), live_bots)
+        self.assertEqual(urlopen.call_args.args[0].full_url, "http://127.0.0.1:1242/Api/Bot/@all")
 
     @patch("integrations.asf.client.urlopen")
-    def test_get_bots_returns_empty_map_when_status_has_no_bots_field(self, urlopen):
-        # ASF versions do not consistently expose a Bots map in /Api/ASF.
-        # Callers can then fall back to the configured bot JSON files.
-        urlopen.return_value = FakeResponse({"Success": True, "Result": {"Version": "6.3.10.6"}})
+    def test_get_bots_returns_empty_map_when_asf_has_no_loaded_bots(self, urlopen):
+        urlopen.return_value = FakeResponse({"Success": True, "Result": {}})
+
         self.assertEqual(ASFClient().get_bots(), {})
+        self.assertEqual(urlopen.call_args.args[0].full_url, "http://127.0.0.1:1242/Api/Bot/@all")
+
+    @patch("integrations.asf.client.urlopen")
+    def test_get_bots_rejects_non_object_bot_details(self, urlopen):
+        urlopen.return_value = FakeResponse({"Success": True, "Result": {"bot-a": False}})
+
+        with self.assertRaises(ASFError):
+            ASFClient().get_bots()
 
     @patch.object(ASFClient, "send_command", return_value={"Success": True, "Result": "OK"})
     def test_start_bots_sends_one_batch_command(self, send_command):
