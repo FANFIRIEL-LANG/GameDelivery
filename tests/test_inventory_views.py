@@ -1,6 +1,6 @@
 import unittest
 
-from games.steam_cards.inventory_views import build_inventory_view
+from games.steam_cards.inventory_views import build_inventory_view, expand_inventory_instances
 from games.steam_cards.selection import CardCopy
 
 
@@ -29,6 +29,14 @@ class InventoryViewTests(unittest.TestCase):
             "Bot A": ("same-id", "a2"),
             "Bot B": ("same-id", "b2"),
         })
+
+    def test_expanded_instances_keep_exact_bot_ownership_for_quantity_selection(self):
+        view = build_inventory_view(self.inventories, ["Bot A", "Bot B"], mode="shared")
+        row = next(row for row in view.rows if row.card_name == "Card A" and not row.is_foil)
+        self.assertEqual(
+            expand_inventory_instances(row),
+            (("Bot A", "same-id"), ("Bot A", "a2"), ("Bot B", "same-id"), ("Bot B", "b2")),
+        )
 
     def test_same_asset_id_on_different_bots_is_not_a_duplicate(self):
         view = build_inventory_view(self.inventories, ["Bot A", "Bot B"], mode="shared")
