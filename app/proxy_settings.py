@@ -118,7 +118,9 @@ class ProxySettingsWidget(QWidget):
             "Импорт TXT: одна прокси в строке. Форматы: socks5://host:1080; URI;логин;пароль "
             "(разделители ; | , или TAB); host:port или host:port:логин:пароль. "
             "Без схемы используется HTTP; для SOCKS указывай схему явно. IPv6 пиши как [2001:db8::1]:1080. "
-            "Пустые строки и строки с # игнорируются. Пароли хранятся только в системном хранилище."
+            "Пустые строки и строки с # игнорируются. Пароли хранятся в системном хранилище и записываются "
+            "в JSON ASF. ASF-ui может не показывать сохранённый секрет в пустом поле; используй "
+            "«Проверить конфиги ASF», чтобы сверить фактический JSON без раскрытия паролей."
         )
         pool_intro.setWordWrap(True)
         pool_intro.setObjectName("muted")
@@ -368,9 +370,9 @@ class ProxySettingsWidget(QWidget):
             "что пароль отсутствует: ориентируйся на проверку локального JSON."
         )
         if problems:
-            message = summary + "\\n\\nПроблемы:\\n" + "\\n".join(problems[:20])
+            message = summary + "\n\nПроблемы:\n" + "\n".join(problems[:20])
             if len(problems) > 20:
-                message += f"\\n…и ещё {len(problems) - 20}"
+                message += f"\n…и ещё {len(problems) - 20}"
             self.pool_status.setText(
                 f"Проверка конфигураций ASF: {verified}/{len(profiles)} корректны; "
                 f"проблем: {len(problems)}."
