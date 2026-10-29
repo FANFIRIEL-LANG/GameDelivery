@@ -329,6 +329,7 @@ class ProxySettingsWidget(QWidget):
         problems: list[str] = []
         verified = 0
         password_verified = 0
+        verified_names: list[str] = []
         for profile in profiles:
             bot_name = str(profile["bot_name"])
             path = config_files.get(bot_name.casefold())
@@ -359,12 +360,14 @@ class ProxySettingsWidget(QWidget):
                     )
                     continue
                 verified += 1
+                verified_names.append(bot_name)
                 if expected_password:
                     password_verified += 1
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, RuntimeError, ValueError):
                 problems.append(f"{bot_name}: не удалось безопасно проверить JSON или пароль в хранилище")
         summary = (
             f"Проверено конфигураций: {verified} из {len(profiles)}. "
+            f"Корректны: {', '.join(verified_names) if verified_names else 'нет'}. "
             f"Пароли сверены с системным хранилищем: {password_verified}. "
             "Сами пароли не отображаются. Пустое поле в ASF-ui само по себе не доказывает, "
             "что пароль отсутствует: ориентируйся на проверку локального JSON."
