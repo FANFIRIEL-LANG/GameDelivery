@@ -899,11 +899,19 @@ class ASFManagementWidget(QWidget):
                 # ASF's Bot API serializes this exact property name; it is not
                 # called IsConnected. KeepRunning only means the bot is active
                 # inside ASF, not that its Steam session is online.
-                connected = details.get("IsConnectedAndLoggedOn", details.get("IsConnected"))
+                connected = next(
+                    (value for key, value in details.items()
+                     if str(key).casefold() in {"isconnectedandloggedon", "isconnected"}),
+                    None,
+                )
                 if isinstance(connected, bool):
                     state = "В сети" if connected else "Не в сети"
                 else:
-                    running = details.get("KeepRunning", details.get("IsRunning"))
+                    running = next(
+                        (value for key, value in details.items()
+                         if str(key).casefold() in {"keeprunning", "isrunning"}),
+                        None,
+                    )
                     state = ("Запущен в ASF" if running else "Остановлен") if isinstance(running, bool) else "Статус неизвестен"
             else:
                 state = "Загружен"
