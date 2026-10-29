@@ -363,6 +363,19 @@ class ASFClientTests(unittest.TestCase):
         with self.assertRaises(ASFError):
             ASFClient().get_bots()
 
+    @patch.object(ASFClient, "send_command", return_value={"Success": True, "Result": "OK"})
+    def test_start_bots_sends_one_batch_command(self, send_command):
+        result = ASFClient().start_bots(["bot-a", "bot-b", "bot-c"])
+        send_command.assert_called_once_with("start bot-a,bot-b,bot-c")
+        self.assertEqual(result["bot_names"], ["bot-a", "bot-b", "bot-c"])
+
+    def test_start_bots_rejects_unsafe_names_before_sending(self):
+        for names in ([], ["bot-a", "bot,b"], ["bot-a", "bot-a\\nstart all"]):
+            with self.subTest(names=names), patch.object(ASFClient, "send_command") as send_command:
+                with self.assertRaises(ValueError):
+                    ASFClient().start_bots(names)
+                send_command.assert_not_called()
+
     @patch.object(ASFClient, "send_command")
     def test_start_bot_sends_official_start_command(self, send_command):
         send_command.return_value = {"Success": True, "Result": "OK"}
