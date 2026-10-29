@@ -1113,29 +1113,38 @@ class ASFManagementWidget(QWidget):
     def _start_bots(self, bot_names: list[str]):
         self.start_selected_button.setEnabled(False)
         self.start_all_button.setEnabled(False)
-        started = []
-        failed = []
         client = self._client()
         try:
-            for bot_name in bot_names:
-                try:
-                    client.start_bot(bot_name)
-                    started.append(bot_name)
-                except (ASFError, ValueError, OSError):
-                    failed.append(bot_name)
-            self.refresh_bots()
-            if failed:
+            try:
+                client.start_bots(bot_names)
+                self.refresh_bots()
                 self.status.setText(
-                    f"Команды запуска отправлены: {len(started)} из {len(bot_names)}. "
-                    f"Не удалось отправить для: {', '.join(failed[:8])}"
-                    + ("…" if len(failed) > 8 else "")
-                    + ". Перечитай состояние после входа ASF."
+                    f"Одна команда запуска отправлена ASF для {len(bot_names)} ботов. "
+                    "Подключение к Steam выполняется отдельно; проверь состояния и журнал ASF."
                 )
-            else:
-                self.status.setText(
-                    f"Команды запуска отправлены для {len(started)} ботов. "
-                    "Фактическое подключение проверь по состояниям и журналу ASF."
-                )
+            except (AttributeError, ASFError, ValueError, OSError) as batch_error:
+                # Compatibility fallback for older client adapters or ASF builds that
+                # reject multi-bot command syntax. Preserve per-bot error reporting.
+                started = []
+                failed = []
+                for bot_name in bot_names:
+                    try:
+                        client.start_bot(bot_name)
+                        started.append(bot_name)
+                    except (ASFError, ValueError, OSError):
+                        failed.append(bot_name)
+                self.refresh_bots()
+                if failed:
+                    self.status.setText(
+                        f"Массовая команда недоступна ({batch_error}). Отправлены команды: "
+                        f"{len(started)} из {len(bot_names)}. Не удалось: {', '.join(failed[:8])}"
+                        + ("…" if len(failed) > 8 else "")
+                    )
+                else:
+                    self.status.setText(
+                        f"ASF отклонил пакетную команду; индивидуальные команды отправлены "
+                        f"для {len(started)} ботов. Подключение проверяется по журналу ASF."
+                    )
         finally:
             self.start_selected_button.setEnabled(True)
             self.start_all_button.setEnabled(True)
