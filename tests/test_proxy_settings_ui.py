@@ -161,7 +161,7 @@ class ProxySettingsUITests(unittest.TestCase):
         warning.assert_not_called()
         message = info.call_args.args[2]
         self.assertIn("bot-a", message)
-        self.assertIn("пароль сохранён", message.casefold())
+        self.assertIn("пароли сверены с системным хранилищем: 1", message.casefold())
         self.assertNotIn("secret-password", message)
 
     def test_audit_proxy_configs_reports_missing_password_on_disk(self):
