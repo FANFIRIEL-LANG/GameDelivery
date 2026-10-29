@@ -370,7 +370,7 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(result["bot_names"], ["bot-a", "bot-b", "bot-c"])
 
     def test_start_bots_rejects_unsafe_names_before_sending(self):
-        for names in ([], ["bot-a", "bot,b"], ["bot-a", "bot-a\\nstart all"]):
+        for names in ([], ["bot-a", "bot,b"], ["bot-a", "bot-a" + chr(10) + "start all"]):
             with self.subTest(names=names), patch.object(ASFClient, "send_command") as send_command:
                 with self.assertRaises(ValueError):
                     ASFClient().start_bots(names)
