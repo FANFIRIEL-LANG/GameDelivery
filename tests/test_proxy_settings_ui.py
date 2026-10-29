@@ -133,6 +133,40 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertNotIn("private-proxy-password", self.widget.status.text())
         self.assertNotIn("private-proxy-password", self.widget.pool_status.text())
 
+    def test_auto_distribute_writes_disabled_bot_configs_before_any_bot_starts(self):
+        import json
+        from PySide6.QtCore import QSettings
+
+        config_dir = Path(self.temp_dir.name) / "asf-config"
+        config_dir.mkdir()
+        (config_dir / "bot-a.json").write_text(json.dumps({"Enabled": False}), encoding="utf-8")
+        (config_dir / "bot-b.json").write_text(json.dumps({"Enabled": False}), encoding="utf-8")
+        self.widget.store.add_pool_proxies([
+            SteamProxy("socks5", "one.example", 1080, "proxy-user", "proxy-pass"),
+            SteamProxy("http", "two.example", 8080),
+        ])
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        settings.setValue("asf/config_path", str(config_dir))
+        settings.sync()
+        self.addCleanup(lambda: settings.remove("asf/config_path"))
+
+        with patch("app.proxy_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \\
+             patch("app.proxy_settings.ASFClient") as client, \\
+             patch("app.proxy_settings.QMessageBox.warning") as warning:
+            self.widget.auto_distribute_pool()
+
+        client.assert_not_called()
+        warning.assert_not_called()
+        first = json.loads((config_dir / "bot-a.json").read_text(encoding="utf-8"))
+        second = json.loads((config_dir / "bot-b.json").read_text(encoding="utf-8"))
+        self.assertFalse(first["Enabled"])
+        self.assertFalse(second["Enabled"])
+        self.assertEqual(first["WebProxy"], "socks5://one.example:1080")
+        self.assertEqual(first["WebProxyUsername"], "proxy-user")
+        self.assertEqual(first["WebProxyPassword"], "proxy-pass")
+        self.assertEqual(second["WebProxy"], "http://two.example:8080")
+        self.assertIn("до запуска", self.widget.pool_status.text().casefold())
+
     def test_auto_distribute_pool_rotates_through_bots_and_preserves_credentials(self):
         proxies = [
             SteamProxy("socks5", "one.example", 1080, "proxy-one", "pass-one"),
