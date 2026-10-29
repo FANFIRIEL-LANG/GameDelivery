@@ -151,8 +151,10 @@ class ProxySettingsUITests(unittest.TestCase):
         settings.sync()
         self.addCleanup(lambda: settings.remove("asf/config_path"))
 
-        with patch("app.proxy_settings.QMessageBox.information") as info, \\
-             patch("app.proxy_settings.QMessageBox.warning") as warning:
+        with (
+            patch("app.proxy_settings.QMessageBox.information") as info,
+            patch("app.proxy_settings.QMessageBox.warning") as warning,
+        ):
             self.widget.audit_proxy_configs()
 
         info.assert_called_once()
@@ -180,8 +182,10 @@ class ProxySettingsUITests(unittest.TestCase):
         settings.sync()
         self.addCleanup(lambda: settings.remove("asf/config_path"))
 
-        with patch("app.proxy_settings.QMessageBox.information") as info, \\
-             patch("app.proxy_settings.QMessageBox.warning") as warning:
+        with (
+            patch("app.proxy_settings.QMessageBox.information") as info,
+            patch("app.proxy_settings.QMessageBox.warning") as warning,
+        ):
             self.widget.audit_proxy_configs()
 
         warning.assert_called_once()
