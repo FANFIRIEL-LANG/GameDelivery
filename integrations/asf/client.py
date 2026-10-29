@@ -320,6 +320,22 @@ class ASFClient:
             raise ValueError("Команда ASF не должна быть пустой")
         return self.request("/Api/Command", method="POST", body={"Command": command})
 
+    def start_bots(self, bot_names: Iterable[str]) -> dict[str, Any]:
+        """Ask ASF to start several configured bots with one IPC command."""
+        names = [str(name).strip() for name in bot_names]
+        if not names or any(
+            not name or "," in name or any(ord(char) < 32 for char in name)
+            for name in names
+        ):
+            raise ValueError("Некорректный список имён ботов ASF для массового запуска")
+        if len({name.casefold() for name in names}) != len(names):
+            raise ValueError("В списке массового запуска есть повторяющиеся боты")
+        response = self.send_command("start " + ",".join(names))
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду массового запуска")
+        return {"bot_names": names, "command_sent": True}
+
     def start_bot(self, bot_name: str) -> dict[str, Any]:
         """Ask ASF to start one configured bot, including a bot disabled in JSON."""
         name = bot_name.strip()
