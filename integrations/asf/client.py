@@ -458,26 +458,24 @@ class ASFClient:
         return preview
 
     def get_bots(self) -> dict[str, Any]:
-        """Return bot status when /Api/ASF exposes it; otherwise let callers use disk config.
+        """Return live bot objects from ASF's documented bot endpoint.
 
-        The ASF status endpoint does not guarantee a top-level Bots field across
-        supported versions. Bot discovery must therefore not fail just because
-        that optional field is absent: management screens merge this result with
-        the bot JSON files discovered locally.
+        /Api/ASF reports process-wide information and does not contain a Bots
+        collection. /Api/Bot/{botNames} is the supported endpoint for bot state;
+        @all asks ASF for every bot currently loaded in this process.
         """
-        payload = _unwrap_result(self.get_status())
+        payload = _unwrap_result(self.request("/Api/Bot/@all"))
         if not isinstance(payload, dict):
-            raise ASFError("ASF вернул ответ статуса в неожиданном формате")
-        bots_key = _find_key(payload, "Bots")
-        if bots_key is None:
-            return {}
-        bots_value = payload[bots_key]
-        if isinstance(bots_value, dict):
-            return dict(bots_value)
-        if isinstance(bots_value, list):
-            names = [str(name).strip() for name in bots_value if str(name).strip()]
-            return {name: {} for name in names}
-        raise ASFError("ASF вернул список Bots в неподдерживаемом формате")
+            raise ASFError("ASF вернул список ботов в неожиданном формате")
+        bots: dict[str, Any] = {}
+        for name, details in payload.items():
+            bot_name = str(name).strip()
+            if not bot_name:
+                continue
+            if not isinstance(details, dict):
+                raise ASFError("ASF вернул состояние бота в неподдерживаемом формате")
+            bots[bot_name] = details
+        return bots
 
     def send_trade_offer(
         self,
