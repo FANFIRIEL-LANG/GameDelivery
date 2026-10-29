@@ -358,10 +358,11 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(urlopen.call_args.args[0].full_url, "http://127.0.0.1:1242/Api/ASF")
 
     @patch("integrations.asf.client.urlopen")
-    def test_get_bots_rejects_missing_bot_map(self, urlopen):
+    def test_get_bots_returns_empty_map_when_status_has_no_bots_field(self, urlopen):
+        # ASF versions do not consistently expose a Bots map in /Api/ASF.
+        # Callers can then fall back to the configured bot JSON files.
         urlopen.return_value = FakeResponse({"Success": True, "Result": {"Version": "6.3.10.6"}})
-        with self.assertRaises(ASFError):
-            ASFClient().get_bots()
+        self.assertEqual(ASFClient().get_bots(), {})
 
     @patch.object(ASFClient, "send_command", return_value={"Success": True, "Result": "OK"})
     def test_start_bots_sends_one_batch_command(self, send_command):
