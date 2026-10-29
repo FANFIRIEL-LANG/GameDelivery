@@ -167,24 +167,30 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertEqual(second["WebProxy"], "http://two.example:8080")
         self.assertIn("до запуска", self.widget.pool_status.text().casefold())
 
-    def test_auto_distribute_pool_rotates_through_bots_and_preserves_credentials(self):
+    def test_auto_distribute_pool_rotates_through_configured_bots_and_preserves_credentials(self):
+        import json
+        from PySide6.QtCore import QSettings
+
+        config_dir = Path(self.temp_dir.name) / "asf-config"
+        config_dir.mkdir()
+        for name in ("bot-c", "bot-a", "bot-b"):
+            (config_dir / f"{name}.json").write_text(json.dumps({"Enabled": False}), encoding="utf-8")
         proxies = [
             SteamProxy("socks5", "one.example", 1080, "proxy-one", "pass-one"),
             SteamProxy("http", "two.example", 8080),
         ]
         self.widget.store.add_pool_proxies(proxies)
-        self.widget.refresh_pool()
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        settings.setValue("asf/config_path", str(config_dir))
+        settings.sync()
+        self.addCleanup(lambda: settings.remove("asf/config_path"))
 
-        with patch.object(self.widget, "_ask_ipc_password", return_value=("ipc-test", True)), \
-             patch("app.proxy_settings.ASFClient.get_bots", return_value={
-                 "bot-c": False, "bot-a": False, "bot-b": False,
-             }), \
-             patch(
-                 "app.proxy_settings.QMessageBox.question",
-                 return_value=QMessageBox.StandardButton.Yes,
-             ), patch("app.proxy_settings.QMessageBox.warning") as warning:
+        with patch("app.proxy_settings.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \\
+             patch("app.proxy_settings.ASFClient") as client, \\
+             patch("app.proxy_settings.QMessageBox.warning") as warning:
             self.widget.auto_distribute_pool()
 
+        client.assert_not_called()
         warning.assert_not_called()
         profiles = {item["bot_name"]: item for item in self.widget.store.list_profiles()}
         self.assertEqual(
@@ -194,7 +200,13 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertEqual(self.widget.store.get_password("bot-a"), "pass-one")
         self.assertIsNone(self.widget.store.get_password("bot-b"))
         self.assertEqual(self.widget.store.get_password("bot-c"), "pass-one")
-        self.assertIn("3", self.widget.pool_status.text())
+        for name, host in (("bot-a", "one.example"), ("bot-b", "two.example"), ("bot-c", "one.example")):
+            payload = json.loads((config_dir / f"{name}.json").read_text(encoding="utf-8"))
+            self.assertFalse(payload["Enabled"])
+            self.assertIn(host, payload["WebProxy"])
+            self.assertTrue((config_dir / f"{name}.json.gamedelivery.bak").exists())
+        self.assertIn("до запуска", self.widget.pool_status.text().casefold())
+
 
 
 if __name__ == "__main__":
