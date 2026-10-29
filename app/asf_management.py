@@ -896,12 +896,15 @@ class ASFManagementWidget(QWidget):
             elif isinstance(details, bool):
                 state = "Запущен" if details else "Отключён"
             elif isinstance(details, dict):
-                connected = details.get("IsConnected")
+                # ASF's Bot API serializes this exact property name; it is not
+                # called IsConnected. KeepRunning only means the bot is active
+                # inside ASF, not that its Steam session is online.
+                connected = details.get("IsConnectedAndLoggedOn", details.get("IsConnected"))
                 if isinstance(connected, bool):
-                    state = "Подключён" if connected else "Не подключён"
+                    state = "В сети" if connected else "Не в сети"
                 else:
                     running = details.get("KeepRunning", details.get("IsRunning"))
-                    state = ("Запущен" if running else "Отключён") if isinstance(running, bool) else "Загружен"
+                    state = ("Запущен в ASF" if running else "Остановлен") if isinstance(running, bool) else "Статус неизвестен"
             else:
                 state = "Загружен"
             self.table.setItem(row, 1, QTableWidgetItem(state))
