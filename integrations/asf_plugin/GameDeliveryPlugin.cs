@@ -20,6 +20,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
 {
     private const string PreviewCommandName = "gamedelivery-preview";
     private const string SendCommandName = "gamedelivery-send";
+    private const string DiagnosticCommandName = "gamedelivery-diagnose";
     private const int MaxItemsPerPreview = 255;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -49,7 +50,8 @@ public sealed class GameDeliveryPlugin : IBotCommand2
 
         bool isPreview = string.Equals(args[0], PreviewCommandName, StringComparison.OrdinalIgnoreCase);
         bool isSend = string.Equals(args[0], SendCommandName, StringComparison.OrdinalIgnoreCase);
-        if (!isPreview && !isSend)
+        bool isDiagnostic = string.Equals(args[0], DiagnosticCommandName, StringComparison.OrdinalIgnoreCase);
+        if (!isPreview && !isSend && !isDiagnostic)
         {
             return null;
         }
@@ -57,6 +59,16 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         if (access != EAccess.Owner)
         {
             return Failure("Команда доступна только ASF Owner.");
+        }
+
+        if (isDiagnostic)
+        {
+            if (args.Length != 1)
+            {
+                return Failure("Диагностическая команда не принимает аргументы.");
+            }
+
+            return await RunDiagnosticCommand(bot).ConfigureAwait(false);
         }
 
         if (args.Length != 2 || args[1].Length > 16000)
@@ -201,6 +213,70 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             Assets = previewAssets,
             Message = "ASF подтвердил состав черновика. Торговое предложение не создавалось и не отправлялось."
         }, JsonOptions);
+    }
+
+    private static async Task<string> RunDiagnosticCommand(Bot bot)
+    {
+        string asfVersion = typeof(Bot).Assembly.GetName().Version?.ToString() ?? "unknown";
+        string actionsType = bot.Actions.GetType().FullName ?? bot.Actions.GetType().Name;
+        string inventoryMethods = string.Join(" | ", bot.Actions.GetType()
+            .GetMethods()
+            .Where(method => string.Equals(method.Name, "GetInventory", StringComparison.Ordinal))
+            .Select(method => method.ToString()));
+
+        try
+        {
+            (HashSet<Asset>? inventory, string inventoryMessage) = await bot.Actions.GetInventory(
+                Asset.SteamAppID,
+                Asset.SteamCommunityContextID,
+                language: "english").ConfigureAwait(false);
+
+            return JsonSerializer.Serialize(new
+            {
+                success = inventory is not null,
+                mode = "diagnostic-read-only",
+                sendEnabled = false,
+                tradeOfferCreated = false,
+                botName = bot.BotName,
+                botConnected = bot.IsConnectedAndLoggedOn,
+                asfAssemblyVersion = asfVersion,
+                actionsType,
+                getInventoryMethods = inventoryMethods,
+                inventoryCount = inventory?.Count,
+                inventoryMessage = inventory is null ? SafeMessage(inventoryMessage) : null,
+                message = inventory is null
+                    ? "Диагностика завершилась: ASF не вернул инвентарь. Отправка не выполнялась."
+                    : "Диагностика успешна: инвентарь получен. Торговое предложение не создавалось."
+            }, JsonOptions);
+        }
+        catch (Exception exception)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                mode = "diagnostic-read-only",
+                sendEnabled = false,
+                tradeOfferCreated = false,
+                botName = bot.BotName,
+                botConnected = bot.IsConnectedAndLoggedOn,
+                asfAssemblyVersion = asfVersion,
+                actionsType,
+                getInventoryMethods = inventoryMethods,
+                exceptionType = exception.GetType().FullName,
+                exceptionMessage = SafeMessage(exception.Message),
+                message = "Ошибка диагностического чтения инвентаря. Отправка не выполнялась."
+            }, JsonOptions);
+        }
+    }
+
+    private static string SafeMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "неизвестная ошибка";
+        }
+
+        return new string(message.Where(character => !char.IsControl(character)).Take(240).ToArray());
     }
 
     private static string Failure(string message) => JsonSerializer.Serialize(new
