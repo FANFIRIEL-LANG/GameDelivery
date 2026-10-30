@@ -30,6 +30,15 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("resultUnknown = true", dispatch_region)
         self.assertIn("exception.GetType().Name", dispatch_region)
 
+    def test_diagnostic_command_checks_inventory_without_trade_send(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        self.assertIn('DiagnosticCommandName = "gamedelivery-diagnose"', source)
+        self.assertIn("RunDiagnosticCommand(bot)", source)
+        self.assertIn("GetInventory(", source)
+        diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static string Failure")]
+        self.assertIn("inventoryCount", diagnostic_region)
+        self.assertNotIn("SendTradeOffer", diagnostic_region)
+
 
 if __name__ == "__main__":
     unittest.main()
