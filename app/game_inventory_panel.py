@@ -5,11 +5,11 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from app.bot_selector import populate_bot_combo
+from app.bot_selector import configured_bot_names
 from app.game_inventory_cards import GameItemCard, GameItemImageLoader
 from app.inventory_panel import InventoryPanel
 from games.catalog import GAME_CATALOG
@@ -45,12 +45,17 @@ class GameInventoryPanel(QWidget):
                 self.game_combo.addItem(game.name, game.game_id)
         controls.addWidget(self.game_combo, 1)
 
-        controls.addWidget(QLabel("Аккаунт"))
-        self.bot_combo = QComboBox()
-        populate_bot_combo(self.bot_combo)
-        self.bot_combo.insertItem(0, "Все аккаунты", "__all__")
-        self.bot_combo.setCurrentIndex(0)
-        controls.addWidget(self.bot_combo, 1)
+        controls.addWidget(QLabel("Аккаунты"))
+        self.bot_list = QListWidget()
+        self.bot_list.setMaximumHeight(92)
+        self.bot_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        controls.addWidget(self.bot_list, 2)
+        account_actions = QVBoxLayout()
+        self.select_all_bots_button = QPushButton("Выбрать всех")
+        self.clear_bots_button = QPushButton("Снять выбор")
+        account_actions.addWidget(self.select_all_bots_button)
+        account_actions.addWidget(self.clear_bots_button)
+        controls.addLayout(account_actions)
 
         controls.addWidget(QLabel("IPC-пароль"))
         self.password = QLineEdit(InventoryPanel._load_saved_ipc_password())
@@ -58,7 +63,7 @@ class GameInventoryPanel(QWidget):
         self.password.setPlaceholderText("Если задан в ASF")
         controls.addWidget(self.password, 1)
 
-        self.load_button = QPushButton("Загрузить выбранный аккаунт")
+        self.load_button = QPushButton("Обновить выбранные аккаунты")
         self.load_button.clicked.connect(self.fetch_inventory)
         controls.addWidget(self.load_button)
         self.refresh_button = QPushButton("Обновить список")
@@ -106,52 +111,77 @@ class GameInventoryPanel(QWidget):
 
         self.image_loader = GameItemImageLoader(self, self._image_loaded)
         self.game_combo.currentIndexChanged.connect(self.load_saved)
-        self.bot_combo.currentIndexChanged.connect(self._account_changed)
+        self.select_all_bots_button.clicked.connect(self.select_all_bots)
+        self.clear_bots_button.clicked.connect(self.clear_bot_selection)
+        self._populate_accounts()
         self.load_saved()
 
-    def _selected(self):
-        return str(self.game_combo.currentData() or ""), str(self.bot_combo.currentData() or "")
+    def _populate_accounts(self):
+        names = sorted(set(configured_bot_names()), key=str.casefold)
+        self.bot_list.clear()
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            self.bot_list.addItem(item)
 
-    def _account_changed(self):
-        self.load_button.setEnabled(self.bot_combo.currentData() != "__all__")
+    def _selected_bot_names(self) -> list[str]:
+        return [
+            str(self.bot_list.item(i).data(Qt.ItemDataRole.UserRole))
+            for i in range(self.bot_list.count())
+            if self.bot_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def select_all_bots(self):
+        for i in range(self.bot_list.count()):
+            self.bot_list.item(i).setCheckState(Qt.CheckState.Checked)
+        self.load_saved()
+
+    def clear_bot_selection(self):
+        for i in range(self.bot_list.count()):
+            self.bot_list.item(i).setCheckState(Qt.CheckState.Unchecked)
         self.load_saved()
 
     def fetch_inventory(self):
-        game_id, bot_name = self._selected()
-        if not game_id or not bot_name or bot_name == "__all__":
-            self.status.setText("Выбери конкретный аккаунт для загрузки из ASF.")
+        game_id = str(self.game_combo.currentData() or "")
+        bot_names = self._selected_bot_names()
+        if not game_id or not bot_names:
+            self.status.setText("Выбери аккаунты для загрузки из ASF.")
             return
         self.load_button.setEnabled(False)
-        self.status.setText(f"Запрашиваю {game_id} для {bot_name} через локальный ASF IPC…")
+        succeeded, failed = 0, []
         try:
             client = ASFClient(ipc_password=self.password.text().strip() or None, timeout=45.0)
-            result = refresh_game_inventory(client, self.store, game_id, bot_name)
-            self.status.setText(
-                f"Снимок обновлён: {bot_name} · {result['item_count']} предметов · "
-                f"{result['updated_at']}. Обмены не выполнялись."
-            )
+            for index, bot_name in enumerate(bot_names, 1):
+                self.status.setText(f"Загрузка {game_id}: {index}/{len(bot_names)} · {bot_name}…")
+                try:
+                    refresh_game_inventory(client, self.store, game_id, bot_name)
+                    succeeded += 1
+                except Exception as exc:
+                    failed.append(f"{bot_name}: {exc}")
             self.load_saved()
-        except Exception as exc:
-            self.status.setText(f"Не удалось обновить инвентарь: {exc}. Старый снимок сохранён.")
+            message = f"Обновлено аккаунтов: {succeeded} из {len(bot_names)}."
+            if failed:
+                message += " Ошибки: " + " | ".join(failed[:4])
+            self.status.setText(message)
         finally:
-            self.load_button.setEnabled(self.bot_combo.currentData() != "__all__")
+            self.load_button.setEnabled(True)
 
     def load_saved(self):
-        game_id, bot_name = self._selected()
+        game_id = str(self.game_combo.currentData() or "")
         if not game_id:
             self.items = []
             self.render()
             return
         try:
-            self.items = (
-                self.store.load_all(game_id) if bot_name == "__all__"
-                else self.store.load(game_id, bot_name) if bot_name
-                else []
-            )
+            all_items = self.store.load_all(game_id)
+            selected = set(self._selected_bot_names())
+            self.items = [item for item in all_items if item.bot_name in selected]
             accounts = len({item.bot_name for item in self.items})
             self.status.setText(
                 f"Локальные снимки: {game_id} · {accounts} аккаунтов · {len(self.items)} предметов. "
-                "Общий список объединяет только ранее загруженные снимки; актуальность нужно проверять."
+                "Общий список объединяет только выбранные аккаунты; актуальность нужно проверять."
             )
             self._refresh_filter_values()
             self.render()
