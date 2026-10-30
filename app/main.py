@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from games.steam_cards.snapshot import InventorySnapshotStore
 from games.steam_cards.reservations import AssetReservationStore
 from app.inventory_panel import InventoryPanel
+from app.game_inventory_panel import GameInventoryPanel
 from app.proxy_settings import ProxySettingsWidget
 from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
@@ -64,6 +65,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
+        self.game_inventory_panel = GameInventoryPanel()
+        self.tabs.addTab(self.game_inventory_panel, "Игровые предметы")
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
