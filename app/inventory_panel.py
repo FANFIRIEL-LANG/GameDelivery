@@ -57,7 +57,9 @@ class _InventoryBatchWorker(QObject):
 
 
 class InventoryPanel(QWidget):
-    """Read-only UI for local snapshots and reservations; never fetches or sends."""
+    """Read-only UI for local snapshots and reservations."""
+
+    trade_url_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -115,6 +117,17 @@ class InventoryPanel(QWidget):
         self.refresh_button = QPushButton("Обновить")
         controls.addWidget(self.refresh_button)
         layout.addLayout(controls)
+
+        trade_row = QHBoxLayout()
+        self.trade_url = QLineEdit()
+        self.trade_url.setPlaceholderText("HTTPS Steam Trade URL получателя")
+        self.send_to_order_button = QPushButton("Отправить через заказы…")
+        self.send_to_order_button.clicked.connect(
+            lambda: self.trade_url_requested.emit(self.trade_url.text().strip())
+        )
+        trade_row.addWidget(self.trade_url, 1)
+        trade_row.addWidget(self.send_to_order_button)
+        layout.addLayout(trade_row)
 
         self.summary = QLabel("Снимки не загружены.")
         self.summary.setObjectName("muted")
