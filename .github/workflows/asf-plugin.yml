@@ -10,7 +10,7 @@ on:
       - .github/workflows/asf-plugin.yml
   push:
     branches:
-      - feature/steam-card-set-selection
+      - feature/asf-bulk-account-import
     paths:
       - integrations/asf_plugin/**
       - integrations/asf/client.py
