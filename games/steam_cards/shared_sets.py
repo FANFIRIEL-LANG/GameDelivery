@@ -46,7 +46,13 @@ def find_shared_game_sets(
             if asset_key in seen_assets:
                 continue
             seen_assets.add(asset_key)
-            if not card.is_trading_card or card.is_foil or card.is_tradable is not True:
+            if not card.is_trading_card:
+                continue
+            # Keep normal card types represented even when their only copies
+            # are foil, non-tradable, or have unknown tradability. Otherwise a
+            # partial inventory could be misreported as a complete set.
+            if card.is_foil or card.is_tradable is not True:
+                by_game[game_name].setdefault(card_name, [])
                 continue
             by_game[game_name][card_name].append(asset_key)
 
