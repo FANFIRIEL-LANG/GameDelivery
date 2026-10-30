@@ -44,7 +44,7 @@ def ensure_asf_login_limiter_delay(config_dir: Path) -> bool:
     payload[key] = ASF_LOGIN_LIMITER_DELAY_SECONDS
     temporary_path = config_path.with_name(config_path.name + ".gamedelivery.tmp")
     temporary_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent="\t") + "\\n",
+        json.dumps(payload, ensure_ascii=False, indent="\t") + "\n",
         encoding="utf-8",
     )
     temporary_path.replace(config_path)
