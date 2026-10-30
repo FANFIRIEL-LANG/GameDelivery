@@ -393,7 +393,7 @@ class ASFManagementWidget(QWidget):
             return
         self._autodetect_config_dir(executable.parent)
         config_text = self.config_path.text().strip()
-        if config_text:
+        if config_text and Path(config_text).is_dir():
             try:
                 changed = ensure_asf_login_limiter_delay(Path(config_text))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
