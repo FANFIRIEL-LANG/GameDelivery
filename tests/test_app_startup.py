@@ -19,6 +19,37 @@ class AppStartupSmokeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_corrupted_database_shows_clear_error_and_preserves_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "gamedelivery.sqlite3"
+            original = b"not a sqlite database\\x00\\xff"
+            database.write_bytes(original)
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \\
+                 patch("app.main.QMessageBox.critical") as critical:
+                with self.assertRaises(sqlite3.DatabaseError):
+                    MainWindow()
+
+            critical.assert_called_once()
+            title, message = critical.call_args.args[1:3]
+            self.assertEqual(title, "Ошибка локальной базы данных")
+            self.assertIn("не может открыть или обновить локальную базу данных", message)
+            self.assertIn("резервную копию", message)
+            self.assertEqual(database.read_bytes(), original)
+
+    def test_unavailable_database_path_shows_clear_error_without_creating_replacement(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "database-directory"
+            database.mkdir()
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \\
+                 patch("app.main.QMessageBox.critical") as critical:
+                with self.assertRaises(sqlite3.Error):
+                    MainWindow()
+
+            critical.assert_called_once()
+            self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
+            self.assertTrue(database.is_dir())
+            self.assertEqual(list(database.iterdir()), [])
+
     def test_trade_url_validation_accepts_steam_url_and_rejects_other_hosts(self):
         valid = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
         self.assertEqual(MainWindow._validate_trade_url(valid), valid)
