@@ -4,8 +4,8 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QComboBox, QLineEdit, QListWidget
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import QComboBox, QCompleter, QLineEdit, QListWidget
 
 
 _BOT_KEYS = {
@@ -104,6 +104,13 @@ def populate_bot_combo(combo: QComboBox, extra_names=()) -> None:
     names = set(configured_bot_names())
     names.update(str(name).strip() for name in extra_names if str(name).strip())
     combo.blockSignals(True)
+    combo.setEditable(True)
+    combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+    completer = QCompleter(combo.model(), combo)
+    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+    combo.setCompleter(completer)
     combo.clear()
     combo.addItem("Выбери бота из списка", "")
     for name in sorted(names, key=str.casefold):
