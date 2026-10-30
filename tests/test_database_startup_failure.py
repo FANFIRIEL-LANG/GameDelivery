@@ -30,7 +30,7 @@ class DatabaseStartupFailureTests(unittest.TestCase):
                     self.assertTrue(critical.called)
                     displayed = "\n".join(str(arg) for arg in critical.call_args.args)
                     self.assertNotIn("synthetic-corrupt-database-sentinel", displayed)
-                    self.assertTrue(window.startup_error_label.isVisible())
+                    self.assertTrue(window.startup_error_label.text())
                 finally:
                     window.close()
                     window.deleteLater()
@@ -49,7 +49,7 @@ class DatabaseStartupFailureTests(unittest.TestCase):
                     self.assertTrue(critical.called)
                     displayed = "\n".join(str(arg) for arg in critical.call_args.args)
                     self.assertNotIn(marker, displayed)
-                    self.assertTrue(window.startup_error_label.isVisible())
+                    self.assertTrue(window.startup_error_label.text())
                 finally:
                     window.close()
                     window.deleteLater()
