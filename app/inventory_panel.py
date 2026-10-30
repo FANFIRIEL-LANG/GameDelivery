@@ -171,9 +171,11 @@ class InventoryPanel(QWidget):
         self.sets_per_bot_spin.setValue(1)
         self.sets_per_bot_spin.setToolTip("Количество полных наборов отдельно для каждого выбранного бота")
         self.select_sets_button = QPushButton("Выбрать полные наборы")
+        self.clear_item_selection_button = QPushButton("Снять выбор предметов")
         quantity_controls.addWidget(self.apply_quantity_button)
         quantity_controls.addWidget(self.clear_selection_button)
         quantity_controls.addWidget(self.select_visible_button)
+        quantity_controls.addWidget(self.clear_item_selection_button)
         quantity_controls.addWidget(QLabel("Наборов на бота"))
         quantity_controls.addWidget(self.sets_per_bot_spin)
         quantity_controls.addWidget(self.select_sets_button)
@@ -423,9 +425,25 @@ class InventoryPanel(QWidget):
             row_data = card_item.data(Qt.ItemDataRole.UserRole + 2)
             if row_data is not None:
                 available.extend(expand_inventory_instances(row_data))
-        self._selected_asset_keys = set(
-            select_inventory_instances(available, self.quantity_input.value())
-        )
+        available = [
+            (str(bot), str(asset)) for bot, asset in available
+            if (str(bot), str(asset)) not in self.reservation_rows
+        ]
+        requested = self.quantity_input.value()
+        if requested <= 0:
+            self.instance_summary.setText("Укажи количество больше нуля.")
+            return
+        if requested > len(available):
+            self.instance_summary.setText(
+                f"Доступно только {len(available)} незарезервированных экземпляров."
+            )
+            return
+        self._selected_asset_keys = set(available[:requested])
+        self._render_instance_choices()
+
+    def _clear_item_selection(self):
+        self.item_grid.clearSelection()
+        self._selected_asset_keys.clear()
         self._render_instance_choices()
 
     def _clear_asset_selection(self):
