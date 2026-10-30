@@ -156,3 +156,23 @@ def filter_inventory_rows(
                 continue
         result.append(row)
     return tuple(result)
+
+
+def select_inventory_instances(
+    instances: Iterable[tuple[str, str]],
+    quantity: int,
+) -> tuple[tuple[str, str], ...]:
+    """Select an exact quantity in stable bot/asset order without losing ownership."""
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
+        raise ValueError("Количество должно быть целым числом не меньше нуля")
+    unique: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_bot, raw_asset in instances:
+        bot, asset = str(raw_bot).strip(), str(raw_asset).strip()
+        key = (bot.casefold(), asset)
+        if bot and asset and key not in seen:
+            seen.add(key)
+            unique.append((bot, asset))
+    if quantity > len(unique):
+        raise ValueError("Запрошено больше экземпляров, чем доступно")
+    return tuple(unique[:quantity])
