@@ -214,6 +214,38 @@ class TradeDeliveryUITests(unittest.TestCase):
 
             self._run_with_window(database, exercise)
 
+    def test_cancel_unknown_send_result_marks_order_cancelled_but_keeps_asset_reserved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+
+            def exercise(window):
+                with sqlite3.connect(database) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ?",
+                        ("неизвестен результат отправки — проверь исходящие Steam", "GD-ORDER-1"),
+                    )
+                with patch(
+                    "app.main.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ), patch("app.main.QMessageBox.warning") as warning:
+                    window._cancel_selected_order()
+
+                warning.assert_not_called()
+                with sqlite3.connect(database) as db:
+                    status = db.execute(
+                        "SELECT status FROM delivery_orders WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                    reservations = db.execute(
+                        "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchall()
+                self.assertEqual(status, "cancelled — результат отправки требует сверки")
+                self.assertEqual(reservations, [("Bot A", "1234567890")])
+                self.assertFalse(window.send_offer_button.isEnabled())
+
+            self._run_with_window(database, exercise)
+
     def test_user_cancellation_does_not_send_offer_or_change_order_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
