@@ -234,6 +234,26 @@ class GameInventoryStore:
             """, (game.game_id, bot, timestamp, len(items)))
         return {"game_id": game.game_id, "bot_name": bot, "updated_at": timestamp, "item_count": len(items)}
 
+    def load_all(self, game_id: str) -> list[InventoryItem]:
+        """Load the latest saved items for every bot, retaining each item's owner."""
+        import json
+        from games.catalog import get_game
+        game = get_game(game_id)
+        with self._connect() as db:
+            rows = db.execute("""
+                SELECT game_id, bot_name, asset_id, class_id, instance_id, name, item_type,
+                       market_hash_name, icon_url, icon_url_large, is_tradable, is_marketable,
+                       quality, rarity, exterior, tags_json
+                FROM game_inventory_snapshot WHERE game_id=? ORDER BY bot_name, name, asset_id
+            """, (game.game_id,)).fetchall()
+        return [InventoryItem(
+            game_id=r[0], bot_name=r[1], asset_id=r[2], class_id=r[3], instance_id=r[4],
+            name=r[5], item_type=r[6], market_hash_name=r[7], icon_url=r[8], icon_url_large=r[9],
+            is_tradable=None if r[10] is None else bool(r[10]),
+            is_marketable=None if r[11] is None else bool(r[11]),
+            quality=r[12], rarity=r[13], exterior=r[14], tags=tuple(json.loads(r[15])),
+        ) for r in rows]
+
     def load(self, game_id: str, bot_name: str) -> list[InventoryItem]:
         import json
         from games.catalog import get_game
