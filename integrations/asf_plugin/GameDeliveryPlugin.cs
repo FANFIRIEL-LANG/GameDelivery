@@ -4,6 +4,7 @@ using System.Composition;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
@@ -20,6 +21,12 @@ public sealed class GameDeliveryPlugin : IBotCommand2
     private const string PreviewCommandName = "gamedelivery-preview";
     private const string SendCommandName = "gamedelivery-send";
     private const int MaxItemsPerPreview = 255;
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+    };
 
     public string Name => nameof(GameDeliveryPlugin);
 
@@ -68,7 +75,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             string encoded = args[1].Replace('-', '+').Replace('_', '/');
             encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
             byte[] bytes = Convert.FromBase64String(encoded);
-            request = JsonSerializer.Deserialize<PreviewRequest>(bytes);
+            request = JsonSerializer.Deserialize<PreviewRequest>(bytes, JsonOptions);
         }
         catch (Exception exception) when (exception is FormatException or JsonException)
         {
@@ -175,7 +182,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             AssetCount = previewAssets.Count,
             Assets = previewAssets,
             Message = "ASF подтвердил состав черновика. Торговое предложение не создавалось и не отправлялось."
-        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        }, JsonOptions);
     }
 
     private static string Failure(string message) => JsonSerializer.Serialize(new
@@ -183,7 +190,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         success = false,
         error = message,
         sendEnabled = false
-    });
+    }, JsonOptions);
 
     private static string SafeMessage(string? message)
     {
