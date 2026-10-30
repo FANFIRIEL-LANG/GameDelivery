@@ -75,13 +75,12 @@ class OrderPreflightTests(unittest.TestCase):
                 CardCopy("normal-b", "Game", "B"),
             ],
         }
-        result = self.service.prepare(
-            order_id="foil-only", game_name="Game", requested_sets=1,
-            inventories=inventories,
-            recipient_badges=[RecipientBadge("Game", 0)], badge_data_verified=True,
-        )
-        self.assertFalse(result.ready_for_manual_review)
-        self.assertEqual(result.reserved_assets, ())
+        with self.assertRaisesRegex(ValueError, "полных наборов"):
+            self.service.prepare(
+                order_id="foil-only", game_name="Game", requested_sets=1,
+                inventories=inventories,
+                recipient_badges=[RecipientBadge("Game", 0)], badge_data_verified=True,
+            )
         self.assertEqual(self.reservations.list_for_order("foil-only"), [])
 
     def test_badge_capacity_blocks_order(self):
