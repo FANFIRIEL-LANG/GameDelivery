@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import escape
+
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
@@ -86,7 +88,7 @@ class GameItemCard(QFrame):
         )
         body = "".join(
             f"<tr><td style='color:#9daabd;padding:2px 8px 2px 0'>{key}</td>"
-            f"<td style='padding:2px 0'><b>{value}</b></td></tr>"
+            f"<td style='padding:2px 0'><b>{escape(str(value))}</b></td></tr>"
             for key, value in rows
         )
         return f"<table>{body}</table>"
