@@ -372,7 +372,8 @@ internal static class TradeDelivery
                 catch (UnauthorizedAccessException) { }
                 return UnknownFailure(
                     record,
-                    "Не удалось однозначно подтвердить результат отправки. Проверь исходящие предложения Steam; повторная отправка заблокирована.");
+                    "Не удалось однозначно подтвердить результат отправки. Проверь исходящие предложения Steam; повторная отправка заблокирована.",
+                    exception);
             }
         }
         finally
@@ -487,13 +488,18 @@ internal static class TradeDelivery
         }, JsonOptions);
     }
 
-    private static string UnknownFailure(SendRecord record, string message) => JsonSerializer.Serialize(new
+    private static string UnknownFailure(SendRecord record, string message, Exception? exception = null) => JsonSerializer.Serialize(new
     {
         success = false,
         mode = "send",
         sendEnabled = true,
         resultUnknown = true,
         error = message,
+        exceptionType = exception?.GetType().FullName,
+        exceptionMessage = exception is null ? null : SafeDiagnosticText(exception.Message),
+        missingMethod = exception is MissingMethodException ? SafeDiagnosticText(exception.Message) : null,
+        targetSite = exception?.TargetSite?.ToString() is string targetSite ? SafeDiagnosticText(targetSite) : null,
+        stackTrace = exception?.StackTrace is string stackTrace ? SafeDiagnosticText(stackTrace) : null,
         orderId = record.OrderId,
         botName = record.BotName,
         targetSteamId64 = record.TargetSteamId64,
@@ -519,6 +525,16 @@ internal static class TradeDelivery
         }
 
         return new string(message.Where(character => !char.IsControl(character)).Take(180).ToArray());
+    }
+
+    private static string SafeDiagnosticText(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "unknown";
+        }
+
+        return new string(message.Where(character => !char.IsControl(character)).Take(2400).ToArray());
     }
 
     private sealed class SendRequest
