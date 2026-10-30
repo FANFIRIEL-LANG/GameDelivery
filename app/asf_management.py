@@ -80,7 +80,7 @@ class ASFOutputReader(QThread):
             except (OSError, ValueError):
                 return
             if line:
-                self.line_received.emit(str(line).rstrip("\r\n"))
+                self.line_received.emit(decode_asf_output_line(line))
                 continue
             if self.process.poll() is not None or self.isInterruptionRequested():
                 return
@@ -525,7 +525,7 @@ class ASFManagementWidget(QWidget):
         if not command:
             return
         try:
-            process.stdin.write(command + "\n")
+            process.stdin.write((command + "\n").encode("utf-8"))
             process.stdin.flush()
             self._asf_console_input.clear()
         except (OSError, ValueError) as exc:
