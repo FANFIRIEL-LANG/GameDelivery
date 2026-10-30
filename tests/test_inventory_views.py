@@ -1,6 +1,9 @@
 import unittest
 
-from games.steam_cards.inventory_views import (\n    build_inventory_view, expand_inventory_instances, filter_inventory_rows,\n)
+from games.steam_cards.inventory_views import (
+    build_inventory_view, expand_inventory_instances, filter_inventory_rows, select_inventory_instances,
+)
+
 from games.steam_cards.selection import CardCopy
 
 
@@ -136,6 +139,18 @@ class InventoryViewTests(unittest.TestCase):
     def test_unknown_inventory_filter_is_rejected(self):
         with self.assertRaises(ValueError):
             filter_inventory_rows((), item_filter="unknown")
+
+    def test_quantity_selection_preserves_owner_and_asset_and_deduplicates(self):
+        instances = [("Bot B", "2"), ("Bot A", "1"), ("Bot A", "1"), ("Bot B", "3")]
+        self.assertEqual(select_inventory_instances(instances, 2), (("Bot B", "2"), ("Bot A", "1")))
+        self.assertEqual(select_inventory_instances(instances, 0), ())
+
+    def test_quantity_selection_rejects_invalid_or_unavailable_quantity(self):
+        instances = [("Bot A", "1")]
+        with self.assertRaises(ValueError):
+            select_inventory_instances(instances, -1)
+        with self.assertRaises(ValueError):
+            select_inventory_instances(instances, 2)
 
 
 if __name__ == "__main__":
