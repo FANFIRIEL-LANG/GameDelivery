@@ -997,7 +997,7 @@ class ASFManagementWidget(QWidget):
         names = []
         for row in rows:
             item = self.table.item(row, 0)
-            if item is not None and item.text().strip():
+            if item is not None and item.text().strip() and not self.table.isRowHidden(row):
                 names.append(item.text().strip())
         return names
 
