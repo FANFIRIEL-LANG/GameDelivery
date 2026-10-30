@@ -9,7 +9,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
-from app.asf_management import ASFManagementWidget, ensure_asf_login_limiter_delay
+from app.asf_management import (\n    ASFManagementWidget, ensure_asf_login_limiter_delay, decode_asf_output_line,\n)
 
 
 class ASFManagementWidgetTests(unittest.TestCase):
@@ -51,6 +51,14 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 json.loads((config_dir / "ASF.json").read_text(encoding="utf-8")),
                 {"LoginLimiterDelay": 3},
             )
+
+    def test_asf_console_decodes_utf8_russian_output(self):
+        message = "Ошибка отправки предмета"
+        self.assertEqual(decode_asf_output_line((message + "\\r\\n").encode("utf-8")), message)
+
+    def test_asf_console_decodes_windows_oem_russian_output(self):
+        message = "Ошибка отправки предмета"
+        self.assertEqual(decode_asf_output_line((message + "\\r\\n").encode("cp866")), message)
 
     def setUp(self):
         self.widget = ASFManagementWidget()
