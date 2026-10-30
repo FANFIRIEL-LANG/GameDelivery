@@ -9,10 +9,13 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget, QLineEdit,
+    QVBoxLayout, QWidget, QLineEdit, QSpinBox,
 )
 
-from games.steam_cards.inventory_views import (\n    build_inventory_view, expand_inventory_instances, filter_inventory_rows,\n)
+from games.steam_cards.inventory_views import (
+    build_inventory_view, expand_inventory_instances, filter_inventory_rows, select_inventory_instances,
+)
+
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
@@ -114,8 +117,21 @@ class InventoryPanel(QWidget):
         self.instance_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.instance_list.itemChanged.connect(self._instance_check_changed)
         layout.addWidget(self.instance_list)
+        quantity_controls = QHBoxLayout()
+        quantity_controls.addWidget(QLabel("Количество экземпляров"))
+        self.quantity_input = QSpinBox()
+        self.quantity_input.setRange(0, 0)
+        quantity_controls.addWidget(self.quantity_input)
+        self.apply_quantity_button = QPushButton("Применить")
+        self.clear_selection_button = QPushButton("Снять выбор")
+        quantity_controls.addWidget(self.apply_quantity_button)
+        quantity_controls.addWidget(self.clear_selection_button)
+        quantity_controls.addStretch(1)
+        layout.addLayout(quantity_controls)
         self._selected_asset_keys: set[tuple[str, str]] = set()
         self.item_grid.itemSelectionChanged.connect(self._render_instance_choices)
+        self.apply_quantity_button.clicked.connect(self._apply_quantity_selection)
+        self.clear_selection_button.clicked.connect(self._clear_asset_selection)
         self.table.hide()
 
         self.view_mode = QComboBox()
@@ -253,6 +269,7 @@ class InventoryPanel(QWidget):
             row_data = card_item.data(Qt.ItemDataRole.UserRole + 2)
             if row_data is not None:
                 available.extend(expand_inventory_instances(row_data))
+        self.quantity_input.setRange(0, len(available))
         for bot_name, asset_id in available:
             key = (bot_name, asset_id)
             choice = QListWidgetItem(f"{bot_name} — {asset_id}")
@@ -276,10 +293,30 @@ class InventoryPanel(QWidget):
             self._selected_asset_keys.discard(normalized)
         self._update_instance_summary()
 
+    def _apply_quantity_selection(self):
+        available = []
+        for card_item in self.item_grid.selectedItems():
+            row_data = card_item.data(Qt.ItemDataRole.UserRole + 2)
+            if row_data is not None:
+                available.extend(expand_inventory_instances(row_data))
+        self._selected_asset_keys = set(
+            select_inventory_instances(available, self.quantity_input.value())
+        )
+        self._render_instance_choices()
+
+    def _clear_asset_selection(self):
+        self._selected_asset_keys.clear()
+        self._render_instance_choices()
+
     def _update_instance_summary(self):
+        counts = {}
+        for bot, asset in self._selected_asset_keys:
+            counts[bot] = counts.get(bot, 0) + 1
+        distribution = " · ".join(f"{bot}: {count}" for bot, count in sorted(counts.items()))
+        detail = f" Распределение: {distribution}." if distribution else ""
         self.instance_summary.setText(
-            f"Выбрано экземпляров: {len(self._selected_asset_keys)}. "
-            "Каждый экземпляр сохраняет своего бота и asset ID."
+            f"Выбрано экземпляров: {len(self._selected_asset_keys)}.{detail} "
+            "Владельцы и asset ID сохраняются отдельно."
         )
 
     def _toggle_view(self, *_):
