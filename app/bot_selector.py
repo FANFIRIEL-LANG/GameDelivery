@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QComboBox
+from PySide6.QtWidgets import QComboBox, QLineEdit, QListWidget
 
 
 _BOT_KEYS = {
@@ -111,3 +111,15 @@ def populate_bot_combo(combo: QComboBox, extra_names=()) -> None:
     index = combo.findData(previous)
     combo.setCurrentIndex(index if index >= 0 else 0)
     combo.blockSignals(False)
+
+
+
+def connect_account_search(search: QLineEdit, account_list: QListWidget) -> None:
+    """Filter visible account rows without changing their checked/selected state."""
+    def apply_filter(text: str) -> None:
+        query = text.strip().casefold()
+        for index in range(account_list.count()):
+            item = account_list.item(index)
+            item.setHidden(bool(query) and query not in item.text().casefold())
+
+    search.textChanged.connect(apply_filter)
