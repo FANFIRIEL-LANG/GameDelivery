@@ -5,6 +5,7 @@ import re
 import shutil
 import socket
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QSettings, QThread, QTimer, Signal
@@ -67,6 +68,7 @@ class ASFManagementWidget(QWidget):
         self._asf_console_lines: list[str] = []
         self._asf_ipc_attempts = 0
         self._pending_start_bot_names: list[str] = []
+        self._bot_start_requested_at: dict[str, str] = {}
         root = QVBoxLayout(self)
         intro = QLabel(
             "Массовый импорт аккаунтов: TXT с логином и паролем + папка maFiles + "
@@ -169,8 +171,8 @@ class ASFManagementWidget(QWidget):
         launch_buttons.addStretch()
         root.addLayout(launch_buttons)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Имя бота", "Состояние"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Имя бота", "Состояние", "Команда запуска"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
@@ -916,6 +918,8 @@ class ASFManagementWidget(QWidget):
             else:
                 state = "Загружен"
             self.table.setItem(row, 1, QTableWidgetItem(state))
+            requested_at = self._bot_start_requested_at.get(str(name), "—")
+            self.table.setItem(row, 2, QTableWidgetItem(requested_at))
 
     def _selected_bot_names(self) -> list[str]:
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
@@ -1128,6 +1132,9 @@ class ASFManagementWidget(QWidget):
         try:
             try:
                 client.start_bots(bot_names)
+                requested_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+                for bot_name in bot_names:
+                    self._bot_start_requested_at[bot_name] = requested_at
                 self.refresh_bots()
                 self.status.setText(
                     f"Одна команда запуска отправлена ASF для {len(bot_names)} ботов. "
@@ -1142,6 +1149,7 @@ class ASFManagementWidget(QWidget):
                     try:
                         client.start_bot(bot_name)
                         started.append(bot_name)
+                        self._bot_start_requested_at[bot_name] = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
                     except (ASFError, ValueError, OSError):
                         failed.append(bot_name)
                 self.refresh_bots()
