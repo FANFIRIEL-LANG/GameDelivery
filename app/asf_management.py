@@ -199,6 +199,10 @@ class ASFManagementWidget(QWidget):
         launch_buttons.addStretch()
         root.addLayout(launch_buttons)
 
+        self.account_search = QLineEdit()
+        self.account_search.setPlaceholderText("Поиск аккаунта / бота…")
+        self.account_search.textChanged.connect(self._filter_bot_table)
+        root.addWidget(self.account_search)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Имя бота", "Состояние", "Команда запуска"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -965,6 +969,18 @@ class ASFManagementWidget(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(state))
             requested_at = self._bot_start_requested_at.get(str(name), "—")
             self.table.setItem(row, 2, QTableWidgetItem(requested_at))
+
+    def _filter_bot_table(self, text: str):
+        query = text.strip().casefold()
+        for row in range(self.table.rowCount()):
+            values = [
+                self.table.item(row, column).text()
+                for column in range(self.table.columnCount())
+                if self.table.item(row, column) is not None
+            ]
+            self.table.setRowHidden(
+                row, bool(query) and not any(query in value.casefold() for value in values)
+            )
 
     def _selected_bot_names(self) -> list[str]:
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
