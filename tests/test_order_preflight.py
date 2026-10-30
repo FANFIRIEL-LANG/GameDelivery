@@ -43,6 +43,47 @@ class OrderPreflightTests(unittest.TestCase):
         self.assertIn("ручной проверке", result.message)
         self.assertIn("не выполнялась", result.message)
 
+    def test_foil_cards_are_never_reserved_when_normal_copy_exists(self):
+        inventories = {
+            "Bot A": [
+                CardCopy("foil-a", "Game", "A", is_foil=True),
+                CardCopy("normal-a", "Game", "A"),
+                CardCopy("normal-b", "Game", "B"),
+            ],
+        }
+        result = self.service.prepare(
+            order_id="foil-exclusion", game_name="Game", requested_sets=1,
+            inventories=inventories,
+            recipient_badges=[RecipientBadge("Game", 0)], badge_data_verified=True,
+        )
+        self.assertTrue(result.ready_for_manual_review)
+        self.assertEqual(
+            set(result.reserved_assets),
+            {("Bot A", "normal-a"), ("Bot A", "normal-b")},
+        )
+        self.assertNotIn(("Bot A", "foil-a"), result.reserved_assets)
+        self.assertNotIn(
+            ("Bot A", "foil-a"),
+            {(row["bot_name"], row["asset_id"])
+             for row in self.reservations.list_for_order("foil-exclusion")},
+        )
+
+    def test_foil_card_cannot_replace_missing_normal_card(self):
+        inventories = {
+            "Bot A": [
+                CardCopy("foil-a", "Game", "A", is_foil=True),
+                CardCopy("normal-b", "Game", "B"),
+            ],
+        }
+        result = self.service.prepare(
+            order_id="foil-only", game_name="Game", requested_sets=1,
+            inventories=inventories,
+            recipient_badges=[RecipientBadge("Game", 0)], badge_data_verified=True,
+        )
+        self.assertFalse(result.ready_for_manual_review)
+        self.assertEqual(result.reserved_assets, ())
+        self.assertEqual(self.reservations.list_for_order("foil-only"), [])
+
     def test_badge_capacity_blocks_order(self):
         result = self.service.prepare(
             order_id="o1", game_name="Game", requested_sets=2,
