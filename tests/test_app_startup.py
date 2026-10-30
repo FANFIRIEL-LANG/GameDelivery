@@ -476,21 +476,25 @@ class AppStartupSmokeTests(unittest.TestCase):
                     self.app.processEvents()
 
 
-    def test_game_catalog_lists_supported_modules_and_filters_search(self):
+    def test_game_catalog_contains_requested_games_and_filters_search(self):
         window = MainWindow()
         try:
-            self.assertEqual(window.game_list.count(), 2)
+            expected = ["cs2", "dota2", "steam_cards", "tf2", "rust"]
+            self.assertEqual(window.game_list.count(), len(expected))
             self.assertEqual(
-                window.game_list.item(0).data(Qt.ItemDataRole.UserRole),
-                "steam_cards",
+                [
+                    window.game_list.item(index).data(Qt.ItemDataRole.UserRole)
+                    for index in range(window.game_list.count())
+                ],
+                expected,
             )
             self.assertTrue(window.open_game_inventory_button.isEnabled())
 
-            window.game_search.setText("counter")
+            window.game_search.setText("dota")
             self.assertEqual(window.game_list.count(), 1)
             self.assertEqual(
                 window.game_list.item(0).data(Qt.ItemDataRole.UserRole),
-                "cs2",
+                "dota2",
             )
             self.assertFalse(window.open_game_inventory_button.isEnabled())
 
