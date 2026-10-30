@@ -63,12 +63,19 @@ public sealed class GameDeliveryPlugin : IBotCommand2
 
         if (isDiagnostic)
         {
-            if (args.Length != 1)
+            if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1]))
             {
-                return Failure("Диагностическая команда не принимает аргументы.");
+                return Failure("Укажи имя бота: gamedelivery-diagnose <BotName>.");
             }
 
-            return await RunDiagnosticCommand(bot).ConfigureAwait(false);
+            Bot? diagnosticBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
+                string.Equals(candidate.BotName, args[1], StringComparison.OrdinalIgnoreCase));
+            if (diagnosticBot is null)
+            {
+                return Failure("Бот " + SafeMessage(args[1]) + " не найден в текущем экземпляре ASF.");
+            }
+
+            return await RunDiagnosticCommand(diagnosticBot).ConfigureAwait(false);
         }
 
         if (args.Length != 2 || args[1].Length > 16000)
