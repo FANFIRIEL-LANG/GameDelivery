@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from games.catalog import GAME_CATALOG, get_game
 from games.inventory import GameInventoryStore, parse_game_inventory, refresh_game_inventory
 from integrations.asf.client import ASFError
+from app.game_inventory_cards import rarity_color, stattrak_label
 
 
 def payload():
@@ -90,6 +91,15 @@ class GameInventoryStoreTests(unittest.TestCase):
             self.assertEqual(result["item_count"], 1)
             self.assertEqual(store.load("cs2", "Bot A")[0].asset_id, "1001")
 
+    def test_load_all_keeps_each_items_account_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
+            store.replace("cs2", "Bot A", parse_game_inventory(payload(), "cs2", "Bot A"))
+            store.replace("cs2", "Bot B", parse_game_inventory(payload(), "cs2", "Bot B"))
+            all_items = store.load_all("cs2")
+            self.assertEqual({item.bot_name for item in all_items}, {"Bot A", "Bot B"})
+            self.assertEqual(len(all_items), 2)
+
     def test_snapshots_are_isolated_by_game_and_bot(self):
         with tempfile.TemporaryDirectory() as directory:
             store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
@@ -98,6 +108,18 @@ class GameInventoryStoreTests(unittest.TestCase):
             self.assertEqual(store.load("cs2", "Bot A"), item)
             self.assertEqual(store.load("dota2", "Bot A"), [])
             self.assertEqual(store.load("cs2", "Bot B"), [])
+
+
+class GameInventoryCardMetadataTests(unittest.TestCase):
+    def test_stattrak_is_detected_from_item_metadata(self):
+        item = parse_game_inventory(payload(), "cs2", "Bot A")[0]
+        self.assertEqual(stattrak_label(item), "Нет")
+        from dataclasses import replace
+        self.assertEqual(stattrak_label(replace(item, tags=item.tags + ("StatTrak™",))), "Да")
+
+    def test_rarity_has_a_distinct_border_color(self):
+        self.assertEqual(rarity_color("Covert"), "#eb4b4b")
+        self.assertNotEqual(rarity_color("Classified"), rarity_color("Mil-Spec Grade"))
 
 
 if __name__ == "__main__":
