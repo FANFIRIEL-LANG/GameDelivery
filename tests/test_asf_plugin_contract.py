@@ -52,10 +52,11 @@ class ASFPluginContractTests(unittest.TestCase):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         send_call = source.index("targetBot.ArchiWebHandler.SendTradeOffer")
         catch_region = source[send_call:source.index("finally", send_call)]
-        self.assertIn("exception is MissingMethodException", catch_region)
-        self.assertIn("MissingMethod", catch_region)
-        self.assertIn("StackTrace", catch_region)
-        self.assertIn("exceptionType", source[source.index("private static string UnknownFailure"):source.index("private static string Failure")])
+        self.assertIn("exception);", catch_region)
+        failure_region = source[source.index("private static string UnknownFailure"):source.index("private static string Failure")]
+        self.assertIn("exception is MissingMethodException", failure_region)
+        self.assertIn("StackTrace", failure_region)
+        self.assertIn("exceptionType", failure_region)
 
 
 if __name__ == "__main__":
