@@ -13,7 +13,9 @@ from app.bot_selector import configured_bot_names
 from app.game_inventory_cards import GameItemCard, GameItemImageLoader
 from app.inventory_panel import InventoryPanel
 from games.catalog import GAME_CATALOG
-from games.inventory import (\n    GameInventoryStore, refresh_game_inventory, filter_game_inventory_items,\n)
+from games.inventory import (
+    GameInventoryStore, refresh_game_inventory, filter_game_inventory_items,
+)
 from integrations.asf.client import ASFClient
 
 
