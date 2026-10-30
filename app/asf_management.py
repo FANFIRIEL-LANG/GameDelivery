@@ -872,9 +872,17 @@ class ASFManagementWidget(QWidget):
                     self.export_inventory_button.setEnabled(False)
                     self.status.setText(f"Не удалось получить список ASF: {ipc_error}. Список очищен.")
             elif bots:
+                online = sum(
+                    1 for details in bots.values()
+                    if isinstance(details, dict) and any(
+                        value is True for key, value in details.items()
+                        if str(key).casefold() in {"isconnectedandloggedon", "isconnected"}
+                    )
+                )
                 self.status.setText(
-                    f"Получено ботов: {len(bots)} из ASF; всего конфигураций: {len(merged)}. "
-                    "Секреты в таблицу не выводятся."
+                    f"Ботов в ASF: {len(bots)} · онлайн: {online} · "
+                    f"не онлайн/не подтверждено: {len(bots) - online} · "
+                    f"всего конфигураций: {len(merged)}. В таблице указано время отправки команды запуска."
                 )
             elif configured:
                 self.status.setText(
