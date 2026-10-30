@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from app.bot_selector import configured_bot_names
+from app.bot_selector import configured_bot_names, connect_account_search
 from app.game_inventory_cards import GameItemCard, GameItemImageLoader
 from app.inventory_panel import InventoryPanel
 from games.catalog import GAME_CATALOG
@@ -52,8 +52,14 @@ class GameInventoryPanel(QWidget):
         controls.addWidget(QLabel("Аккаунты"))
         self.bot_list = QListWidget()
         self.bot_list.setMaximumHeight(92)
+        self.account_search = QLineEdit()
+        self.account_search.setPlaceholderText("Поиск аккаунта…")
+        connect_account_search(self.account_search, self.bot_list)
+        account_search_column = QVBoxLayout()
+        account_search_column.addWidget(self.account_search)
+        account_search_column.addWidget(self.bot_list)
         self.bot_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        controls.addWidget(self.bot_list, 2)
+        controls.addLayout(account_search_column, 2)
         account_actions = QVBoxLayout()
         self.select_all_bots_button = QPushButton("Выбрать всех")
         self.clear_bots_button = QPushButton("Снять выбор")
