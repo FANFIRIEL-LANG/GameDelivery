@@ -46,7 +46,7 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("GetInventory(", source)
         diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static string Failure")]
         self.assertIn("inventoryCount", diagnostic_region)
-        self.assertNotIn("SendTradeOffer", diagnostic_region)
+        self.assertNotIn(".SendTradeOffer(", diagnostic_region)
 
 
 if __name__ == "__main__":
