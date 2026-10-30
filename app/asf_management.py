@@ -21,6 +21,34 @@ from integrations.asf.client import ASFClient, ASFError
 
 ASF_IPC_KEYRING_SERVICE = "GameDelivery.ASFIPC"
 ASF_IPC_KEYRING_ACCOUNT = "localhost:1242"
+ASF_LOGIN_LIMITER_DELAY_SECONDS = 3
+
+
+def ensure_asf_login_limiter_delay(config_dir: Path) -> bool:
+    """Set only ASF's global delay between consecutive Steam login attempts."""
+    config_path = config_dir / "ASF.json"
+    if config_path.is_file():
+        payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        if not isinstance(payload, dict):
+            raise ValueError("ASF.json должен содержать JSON-объект")
+    else:
+        payload = {}
+
+    key = next(
+        (name for name in payload if str(name).casefold() == "loginlimiterdelay"),
+        "LoginLimiterDelay",
+    )
+    if payload.get(key) == ASF_LOGIN_LIMITER_DELAY_SECONDS:
+        return False
+
+    payload[key] = ASF_LOGIN_LIMITER_DELAY_SECONDS
+    temporary_path = config_path.with_name(config_path.name + ".gamedelivery.tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent="\t") + "\\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(config_path)
+    return True
 
 
 class ASFOutputReader(QThread):
@@ -364,6 +392,15 @@ class ASFManagementWidget(QWidget):
             )
             return
         self._autodetect_config_dir(executable.parent)
+        config_text = self.config_path.text().strip()
+        if config_text:
+            try:
+                changed = ensure_asf_login_limiter_delay(Path(config_text))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                self.status.setText(f"Не удалось установить LoginLimiterDelay=3 в ASF.json: {exc}")
+                return
+            if changed:
+                self.status.setText("В ASF.json установлено LoginLimiterDelay=3 секунды.")
         if self._asf_process is not None and self._asf_process.poll() is None:
             self._asf_ipc_attempts = 0
             self.status.setText("ASF уже запущен GameDelivery; ожидаю готовности IPC…")
