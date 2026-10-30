@@ -8,10 +8,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
+from PySide6.QtCore import Qt\nfrom PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem, QLineEdit, QListWidget, QListWidgetItem
 from app.asf_management import (
     ASFManagementWidget, ensure_asf_login_limiter_delay, decode_asf_output_line,
 )
+from app.bot_selector import connect_account_search
 
 
 class ASFManagementWidgetTests(unittest.TestCase):
@@ -53,6 +54,27 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 json.loads((config_dir / "ASF.json").read_text(encoding="utf-8")),
                 {"LoginLimiterDelay": 3},
             )
+
+    def test_account_search_hides_nonmatching_rows_without_changing_checked_state(self):
+        search = QLineEdit()
+        account_list = QListWidget()
+        first = QListWidgetItem("account-alpha")
+        second = QListWidgetItem("account-beta")
+        account_list.addItem(first)
+        account_list.addItem(second)
+        first.setCheckState(Qt.CheckState.Checked)
+        second.setCheckState(Qt.CheckState.Checked)
+        connect_account_search(search, account_list)
+
+        search.setText("beta")
+        self.assertTrue(first.isHidden())
+        self.assertFalse(second.isHidden())
+        self.assertEqual(first.checkState(), Qt.CheckState.Checked)
+        self.assertEqual(second.checkState(), Qt.CheckState.Checked)
+
+        search.clear()
+        self.assertFalse(first.isHidden())
+        self.assertFalse(second.isHidden())
 
     def test_asf_console_decodes_utf8_russian_output(self):
         message = "Ошибка отправки предмета"
