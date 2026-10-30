@@ -476,5 +476,32 @@ class AppStartupSmokeTests(unittest.TestCase):
                     self.app.processEvents()
 
 
+    def test_game_catalog_lists_supported_modules_and_filters_search(self):
+        window = MainWindow()
+        try:
+            self.assertEqual(window.game_list.count(), 2)
+            self.assertEqual(
+                window.game_list.item(0).data(Qt.ItemDataRole.UserRole),
+                "steam_cards",
+            )
+            self.assertTrue(window.open_game_inventory_button.isEnabled())
+
+            window.game_search.setText("counter")
+            self.assertEqual(window.game_list.count(), 1)
+            self.assertEqual(
+                window.game_list.item(0).data(Qt.ItemDataRole.UserRole),
+                "cs2",
+            )
+            self.assertFalse(window.open_game_inventory_button.isEnabled())
+
+            window.game_search.setText("нет такой игры")
+            self.assertEqual(window.game_list.count(), 0)
+            self.assertFalse(window.open_game_inventory_button.isEnabled())
+        finally:
+            window.close()
+            window.deleteLater()
+            self.app.processEvents()
+
+
 if __name__ == "__main__":
     unittest.main()
