@@ -66,7 +66,25 @@ public sealed class GameDeliveryPlugin : IBotCommand2
 
         if (isSend)
         {
-            return await TradeDelivery.ProcessSendCommand(args[1]).ConfigureAwait(false);
+            try
+            {
+                return await TradeDelivery.ProcessSendCommand(args[1]).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                // The failure may have happened after Steam accepted the request.
+                // Fail closed: surface the exact exception type/message and prevent automatic retries.
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    mode = "send",
+                    sendEnabled = true,
+                    resultUnknown = true,
+                    error = "ASF прервал обработку отправки: "
+                        + exception.GetType().Name + ": " + SafeMessage(exception.Message)
+                        + ". Проверь исходящие предложения Steam; повторная отправка заблокирована."
+                }, JsonOptions);
+            }
         }
 
         PreviewRequest? request;
