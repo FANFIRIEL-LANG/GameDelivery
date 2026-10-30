@@ -25,11 +25,16 @@ class DatabaseStartupFailureTests(unittest.TestCase):
             database.write_bytes(original)
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
                  patch("app.main.QMessageBox.critical") as critical:
-                with self.assertRaises(sqlite3.DatabaseError):
-                    MainWindow()
-                self.assertTrue(critical.called)
-                displayed = "\n".join(str(arg) for arg in critical.call_args.args)
-                self.assertNotIn("synthetic-corrupt-database-sentinel", displayed)
+                window = MainWindow()
+                try:
+                    self.assertTrue(critical.called)
+                    displayed = "\n".join(str(arg) for arg in critical.call_args.args)
+                    self.assertNotIn("synthetic-corrupt-database-sentinel", displayed)
+                    self.assertTrue(window.startup_error_label.isVisible())
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
             self.assertEqual(database.read_bytes(), original)
 
     def test_database_permission_failure_is_reported_without_raw_os_error(self):
@@ -39,11 +44,16 @@ class DatabaseStartupFailureTests(unittest.TestCase):
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
                  patch("app.main.QMessageBox.critical") as critical, \
                  patch("sqlite3.connect", side_effect=OSError(marker)):
-                with self.assertRaises(OSError):
-                    MainWindow()
-                self.assertTrue(critical.called)
-                displayed = "\n".join(str(arg) for arg in critical.call_args.args)
-                self.assertNotIn(marker, displayed)
+                window = MainWindow()
+                try:
+                    self.assertTrue(critical.called)
+                    displayed = "\n".join(str(arg) for arg in critical.call_args.args)
+                    self.assertNotIn(marker, displayed)
+                    self.assertTrue(window.startup_error_label.isVisible())
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
 
 
 if __name__ == "__main__":
