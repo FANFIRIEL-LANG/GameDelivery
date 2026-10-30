@@ -67,6 +67,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
         self.game_inventory_panel = GameInventoryPanel()
         self.tabs.addTab(self.game_inventory_panel, "Игровые предметы")
+        self.inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
+        self.game_inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
@@ -91,6 +93,22 @@ class MainWindow(QMainWindow):
             QHeaderView::section { background: #252d38; color: #cbd5e1; border: 0; padding: 8px; }
             QFrame#card { background: #202731; border: 1px solid #303846; border-radius: 10px; }
         """)
+
+    def _open_order_with_trade_url(self, trade_url: str):
+        value = str(trade_url or "").strip()
+        if not value:
+            QMessageBox.warning(self, "Trade URL", "Укажи Steam Trade URL получателя.")
+            return
+        try:
+            value = self._validate_trade_url(value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Некорректный Trade URL", str(exc))
+            return
+        self.order_recipient.setText(value)
+        self.tabs.setCurrentIndex(0)
+        self.statusBar().showMessage(
+            "Trade URL перенесён в тестовую вкладку «Заказы». Проверь состав и подтверди отправку отдельно."
+        )
 
     def _orders_tab(self):
         page = QWidget()
