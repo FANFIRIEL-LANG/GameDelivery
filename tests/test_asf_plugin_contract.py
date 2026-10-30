@@ -29,6 +29,9 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("catch (Exception exception)", dispatch_region)
         self.assertIn("resultUnknown = true", dispatch_region)
         self.assertIn("exception.GetType().Name", dispatch_region)
+        self.assertIn("exceptionType = exception.GetType().FullName", dispatch_region)
+        self.assertIn("targetSite = exception.TargetSite?.ToString()", dispatch_region)
+        self.assertIn("stackTrace = SafeDiagnosticText(exception.StackTrace)", dispatch_region)
 
     def test_diagnostic_command_reports_runtime_trade_send_api_signature(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
