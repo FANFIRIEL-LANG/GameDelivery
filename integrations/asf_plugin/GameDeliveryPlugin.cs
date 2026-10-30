@@ -101,7 +101,11 @@ public sealed class GameDeliveryPlugin : IBotCommand2
                     resultUnknown = true,
                     error = "ASF прервал обработку отправки: "
                         + exception.GetType().Name + ": " + SafeMessage(exception.Message)
-                        + ". Проверь исходящие предложения Steam; повторная отправка заблокирована."
+                        + ". Проверь исходящие предложения Steam; повторная отправка заблокирована.",
+                    exceptionType = exception.GetType().FullName,
+                    exceptionMessage = SafeDiagnosticText(exception.Message),
+                    targetSite = exception.TargetSite?.ToString(),
+                    stackTrace = SafeDiagnosticText(exception.StackTrace)
                 }, JsonOptions);
             }
         }
@@ -354,6 +358,16 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         {
             return "REFLECTION_ERROR: " + exception.GetType().Name + ": " + SafeMessage(exception.Message);
         }
+    }
+
+    private static string SafeDiagnosticText(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return "unknown";
+        }
+
+        return new string(message.Where(character => !char.IsControl(character)).Take(6000).ToArray());
     }
 
     private static string SafeMessage(string? message)
