@@ -33,7 +33,8 @@ class ASFPluginContractTests(unittest.TestCase):
     def test_diagnostic_command_checks_inventory_without_trade_send(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         self.assertIn('DiagnosticCommandName = "gamedelivery-diagnose"', source)
-        self.assertIn("RunDiagnosticCommand(bot)", source)
+        self.assertIn("RunDiagnosticCommand(diagnosticBot)", source)
+        self.assertIn("gamedelivery-diagnose <BotName>", source)
         self.assertIn("GetInventory(", source)
         diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static string Failure")]
         self.assertIn("inventoryCount", diagnostic_region)
