@@ -28,15 +28,21 @@ class AppStartupSmokeTests(unittest.TestCase):
                 MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
             ):
                 with patch("app.main.QMessageBox.critical") as critical:
-                    with self.assertRaises(sqlite3.DatabaseError):
-                        MainWindow()
+                    window = MainWindow()
 
-            critical.assert_called_once()
-            title, message = critical.call_args.args[1:3]
-            self.assertEqual(title, "Ошибка локальной базы данных")
-            self.assertIn("не может открыть или обновить локальную базу данных", message)
-            self.assertIn("резервную копию", message)
-            self.assertEqual(database.read_bytes(), original)
+            try:
+                critical.assert_called_once()
+                title, message = critical.call_args.args[1:3]
+                self.assertEqual(title, "Ошибка локальной базы данных")
+                self.assertIn("не может открыть или обновить локальную базу данных", message)
+                self.assertIn("резервную копию", message)
+                self.assertEqual(window.startup_error_label.text(), message)
+                self.assertIsNone(window.tabs if hasattr(window, "tabs") else None)
+                self.assertEqual(database.read_bytes(), original)
+            finally:
+                window.close()
+                window.deleteLater()
+                self.app.processEvents()
 
     def test_unavailable_database_path_shows_clear_error_without_creating_replacement(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -46,13 +52,19 @@ class AppStartupSmokeTests(unittest.TestCase):
                 MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
             ):
                 with patch("app.main.QMessageBox.critical") as critical:
-                    with self.assertRaises(sqlite3.Error):
-                        MainWindow()
+                    window = MainWindow()
 
-            critical.assert_called_once()
-            self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
-            self.assertTrue(database.is_dir())
-            self.assertEqual(list(database.iterdir()), [])
+            try:
+                critical.assert_called_once()
+                self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
+                self.assertEqual(window.startup_error_label.text(), critical.call_args.args[2])
+                self.assertIsNone(window.tabs if hasattr(window, "tabs") else None)
+                self.assertTrue(database.is_dir())
+                self.assertEqual(list(database.iterdir()), [])
+            finally:
+                window.close()
+                window.deleteLater()
+                self.app.processEvents()
 
     def test_trade_url_validation_accepts_steam_url_and_rejects_other_hosts(self):
         valid = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
