@@ -4,7 +4,10 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from games.catalog import GAME_CATALOG, get_game
-from games.inventory import (\n    GameInventoryStore, parse_game_inventory, refresh_game_inventory,\n    is_container_item, filter_game_inventory_items,\n)
+from games.inventory import (
+    GameInventoryStore, parse_game_inventory, refresh_game_inventory,
+    is_container_item, filter_game_inventory_items,
+)
 from integrations.asf.client import ASFError
 from app.game_inventory_cards import rarity_color, stattrak_label, GameItemImageLoader
 
