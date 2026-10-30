@@ -27,15 +27,22 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
-        except (OSError, sqlite3.Error):
-            QMessageBox.critical(
-                self,
-                "Ошибка локальной базы данных",
+        except (OSError, sqlite3.Error) as exc:
+            message = (
                 "GameDelivery не может открыть или обновить локальную базу данных. "
                 "Исходные данные не сбрасывались. Проверь доступ к файлу и сделай резервную копию "
-                "перед восстановлением.",
+                "перед восстановлением.\n\n"
+                f"Подробности: {type(exc).__name__}"
             )
-            raise
+            QMessageBox.critical(self, "Ошибка локальной базы данных", message)
+            self.startup_error_label = QLabel(message)
+            self.startup_error_label.setWordWrap(True)
+            self.startup_error_label.setMargin(24)
+            self.startup_error_label.setObjectName("databaseStartupError")
+            self.setCentralWidget(self.startup_error_label)
+            self.resize(720, 260)
+            self.setMinimumSize(560, 220)
+            return
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
         root = QWidget()
