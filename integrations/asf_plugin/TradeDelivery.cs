@@ -202,10 +202,31 @@ internal static class TradeDelivery
             return Failure("Нельзя отправлять предложение самому себе.");
         }
 
-        (HashSet<Asset>? inventory, string inventoryMessage) = await targetBot.Actions.GetInventory(
-            Asset.SteamAppID,
-            Asset.SteamCommunityContextID,
-            language: "english").ConfigureAwait(false);
+        HashSet<Asset>? inventory;
+        string inventoryMessage;
+        try
+        {
+            (inventory, inventoryMessage) = await targetBot.Actions.GetInventory(
+                Asset.SteamAppID,
+                Asset.SteamCommunityContextID,
+                language: "english").ConfigureAwait(false);
+        }
+        catch (MissingMethodException exception)
+        {
+            return Failure(
+                "Проверка инвентаря ASF завершилась ошибкой до отправки: MissingMethodException: "
+                + SafeMessage(exception.Message)
+                + ". Предложение не отправлялось.",
+                resultUnknown: false);
+        }
+        catch (Exception exception)
+        {
+            return Failure(
+                "Проверка инвентаря ASF завершилась ошибкой до отправки: "
+                + exception.GetType().Name + ": " + SafeMessage(exception.Message)
+                + ". Предложение не отправлялось.",
+                resultUnknown: false);
+        }
 
         if (inventory is null)
         {
