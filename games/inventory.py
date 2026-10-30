@@ -48,6 +48,22 @@ def _flag(data: dict[str, Any], field: str, asset_id: str) -> bool | None:
     raise ASFError(f"Некорректный флаг {field} у предмета {asset_id}")
 
 
+
+def is_container_item(item: InventoryItem) -> bool:
+    """Identify CS2 containers from Steam's typed description metadata."""
+    if item.game_id != "cs2":
+        return False
+    if "container" in (item.item_type or "").casefold():
+        return True
+    return any(str(tag).strip().casefold() == "container" for tag in item.tags)
+
+
+def filter_game_inventory_items(items: list[InventoryItem], containers_only: bool = False) -> list[InventoryItem]:
+    if not containers_only:
+        return list(items)
+    return [item for item in items if is_container_item(item)]
+
+
 def parse_game_inventory(payload: Any, game_id: str, bot_name: str) -> list[InventoryItem]:
     """Parse a complete ASF BotInventoryResponse without assuming card semantics."""
     from games.catalog import get_game
