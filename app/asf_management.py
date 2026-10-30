@@ -880,7 +880,7 @@ class ASFManagementWidget(QWidget):
                     )
                 )
                 self.status.setText(
-                    f"Ботов в ASF: {len(bots)} · онлайн: {online} · "
+                    f"Получено ботов: {len(bots)} из ASF · онлайн: {online} · "
                     f"не онлайн/не подтверждено: {len(bots) - online} · "
                     f"всего конфигураций: {len(merged)}. В таблице указано время отправки команды запуска."
                 )
