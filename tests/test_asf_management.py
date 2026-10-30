@@ -9,7 +9,9 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
-from app.asf_management import (\n    ASFManagementWidget, ensure_asf_login_limiter_delay, decode_asf_output_line,\n)
+from app.asf_management import (
+    ASFManagementWidget, ensure_asf_login_limiter_delay, decode_asf_output_line,
+)
 
 
 class ASFManagementWidgetTests(unittest.TestCase):
