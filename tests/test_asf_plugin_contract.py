@@ -30,6 +30,14 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("resultUnknown = true", dispatch_region)
         self.assertIn("exception.GetType().Name", dispatch_region)
 
+    def test_diagnostic_command_reports_runtime_trade_send_api_signature(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static string Failure")]
+        self.assertIn("sendTradeOfferMethods", diagnostic_region)
+        self.assertIn("ArchiWebHandler", diagnostic_region)
+        self.assertIn("GetMethods()", diagnostic_region)
+        self.assertIn("asfAssemblyLocation", diagnostic_region)
+
     def test_diagnostic_command_checks_inventory_without_trade_send(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         self.assertIn('DiagnosticCommandName = "gamedelivery-diagnose"', source)
