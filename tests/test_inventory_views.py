@@ -1,6 +1,6 @@
 import unittest
 
-from games.steam_cards.inventory_views import build_inventory_view, expand_inventory_instances
+from games.steam_cards.inventory_views import (\n    build_inventory_view, expand_inventory_instances, filter_inventory_rows,\n)
 from games.steam_cards.selection import CardCopy
 
 
@@ -100,6 +100,42 @@ class InventoryViewTests(unittest.TestCase):
     def test_invalid_mode_rejected(self):
         with self.assertRaises(ValueError):
             build_inventory_view(self.inventories, ["Bot A"], mode="merged")
+
+
+    def test_inventory_search_matches_game_card_owner_and_asset_id(self):
+        view = build_inventory_view(self.inventories, ["Bot A", "Bot B"], mode="shared")
+        self.assertEqual(
+            [row.card_name for row in filter_inventory_rows(view.rows, "bot b")],
+            ["Card A", "Card B"],
+        )
+        self.assertEqual(
+            [row.card_name for row in filter_inventory_rows(view.rows, "same-id")],
+            ["Card A"],
+        )
+        self.assertEqual(
+            [row.card_name for row in filter_inventory_rows(view.rows, "Other Game")],
+            [],
+        )
+
+    def test_inventory_type_and_transfer_filters(self):
+        inventories = {
+            "Bot A": [
+                card("card", "Card", tradable=True),
+                CardCopy("item", "Game", "Item", is_trading_card=False, is_tradable=False),
+                card("foil", "Foil", foil=True, tradable=True),
+                card("unknown", "Unknown", tradable=None),
+            ],
+        }
+        view = build_inventory_view(inventories, ["Bot A"], mode="shared")
+        self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="cards")}, {"Card", "Foil", "Unknown"})
+        self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="items")}, {"Item"})
+        self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="tradable")}, {"Card", "Foil"})
+        self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="nontradable")}, {"Item"})
+        self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="foil")}, {"Foil"})
+
+    def test_unknown_inventory_filter_is_rejected(self):
+        with self.assertRaises(ValueError):
+            filter_inventory_rows((), item_filter="unknown")
 
 
 if __name__ == "__main__":
