@@ -4,9 +4,9 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from games.catalog import GAME_CATALOG, get_game
-from games.inventory import GameInventoryStore, parse_game_inventory, refresh_game_inventory
+from games.inventory import (\n    GameInventoryStore, parse_game_inventory, refresh_game_inventory,\n    is_container_item, filter_game_inventory_items,\n)
 from integrations.asf.client import ASFError
-from app.game_inventory_cards import rarity_color, stattrak_label
+from app.game_inventory_cards import rarity_color, stattrak_label, GameItemImageLoader
 
 
 def payload():
@@ -110,6 +110,46 @@ class GameInventoryStoreTests(unittest.TestCase):
             self.assertEqual(store.load("cs2", "Bot A"), item)
             self.assertEqual(store.load("dota2", "Bot A"), [])
             self.assertEqual(store.load("cs2", "Bot B"), [])
+
+
+class GameInventoryFilteringTests(unittest.TestCase):
+    def test_cs2_container_is_detected_from_item_type(self):
+        item = parse_game_inventory(payload(), "cs2", "Bot A")[0]
+        from dataclasses import replace
+        container = replace(item, item_type="Base Grade Container")
+        self.assertTrue(is_container_item(container))
+        self.assertEqual(filter_game_inventory_items([item, container], True), [container])
+
+    def test_cs2_container_is_detected_from_type_tag(self):
+        item = parse_game_inventory(payload(), "cs2", "Bot A")[0]
+        from dataclasses import replace
+        container = replace(item, item_type="Base Grade", tags=("Container",))
+        self.assertTrue(is_container_item(container))
+
+    def test_non_cs2_items_are_not_classified_as_cs2_containers(self):
+        item = parse_game_inventory(payload(), "dota2", "Bot A")[0]
+        from dataclasses import replace
+        misleading = replace(item, item_type="Container", tags=("Container",))
+        self.assertFalse(is_container_item(misleading))
+        self.assertEqual(filter_game_inventory_items([misleading], True), [])
+
+    def test_all_items_filter_preserves_inventory(self):
+        items = parse_game_inventory(payload(), "cs2", "Bot A")
+        self.assertEqual(filter_game_inventory_items(items), items)
+
+
+class GameInventoryImageFallbackTests(unittest.TestCase):
+    def test_image_candidates_match_steam_cards_fallback_hosts(self):
+        url = "https://community.cloudflare.steamstatic.com/economy/image/abcdef/96fx96f"
+        candidates = GameItemImageLoader.steam_image_candidates(url)
+        self.assertEqual(len(candidates), 3)
+        self.assertIn("https://community.akamai.steamstatic.com/economy/image/abcdef/96fx96f", candidates)
+        self.assertIn("https://steamcommunity-a.akamaihd.net/economy/image/abcdef/96fx96f", candidates)
+        self.assertIn("https://community.steamstatic.com/economy/image/abcdef/96fx96f", candidates)
+        self.assertNotIn(url, candidates)
+
+    def test_image_candidates_require_a_path(self):
+        self.assertEqual(GameItemImageLoader.steam_image_candidates("https://example.com"), [])
 
 
 class GameInventoryCardMetadataTests(unittest.TestCase):
