@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from html import escape
+import os
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPixmap
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
 
 
@@ -102,14 +105,82 @@ class GameItemCard(QFrame):
 
 
 class GameItemImageLoader:
+    """Steam CDN image loader with the same fallback and diagnostics as Steam cards."""
+
+    STEAM_IMAGE_HOSTS = (
+        "community.cloudflare.steamstatic.com",
+        "community.akamai.steamstatic.com",
+        "steamcommunity-a.akamaihd.net",
+        "community.steamstatic.com",
+    )
+
     def __init__(self, parent, on_loaded):
         self.manager = QNetworkAccessManager(parent)
         self.manager.finished.connect(on_loaded)
         self.cache: dict[str, QPixmap] = {}
         self.pending: set[str] = set()
+        self.attempted: dict[str, set[str]] = {}
+        self.request_origin: dict[str, str] = {}
 
-    def request(self, url: str):
+    @classmethod
+    def steam_image_candidates(cls, url: str) -> list[str]:
+        parsed = QUrl(url)
+        path = parsed.path()
+        if not path:
+            return []
+        return [
+            candidate for host in cls.STEAM_IMAGE_HOSTS
+            if (candidate := QUrl("https://" + host + path).toString()) != url
+        ]
+
+    def request(self, url: str, origin: str | None = None):
         if not url or url in self.cache or url in self.pending:
             return
+        origin = origin or url
+        attempted = self.attempted.setdefault(origin, set())
+        if url in attempted:
+            return
+        attempted.add(url)
+        self.request_origin[url] = origin
         self.pending.add(url)
-        self.manager.get(QNetworkRequest(QUrl(url)))
+        request = QNetworkRequest(QUrl(url))
+        request.setRawHeader(b"User-Agent", b"Mozilla/5.0 GameDelivery/1.0")
+        request.setTransferTimeout(15000)
+        request.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
+        )
+        self.manager.get(request)
+
+    def handle_reply(self, reply: QNetworkReply):
+        url = reply.request().url().toString()
+        origin = self.request_origin.pop(url, url)
+        self.pending.discard(url)
+        pixmap = QPixmap()
+        if reply.error() == QNetworkReply.NetworkError.NoError:
+            pixmap.loadFromData(bytes(reply.readAll()))
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        error_text = reply.errorString()
+        reply.deleteLater()
+        if pixmap.isNull():
+            for fallback in self.steam_image_candidates(origin):
+                if fallback not in self.attempted.setdefault(origin, set()):
+                    self.request(fallback, origin)
+                    return
+            self._log_failure(origin, status, error_text)
+            return
+        self.cache[origin] = pixmap
+        self.cache[url] = pixmap
+
+    @staticmethod
+    def _log_failure(url: str, status, error_text: str):
+        try:
+            log_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "GameDelivery" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "image-download.log").open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"{datetime.now(timezone.utc).isoformat()} | "
+                    f"HTTP={status} | {error_text} | {url}\\n"
+                )
+        except OSError:
+            pass
