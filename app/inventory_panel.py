@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QSize, QUrl
+from PySide6.QtCore import QSettings, Qt, QSize, QUrl, QObject, QThread, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWidgets import (
@@ -22,6 +22,38 @@ from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
 from integrations.asf.client import ASFError
 from app.bot_selector import populate_bot_combo
+
+
+
+class _InventoryBatchWorker(QObject):
+    progress = Signal(int, int, str, str)
+    finished = Signal(list)
+
+    def __init__(self, bot_names: list[str], ipc_password: str, database_path):
+        super().__init__()
+        self.bot_names = list(bot_names)
+        self.ipc_password = ipc_password
+        self.database_path = database_path
+
+    def run(self):
+        results = []
+        controller = ASFInventoryController(self.database_path)
+        total = len(self.bot_names)
+        for index, bot_name in enumerate(self.bot_names, 1):
+            self.progress.emit(index, total, bot_name, "Запрашиваю инвентарь через ASF…")
+            try:
+                result = controller.refresh(bot_name, self.ipc_password)
+                results.append({"bot": bot_name, "ok": True,
+                    "item_count": int(result.get("item_count", 0)),
+                    "updated_at": str(result.get("updated_at", "")), "error": ""})
+                self.progress.emit(index, total, bot_name,
+                    f"Готово: {result.get('item_count', 0)} предметов")
+            except Exception as exc:
+                results.append({"bot": bot_name, "ok": False, "item_count": None,
+                    "updated_at": "", "error": str(exc)})
+                self.progress.emit(index, total, bot_name, f"Ошибка: {exc}")
+        self.finished.emit(results)
+
 
 
 class InventoryPanel(QWidget):
@@ -62,6 +94,14 @@ class InventoryPanel(QWidget):
         self.bot_list.setMaximumHeight(100)
         self.bot_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         controls.addWidget(self.bot_list, 2)
+        bot_actions = QVBoxLayout()
+        self.select_all_bots_button = QPushButton("Выбрать всех")
+        self.clear_bots_button = QPushButton("Снять выбор ботов")
+        self.fetch_selected_button = QPushButton("Проверить выбранных")
+        bot_actions.addWidget(self.select_all_bots_button)
+        bot_actions.addWidget(self.clear_bots_button)
+        bot_actions.addWidget(self.fetch_selected_button)
+        controls.addLayout(bot_actions)
         controls.addWidget(QLabel("Режим"))
         self.mode = QComboBox()
         self.mode.addItem("Общий вид", "shared")
@@ -158,6 +198,12 @@ class InventoryPanel(QWidget):
 
         self.refresh_button.clicked.connect(self.refresh)
         self.fetch_button.clicked.connect(self.fetch_from_asf)
+        self.select_all_bots_button.clicked.connect(self.select_all_bots)
+        self.clear_bots_button.clicked.connect(self.clear_bot_selection)
+        self.fetch_selected_button.clicked.connect(self.fetch_selected_from_asf)
+        self._batch_thread = None
+        self._batch_worker = None
+        self._batch_results = []
         self.mode.currentIndexChanged.connect(self.render_inventory)
         self.search_input.textChanged.connect(self.render_inventory)
         self.item_filter.currentIndexChanged.connect(self.render_inventory)
@@ -272,6 +318,71 @@ class InventoryPanel(QWidget):
                 f"Не удалось прочитать локальную базу: {exc}. "
                 "Отображение очищено; данные не подтверждены как актуальные."
             )
+
+    def select_all_bots(self):
+        for index in range(self.bot_list.count()):
+            self.bot_list.item(index).setSelected(True)
+        self.render_inventory()
+
+    def clear_bot_selection(self):
+        self.bot_list.clearSelection()
+        self.render_inventory()
+
+    def fetch_selected_from_asf(self):
+        if self._batch_thread is not None and self._batch_thread.isRunning():
+            self.summary.setText("Массовая проверка уже выполняется.")
+            return
+        bot_names = [str(item.data(Qt.ItemDataRole.UserRole)) for item in self.bot_list.selectedItems()]
+        if not bot_names:
+            self.summary.setText("Сначала выбери ботов в списке снимков.")
+            return
+        for button in (self.fetch_selected_button, self.fetch_button,
+                       self.select_all_bots_button, self.clear_bots_button, self.refresh_button):
+            button.setEnabled(False)
+        self.summary.setText(f"Начинаю проверку инвентарей: 0 из {len(bot_names)}…")
+        self._batch_thread = QThread(self)
+        self._batch_worker = _InventoryBatchWorker(
+            bot_names, self.ipc_password_input.text(), self.database_path
+        )
+        self._batch_worker.moveToThread(self._batch_thread)
+        self._batch_thread.started.connect(self._batch_worker.run)
+        self._batch_worker.progress.connect(self._batch_progress)
+        self._batch_worker.finished.connect(self._batch_finished)
+        self._batch_worker.finished.connect(self._batch_thread.quit)
+        self._batch_thread.finished.connect(self._batch_worker.deleteLater)
+        self._batch_thread.finished.connect(self._batch_thread.deleteLater)
+        self._batch_thread.start()
+
+    def _batch_progress(self, index: int, total: int, bot_name: str, message: str):
+        self.summary.setText(f"Проверка инвентарей: {index}/{total} · {bot_name} · {message}")
+
+    def _batch_finished(self, results: list):
+        self._batch_results = results
+        succeeded = [row for row in results if row["ok"]]
+        failed = [row for row in results if not row["ok"]]
+        self.refresh()
+        checked = {row["bot"] for row in results}
+        for index in range(self.bot_list.count()):
+            item = self.bot_list.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) in checked:
+                item.setSelected(True)
+        self.render_inventory()
+        total_items = sum(row["item_count"] for row in succeeded)
+        total_sets = sum(
+            sum(item.available_sets for item in find_available_sets(self.inventories.get(row["bot"], [])))
+            for row in succeeded
+        )
+        message = (f"Проверка завершена: успешно {len(succeeded)} из {len(results)}; "
+                   f"ошибок {len(failed)}. Предметов: {total_items}. "
+                   f"Полных наборов отдельно по ботам: {total_sets}. Обмены не отправлялись.")
+        if failed:
+            message += " Не удалось: " + ", ".join(row["bot"] for row in failed[:12])
+        self.summary.setText(message)
+        for button in (self.fetch_selected_button, self.fetch_button,
+                       self.select_all_bots_button, self.clear_bots_button, self.refresh_button):
+            button.setEnabled(True)
+        self._batch_worker = None
+        self._batch_thread = None
 
     def _render_instance_choices(self):
         self.instance_list.blockSignals(True)
