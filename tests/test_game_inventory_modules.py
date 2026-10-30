@@ -95,7 +95,9 @@ class GameInventoryStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
             store.replace("cs2", "Bot A", parse_game_inventory(payload(), "cs2", "Bot A"))
-            store.replace("cs2", "Bot B", parse_game_inventory(payload(), "cs2", "Bot B"))
+            data_b = payload()
+            data_b["Result"]["Bot B"] = data_b["Result"].pop("Bot A")
+            store.replace("cs2", "Bot B", parse_game_inventory(data_b, "cs2", "Bot B"))
             all_items = store.load_all("cs2")
             self.assertEqual({item.bot_name for item in all_items}, {"Bot A", "Bot B"})
             self.assertEqual(len(all_items), 2)
