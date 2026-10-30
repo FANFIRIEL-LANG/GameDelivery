@@ -120,3 +120,39 @@ def expand_inventory_instances(row: InventoryRow) -> tuple[tuple[str, str], ...]
         for bot_name, asset_ids in row.assets_by_bot
         for asset_id in asset_ids
     )
+
+
+def filter_inventory_rows(
+    rows: Iterable[InventoryRow],
+    query: str = "",
+    *,
+    item_filter: str = "all",
+) -> tuple[InventoryRow, ...]:
+    """Filter displayed rows without changing inventory ownership or stored data."""
+    allowed = {"all", "cards", "items", "foil", "tradable", "nontradable"}
+    if item_filter not in allowed:
+        raise ValueError("Неизвестный фильтр инвентаря")
+
+    needle = query.strip().casefold()
+    result: list[InventoryRow] = []
+    for row in rows:
+        if item_filter == "cards" and not row.is_trading_card:
+            continue
+        if item_filter == "items" and row.is_trading_card:
+            continue
+        if item_filter == "foil" and not row.is_foil:
+            continue
+        if item_filter == "tradable" and row.is_tradable is not True:
+            continue
+        if item_filter == "nontradable" and row.is_tradable is not False:
+            continue
+        if needle:
+            searchable = " ".join((
+                row.game_name, row.card_name, row.market_hash_name, row.item_quality,
+                *(bot for bot, _ in row.assets_by_bot),
+                *(asset for _, assets in row.assets_by_bot for asset in assets),
+            )).casefold()
+            if needle not in searchable:
+                continue
+        result.append(row)
+    return tuple(result)
