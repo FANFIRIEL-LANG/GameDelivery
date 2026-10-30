@@ -488,6 +488,9 @@ class AppStartupSmokeTests(unittest.TestCase):
                 ],
                 expected,
             )
+            # The first catalog entry is CS2 (not yet available). Select Steam
+            # explicitly before checking that its inventory action is enabled.
+            window.game_list.setCurrentRow(expected.index("steam_cards"))
             self.assertTrue(window.open_game_inventory_button.isEnabled())
 
             window.game_search.setText("dota")
