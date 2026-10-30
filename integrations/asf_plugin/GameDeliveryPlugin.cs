@@ -224,11 +224,20 @@ public sealed class GameDeliveryPlugin : IBotCommand2
 
     private static async Task<string> RunDiagnosticCommand(Bot bot)
     {
-        string asfVersion = typeof(Bot).Assembly.GetName().Version?.ToString() ?? "unknown";
-        string actionsType = bot.Actions.GetType().FullName ?? bot.Actions.GetType().Name;
-        string inventoryMethods = string.Join(" | ", bot.Actions.GetType()
+        System.Reflection.Assembly asfAssembly = typeof(Bot).Assembly;
+        string asfVersion = asfAssembly.GetName().Version?.ToString() ?? "unknown";
+        string asfAssemblyLocation = SafeMessage(asfAssembly.Location);
+        object actions = bot.Actions;
+        object webHandler = bot.ArchiWebHandler;
+        string actionsType = actions.GetType().FullName ?? actions.GetType().Name;
+        string webHandlerType = webHandler.GetType().FullName ?? webHandler.GetType().Name;
+        string inventoryMethods = string.Join(" | ", actions.GetType()
             .GetMethods()
             .Where(method => string.Equals(method.Name, "GetInventory", StringComparison.Ordinal))
+            .Select(method => method.ToString()));
+        string sendTradeOfferMethods = string.Join(" | ", webHandler.GetType()
+            .GetMethods()
+            .Where(method => string.Equals(method.Name, "SendTradeOffer", StringComparison.Ordinal))
             .Select(method => method.ToString()));
 
         try
@@ -247,8 +256,11 @@ public sealed class GameDeliveryPlugin : IBotCommand2
                 botName = bot.BotName,
                 botConnected = bot.IsConnectedAndLoggedOn,
                 asfAssemblyVersion = asfVersion,
+                asfAssemblyLocation,
                 actionsType,
                 getInventoryMethods = inventoryMethods,
+                webHandlerType,
+                sendTradeOfferMethods,
                 inventoryCount = inventory?.Count,
                 inventoryMessage = inventory is null ? SafeMessage(inventoryMessage) : null,
                 message = inventory is null
@@ -267,8 +279,11 @@ public sealed class GameDeliveryPlugin : IBotCommand2
                 botName = bot.BotName,
                 botConnected = bot.IsConnectedAndLoggedOn,
                 asfAssemblyVersion = asfVersion,
+                asfAssemblyLocation,
                 actionsType,
                 getInventoryMethods = inventoryMethods,
+                webHandlerType,
+                sendTradeOfferMethods,
                 exceptionType = exception.GetType().FullName,
                 exceptionMessage = SafeMessage(exception.Message),
                 message = "Ошибка диагностического чтения инвентаря. Отправка не выполнялась."
