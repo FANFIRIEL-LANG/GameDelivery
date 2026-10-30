@@ -937,24 +937,111 @@ class MainWindow(QMainWindow):
     def _games_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        for name, state in [
-            ("Steam-карточки", "Первый модуль · планируется"),
-            ("Counter-Strike 2", "Скины и предметы · планируется"),
-            ("Другие игры", "Подключаемые модули · будущий этап"),
-        ]:
-            card = QFrame()
-            card.setObjectName("card")
-            row = QHBoxLayout(card)
-            name_label = QLabel(name)
-            name_label.setStyleSheet("font-weight: 600;")
-            state_label = QLabel(state)
-            state_label.setObjectName("muted")
-            row.addWidget(name_label)
-            row.addStretch()
-            row.addWidget(state_label)
-            layout.addWidget(card)
-        layout.addStretch()
+        heading = QLabel("Каталог игровых модулей")
+        heading.setStyleSheet("font-size: 18px; font-weight: 700;")
+        layout.addWidget(heading)
+        description = QLabel(
+            "Выбери игру, чтобы увидеть состояние её модуля. Доступные функции "
+            "открываются отдельно; незавершённые модули не влияют на текущую работу."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.game_modules = [
+            {
+                "id": "steam_cards",
+                "name": "Steam-карточки",
+                "state": "Доступен",
+                "details": "Просмотр снимков инвентаря, выбор конкретных карточек, "
+                           "резервирование активов и подготовка заказов.",
+                "available": True,
+            },
+            {
+                "id": "cs2",
+                "name": "Counter-Strike 2",
+                "state": "В разработке",
+                "details": "Планируемый модуль скинов и предметов CS2. "
+                           "Просмотр, фильтрация и торговые сценарии ещё не подключены.",
+                "available": False,
+            },
+        ]
+        self.game_search = QLineEdit()
+        self.game_search.setPlaceholderText("Поиск игры...")
+        self.game_search.textChanged.connect(self._filter_game_modules)
+        layout.addWidget(self.game_search)
+
+        content = QHBoxLayout()
+        self.game_list = QListWidget()
+        self.game_list.setMinimumWidth(240)
+        self.game_list.currentItemChanged.connect(self._show_game_module_details)
+        content.addWidget(self.game_list, 1)
+
+        details_card = QFrame()
+        details_card.setObjectName("card")
+        details_layout = QVBoxLayout(details_card)
+        self.game_module_name = QLabel("Выбери игру из списка")
+        self.game_module_name.setStyleSheet("font-size: 16px; font-weight: 700;")
+        self.game_module_state = QLabel("")
+        self.game_module_state.setObjectName("muted")
+        self.game_module_description = QLabel(
+            "Здесь появится описание выбранного игрового модуля."
+        )
+        self.game_module_description.setWordWrap(True)
+        details_layout.addWidget(self.game_module_name)
+        details_layout.addWidget(self.game_module_state)
+        details_layout.addWidget(self.game_module_description, 1)
+        self.open_game_inventory_button = QPushButton("Открыть инвентарь Steam-карточек")
+        self.open_game_inventory_button.setEnabled(False)
+        self.open_game_inventory_button.clicked.connect(self._open_selected_game_inventory)
+        details_layout.addWidget(self.open_game_inventory_button)
+        content.addWidget(details_card, 2)
+        layout.addLayout(content, 1)
+
+        self._filter_game_modules()
+        if self.game_list.count():
+            self.game_list.setCurrentRow(0)
         return page
+
+    def _filter_game_modules(self, text=""):
+        query = str(text or "").strip().casefold()
+        self.game_list.clear()
+        for module in self.game_modules:
+            if query and query not in module["name"].casefold():
+                continue
+            item = QListWidgetItem(f'{module["name"]}  ·  {module["state"]}')
+            item.setData(Qt.ItemDataRole.UserRole, module["id"])
+            self.game_list.addItem(item)
+        if self.game_list.count():
+            self.game_list.setCurrentRow(0)
+        else:
+            self._show_game_module_details(None, None)
+
+    def _show_game_module_details(self, current, previous=None):
+        module_id = current.data(Qt.ItemDataRole.UserRole) if current else None
+        module = next(
+            (entry for entry in self.game_modules if entry["id"] == module_id),
+            None,
+        )
+        if module is None:
+            self.game_module_name.setText("Игра не найдена")
+            self.game_module_state.setText("")
+            self.game_module_description.setText("Измени поисковый запрос.")
+            self.open_game_inventory_button.setEnabled(False)
+            return
+        self.game_module_name.setText(module["name"])
+        self.game_module_state.setText(module["state"])
+        self.game_module_description.setText(module["details"])
+        self.open_game_inventory_button.setEnabled(module["available"])
+
+    def _open_selected_game_inventory(self):
+        current = self.game_list.currentItem()
+        if current is None or current.data(Qt.ItemDataRole.UserRole) != "steam_cards":
+            return
+        for index in range(self.tabs.count()):
+            if self.tabs.widget(index) is self.inventory_panel:
+                self.tabs.setCurrentIndex(index)
+                return
 
     def _logs_tab(self):
         page = QWidget()
