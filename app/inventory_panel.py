@@ -21,7 +21,7 @@ from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
 from integrations.asf.client import ASFError
-from app.bot_selector import populate_bot_combo
+from app.bot_selector import populate_bot_combo, configured_bot_names
 
 
 
@@ -92,7 +92,7 @@ class InventoryPanel(QWidget):
         controls.addWidget(QLabel("Снимки"))
         self.bot_list = QListWidget()
         self.bot_list.setMaximumHeight(100)
-        self.bot_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.bot_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         controls.addWidget(self.bot_list, 2)
         bot_actions = QVBoxLayout()
         self.select_all_bots_button = QPushButton("Выбрать всех")
@@ -195,6 +195,8 @@ class InventoryPanel(QWidget):
         controls.addWidget(self.view_mode)
         self._image_cache: dict[str, QIcon] = {}
         self._image_requests: set[str] = set()
+        self._image_attempted: dict[str, set[str]] = {}
+        self._image_request_origin: dict[str, str] = {}
         self._image_manager = QNetworkAccessManager(self)
         self._image_manager.finished.connect(self._image_loaded)
 
@@ -207,9 +209,8 @@ class InventoryPanel(QWidget):
         self._batch_worker = None
         self._batch_results = []
         self.mode.currentIndexChanged.connect(self.render_inventory)
-        self.search_input.textChanged.connect(self.render_inventory)
-        self.item_filter.currentIndexChanged.connect(self.render_inventory)
-        self.bot_list.itemSelectionChanged.connect(self.render_inventory)
+        self.search_input.textChanged.connect(self._filter_item_tiles)
+        self.item_filter.currentIndexChanged.connect(self._filter_item_tiles)
         self.view_mode.currentIndexChanged.connect(self._toggle_view)
         self.refresh()
 
@@ -290,19 +291,18 @@ class InventoryPanel(QWidget):
                 bot: self.snapshots.status(bot) for bot in self.inventories
             }
             self.reservation_rows = self._load_reservations()
-            selected_before = {
-                item.data(Qt.ItemDataRole.UserRole) for item in self.bot_list.selectedItems()
-            }
+            selected_before = self._checked_bot_names()
             self.bot_list.clear()
-            for bot in sorted(self.inventories, key=str.casefold):
-                status = self.statuses[bot]
-                timestamp = status["updated_at"] or "нет даты"
+            all_bots = set(configured_bot_names()) | set(self.inventories)
+            for bot in sorted(all_bots, key=str.casefold):
+                status = self.statuses.get(bot) or {"updated_at": None, "item_count": 0}
+                timestamp = status["updated_at"] or "ещё не загружен"
                 label = f"{bot} — {status['item_count']} предметов — {timestamp}"
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, bot)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if bot in selected_before else Qt.CheckState.Unchecked)
                 self.bot_list.addItem(item)
-                if bot in selected_before:
-                    item.setSelected(True)
             self.summary.setText(
                 f"База: {self.database_path} · снимков: {len(self.inventories)}. "
                 "Если список пуст, реальные данные ещё не импортированы в эту базу."
@@ -321,20 +321,28 @@ class InventoryPanel(QWidget):
                 "Отображение очищено; данные не подтверждены как актуальные."
             )
 
+    def _checked_bot_names(self) -> list[str]:
+        return [
+            str(self.bot_list.item(i).data(Qt.ItemDataRole.UserRole))
+            for i in range(self.bot_list.count())
+            if self.bot_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
     def select_all_bots(self):
         for index in range(self.bot_list.count()):
-            self.bot_list.item(index).setSelected(True)
+            self.bot_list.item(index).setCheckState(Qt.CheckState.Checked)
         self.render_inventory()
 
     def clear_bot_selection(self):
-        self.bot_list.clearSelection()
+        for index in range(self.bot_list.count()):
+            self.bot_list.item(index).setCheckState(Qt.CheckState.Unchecked)
         self.render_inventory()
 
     def fetch_selected_from_asf(self):
         if self._batch_thread is not None and self._batch_thread.isRunning():
             self.summary.setText("Массовая проверка уже выполняется.")
             return
-        bot_names = [str(item.data(Qt.ItemDataRole.UserRole)) for item in self.bot_list.selectedItems()]
+        bot_names = self._checked_bot_names()
         if not bot_names:
             self.summary.setText("Сначала выбери ботов в списке снимков.")
             return
@@ -466,32 +474,71 @@ class InventoryPanel(QWidget):
         self.table.setVisible(show_table)
         self.item_grid.setVisible(not show_table)
 
-    def _request_item_image(self, url: str):
-        if url in self._image_requests:
+    @staticmethod
+    def _steam_image_candidates(url: str) -> list[str]:
+        parsed = QUrl(url)
+        path = parsed.path()
+        if not path:
+            return []
+        hosts = ("community.cloudflare.steamstatic.com", "community.akamai.steamstatic.com",
+                 "steamcommunity-a.akamaihd.net", "community.steamstatic.com")
+        return [candidate for host in hosts
+                if (candidate := QUrl("https://" + host + path).toString()) != url]
+
+    def _request_item_image(self, url: str, origin: str | None = None):
+        if not url or url in self._image_requests or url in self._image_cache:
             return
+        origin = origin or url
+        attempted = self._image_attempted.setdefault(origin, set())
+        if url in attempted:
+            return
+        attempted.add(url)
+        self._image_request_origin[url] = origin
         self._image_requests.add(url)
         request = QNetworkRequest(QUrl(url))
-        request.setAttribute(QNetworkRequest.Attribute.FollowRedirectsAttribute, True)
+        request.setRawHeader(b"User-Agent", b"Mozilla/5.0 GameDelivery/1.0")
+        request.setTransferTimeout(15000)
+        request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
+                             QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
         self._image_manager.get(request)
 
     def _image_loaded(self, reply):
         url = reply.request().url().toString()
+        origin = self._image_request_origin.pop(url, url)
         self._image_requests.discard(url)
         pixmap = QPixmap()
         if reply.error() == QNetworkReply.NetworkError.NoError:
             pixmap.loadFromData(bytes(reply.readAll()))
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        error_text = reply.errorString()
         reply.deleteLater()
         if pixmap.isNull():
+            for fallback in self._steam_image_candidates(origin):
+                if fallback not in self._image_attempted.setdefault(origin, set()):
+                    self._request_item_image(fallback, origin)
+                    return
+            self._log_image_failure(origin, status, error_text)
             return
-        icon = QIcon(pixmap.scaled(
-            QSize(76, 76), Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        ))
+        icon = QIcon(pixmap.scaled(QSize(96, 96), Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation))
+        self._image_cache[origin] = icon
         self._image_cache[url] = icon
         for index in range(self.item_grid.count()):
             item = self.item_grid.item(index)
-            if item.data(Qt.ItemDataRole.UserRole + 1) == url:
+            if item.data(Qt.ItemDataRole.UserRole + 1) == origin:
                 item.setIcon(icon)
+
+    @staticmethod
+    def _log_image_failure(url: str, status, error_text: str):
+        try:
+            from datetime import datetime, timezone
+            import os
+            log_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "GameDelivery" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "image-download.log").open("a", encoding="utf-8") as handle:
+                handle.write(f"{datetime.now(timezone.utc).isoformat()} | HTTP={status} | {error_text} | {url}\\n")
+        except OSError:
+            pass
 
     def _select_all_visible_items(self):
         """Select every non-reserved physical asset represented by visible tiles."""
@@ -517,11 +564,7 @@ class InventoryPanel(QWidget):
     def _select_complete_sets_for_bots(self):
         """Select N complete normal trading-card sets independently for each selected bot."""
         requested = self.sets_per_bot_spin.value()
-        selected_bots = [
-            str(item.data(Qt.ItemDataRole.UserRole))
-            for item in self.bot_list.selectedItems()
-            if item.data(Qt.ItemDataRole.UserRole)
-        ]
+        selected_bots = self._checked_bot_names()
         if not selected_bots:
             self.instance_summary.setText("Сначала выбери одного или нескольких ботов в списке снимков.")
             return
@@ -575,13 +618,25 @@ class InventoryPanel(QWidget):
             ).fetchall()
         return {(bot, asset): order for bot, asset, order in rows}
 
+    def _filter_item_tiles(self, *_):
+        query = self.search_input.text().strip().casefold()
+        kind = self.item_filter.currentData()
+        for index in range(self.item_grid.count()):
+            item = self.item_grid.item(index)
+            row = item.data(Qt.ItemDataRole.UserRole + 2)
+            searchable = f"{row.game_name} {row.card_name}".casefold()
+            matches = (kind == "all"
+                       or (kind == "cards" and row.is_trading_card and not row.is_foil)
+                       or (kind == "foil" and row.is_foil)
+                       or (kind == "items" and not row.is_trading_card)
+                       or (kind == "tradable" and row.is_tradable is True)
+                       or (kind == "nontradable" and row.is_tradable is False))
+            item.setHidden(not (matches and query in searchable))
+
     def render_inventory(self, *_):
         if not hasattr(self, "inventories"):
             return
-        selected = [
-            item.data(Qt.ItemDataRole.UserRole)
-            for item in self.bot_list.selectedItems()
-        ]
+        selected = self._checked_bot_names()
         view = build_inventory_view(
             self.inventories, selected, mode=self.mode.currentData()
         )
@@ -643,6 +698,7 @@ class InventoryPanel(QWidget):
                 if icon_url:
                     self._request_item_image(icon_url)
             self.item_grid.addItem(tile)
+        self._filter_item_tiles()
         self.table.resizeColumnsToContents()
         if not selected:
             self.summary.setText(
