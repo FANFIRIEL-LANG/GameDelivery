@@ -36,7 +36,11 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("sendTradeOfferMethods", diagnostic_region)
         self.assertIn("ArchiWebHandler", diagnostic_region)
         self.assertIn("GetMethods()", diagnostic_region)
-        self.assertIn("asfAssemblyLocation", diagnostic_region)
+        self.assertIn("asfAssembly", diagnostic_region)
+        self.assertIn("moduleVersionId", diagnostic_region)
+        self.assertIn("pluginReferences", diagnostic_region)
+        self.assertIn("confirmationMethods", diagnostic_region)
+        self.assertIn("GetAssemblyDiagnostics", diagnostic_region)
 
     def test_diagnostic_command_checks_inventory_without_trade_send(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
