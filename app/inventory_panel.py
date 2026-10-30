@@ -81,6 +81,10 @@ class InventoryPanel(QWidget):
         self.bot_name_input = QComboBox()
         self.bot_name_input.setMinimumWidth(180)
         controls.addWidget(self.bot_name_input, 1)
+        # Bulk inventory refresh uses the single checked-account list below.
+        # Keep the legacy single-account widgets hidden for compatibility with
+        # older signal paths while removing the duplicate selector from the UI.
+        self.bot_name_input.hide()
         controls.addWidget(QLabel("IPC-пароль"))
         self.ipc_password_input = QLineEdit()
         self.ipc_password_input.setPlaceholderText("Если задан в ASF")
@@ -89,6 +93,7 @@ class InventoryPanel(QWidget):
         controls.addWidget(self.ipc_password_input, 1)
         self.fetch_button = QPushButton("Загрузить из ASF")
         controls.addWidget(self.fetch_button)
+        self.fetch_button.hide()
         controls.addWidget(QLabel("Снимки"))
         self.bot_list = QListWidget()
         self.bot_list.setMaximumHeight(100)
@@ -292,6 +297,9 @@ class InventoryPanel(QWidget):
             }
             self.reservation_rows = self._load_reservations()
             selected_before = self._checked_bot_names()
+            # First opening selects every discovered account automatically.
+            # Later refreshes preserve the operator's explicit selection.
+            select_all_by_default = not selected_before
             self.bot_list.clear()
             all_bots = set(configured_bot_names()) | set(self.inventories)
             for bot in sorted(all_bots, key=str.casefold):
@@ -301,7 +309,11 @@ class InventoryPanel(QWidget):
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, bot)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(Qt.CheckState.Checked if bot in selected_before else Qt.CheckState.Unchecked)
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if select_all_by_default or bot in selected_before
+                    else Qt.CheckState.Unchecked
+                )
                 self.bot_list.addItem(item)
             self.summary.setText(
                 f"База: {self.database_path} · снимков: {len(self.inventories)}. "
