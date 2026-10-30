@@ -55,7 +55,9 @@ class SharedSteamCardSetTests(unittest.TestCase):
             ],
             "Bot B": [CardCopy("b1", "Game", "Card B")],
         }
-        self.assertEqual(find_shared_game_sets(inventories), [])
+        result = find_shared_game_sets(inventories)
+        self.assertEqual(result[0].available_sets, 1)
+        self.assertEqual(set(result[0].sets[0]), {("Bot A", "a1"), ("Bot B", "b1")})
 
     def test_foil_non_card_and_nontradable_items_are_excluded(self):
         inventories = {"Bot A": [
