@@ -21,6 +21,15 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("      - feature/asf-bulk-account-import", workflow)
         self.assertNotIn("      - feature/steam-card-set-selection", workflow)
 
+    def test_unexpected_send_dispatch_exception_returns_fail_closed_diagnostic(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        send_dispatch = source.index("TradeDelivery.ProcessSendCommand")
+        dispatch_region = source[send_dispatch:send_dispatch + 1200]
+
+        self.assertIn("catch (Exception exception)", dispatch_region)
+        self.assertIn("resultUnknown = true", dispatch_region)
+        self.assertIn("exception.GetType().Name", dispatch_region)
+
 
 if __name__ == "__main__":
     unittest.main()
