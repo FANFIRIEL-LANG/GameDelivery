@@ -9,13 +9,48 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
-from app.asf_management import ASFManagementWidget
+from app.asf_management import ASFManagementWidget, ensure_asf_login_limiter_delay
 
 
 class ASFManagementWidgetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_asf_login_limiter_delay_is_reduced_to_three_without_changing_other_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            config_path = config_dir / "ASF.json"
+            config_path.write_text(
+                json.dumps({"IPC": True, "LoginLimiterDelay": 5, "WebLimiterDelay": 300}),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(ensure_asf_login_limiter_delay(config_dir))
+            updated = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(updated["LoginLimiterDelay"], 3)
+            self.assertEqual(updated["IPC"], True)
+            self.assertEqual(updated["WebLimiterDelay"], 300)
+
+    def test_asf_login_limiter_delay_does_not_rewrite_when_already_three(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            config_path = config_dir / "ASF.json"
+            config_path.write_text(json.dumps({"LoginLimiterDelay": 3}), encoding="utf-8")
+            original = config_path.read_bytes()
+
+            self.assertFalse(ensure_asf_login_limiter_delay(config_dir))
+            self.assertEqual(config_path.read_bytes(), original)
+
+    def test_asf_login_limiter_delay_creates_global_config_when_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+
+            self.assertTrue(ensure_asf_login_limiter_delay(config_dir))
+            self.assertEqual(
+                json.loads((config_dir / "ASF.json").read_text(encoding="utf-8")),
+                {"LoginLimiterDelay": 3},
+            )
 
     def setUp(self):
         self.widget = ASFManagementWidget()
