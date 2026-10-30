@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QLineEdit,
 )
 
-from games.steam_cards.inventory_views import build_inventory_view, expand_inventory_instances
+from games.steam_cards.inventory_views import (\n    build_inventory_view, expand_inventory_instances, filter_inventory_rows,\n)
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
@@ -71,6 +71,20 @@ class InventoryPanel(QWidget):
         self.summary.setObjectName("muted")
         layout.addWidget(self.summary)
 
+        filters = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Поиск: игра, предмет, бот или asset ID…")
+        filters.addWidget(self.search_input, 3)
+        self.item_filter = QComboBox()
+        self.item_filter.addItem("Все предметы", "all")
+        self.item_filter.addItem("Только карточки", "cards")
+        self.item_filter.addItem("Без карточек", "items")
+        self.item_filter.addItem("Foil", "foil")
+        self.item_filter.addItem("Передаваемые", "tradable")
+        self.item_filter.addItem("Непередаваемые", "nontradable")
+        filters.addWidget(self.item_filter, 1)
+        layout.addLayout(filters)
+
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["Игра", "Карточка", "Тип", "Передача", "Количество", "Владелец / asset ID", "Резерв"]
@@ -116,6 +130,8 @@ class InventoryPanel(QWidget):
         self.refresh_button.clicked.connect(self.refresh)
         self.fetch_button.clicked.connect(self.fetch_from_asf)
         self.mode.currentIndexChanged.connect(self.render_inventory)
+        self.search_input.textChanged.connect(self.render_inventory)
+        self.item_filter.currentIndexChanged.connect(self.render_inventory)
         self.bot_list.itemSelectionChanged.connect(self.render_inventory)
         self.view_mode.currentIndexChanged.connect(self._toggle_view)
         self.refresh()
@@ -317,9 +333,12 @@ class InventoryPanel(QWidget):
         view = build_inventory_view(
             self.inventories, selected, mode=self.mode.currentData()
         )
+        rows = filter_inventory_rows(
+            view.rows, self.search_input.text(), item_filter=self.item_filter.currentData()
+        )
         self.table.setRowCount(0)
         self.item_grid.clear()
-        for row_data in view.rows:
+        for row_data in rows:
             owners = []
             reservations = []
             for bot, asset_ids in row_data.assets_by_bot:
@@ -383,6 +402,6 @@ class InventoryPanel(QWidget):
                 for bot in selected
             ]
             self.summary.setText(
-                f"Выбрано ботов: {len(selected)} · строк: {len(view.rows)} · "
+                f"Выбрано ботов: {len(selected)} · показано: {len(rows)} из {len(view.rows)} · "
                 + " | ".join(updated)
             )
