@@ -56,11 +56,11 @@ class ASFManagementWidgetTests(unittest.TestCase):
 
     def test_asf_console_decodes_utf8_russian_output(self):
         message = "Ошибка отправки предмета"
-        self.assertEqual(decode_asf_output_line((message + "\\r\\n").encode("utf-8")), message)
+        self.assertEqual(decode_asf_output_line((message + "\r\n").encode("utf-8")), message)
 
     def test_asf_console_decodes_windows_oem_russian_output(self):
         message = "Ошибка отправки предмета"
-        self.assertEqual(decode_asf_output_line((message + "\\r\\n").encode("cp866")), message)
+        self.assertEqual(decode_asf_output_line((message + "\r\n").encode("cp866")), message)
 
     def setUp(self):
         self.widget = ASFManagementWidget()
