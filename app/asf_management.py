@@ -54,13 +54,13 @@ def ensure_asf_login_limiter_delay(config_dir: Path) -> bool:
 def decode_asf_output_line(raw: bytes | str) -> str:
     """Decode redirected ASF console output without replacing Russian characters."""
     if isinstance(raw, str):
-        return raw.rstrip("\\r\\n")
+        return raw.rstrip("\r\n")
     for encoding in ("utf-8-sig", "cp866", "cp1251"):
         try:
-            return raw.decode(encoding, errors="strict").rstrip("\\r\\n")
+            return raw.decode(encoding, errors="strict").rstrip("\r\n")
         except UnicodeDecodeError:
             continue
-    return raw.decode("utf-8", errors="replace").rstrip("\\r\\n")
+    return raw.decode("utf-8", errors="replace").rstrip("\r\n")
 
 
 class ASFOutputReader(QThread):
