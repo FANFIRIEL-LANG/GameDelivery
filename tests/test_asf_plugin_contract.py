@@ -35,7 +35,8 @@ class ASFPluginContractTests(unittest.TestCase):
         diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static string Failure")]
         self.assertIn("sendTradeOfferMethods", diagnostic_region)
         self.assertIn("ArchiWebHandler", diagnostic_region)
-        self.assertIn("GetMethods()", diagnostic_region)
+        self.assertIn("GetMethodSignatures", diagnostic_region)
+        self.assertIn("type.GetMethods(", source)
         self.assertIn("asfAssembly", diagnostic_region)
         self.assertIn("moduleVersionId", diagnostic_region)
         self.assertIn("pluginReferences", diagnostic_region)
