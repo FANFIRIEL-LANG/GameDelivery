@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt\nfrom PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem, QLineEdit, QListWidget, QListWidgetItem
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem, QLineEdit, QListWidget, QListWidgetItem
 from app.asf_management import (
     ASFManagementWidget, ensure_asf_login_limiter_delay, decode_asf_output_line,
 )
