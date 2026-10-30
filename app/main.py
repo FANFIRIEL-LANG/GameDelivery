@@ -923,20 +923,34 @@ class MainWindow(QMainWindow):
             if row is None:
                 raise ValueError("Заказ не найден в базе данных.")
             original_status, source_platform = row
-            if original_status not in {"reserved — не отправлен", "imported — ожидание подготовки"}:
+            unknown_status = "неизвестен результат отправки — проверь исходящие Steam"
+            if original_status not in {
+                "reserved — не отправлен",
+                "imported — ожидание подготовки",
+                unknown_status,
+            }:
                 raise ValueError(
-                    "Отменить можно только подготовленный заказ без отправки или импортированный "
-                    "заказ, который ещё не готовился к доставке."
+                    "Этот заказ уже отправлялся или завершил обработку. "
+                    "Для отмены предложения Steam сначала нужно отозвать само предложение."
                 )
+            is_unknown = original_status == unknown_status
             cancelled_status = (
-                "cancelled — резерв снят"
-                if original_status == "reserved — не отправлен"
-                else "cancelled — отказ от заказа"
+                "cancelled — результат отправки требует сверки"
+                if is_unknown
+                else (
+                    "cancelled — резерв снят"
+                    if original_status == "reserved — не отправлен"
+                    else "cancelled — отказ от заказа"
+                )
             )
             action_text = (
-                "освободить зарезервированные активы"
-                if original_status == "reserved — не отправлен"
-                else "убрать импортированный заказ из очереди"
+                "закрыть заказ, сохранив резерв до ручной проверки исходящих Steam"
+                if is_unknown
+                else (
+                    "освободить зарезервированные активы"
+                    if original_status == "reserved — не отправлен"
+                    else "убрать импортированный заказ из очереди"
+                )
             )
             answer = QMessageBox.question(
                 self, "Отменить заказ",
@@ -957,9 +971,10 @@ class MainWindow(QMainWindow):
                     "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                     (cancelled_status, order_id, original_status),
                 )
-                db.execute(
-                    "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
-                )
+                if not is_unknown:
+                    db.execute(
+                        "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
+                    )
             self._load_saved_orders()
             self._load_order_assets()
             self.statusBar().showMessage(f"Заказ {order_id} отменён.")
