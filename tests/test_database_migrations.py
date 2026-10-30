@@ -98,7 +98,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 try:
                     self.assertTrue(critical.called)
                     self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
-                    self.assertTrue(window.startup_error_label.isVisible())
+                    self.assertTrue(window.startup_error_label.text())
                 finally:
                     window.close()
                     window.deleteLater()
