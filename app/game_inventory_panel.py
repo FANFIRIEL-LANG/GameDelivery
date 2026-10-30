@@ -88,6 +88,8 @@ class GameInventoryPanel(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table, 1)
+        self.game_combo.currentIndexChanged.connect(self.load_saved)
+        self.bot_combo.currentIndexChanged.connect(self.load_saved)
         self.load_saved()
 
     def _selected(self):
