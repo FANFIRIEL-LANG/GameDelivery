@@ -94,9 +94,15 @@ class DatabaseMigrationTests(unittest.TestCase):
             original_size = database.stat().st_size
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
                  patch("app.main.QMessageBox.critical") as critical:
-                with self.assertRaises(sqlite3.IntegrityError):
-                    MainWindow()
-                self.assertTrue(critical.called)
+                window = MainWindow()
+                try:
+                    self.assertTrue(critical.called)
+                    self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
+                    self.assertTrue(window.startup_error_label.isVisible())
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
             self.assertGreaterEqual(database.stat().st_size, original_size)
             with sqlite3.connect(database) as db:
                 ids = [r[0] for r in db.execute("SELECT order_id FROM delivery_orders ORDER BY order_id")]
