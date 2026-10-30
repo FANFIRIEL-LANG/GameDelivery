@@ -224,21 +224,23 @@ public sealed class GameDeliveryPlugin : IBotCommand2
 
     private static async Task<string> RunDiagnosticCommand(Bot bot)
     {
+        System.Reflection.Assembly pluginAssembly = typeof(GameDeliveryPlugin).Assembly;
         System.Reflection.Assembly asfAssembly = typeof(Bot).Assembly;
-        string asfVersion = asfAssembly.GetName().Version?.ToString() ?? "unknown";
-        string asfAssemblyLocation = SafeMessage(asfAssembly.Location);
+        System.Reflection.Assembly steamKitAssembly = typeof(SteamID).Assembly;
         object actions = bot.Actions;
         object webHandler = bot.ArchiWebHandler;
-        string actionsType = actions.GetType().FullName ?? actions.GetType().Name;
-        string webHandlerType = webHandler.GetType().FullName ?? webHandler.GetType().Name;
-        string inventoryMethods = string.Join(" | ", actions.GetType()
-            .GetMethods()
-            .Where(method => string.Equals(method.Name, "GetInventory", StringComparison.Ordinal))
-            .Select(method => method.ToString()));
-        string sendTradeOfferMethods = string.Join(" | ", webHandler.GetType()
-            .GetMethods()
-            .Where(method => string.Equals(method.Name, "SendTradeOffer", StringComparison.Ordinal))
-            .Select(method => method.ToString()));
+
+        string inventoryMethods = GetMethodSignatures(actions.GetType(), "GetInventory");
+        string confirmationMethods = GetMethodSignatures(
+            actions.GetType(), "HandleTwoFactorAuthenticationConfirmations");
+        string sendTradeOfferMethods = GetMethodSignatures(webHandler.GetType(), "SendTradeOffer");
+        string[] pluginReferences = pluginAssembly.GetReferencedAssemblies()
+            .Select(reference => reference.FullName ?? reference.Name ?? "unknown")
+            .Where(name => name.Contains("ArchiSteamFarm", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("SteamKit", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("System.Composition", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
 
         try
         {
@@ -255,11 +257,16 @@ public sealed class GameDeliveryPlugin : IBotCommand2
                 tradeOfferCreated = false,
                 botName = bot.BotName,
                 botConnected = bot.IsConnectedAndLoggedOn,
-                asfAssemblyVersion = asfVersion,
-                asfAssemblyLocation,
-                actionsType,
+                pluginAssembly = GetAssemblyDiagnostics(pluginAssembly),
+                asfAssembly = GetAssemblyDiagnostics(asfAssembly),
+                steamKitAssembly = GetAssemblyDiagnostics(steamKitAssembly),
+                pluginReferences,
+                actionsType = actions.GetType().FullName ?? actions.GetType().Name,
+                actionsAssembly = GetAssemblyDiagnostics(actions.GetType().Assembly),
                 getInventoryMethods = inventoryMethods,
-                webHandlerType,
+                confirmationMethods,
+                webHandlerType = webHandler.GetType().FullName ?? webHandler.GetType().Name,
+                webHandlerAssembly = GetAssemblyDiagnostics(webHandler.GetType().Assembly),
                 sendTradeOfferMethods,
                 inventoryCount = inventory?.Count,
                 inventoryMessage = inventory is null ? SafeMessage(inventoryMessage) : null,
@@ -278,16 +285,74 @@ public sealed class GameDeliveryPlugin : IBotCommand2
                 tradeOfferCreated = false,
                 botName = bot.BotName,
                 botConnected = bot.IsConnectedAndLoggedOn,
-                asfAssemblyVersion = asfVersion,
-                asfAssemblyLocation,
-                actionsType,
+                pluginAssembly = GetAssemblyDiagnostics(pluginAssembly),
+                asfAssembly = GetAssemblyDiagnostics(asfAssembly),
+                steamKitAssembly = GetAssemblyDiagnostics(steamKitAssembly),
+                pluginReferences,
+                actionsType = actions.GetType().FullName ?? actions.GetType().Name,
+                actionsAssembly = GetAssemblyDiagnostics(actions.GetType().Assembly),
                 getInventoryMethods = inventoryMethods,
-                webHandlerType,
+                confirmationMethods,
+                webHandlerType = webHandler.GetType().FullName ?? webHandler.GetType().Name,
+                webHandlerAssembly = GetAssemblyDiagnostics(webHandler.GetType().Assembly),
                 sendTradeOfferMethods,
                 exceptionType = exception.GetType().FullName,
                 exceptionMessage = SafeMessage(exception.Message),
                 message = "Ошибка диагностического чтения инвентаря. Отправка не выполнялась."
             }, JsonOptions);
+        }
+    }
+
+    private static object GetAssemblyDiagnostics(System.Reflection.Assembly assembly)
+    {
+        string location;
+        try
+        {
+            location = string.IsNullOrWhiteSpace(assembly.Location) ? "empty" : assembly.Location;
+        }
+        catch (Exception exception)
+        {
+            location = exception.GetType().Name + ": " + SafeMessage(exception.Message);
+        }
+
+        string moduleVersionId;
+        try
+        {
+            moduleVersionId = assembly.ManifestModule.ModuleVersionId.ToString("D");
+        }
+        catch (Exception exception)
+        {
+            moduleVersionId = exception.GetType().Name + ": " + SafeMessage(exception.Message);
+        }
+
+        return new
+        {
+            fullName = assembly.FullName ?? "unknown",
+            version = assembly.GetName().Version?.ToString() ?? "unknown",
+            location,
+            moduleVersionId
+        };
+    }
+
+    private static string GetMethodSignatures(Type type, string methodName)
+    {
+        try
+        {
+            string[] methods = type.GetMethods(
+                    System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Static
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic)
+                .Where(method => string.Equals(method.Name, methodName, StringComparison.Ordinal))
+                .Select(method => method.ToString() ?? method.Name)
+                .OrderBy(signature => signature, StringComparer.Ordinal)
+                .ToArray();
+
+            return methods.Length == 0 ? "NOT_FOUND" : string.Join(" | ", methods);
+        }
+        catch (Exception exception)
+        {
+            return "REFLECTION_ERROR: " + exception.GetType().Name + ": " + SafeMessage(exception.Message);
         }
     }
 
