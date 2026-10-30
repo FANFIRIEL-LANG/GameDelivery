@@ -286,16 +286,6 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         sendEnabled = false
     }, JsonOptions);
 
-    private static string SafeMessage(string? message)
-    {
-        if (string.IsNullOrWhiteSpace(message))
-        {
-            return "инвентарь не подтверждён";
-        }
-
-        return new string(message.Where(character => !char.IsControl(character)).Take(180).ToArray());
-    }
-
     private sealed class PreviewRequest
     {
         public string OrderId { get; set; } = "";
