@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame,
-    QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox,
+    QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox, QCompleter,
 )
 from games.steam_cards.snapshot import InventorySnapshotStore
 from games.steam_cards.reservations import AssetReservationStore
@@ -134,6 +134,13 @@ class MainWindow(QMainWindow):
         self.order_recipient.setPlaceholderText("HTTPS trade URL получателя")
         self.order_bot = QComboBox()
         self.order_bot.setMinimumWidth(160)
+        self.order_bot.setEditable(True)
+        self.order_bot.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        order_bot_completer = QCompleter(self.order_bot.model(), self.order_bot)
+        order_bot_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        order_bot_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        order_bot_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.order_bot.setCompleter(order_bot_completer)
         self.order_bot.currentIndexChanged.connect(self._load_order_assets)
         form.addWidget(self.order_recipient, 2)
         form.addWidget(self.order_bot, 1)
