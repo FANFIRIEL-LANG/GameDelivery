@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QLineEdit, QSpinBox,
 )
 
+from games.steam_cards.selection import find_available_sets
 from games.steam_cards.inventory_views import (
     build_inventory_view, expand_inventory_instances, filter_inventory_rows, select_inventory_instances,
 )
@@ -124,10 +125,22 @@ class InventoryPanel(QWidget):
         quantity_controls.addWidget(self.quantity_input)
         self.apply_quantity_button = QPushButton("Применить")
         self.clear_selection_button = QPushButton("Снять выбор")
+        self.select_visible_button = QPushButton("Выбрать все видимые")
+        self.sets_per_bot_spin = QSpinBox()
+        self.sets_per_bot_spin.setRange(1, 999)
+        self.sets_per_bot_spin.setValue(1)
+        self.sets_per_bot_spin.setToolTip("Количество полных наборов отдельно для каждого выбранного бота")
+        self.select_sets_button = QPushButton("Выбрать полные наборы")
         quantity_controls.addWidget(self.apply_quantity_button)
         quantity_controls.addWidget(self.clear_selection_button)
+        quantity_controls.addWidget(self.select_visible_button)
+        quantity_controls.addWidget(QLabel("Наборов на бота"))
+        quantity_controls.addWidget(self.sets_per_bot_spin)
+        quantity_controls.addWidget(self.select_sets_button)
         quantity_controls.addStretch(1)
         layout.addLayout(quantity_controls)
+        self.select_visible_button.clicked.connect(self._select_all_visible_items)
+        self.select_sets_button.clicked.connect(self._select_complete_sets_for_bots)
         self._selected_asset_keys: set[tuple[str, str]] = set()
         self.item_grid.itemSelectionChanged.connect(self._render_instance_choices)
         self.apply_quantity_button.clicked.connect(self._apply_quantity_selection)
@@ -350,6 +363,79 @@ class InventoryPanel(QWidget):
             item = self.item_grid.item(index)
             if item.data(Qt.ItemDataRole.UserRole + 1) == url:
                 item.setIcon(icon)
+
+    def _select_all_visible_items(self):
+        """Select every non-reserved physical asset represented by visible tiles."""
+        candidates = set()
+        for index in range(self.item_grid.count()):
+            tile = self.item_grid.item(index)
+            if tile.isHidden():
+                continue
+            row_data = tile.data(Qt.ItemDataRole.UserRole + 2)
+            if row_data is None:
+                continue
+            for bot_name, asset_id in expand_inventory_instances(row_data):
+                key = (str(bot_name), str(asset_id))
+                if key not in self.reservation_rows:
+                    candidates.add(key)
+        self._selected_asset_keys.update(candidates)
+        self._render_instance_choices()
+        self.instance_summary.setText(
+            f"Добавлено доступных экземпляров: {len(candidates)}. "
+            f"Всего выбрано: {len(self._selected_asset_keys)}. Резервы исключены."
+        )
+
+    def _select_complete_sets_for_bots(self):
+        """Select N complete normal trading-card sets independently for each selected bot."""
+        requested = self.sets_per_bot_spin.value()
+        selected_bots = [
+            str(item.data(Qt.ItemDataRole.UserRole))
+            for item in self.bot_list.selectedItems()
+            if item.data(Qt.ItemDataRole.UserRole)
+        ]
+        if not selected_bots:
+            self.instance_summary.setText("Сначала выбери одного или нескольких ботов в списке снимков.")
+            return
+
+        chosen = set()
+        problems = []
+        for bot_name in selected_bots:
+            available = find_available_sets(self.inventories.get(bot_name, []))
+            total_sets = sum(item.available_sets for item in available)
+            if total_sets < requested:
+                problems.append(f"{bot_name}: доступно {total_sets}")
+                continue
+
+            remaining = requested
+            bot_chosen = set()
+            for game_set in available:
+                take = min(game_set.available_sets, remaining)
+                if take <= 0:
+                    continue
+                for asset_id in game_set.asset_ids[:take * game_set.cards_per_set]:
+                    key = (bot_name, str(asset_id))
+                    if key in self.reservation_rows:
+                        problems.append(f"{bot_name}: выбранный набор содержит зарезервированную карточку")
+                    bot_chosen.add(key)
+                remaining -= take
+                if remaining <= 0:
+                    break
+            chosen.update(bot_chosen)
+
+        # Fail atomically: never apply a partial set selection.
+        if problems:
+            self.instance_summary.setText(
+                f"Ничего не выбрано: не удалось собрать по {requested} полных наборов "
+                "для каждого выбранного бота. " + "; ".join(problems[:8])
+            )
+            return
+
+        self._selected_asset_keys.update(chosen)
+        self._render_instance_choices()
+        self.instance_summary.setText(
+            f"Добавлены полные наборы: {requested} на каждого из {len(selected_bots)} ботов "
+            f"({len(chosen)} экземпляров). Наборы между ботами не смешивались."
+        )
 
     def _load_reservations(self):
         import sqlite3
