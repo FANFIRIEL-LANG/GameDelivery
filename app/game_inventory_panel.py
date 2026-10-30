@@ -13,7 +13,7 @@ from app.bot_selector import configured_bot_names
 from app.game_inventory_cards import GameItemCard, GameItemImageLoader
 from app.inventory_panel import InventoryPanel
 from games.catalog import GAME_CATALOG
-from games.inventory import GameInventoryStore, refresh_game_inventory
+from games.inventory import (\n    GameInventoryStore, refresh_game_inventory, filter_game_inventory_items,\n)
 from integrations.asf.client import ASFClient
 
 
@@ -90,6 +90,12 @@ class GameInventoryPanel(QWidget):
         self.search.textChanged.connect(self.render)
         filters.addWidget(self.search, 3)
 
+        self.item_filter = QComboBox()
+        self.item_filter.addItem("Все предметы", "all")
+        self.item_filter.addItem("Только контейнеры", "containers")
+        self.item_filter.currentIndexChanged.connect(self.render)
+        filters.addWidget(self.item_filter, 1)
+
         self.rarity_filter = QComboBox()
         self.rarity_filter.addItem("Любая редкость", "")
         self.rarity_filter.currentIndexChanged.connect(self.render)
@@ -123,10 +129,17 @@ class GameInventoryPanel(QWidget):
         layout.addWidget(self.scroll, 1)
 
         self.image_loader = GameItemImageLoader(self, self._image_loaded)
-        self.game_combo.currentIndexChanged.connect(self.load_saved)
+        self.game_combo.currentIndexChanged.connect(self._game_changed)
         self.select_all_bots_button.clicked.connect(self.select_all_bots)
         self.clear_bots_button.clicked.connect(self.clear_bot_selection)
         self._populate_accounts()
+        self.load_saved()
+
+    def _game_changed(self, *_):
+        is_cs2 = self.game_combo.currentData() == "cs2"
+        self.item_filter.setVisible(is_cs2)
+        if not is_cs2:
+            self.item_filter.setCurrentIndex(0)
         self.load_saved()
 
     def _populate_accounts(self):
@@ -237,7 +250,14 @@ class GameInventoryPanel(QWidget):
         rarity = self.rarity_filter.currentData()
         quality = self.quality_filter.currentData()
         filtered = []
-        for item in self.items:
+        source_items = filter_game_inventory_items(
+            self.items,
+            containers_only=(
+                self.game_combo.currentData() == "cs2"
+                and self.item_filter.currentData() == "containers"
+            ),
+        )
+        for item in source_items:
             if transfer == "yes" and item.is_tradable is not True:
                 continue
             if transfer == "no" and item.is_tradable is not False:
@@ -275,17 +295,13 @@ class GameInventoryPanel(QWidget):
 
     def _image_loaded(self, reply):
         url = reply.request().url().toString()
-        self.image_loader.pending.discard(url)
-        if reply.error():
-            reply.deleteLater()
-            return
-        pixmap = QPixmap()
-        if pixmap.loadFromData(reply.readAll()):
-            self.image_loader.cache[url] = pixmap
-            for card in self.cards_by_image.pop(url, []):
+        origin = self.image_loader.request_origin.get(url, url)
+        self.image_loader.handle_reply(reply)
+        pixmap = self.image_loader.cache.get(origin)
+        if pixmap is not None:
+            for card in self.cards_by_image.pop(origin, []):
                 if card is not None:
                     card.set_image(pixmap)
-        reply.deleteLater()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
