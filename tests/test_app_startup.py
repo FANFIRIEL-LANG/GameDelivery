@@ -24,10 +24,12 @@ class AppStartupSmokeTests(unittest.TestCase):
             database = Path(temp_dir) / "gamedelivery.sqlite3"
             original = b"not a sqlite database\\x00\\xff"
             database.write_bytes(original)
-            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \\
-                 patch("app.main.QMessageBox.critical") as critical:
-                with self.assertRaises(sqlite3.DatabaseError):
-                    MainWindow()
+            with patch.object(
+                MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
+            ):
+                with patch("app.main.QMessageBox.critical") as critical:
+                    with self.assertRaises(sqlite3.DatabaseError):
+                        MainWindow()
 
             critical.assert_called_once()
             title, message = critical.call_args.args[1:3]
@@ -40,10 +42,12 @@ class AppStartupSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "database-directory"
             database.mkdir()
-            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \\
-                 patch("app.main.QMessageBox.critical") as critical:
-                with self.assertRaises(sqlite3.Error):
-                    MainWindow()
+            with patch.object(
+                MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
+            ):
+                with patch("app.main.QMessageBox.critical") as critical:
+                    with self.assertRaises(sqlite3.Error):
+                        MainWindow()
 
             critical.assert_called_once()
             self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
