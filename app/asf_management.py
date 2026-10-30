@@ -497,6 +497,7 @@ class ASFManagementWidget(QWidget):
             layout = QVBoxLayout(dialog)
             output = QPlainTextEdit()
             output.setReadOnly(True)
+            output.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
             output.setPlaceholderText("Вывод ArchiSteamFarm появится здесь.")
             output.setPlainText("\n".join(self._asf_console_lines[-1000:]))
             layout.addWidget(output, 1)
