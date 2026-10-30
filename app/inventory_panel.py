@@ -21,7 +21,7 @@ from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
 from integrations.asf.client import ASFError
-from app.bot_selector import populate_bot_combo, configured_bot_names
+from app.bot_selector import populate_bot_combo, configured_bot_names, connect_account_search
 
 
 
