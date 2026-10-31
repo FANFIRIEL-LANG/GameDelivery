@@ -764,6 +764,19 @@ class MainWindow(QMainWindow):
             if outcome.get("resultUnknown") is True:
                 status_message = "неизвестен результат отправки — проверь исходящие Steam"
                 user_message = str(outcome.get("error") or "Результат отправки не подтверждён.")
+                diagnostic_lines = []
+                for field, label in (
+                    ("exceptionType", "Тип исключения"),
+                    ("exceptionMessage", "Сообщение исключения"),
+                    ("missingMethod", "Отсутствующий метод"),
+                    ("targetSite", "Место сбоя"),
+                    ("stackTrace", "Стек вызовов"),
+                ):
+                    value = outcome.get(field)
+                    if isinstance(value, str) and value.strip():
+                        diagnostic_lines.append(f"{label}: {value[:8000]}")
+                if diagnostic_lines:
+                    user_message += "\\n\\nДиагностика ASF:\\n" + "\\n".join(diagnostic_lines)
                 raw_offer_ids = outcome.get("offerIds", [])
                 known_offer_ids = []
                 if isinstance(raw_offer_ids, list):
