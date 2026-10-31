@@ -9,7 +9,7 @@ class ASFPluginContractTests(unittest.TestCase):
     def test_inventory_api_failure_is_reported_as_pre_send_and_never_as_unknown_trade(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         inventory_call = source.index("targetBot.Actions.GetInventory")
-        send_call = source.index("InvokeSendTradeOfferAsync(")
+        send_call = source.index("targetBot.ArchiWebHandler.SendTradeOffer(")
         inventory_region = source[inventory_call - 500:send_call]
 
         self.assertIn("catch (MissingMethodException", inventory_region)
