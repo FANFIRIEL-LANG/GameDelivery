@@ -34,18 +34,21 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Checkout stable ASF 6.3.10.6 source
-        uses: actions/checkout@v4
-        with:
-          repository: JustArchiNET/ArchiSteamFarm
-          ref: c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9
-          path: .asf-src
+      - name: Download official ASF 6.3.10.6 release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            https://sourceforge.net/projects/archisteamfarm.mirror/files/6.3.10.6/ASF-generic.zip/download \
+            --output /tmp/ASF-generic.zip
+          echo "118f9bb85d2d8d301536e96d304cbe8e7aa99a6aa1d1bb97a540e78b7c73b1ce  /tmp/ASF-generic.zip" | sha256sum --check
+          mkdir -p .asf-bin
+          unzip -q /tmp/ASF-generic.zip -d .asf-bin
+          test -s .asf-bin/ArchiSteamFarm.dll
+          test -s .asf-bin/SteamKit2.dll
 
-      - name: Build ASF API assemblies
-        run: dotnet build .asf-src/ArchiSteamFarm/ArchiSteamFarm.csproj --configuration Release
-
-      - name: Build GameDelivery ASF plugin
-        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$GITHUB_WORKSPACE/.asf-src/ArchiSteamFarm/bin/Release/net10.0
+      - name: Build GameDelivery ASF plugin against the exact release assemblies
+        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$GITHUB_WORKSPACE/.asf-bin
 
       - name: Prepare installable plugin package
         shell: bash
@@ -56,7 +59,7 @@ jobs:
           mkdir -p dist/GameDelivery.ASFPlugin
           cp "$plugin_dll" dist/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll
           cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
-          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nModes: live preview and explicitly confirmed guarded trade sending\n' "$GITHUB_SHA" "ASF 6.3.10.6 commit c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nModes: live preview and explicitly confirmed guarded trade sending\n' "$GITHUB_SHA" "official ASF 6.3.10.6 ASF-generic.zip SHA256 118f9bb85d2d8d301536e96d304cbe8e7aa99a6aa1d1bb97a540e78b7c73b1ce" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
 
       - name: Upload installable plugin package
         uses: actions/upload-artifact@v4
