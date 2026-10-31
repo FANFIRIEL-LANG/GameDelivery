@@ -312,13 +312,13 @@ internal static class TradeDelivery
             try
             {
                 (bool success, HashSet<ulong>? tradeOfferIds, HashSet<ulong>? mobileTradeOfferIds) =
-                    await targetBot.ArchiWebHandler.SendTradeOffer(
+                    await InvokeSendTradeOfferAsync(
+                        targetBot,
                         request.TargetSteamId64,
                         selectedAssets,
-                        token: secret.TradeToken,
-                        customMessage: "GameDelivery order " + request.OrderId,
-                        forcedSingleOffer: true,
-                        itemsPerTrade: (ushort)selectedAssets.Count).ConfigureAwait(false);
+                        secret.TradeToken,
+                        "GameDelivery order " + request.OrderId,
+                        (ushort)selectedAssets.Count).ConfigureAwait(false);
 
                 HashSet<ulong> allOfferIds = new();
                 if (tradeOfferIds is not null) allOfferIds.UnionWith(tradeOfferIds);
@@ -380,6 +380,78 @@ internal static class TradeDelivery
         {
             SendSemaphore.Release();
         }
+    }
+
+    private static async Task<(bool Success, HashSet<ulong>? TradeOfferIDs, HashSet<ulong>? MobileTradeOfferIDs)>
+        InvokeSendTradeOfferAsync(
+            Bot bot,
+            ulong steamId,
+            IReadOnlyCollection<Asset> itemsToGive,
+            string token,
+            string customMessage,
+            ushort itemsPerTrade)
+    {
+        // Resolve the ASF API against the runtime-loaded assembly instead of binding this
+        // plugin's call site to a compile-time method signature.
+        Type handlerType = bot.ArchiWebHandler.GetType();
+        Type assetCollectionType = typeof(IReadOnlyCollection<Asset>);
+        MethodInfo? method = handlerType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(candidate =>
+            {
+                if (!string.Equals(candidate.Name, "SendTradeOffer", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                ParameterInfo[] parameters = candidate.GetParameters();
+                return parameters.Length == 7
+                    && parameters[0].ParameterType == typeof(ulong)
+                    && parameters[1].ParameterType == assetCollectionType
+                    && parameters[2].ParameterType == assetCollectionType
+                    && parameters[3].ParameterType == typeof(string)
+                    && parameters[4].ParameterType == typeof(string)
+                    && parameters[5].ParameterType == typeof(bool)
+                    && parameters[6].ParameterType == typeof(ushort);
+            });
+
+        if (method is null)
+        {
+            throw new MissingMethodException(
+                handlerType.FullName,
+                "SendTradeOffer(UInt64, IReadOnlyCollection<Asset>, IReadOnlyCollection<Asset>, String, String, Boolean, UInt16)");
+        }
+
+        object? invocation;
+        try
+        {
+            invocation = method.Invoke(
+                bot.ArchiWebHandler,
+                [steamId, itemsToGive, null, token, customMessage, true, itemsPerTrade]);
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
+            throw;
+        }
+
+        if (invocation is not Task task)
+        {
+            throw new InvalidOperationException("ASF SendTradeOffer вернул неожиданный тип результата.");
+        }
+
+        await task.ConfigureAwait(false);
+        object? result = task.GetType().GetProperty("Result")?.GetValue(task);
+        if (result is null)
+        {
+            throw new InvalidOperationException("ASF SendTradeOffer не вернул результат.");
+        }
+
+        Type resultType = result.GetType();
+        bool success = (bool)(resultType.GetField("Item1")?.GetValue(result)
+            ?? throw new InvalidOperationException("ASF не вернул флаг успешной отправки."));
+        HashSet<ulong>? tradeOfferIds = resultType.GetField("Item2")?.GetValue(result) as HashSet<ulong>;
+        HashSet<ulong>? mobileTradeOfferIds = resultType.GetField("Item3")?.GetValue(result) as HashSet<ulong>;
+        return (success, tradeOfferIds, mobileTradeOfferIds);
     }
 
     private static string GetPendingSecretPath(string nonce)
