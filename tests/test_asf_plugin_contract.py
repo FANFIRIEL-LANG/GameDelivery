@@ -56,20 +56,14 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("inventoryCount", diagnostic_region)
         self.assertNotIn(".SendTradeOffer(", diagnostic_region)
 
-    def test_trade_send_uses_runtime_reflection_instead_of_compile_time_binding(self):
+    def test_trade_send_uses_the_public_asf_api_directly(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
-        self.assertIn("InvokeSendTradeOfferAsync(", source)
-        self.assertIn('candidate.Name, "SendTradeOffer"', source)
-        self.assertIn("method.Invoke(", source)
-        self.assertIn("TargetInvocationException", source)
-        self.assertNotIn("targetBot.ArchiWebHandler.SendTradeOffer(", source)
-
-    def test_trade_confirmation_uses_runtime_reflection_not_compile_time_binding(self):
-        source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
-        self.assertIn("InvokeTradeConfirmationAsync(", source)
-        self.assertIn('"HandleTwoFactorAuthenticationConfirmations"', source)
-        self.assertIn("method.Invoke(", source)
-        self.assertNotIn("targetBot.Actions.HandleTwoFactorAuthenticationConfirmations(", source)
+        self.assertIn("targetBot.ArchiWebHandler.SendTradeOffer(", source)
+        self.assertIn("targetBot.Actions.HandleTwoFactorAuthenticationConfirmations(", source)
+        self.assertNotIn("InvokeSendTradeOfferAsync", source)
+        self.assertNotIn("InvokeTradeConfirmationAsync", source)
+        self.assertNotIn("method.Invoke(", source)
+        self.assertNotIn("System.Reflection", source)
 
     def test_send_failure_preserves_missing_method_name_and_stack_for_root_cause_analysis(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
