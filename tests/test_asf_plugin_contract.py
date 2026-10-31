@@ -64,6 +64,13 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("TargetInvocationException", source)
         self.assertNotIn("targetBot.ArchiWebHandler.SendTradeOffer(", source)
 
+    def test_trade_confirmation_uses_runtime_reflection_not_compile_time_binding(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
+        self.assertIn("InvokeTradeConfirmationAsync(", source)
+        self.assertIn('"HandleTwoFactorAuthenticationConfirmations"', source)
+        self.assertIn("method.Invoke(", source)
+        self.assertNotIn("targetBot.Actions.HandleTwoFactorAuthenticationConfirmations(", source)
+
     def test_send_failure_preserves_missing_method_name_and_stack_for_root_cause_analysis(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         send_call = source.index("InvokeSendTradeOfferAsync(")
