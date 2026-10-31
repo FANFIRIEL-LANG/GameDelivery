@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import secrets
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
@@ -12,6 +15,89 @@ from urllib.request import Request, urlopen
 
 class ASFError(RuntimeError):
     """Raised when ASF IPC cannot complete a request."""
+
+
+def _restrict_pending_trade_permissions(path: Path, *, directory: bool = False) -> None:
+    """Restrict temporary trade-token storage to its owner and SYSTEM.
+
+    On Windows, use a protected DACL instead of relying on inherited permissions.
+    On POSIX, remove all group/other access. Fail closed if hardening fails.
+    """
+    if os.name != "nt":
+        path.chmod(0o700 if directory else 0o600)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    sddl = (
+        "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"
+        if directory
+        else "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
+    )
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    descriptor = ctypes.c_void_p()
+    descriptor_size = wintypes.DWORD()
+
+    convert = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    convert.restype = wintypes.BOOL
+
+    get_dacl = advapi32.GetSecurityDescriptorDacl
+    get_dacl.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    )
+    get_dacl.restype = wintypes.BOOL
+
+    set_named_security_info = advapi32.SetNamedSecurityInfoW
+    set_named_security_info.argtypes = (
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    )
+    set_named_security_info.restype = wintypes.DWORD
+
+    local_free = kernel32.LocalFree
+    local_free.argtypes = (ctypes.c_void_p,)
+    local_free.restype = ctypes.c_void_p
+
+    if not convert(sddl, 1, ctypes.byref(descriptor), ctypes.byref(descriptor_size)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        dacl_present = wintypes.BOOL()
+        dacl_defaulted = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        if not get_dacl(
+            descriptor,
+            ctypes.byref(dacl_present),
+            ctypes.byref(dacl),
+            ctypes.byref(dacl_defaulted),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not dacl_present.value or not dacl.value:
+            raise OSError("Не удалось создать ограниченный DACL для временного секрета")
+
+        # SE_FILE_OBJECT; DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+        result = set_named_security_info(
+            str(path), 1, 0x80000004, None, None, dacl, None
+        )
+        if result != 0:
+            raise ctypes.WinError(result)
+    finally:
+        local_free(descriptor)
 
 
 def _find_key(mapping: dict[str, Any], key: str) -> str | None:
@@ -234,6 +320,44 @@ class ASFClient:
             raise ValueError("Команда ASF не должна быть пустой")
         return self.request("/Api/Command", method="POST", body={"Command": command})
 
+    def start_bots(self, bot_names: Iterable[str]) -> dict[str, Any]:
+        """Ask ASF to start several configured bots with one IPC command."""
+        names = [str(name).strip() for name in bot_names]
+        if not names or any(
+            not name or "," in name or any(ord(char) < 32 for char in name)
+            for name in names
+        ):
+            raise ValueError("Некорректный список имён ботов ASF для массового запуска")
+        if len({name.casefold() for name in names}) != len(names):
+            raise ValueError("В списке массового запуска есть повторяющиеся боты")
+        response = self.send_command("start " + ",".join(names))
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду массового запуска")
+        return {"bot_names": names, "command_sent": True}
+
+    def start_bot(self, bot_name: str) -> dict[str, Any]:
+        """Ask ASF to start one configured bot, including a bot disabled in JSON."""
+        name = bot_name.strip()
+        if not name or "," in name or any(ord(char) < 32 for char in name):
+            raise ValueError("Некорректное имя бота ASF для команды запуска")
+        response = self.send_command("start " + name)
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду запуска бота")
+        return {"bot_name": name, "command_sent": True}
+
+    def stop_bot(self, bot_name: str) -> dict[str, Any]:
+        """Ask ASF to stop one bot without stopping the ASF process itself."""
+        name = bot_name.strip()
+        if not name or "," in name or any(ord(char) < 32 for char in name):
+            raise ValueError("Некорректное имя бота ASF для команды остановки")
+        response = self.send_command("stop " + name)
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду остановки бота")
+        return {"bot_name": name, "command_sent": True}
+
     def preview_trade_offer(
         self,
         *,
@@ -334,20 +458,177 @@ class ASFClient:
         return preview
 
     def get_bots(self) -> dict[str, Any]:
-        """Return the active ASF bot map without exposing it to logs."""
-        payload = _unwrap_result(self.get_status())
+        """Return live bot objects from ASF's documented bot endpoint.
+
+        /Api/ASF reports process-wide information and does not contain a Bots
+        collection. /Api/Bot/{botNames} is the supported endpoint for bot state;
+        @all asks ASF for every bot currently loaded in this process.
+        """
+        payload = _unwrap_result(self.request("/Api/Bot/@all"))
         if not isinstance(payload, dict):
-            raise ASFError("ASF не вернул список ботов")
-        bots_key = _find_key(payload, "Bots")
-        if bots_key is None or not isinstance(payload[bots_key], dict):
-            raise ASFError("ASF не предоставил список активных ботов")
-        return dict(payload[bots_key])
+            raise ASFError("ASF вернул список ботов в неожиданном формате")
+        bots: dict[str, Any] = {}
+        for name, details in payload.items():
+            bot_name = str(name).strip()
+            if not bot_name:
+                continue
+            if not isinstance(details, dict):
+                raise ASFError("ASF вернул состояние бота в неподдерживаемом формате")
+            bots[bot_name] = details
+        return bots
+
+    def send_trade_offer(
+        self,
+        *,
+        order_id: str,
+        bot_name: str,
+        trade_url: str,
+        asset_ids: Iterable[str],
+    ) -> dict[str, Any]:
+        """Send one reviewed card offer via ASF; the trade token is passed only in a one-use local file."""
+        order = order_id.strip()
+        bot = bot_name.strip()
+        if not order or len(order) > 128 or any(ord(ch) < 32 for ch in order):
+            raise ValueError("Некорректный ID заказа для отправки")
+        if not bot:
+            raise ValueError("Нужно имя ASF-бота")
+
+        parsed_url = urlsplit(trade_url.strip())
+        params = parse_qs(parsed_url.query, keep_blank_values=True)
+        partners = params.get("partner", [])
+        tokens = params.get("token", [])
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.hostname not in {"steamcommunity.com", "www.steamcommunity.com"}
+            or parsed_url.path.rstrip("/") != "/tradeoffer/new"
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.fragment
+            or len(partners) != 1
+            or not partners[0].isdigit()
+            or not 1 <= int(partners[0]) <= 4294967295
+            or len(tokens) != 1
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tokens[0])
+        ):
+            raise ValueError("Укажи корректную HTTPS trade URL получателя Steam")
+
+        normalized_ids = [str(value).strip() for value in asset_ids]
+        if not normalized_ids or len(normalized_ids) > 255:
+            raise ValueError("Для отправки нужно от 1 до 255 asset ID")
+        if any(not value.isdigit() or int(value) <= 0 for value in normalized_ids):
+            raise ValueError("Asset ID должны быть положительными целыми числами")
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ValueError("В составе заказа найдены повторяющиеся asset ID")
+
+        target_steam_id64 = 76561197960265728 + int(partners[0])
+        nonce = secrets.token_hex(32)
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            local_app_data = str(Path.home() / "AppData" / "Local")
+        secret_dir = Path(local_app_data) / "GameDelivery" / "pending_trade_requests"
+        secret_dir.mkdir(parents=True, exist_ok=True)
+        _restrict_pending_trade_permissions(secret_dir, directory=True)
+        secret_path = secret_dir / (nonce + ".json")
+
+        secret_payload = {
+            "CredentialNonce": nonce,
+            "OrderId": order,
+            "BotName": bot,
+            "TargetSteamId64": target_steam_id64,
+            "AssetIds": normalized_ids,
+            "TradeToken": tokens[0],
+        }
+        command_payload = {
+            "OrderId": order,
+            "BotName": bot,
+            "TargetSteamId64": target_steam_id64,
+            "AssetIds": normalized_ids,
+            "CredentialNonce": nonce,
+        }
+        encoded_payload = base64.urlsafe_b64encode(
+            json.dumps(command_payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+
+        try:
+            with secret_path.open("x", encoding="utf-8") as handle:
+                _restrict_pending_trade_permissions(secret_path)
+                json.dump(secret_payload, handle, ensure_ascii=True, separators=(",", ":"))
+            response = self.send_command("gamedelivery-send " + encoded_payload)
+            result = _unwrap_result(response)
+            if not isinstance(result, str):
+                raise ASFError("ASF не вернул структурированный результат отправки.")
+            try:
+                outcome = json.loads(result)
+            except json.JSONDecodeError:
+                raise ASFError("ASF вернул некорректный результат отправки.") from None
+            if not isinstance(outcome, dict):
+                raise ASFError("ASF вернул некорректный результат отправки.")
+
+            if outcome.get("success") is True:
+                if (
+                    outcome.get("mode") != "sent"
+                    or outcome.get("sendEnabled") is not True
+                    or outcome.get("orderId") != order
+                    or str(outcome.get("botName", "")).casefold() != bot.casefold()
+                    or outcome.get("targetSteamId64") != target_steam_id64
+                    or outcome.get("assetCount") != len(normalized_ids)
+                    or not isinstance(outcome.get("offerIds"), list)
+                    or not outcome["offerIds"]
+                    or any(not str(value).isdigit() for value in outcome["offerIds"])
+                ):
+                    raise ASFError("ASF не подтвердил отправку ожидаемого состава заказа.")
+                returned_assets = outcome.get("assets")
+                if not isinstance(returned_assets, list) or [
+                    str(item.get("assetId", "")) for item in returned_assets if isinstance(item, dict)
+                ] != normalized_ids:
+                    raise ASFError("Состав активов в ответе ASF не совпадает с заказом.")
+                return outcome
+
+            # A known offer ID must be tied to this exact order, recipient, bot, and asset list.
+            # Older plugin failures may not include details; those remain unknown and are never retried.
+            if outcome.get("resultUnknown") is True and "offerIds" in outcome:
+                offer_ids = outcome.get("offerIds")
+                if (
+                    outcome.get("mode") != "send"
+                    or outcome.get("sendEnabled") is not True
+                    or outcome.get("orderId") != order
+                    or str(outcome.get("botName", "")).casefold() != bot.casefold()
+                    or outcome.get("targetSteamId64") != target_steam_id64
+                    or outcome.get("assetCount") != len(normalized_ids)
+                    or not isinstance(offer_ids, list)
+                    or any(
+                        not str(value).isdigit() or int(value) <= 0
+                        for value in offer_ids
+                    )
+                ):
+                    raise ASFError("ASF вернул некорректные данные для неизвестного результата отправки.")
+                returned_assets = outcome.get("assets")
+                if not isinstance(returned_assets, list) or [
+                    str(item.get("assetId", "")) for item in returned_assets if isinstance(item, dict)
+                ] != normalized_ids:
+                    raise ASFError("Состав активов в неизвестном результате ASF не совпадает с заказом.")
+
+            # Preserve the structured uncertainty flag so the UI can lock this order if needed.
+            return outcome
+        finally:
+            try:
+                secret_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def restart(self, *, confirmed: bool = False) -> Any:
         """Restart ASF only after explicit user confirmation."""
         if confirmed is not True:
             raise ValueError("Перезапуск ASF требует явного подтверждения")
         return self.request("/Api/ASF/Restart", method="POST", body={})
+
+    def exit(self) -> Any:
+        """Request a graceful ASF shutdown through the documented Owner command."""
+        response = self.send_command("exit")
+        result = _unwrap_result(response)
+        if result is False:
+            raise ASFError("ASF не подтвердил команду остановки")
+        return response
 
     @staticmethod
     def build_new_bot_config(

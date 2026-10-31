@@ -16,6 +16,10 @@ class CardCopy:
     is_foil: bool = False
     # None means the source did not confirm tradability; selection must fail closed.
     is_tradable: bool | None = True
+    icon_url: str = ""
+    icon_url_large: str = ""
+    market_hash_name: str = ""
+    item_quality: str = ""
 
 
 @dataclass(frozen=True)

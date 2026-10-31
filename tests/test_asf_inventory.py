@@ -22,7 +22,7 @@ class ASFInventoryTests(unittest.TestCase):
                         {"assetid": "102", "classid": "12", "instanceid": "0"},
                     ],
                     "Descriptions": [
-                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tradable": 1, "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
+                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tradable": 1, "icon_url": "test-card-icon", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card", "tradable": 1, "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "12", "instanceid": "0", "name": "Background", "type": "Profile Background"},
                     ],
@@ -35,10 +35,35 @@ class ASFInventoryTests(unittest.TestCase):
                          ("100", "Card A", True, False))
         self.assertEqual(cards[0].game_name, "Tagged Game")
         self.assertTrue(cards[0].is_tradable)
+        self.assertEqual(cards[0].icon_url, "https://community.cloudflare.steamstatic.com/economy/image/test-card-icon")
         self.assertEqual((cards[1].asset_id, cards[1].card_name, cards[1].is_trading_card, cards[1].is_foil),
                          ("101", "Card B", True, True))
         self.assertTrue(cards[1].is_tradable)
         self.assertFalse(cards[2].is_trading_card)
+
+    def test_parser_extracts_cs_exterior_quality_for_future_item_selection(self):
+        payload = {
+            "Success": True,
+            "Result": {"CS2 Bot": {
+                "Assets": [{"assetid": "cs-1", "classid": "cs-class", "instanceid": "0"}],
+                "Descriptions": [{
+                    "classid": "cs-class",
+                    "instanceid": "0",
+                    "name": "AK-47 | Redline (Field-Tested)",
+                    "market_hash_name": "AK-47 | Redline (Field-Tested)",
+                    "type": "Consumer Grade Rifle",
+                    "icon_url": "relative-icon-hash",
+                    "tags": [
+                        {"category": "Game", "localized_tag_name": "Counter-Strike 2"},
+                        {"category": "Exterior", "internal_name": "WearCategory2", "localized_tag_name": "Field-Tested"},
+                    ],
+                }],
+            }},
+        }
+        card = parse_bot_inventory(payload, "CS2 Bot", "Unknown game")[0]
+        self.assertEqual(card.item_quality, "FT")
+        self.assertEqual(card.market_hash_name, "AK-47 | Redline (Field-Tested)")
+        self.assertEqual(card.icon_url, "https://community.cloudflare.steamstatic.com/economy/image/relative-icon-hash")
 
     def test_nontradable_card_flag_is_preserved(self):
         payload = {

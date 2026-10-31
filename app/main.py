@@ -8,11 +8,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame,
-    QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox,
+    QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox, QCompleter,
 )
 from games.steam_cards.snapshot import InventorySnapshotStore
 from games.steam_cards.reservations import AssetReservationStore
 from app.inventory_panel import InventoryPanel
+from app.game_inventory_panel import GameInventoryPanel
 from app.proxy_settings import ProxySettingsWidget
 from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
@@ -23,6 +24,25 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GameDelivery — локальная панель")
+        try:
+            self._ensure_delivery_order_schema()
+            self._recover_interrupted_delivery_orders()
+        except (OSError, sqlite3.Error) as exc:
+            message = (
+                "GameDelivery не может открыть или обновить локальную базу данных. "
+                "Исходные данные не сбрасывались. Проверь доступ к файлу и сделай резервную копию "
+                "перед восстановлением.\n\n"
+                f"Подробности: {type(exc).__name__}"
+            )
+            QMessageBox.critical(self, "Ошибка локальной базы данных", message)
+            self.startup_error_label = QLabel(message)
+            self.startup_error_label.setWordWrap(True)
+            self.startup_error_label.setMargin(24)
+            self.startup_error_label.setObjectName("databaseStartupError")
+            self.setCentralWidget(self.startup_error_label)
+            self.resize(720, 260)
+            self.setMinimumSize(560, 220)
+            return
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
         root = QWidget()
@@ -52,11 +72,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
+        self.game_inventory_panel = GameInventoryPanel()
+        self.tabs.addTab(self.game_inventory_panel, "Игровые предметы")
+        self.inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
+        self.game_inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
         self.asf_management = ASFManagementWidget()
         self.asf_management.inventory_snapshot_updated.connect(self.inventory_panel.select_bot_snapshot)
+        self.asf_management.log_line.connect(self._append_log_line)
         self.tabs.addTab(self.asf_management, "ASF-боты")
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
@@ -76,13 +101,29 @@ class MainWindow(QMainWindow):
             QFrame#card { background: #202731; border: 1px solid #303846; border-radius: 10px; }
         """)
 
+    def _open_order_with_trade_url(self, trade_url: str):
+        value = str(trade_url or "").strip()
+        if not value:
+            QMessageBox.warning(self, "Trade URL", "Укажи Steam Trade URL получателя.")
+            return
+        try:
+            value = self._validate_trade_url(value)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Некорректный Trade URL", str(exc))
+            return
+        self.order_recipient.setText(value)
+        self.tabs.setCurrentIndex(0)
+        self.statusBar().showMessage(
+            "Trade URL перенесён в тестовую вкладку «Заказы». Проверь состав и подтверди отправку отдельно."
+        )
+
     def _orders_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         note = QLabel(
             "Playerok-заказы можно импортировать с вкладки «Площадки». Выбери импортированный заказ, "
             "введи trade URL покупателя и отметь активы ASF. Если заказ не выбран, создастся ручной черновик. "
-            "Резервирование локальное; обмены не отправляются."
+            "Резервирование локальное; отправка доступна отдельной кнопкой после проверки состава через ASF и явного подтверждения."
         )
         note.setObjectName("muted")
         note.setWordWrap(True)
@@ -93,6 +134,13 @@ class MainWindow(QMainWindow):
         self.order_recipient.setPlaceholderText("HTTPS trade URL получателя")
         self.order_bot = QComboBox()
         self.order_bot.setMinimumWidth(160)
+        self.order_bot.setEditable(True)
+        self.order_bot.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        order_bot_completer = QCompleter(self.order_bot.model(), self.order_bot)
+        order_bot_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        order_bot_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        order_bot_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.order_bot.setCompleter(order_bot_completer)
         self.order_bot.currentIndexChanged.connect(self._load_order_assets)
         form.addWidget(self.order_recipient, 2)
         form.addWidget(self.order_bot, 1)
@@ -111,19 +159,25 @@ class MainWindow(QMainWindow):
         self.prepare_order_button.clicked.connect(self._prepare_delivery_order)
         self.preview_offer_button = QPushButton("Проверить черновик через ASF")
         self.preview_offer_button.clicked.connect(self._preview_selected_order_with_asf)
+        self.send_offer_button = QPushButton("Отправить предложение Steam…")
+        self.send_offer_button.setEnabled(False)
+        self.send_offer_button.clicked.connect(self._send_selected_order_with_asf)
         actions.addWidget(self.prepare_order_button)
         actions.addWidget(self.preview_offer_button)
+        actions.addWidget(self.send_offer_button)
         actions.addStretch()
         layout.addLayout(actions)
 
         AssetReservationStore(self._database_path)
         self._ensure_delivery_order_schema()
+        self._recover_interrupted_delivery_orders()
         self.orders = QTableWidget(0, 5)
         self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Товар / активы", "Статус", "Обновлено"])
         self.orders.horizontalHeader().setStretchLastSection(True)
         self.orders.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.orders.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.orders.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.orders.itemSelectionChanged.connect(self._update_order_action_buttons)
         self.orders.cellDoubleClicked.connect(self._show_order_details)
         layout.addWidget(self.orders, 2)
         order_actions = QHBoxLayout()
@@ -159,7 +213,9 @@ class MainWindow(QMainWindow):
                     source_buyer TEXT NOT NULL DEFAULT '',
                     source_status TEXT NOT NULL DEFAULT '',
                     source_amount TEXT NOT NULL DEFAULT '',
-                    source_url TEXT NOT NULL DEFAULT ''
+                    source_url TEXT NOT NULL DEFAULT '',
+                    trade_offer_id TEXT NOT NULL DEFAULT '',
+                    trade_confirmation_status TEXT NOT NULL DEFAULT ''
                 )
             """)
             columns = {
@@ -173,6 +229,8 @@ class MainWindow(QMainWindow):
                 "source_status": "TEXT NOT NULL DEFAULT ''",
                 "source_amount": "TEXT NOT NULL DEFAULT ''",
                 "source_url": "TEXT NOT NULL DEFAULT ''",
+                "trade_offer_id": "TEXT NOT NULL DEFAULT ''",
+                "trade_confirmation_status": "TEXT NOT NULL DEFAULT ''",
             }
             for name, definition in migrations.items():
                 if name not in columns:
@@ -191,6 +249,21 @@ class MainWindow(QMainWindow):
                     FOREIGN KEY (order_id) REFERENCES delivery_orders(order_id)
                 )
             """)
+
+    def _recover_interrupted_delivery_orders(self) -> int:
+        """Fail closed for orders whose send request was interrupted by a crash."""
+        with sqlite3.connect(self._database_path) as db:
+            cursor = db.execute(
+                "UPDATE delivery_orders "
+                "SET status = ?, trade_confirmation_status = 'unknown' "
+                "WHERE status = ?",
+                (
+                    "неизвестен результат отправки — проверь исходящие Steam",
+                    "sending — запрос ASF",
+                ),
+            )
+            return cursor.rowcount
+
 
     def _import_marketplace_order(self, marketplace_order):
         platform = str(marketplace_order.get("platform") or "").strip().lower()
@@ -344,7 +417,15 @@ class MainWindow(QMainWindow):
             if not selected:
                 raise ValueError("Выбери хотя бы один незарезервированный актив.")
 
-            # Validate against the current snapshot, not only the visual selection state.
+            # Validate snapshot freshness and every selected asset again at action time.
+            snapshot_store = InventorySnapshotStore(self._database_path)
+            for bot_name in {item[0] for item in selected}:
+                snapshot_status = snapshot_store.status(bot_name)
+                if snapshot_status["stale"] or not snapshot_status["updated_at"]:
+                    raise ValueError(
+                        f"Снимок инвентаря бота {bot_name} устарел или не подтверждён. "
+                        "Обнови инвентарь через ASF перед резервированием."
+                    )
             with sqlite3.connect(self._database_path) as db:
                 for bot_name, asset_id in selected:
                     row = db.execute(
@@ -438,6 +519,11 @@ class MainWindow(QMainWindow):
                     "WHERE order_id = ? ORDER BY bot_name, asset_id",
                     (order_id,),
                 ).fetchall()
+                reserved_assets = db.execute(
+                    "SELECT bot_name, asset_id FROM steam_asset_reservations "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
 
             if order is None:
                 raise ValueError("Заказ не найден в базе данных.")
@@ -482,9 +568,281 @@ class MainWindow(QMainWindow):
                 "Черновик проверен по актуальному инвентарю ASF.",
                 "Торговое предложение НЕ создавалось и НЕ отправлялось.",
             ])
-            QMessageBox.information(self, "Черновик проверен через ASF", "\\n".join(lines))
+            QMessageBox.information(self, "Черновик проверен через ASF", "\n".join(lines))
         except (OSError, sqlite3.Error, ValueError, ASFError) as exc:
             QMessageBox.warning(self, "Проверка черновика через ASF", str(exc))
+
+    def _send_selected_order_with_asf(self):
+        request_started = False
+        order_id = None
+        try:
+            order_id = self._selected_order_id()
+            with sqlite3.connect(self._database_path) as db:
+                order = db.execute(
+                    "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                assets = db.execute(
+                    "SELECT bot_name, asset_id FROM delivery_order_assets "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
+                reserved_assets = db.execute(
+                    "SELECT bot_name, asset_id FROM steam_asset_reservations "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
+
+            if order is None:
+                raise ValueError("Заказ не найден в локальной базе.")
+            recipient, status = order
+            if status != "reserved — не отправлен":
+                raise ValueError(
+                    "Отправлять можно только подготовленный заказ со статусом «reserved — не отправлен». "
+                    "Заказы с уже начатой или неизвестной отправкой повторно не запускаются."
+                )
+            recipient = self._validate_trade_url(recipient)
+            if not assets:
+                raise ValueError("У заказа нет сохранённого состава активов.")
+            if assets != reserved_assets:
+                raise ValueError(
+                    "Состав заказа не совпадает с действующими резервами активов. "
+                    "Обнови резерв перед отправкой; предложение не создано."
+                )
+            if len(assets) > 255:
+                raise ValueError("Один черновик ASF поддерживает не более 255 выбранных активов.")
+            bot_names = {bot_name for bot_name, _asset_id in assets}
+            if len(bot_names) != 1:
+                raise ValueError("Все активы одного предложения должны принадлежать одному ASF-боту.")
+
+            bot_name = next(iter(bot_names))
+            asset_ids = [str(asset_id) for _bot, asset_id in assets]
+            ipc_password = self.asf_management.ipc_password.text().strip() or None
+            client = ASFClient(ipc_password=ipc_password, timeout=45.0)
+
+            # Re-check the recipient, bot, exact asset list and tradability against the live ASF inventory.
+            preview = client.preview_trade_offer(
+                order_id=order_id,
+                bot_name=bot_name,
+                trade_url=recipient,
+                asset_ids=asset_ids,
+            )
+            if (
+                preview.get("success") is not True
+                or preview.get("mode") != "preview-only"
+                or preview.get("sendEnabled") is not False
+                or preview.get("orderId") != order_id
+                or str(preview.get("botName", "")).casefold() != bot_name.casefold()
+                or preview.get("assetCount") != len(asset_ids)
+                or [str(item.get("assetId", "")) for item in preview.get("assets", []) if isinstance(item, dict)] != asset_ids
+            ):
+                raise ASFError("ASF не подтвердил точное совпадение получателя, бота и состава активов. Отправка отменена.")
+
+            confirmation_lines = [
+                "Сейчас будет создано реальное предложение обмена Steam.",
+                "",
+                f"Заказ: {order_id}",
+                f"Бот ASF: {bot_name}",
+                f"Получатель SteamID64: {preview['targetSteamId64']}",
+                f"Количество активов: {len(asset_ids)}",
+                "",
+                "Asset ID:",
+                *asset_ids,
+                "",
+                "GameDelivery повторно проверил передаваемость через ASF.",
+                "Отправка не означает, что получатель принял обмен.",
+                "При неопределённом результате повторная отправка будет заблокирована.",
+            ]
+            answer = QMessageBox.question(
+                self,
+                "Подтвердить реальную отправку Steam",
+                "\n".join(confirmation_lines),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
+                return
+
+            # Compare-and-set prevents a second UI click from sending the same order concurrently.
+            with sqlite3.connect(self._database_path) as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                current_assets = db.execute(
+                    "SELECT bot_name, asset_id FROM delivery_order_assets "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
+                current_reservations = db.execute(
+                    "SELECT bot_name, asset_id FROM steam_asset_reservations "
+                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
+                    (order_id,),
+                ).fetchall()
+                if current is None or current[0] != "reserved — не отправлен":
+                    raise ValueError("Статус заказа изменился во время проверки. Обнови список.")
+                if current_assets != assets or current_reservations != assets:
+                    raise ValueError(
+                        "Состав заказа или резервы изменились после проверки. "
+                        "Повтори проверку; предложение не отправлено."
+                    )
+                changed = db.execute(
+                    "UPDATE delivery_orders SET status = 'sending — запрос ASF' "
+                    "WHERE order_id = ? AND status = 'reserved — не отправлен'",
+                    (order_id,),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("Заказ уже обрабатывается другой операцией.")
+
+            try:
+                request_started = True
+                outcome = ASFClient(ipc_password=ipc_password, timeout=120.0).send_trade_offer(
+                    order_id=order_id,
+                    bot_name=bot_name,
+                    trade_url=recipient,
+                    asset_ids=asset_ids,
+                )
+            except (OSError, ValueError) as exc:
+                # Local validation or one-use-secret file errors occur before command dispatch.
+                with sqlite3.connect(self._database_path) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                        ("reserved — не отправлен", order_id, "sending — запрос ASF"),
+                    )
+                self._load_saved_orders()
+                QMessageBox.warning(
+                    self,
+                    "Команда ASF не отправлена",
+                    f"{exc}\n\nПроверь локальные настройки и повтори проверку.",
+                )
+                return
+            except ASFError as exc:
+                # The IPC request might have reached ASF; never reset and blindly retry.
+                with sqlite3.connect(self._database_path) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                        ("неизвестен результат отправки — проверь исходящие Steam", order_id, "sending — запрос ASF"),
+                    )
+                self._load_saved_orders()
+                QMessageBox.warning(
+                    self,
+                    "Результат отправки не подтверждён",
+                    f"{exc}\n\nПроверь исходящие предложения Steam. Не отправляй этот заказ повторно.",
+                )
+                return
+
+            if outcome.get("success") is True:
+                offer_ids = outcome.get("offerIds", [])
+                if not offer_ids:
+                    raise ASFError("ASF вернул успех без ID предложения; статус сохранён как неопределённый.")
+                confirmation_status = str(outcome.get("confirmationStatus", "unknown"))
+                order_status = (
+                    "sent — требуется подтверждение Steam"
+                    if confirmation_status == "pending"
+                    else "sent — ожидание покупателя"
+                )
+                offer_id_text = ", ".join(str(value) for value in offer_ids)
+                with sqlite3.connect(self._database_path) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, "
+                        "trade_confirmation_status = ? WHERE order_id = ? AND status = ?",
+                        (order_status, offer_id_text, confirmation_status, order_id, "sending — запрос ASF"),
+                    )
+                self._load_saved_orders()
+                self._load_order_assets()
+                QMessageBox.information(
+                    self,
+                    "Предложение Steam создано",
+                    f"Заказ: {order_id}\nБот ASF: {bot_name}\nID предложения: {offer_id_text}\n"
+                    f"Подтверждение: {confirmation_status}\n\n"
+                    "Предложение создано, но это не подтверждает принятие обмена покупателем.",
+                )
+                return
+
+            if outcome.get("resultUnknown") is True:
+                status_message = "неизвестен результат отправки — проверь исходящие Steam"
+                user_message = str(outcome.get("error") or "Результат отправки не подтверждён.")
+                diagnostic_lines = []
+                for field, label in (
+                    ("exceptionType", "Тип исключения"),
+                    ("exceptionMessage", "Сообщение исключения"),
+                    ("missingMethod", "Отсутствующий метод"),
+                    ("targetSite", "Место сбоя"),
+                    ("stackTrace", "Стек вызовов"),
+                ):
+                    value = outcome.get(field)
+                    if isinstance(value, str) and value.strip():
+                        diagnostic_lines.append(f"{label}: {value[:8000]}")
+                if diagnostic_lines:
+                    user_message += "\n\nДиагностика ASF:\n" + "\n".join(diagnostic_lines)
+                raw_offer_ids = outcome.get("offerIds", [])
+                known_offer_ids = []
+                if isinstance(raw_offer_ids, list):
+                    for value in raw_offer_ids:
+                        text_value = str(value)
+                        if text_value.isdigit() and int(text_value) > 0 and text_value not in known_offer_ids:
+                            known_offer_ids.append(text_value)
+                known_offer_ids.sort(key=int)
+                offer_id_text = ", ".join(known_offer_ids)
+            else:
+                status_message = "reserved — не отправлен"
+                user_message = str(outcome.get("error") or "ASF отклонил отправку до создания предложения.")
+                offer_id_text = ""
+
+            with sqlite3.connect(self._database_path) as db:
+                if outcome.get("resultUnknown") is True and offer_id_text:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, "
+                        "trade_confirmation_status = 'unknown' WHERE order_id = ? AND status = ?",
+                        (status_message, offer_id_text, order_id, "sending — запрос ASF"),
+                    )
+                elif outcome.get("resultUnknown") is True:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ?, trade_confirmation_status = 'unknown' "
+                        "WHERE order_id = ? AND status = ?",
+                        (status_message, order_id, "sending — запрос ASF"),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                        (status_message, order_id, "sending — запрос ASF"),
+                    )
+            self._load_saved_orders()
+            if outcome.get("resultUnknown") is True:
+                QMessageBox.warning(self, "Результат отправки неизвестен", user_message + "\n\nПроверь исходящие предложения Steam; повторная отправка запрещена.")
+            else:
+                QMessageBox.warning(self, "ASF не отправил предложение", user_message)
+
+        except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            if request_started and order_id:
+                try:
+                    with sqlite3.connect(self._database_path) as db:
+                        db.execute(
+                            "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
+                            ("неизвестен результат отправки — проверь исходящие Steam", order_id, "sending — запрос ASF"),
+                        )
+                except sqlite3.Error:
+                    pass
+            QMessageBox.warning(self, "Отправка через ASF не завершена", str(exc))
+        finally:
+            self._load_saved_orders()
+
+    def _update_order_action_buttons(self):
+        if not hasattr(self, "send_offer_button") or not hasattr(self, "orders"):
+            return
+        try:
+            order_id = self._selected_order_id()
+            with sqlite3.connect(self._database_path) as db:
+                row = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                ).fetchone()
+            self.send_offer_button.setEnabled(
+                row is not None and row[0] == "reserved — не отправлен"
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            self.send_offer_button.setEnabled(False)
 
     def _load_saved_orders(self):
         if not hasattr(self, "orders"):
@@ -495,9 +853,9 @@ class MainWindow(QMainWindow):
             with sqlite3.connect(self._database_path) as db:
                 rows = db.execute(
                     "SELECT order_id, asset_count, status, created_at, source_platform, "
-                    "source_title, source_buyer FROM delivery_orders ORDER BY created_at DESC"
+                    "source_title, source_buyer, trade_offer_id FROM delivery_orders ORDER BY created_at DESC"
                 ).fetchall()
-            for order_id, count, status, created, platform, title, buyer in rows:
+            for order_id, count, status, created, platform, title, buyer, trade_offer_id in rows:
                 if platform == "playerok":
                     source = "Playerok" + (f" · {buyer}" if buyer else "")
                     items = title or "Заказ Playerok"
@@ -506,12 +864,16 @@ class MainWindow(QMainWindow):
                 else:
                     source = "Ручной заказ"
                     items = f"{count} активов"
+                if trade_offer_id:
+                    items += f" · offer {trade_offer_id}"
                 row = self.orders.rowCount()
                 self.orders.insertRow(row)
                 for col, value in enumerate((order_id, source, items, status, created)):
                     self.orders.setItem(row, col, QTableWidgetItem(str(value)))
         except sqlite3.Error as exc:
             self.statusBar().showMessage(f"Не удалось загрузить сохранённые заказы: {exc}")
+        finally:
+            self._update_order_action_buttons()
 
     def _selected_order_id(self):
         row = self.orders.currentRow()
@@ -561,7 +923,7 @@ class MainWindow(QMainWindow):
         lines.extend(f"• {bot} — asset {asset}" for bot, asset in assets)
         if not assets:
             lines.append("Состав не сохранён (старый заказ).")
-        QMessageBox.information(self, "Состав заказа", "\\n".join(lines))
+        QMessageBox.information(self, "Состав заказа", "\n".join(lines))
 
     def _cancel_selected_order(self):
         try:
@@ -574,20 +936,34 @@ class MainWindow(QMainWindow):
             if row is None:
                 raise ValueError("Заказ не найден в базе данных.")
             original_status, source_platform = row
-            if original_status not in {"reserved — не отправлен", "imported — ожидание подготовки"}:
+            unknown_status = "неизвестен результат отправки — проверь исходящие Steam"
+            if original_status not in {
+                "reserved — не отправлен",
+                "imported — ожидание подготовки",
+                unknown_status,
+            }:
                 raise ValueError(
-                    "Отменить можно только подготовленный заказ без отправки или импортированный "
-                    "заказ, который ещё не готовился к доставке."
+                    "Этот заказ уже отправлялся или завершил обработку. "
+                    "Для отмены предложения Steam сначала нужно отозвать само предложение."
                 )
+            is_unknown = original_status == unknown_status
             cancelled_status = (
-                "cancelled — резерв снят"
-                if original_status == "reserved — не отправлен"
-                else "cancelled — отказ от заказа"
+                "cancelled — результат отправки требует сверки"
+                if is_unknown
+                else (
+                    "cancelled — резерв снят"
+                    if original_status == "reserved — не отправлен"
+                    else "cancelled — отказ от заказа"
+                )
             )
             action_text = (
-                "освободить зарезервированные активы"
-                if original_status == "reserved — не отправлен"
-                else "убрать импортированный заказ из очереди"
+                "закрыть заказ, сохранив резерв до ручной проверки исходящих Steam"
+                if is_unknown
+                else (
+                    "освободить зарезервированные активы"
+                    if original_status == "reserved — не отправлен"
+                    else "убрать импортированный заказ из очереди"
+                )
             )
             answer = QMessageBox.question(
                 self, "Отменить заказ",
@@ -608,9 +984,10 @@ class MainWindow(QMainWindow):
                     "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                     (cancelled_status, order_id, original_status),
                 )
-                db.execute(
-                    "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
-                )
+                if not is_unknown:
+                    db.execute(
+                        "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
+                    )
             self._load_saved_orders()
             self._load_order_assets()
             self.statusBar().showMessage(f"Заказ {order_id} отменён.")
@@ -623,33 +1000,164 @@ class MainWindow(QMainWindow):
     def _games_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        for name, state in [
-            ("Steam-карточки", "Первый модуль · планируется"),
-            ("Counter-Strike 2", "Скины и предметы · планируется"),
-            ("Другие игры", "Подключаемые модули · будущий этап"),
-        ]:
-            card = QFrame()
-            card.setObjectName("card")
-            row = QHBoxLayout(card)
-            name_label = QLabel(name)
-            name_label.setStyleSheet("font-weight: 600;")
-            state_label = QLabel(state)
-            state_label.setObjectName("muted")
-            row.addWidget(name_label)
-            row.addStretch()
-            row.addWidget(state_label)
-            layout.addWidget(card)
-        layout.addStretch()
+        heading = QLabel("Каталог игровых модулей")
+        heading.setStyleSheet("font-size: 18px; font-weight: 700;")
+        layout.addWidget(heading)
+        description = QLabel(
+            "Выбери игру, чтобы увидеть состояние её модуля. Доступные функции "
+            "открываются отдельно; незавершённые модули не влияют на текущую работу."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.game_modules = [
+            {
+                "id": "cs2",
+                "name": "Counter-Strike 2",
+                "state": "В разработке",
+                "details": "Модуль предметов и скинов Counter-Strike 2. "
+                           "Инвентарь, качество, фильтры и торговые сценарии будут подключены отдельным этапом.",
+                "available": False,
+            },
+            {
+                "id": "dota2",
+                "name": "Dota 2",
+                "state": "В разработке",
+                "details": "Модуль предметов Dota 2. Инвентарь и торговые сценарии ещё не подключены.",
+                "available": False,
+            },
+            {
+                "id": "steam_cards",
+                "name": "Steam",
+                "state": "Доступен · карточки",
+                "details": "Текущий модуль Steam-карточек: просмотр снимков инвентаря, "
+                           "выбор конкретных карточек, резервирование активов и подготовка заказов.",
+                "available": True,
+            },
+            {
+                "id": "tf2",
+                "name": "Team Fortress 2",
+                "state": "В разработке",
+                "details": "Модуль предметов Team Fortress 2. Инвентарь и торговые сценарии ещё не подключены.",
+                "available": False,
+            },
+            {
+                "id": "rust",
+                "name": "Rust",
+                "state": "В разработке",
+                "details": "Модуль предметов Rust. Инвентарь и торговые сценарии ещё не подключены.",
+                "available": False,
+            },
+        ]
+        self.game_search = QLineEdit()
+        self.game_search.setPlaceholderText("Поиск игры...")
+        self.game_search.textChanged.connect(self._filter_game_modules)
+        layout.addWidget(self.game_search)
+
+        content = QHBoxLayout()
+        self.game_list = QListWidget()
+        self.game_list.setMinimumWidth(240)
+        self.game_list.currentItemChanged.connect(self._show_game_module_details)
+        content.addWidget(self.game_list, 1)
+
+        details_card = QFrame()
+        details_card.setObjectName("card")
+        details_layout = QVBoxLayout(details_card)
+        self.game_module_name = QLabel("Выбери игру из списка")
+        self.game_module_name.setStyleSheet("font-size: 16px; font-weight: 700;")
+        self.game_module_state = QLabel("")
+        self.game_module_state.setObjectName("muted")
+        self.game_module_description = QLabel(
+            "Здесь появится описание выбранного игрового модуля."
+        )
+        self.game_module_description.setWordWrap(True)
+        details_layout.addWidget(self.game_module_name)
+        details_layout.addWidget(self.game_module_state)
+        details_layout.addWidget(self.game_module_description, 1)
+        self.open_game_inventory_button = QPushButton("Открыть инвентарь Steam-карточек")
+        self.open_game_inventory_button.setEnabled(False)
+        self.open_game_inventory_button.clicked.connect(self._open_selected_game_inventory)
+        details_layout.addWidget(self.open_game_inventory_button)
+        content.addWidget(details_card, 2)
+        layout.addLayout(content, 1)
+
+        self._filter_game_modules()
+        if self.game_list.count():
+            self.game_list.setCurrentRow(0)
         return page
+
+    def _filter_game_modules(self, text=""):
+        query = str(text or "").strip().casefold()
+        self.game_list.clear()
+        for module in self.game_modules:
+            if query and query not in module["name"].casefold():
+                continue
+            item = QListWidgetItem(f'{module["name"]}  ·  {module["state"]}')
+            item.setData(Qt.ItemDataRole.UserRole, module["id"])
+            self.game_list.addItem(item)
+        if self.game_list.count():
+            self.game_list.setCurrentRow(0)
+        else:
+            self._show_game_module_details(None, None)
+
+    def _show_game_module_details(self, current, previous=None):
+        module_id = current.data(Qt.ItemDataRole.UserRole) if current else None
+        module = next(
+            (entry for entry in self.game_modules if entry["id"] == module_id),
+            None,
+        )
+        if module is None:
+            self.game_module_name.setText("Игра не найдена")
+            self.game_module_state.setText("")
+            self.game_module_description.setText("Измени поисковый запрос.")
+            self.open_game_inventory_button.setEnabled(False)
+            return
+        self.game_module_name.setText(module["name"])
+        self.game_module_state.setText(module["state"])
+        self.game_module_description.setText(module["details"])
+        self.open_game_inventory_button.setEnabled(module["available"])
+
+    def _open_selected_game_inventory(self):
+        current = self.game_list.currentItem()
+        if current is None or current.data(Qt.ItemDataRole.UserRole) != "steam_cards":
+            return
+        for index in range(self.tabs.count()):
+            if self.tabs.widget(index) is self.inventory_panel:
+                self.tabs.setCurrentIndex(index)
+                return
 
     def _logs_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        log = QTextEdit()
-        log.setReadOnly(True)
-        log.setPlainText("GameDelivery: тестовый режим.\nPlayerok не подключён.\nSteam API не используется.\nРеальная отправка предметов отключена.")
-        layout.addWidget(log)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("Локальный журнал ASF и управления процессом"))
+        toolbar.addStretch()
+        refresh = QPushButton("Обновить журнал")
+        refresh.clicked.connect(self._refresh_logs)
+        toolbar.addWidget(refresh)
+        layout.addLayout(toolbar)
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setPlaceholderText("Журнал будет заполнен после запуска или подключения к ASF.")
+        layout.addWidget(self.log_view, 1)
+        self._refresh_logs()
         return page
+
+    def _refresh_logs(self):
+        log_path = Path.home() / ".gamedelivery" / "asf-supervisor.log"
+        try:
+            if not log_path.is_file():
+                content = "Локальный журнал пока пуст. Запусти ASF через вкладку «ASF-боты»."
+            else:
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                content = "\n".join(lines[-3000:]) or "Локальный журнал пока пуст."
+            self.log_view.setPlainText(content)
+        except OSError as exc:
+            self.log_view.setPlainText(f"Не удалось прочитать локальный журнал: {exc}")
+
+    def _append_log_line(self, line: str):
+        self.log_view.append(line)
 
     def _settings_tab(self):
         page = QWidget()
