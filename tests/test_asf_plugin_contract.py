@@ -67,7 +67,7 @@ class ASFPluginContractTests(unittest.TestCase):
 
     def test_send_failure_preserves_missing_method_name_and_stack_for_root_cause_analysis(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
-        send_call = source.index("InvokeSendTradeOfferAsync(")
+        send_call = source.index("targetBot.ArchiWebHandler.SendTradeOffer(")
         catch_region = source[send_call:source.index("finally", send_call)]
         self.assertIn("exception);", catch_region)
         failure_region = source[source.index("private static string UnknownFailure"):source.index("private static string Failure")]
