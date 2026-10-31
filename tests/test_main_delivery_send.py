@@ -204,6 +204,39 @@ class DeliverySendFlowTests(unittest.TestCase):
             )
             client.send_trade_offer.assert_called_once()
 
+    def test_unknown_send_result_displays_full_asf_exception_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            window = self._fake_window(db_path)
+            client = MagicMock()
+            client.preview_trade_offer.return_value = self._preview(
+                self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
+            )
+            client.send_trade_offer.return_value = {
+                "success": False,
+                "mode": "send",
+                "sendEnabled": True,
+                "resultUnknown": True,
+                "error": "ASF send failed.",
+                "exceptionType": "System.MissingMethodException",
+                "exceptionMessage": "Missing method details",
+                "missingMethod": "MissingMethod details",
+                "targetSite": "ArchiWebHandler.SendTradeOffer",
+                "stackTrace": "at TradeDelivery.ProcessSendCommand()",
+            }
+
+            with patch("app.main.ASFClient", return_value=client):
+                with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                    with patch("app.main.QMessageBox.warning") as warning:
+                        MainWindow._send_selected_order_with_asf(window)
+
+            message = warning.call_args.args[2]
+            self.assertIn("System.MissingMethodException", message)
+            self.assertIn("MissingMethod details", message)
+            self.assertIn("ArchiWebHandler.SendTradeOffer", message)
+            self.assertIn("at TradeDelivery.ProcessSendCommand()", message)
+
     def test_cancel_confirmation_does_not_send_or_change_order(self):
         with tempfile.TemporaryDirectory() as temp:
             db_path = Path(temp) / "delivery.sqlite3"
