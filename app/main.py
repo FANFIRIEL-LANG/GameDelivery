@@ -776,7 +776,7 @@ class MainWindow(QMainWindow):
                     if isinstance(value, str) and value.strip():
                         diagnostic_lines.append(f"{label}: {value[:8000]}")
                 if diagnostic_lines:
-                    user_message += "\\n\\nДиагностика ASF:\\n" + "\\n".join(diagnostic_lines)
+                    user_message += "\n\nДиагностика ASF:\n" + "\n".join(diagnostic_lines)
                 raw_offer_ids = outcome.get("offerIds", [])
                 known_offer_ids = []
                 if isinstance(raw_offer_ids, list):
