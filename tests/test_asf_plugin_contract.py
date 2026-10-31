@@ -9,7 +9,7 @@ class ASFPluginContractTests(unittest.TestCase):
     def test_inventory_api_failure_is_reported_as_pre_send_and_never_as_unknown_trade(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         inventory_call = source.index("targetBot.Actions.GetInventory")
-        send_call = source.index("targetBot.ArchiWebHandler.SendTradeOffer")
+        send_call = source.index("InvokeSendTradeOfferAsync(")
         inventory_region = source[inventory_call - 500:send_call]
 
         self.assertIn("catch (MissingMethodException", inventory_region)
@@ -56,9 +56,17 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("inventoryCount", diagnostic_region)
         self.assertNotIn(".SendTradeOffer(", diagnostic_region)
 
+    def test_trade_send_uses_runtime_reflection_instead_of_compile_time_binding(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
+        self.assertIn("InvokeSendTradeOfferAsync(", source)
+        self.assertIn('candidate.Name, "SendTradeOffer"', source)
+        self.assertIn("method.Invoke(", source)
+        self.assertIn("TargetInvocationException", source)
+        self.assertNotIn("targetBot.ArchiWebHandler.SendTradeOffer(", source)
+
     def test_send_failure_preserves_missing_method_name_and_stack_for_root_cause_analysis(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
-        send_call = source.index("targetBot.ArchiWebHandler.SendTradeOffer")
+        send_call = source.index("InvokeSendTradeOfferAsync(")
         catch_region = source[send_call:source.index("finally", send_call)]
         self.assertIn("exception);", catch_region)
         failure_region = source[source.index("private static string UnknownFailure"):source.index("private static string Failure")]
