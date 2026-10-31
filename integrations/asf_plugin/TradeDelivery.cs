@@ -352,9 +352,8 @@ internal static class TradeDelivery
                 bool confirmationPending = mobileTradeOfferIds?.Count > 0;
                 if (confirmationPending && targetBot.HasMobileAuthenticator)
                 {
-                    (bool twoFactorSuccess, _, string confirmationMessage) =
-                        await targetBot.Actions.HandleTwoFactorAuthenticationConfirmations(
-                            true, EMobileConfirmationType.Trade, mobileTradeOfferIds, true).ConfigureAwait(false);
+                    (bool twoFactorSuccess, string confirmationMessage) =
+                        await InvokeTradeConfirmationAsync(targetBot, mobileTradeOfferIds).ConfigureAwait(false);
                     confirmationPending = !twoFactorSuccess;
                     record.Message = SafeMessage(confirmationMessage);
                 }
@@ -454,6 +453,72 @@ internal static class TradeDelivery
         HashSet<ulong>? tradeOfferIds = resultType.GetField("Item2")?.GetValue(result) as HashSet<ulong>;
         HashSet<ulong>? mobileTradeOfferIds = resultType.GetField("Item3")?.GetValue(result) as HashSet<ulong>;
         return (success, tradeOfferIds, mobileTradeOfferIds);
+    }
+
+    private static async Task<(bool Success, string Message)> InvokeTradeConfirmationAsync(
+        Bot bot,
+        IReadOnlyCollection<ulong> tradeOfferIds)
+    {
+        // Use the runtime ASF method just like SendTradeOffer. A direct call here can
+        // bind the plugin to a compile-time ASF signature and fail inside MoveNext().
+        Type actionsType = bot.Actions.GetType();
+        Type confirmationIdsType = typeof(IReadOnlyCollection<ulong>);
+        MethodInfo? method = actionsType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(candidate =>
+            {
+                if (!string.Equals(
+                    candidate.Name,
+                    "HandleTwoFactorAuthenticationConfirmations",
+                    StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                ParameterInfo[] parameters = candidate.GetParameters();
+                return parameters.Length == 4
+                    && parameters[0].ParameterType == typeof(bool)
+                    && parameters[1].ParameterType == typeof(EMobileConfirmationType?)
+                    && parameters[2].ParameterType == confirmationIdsType
+                    && parameters[3].ParameterType == typeof(bool);
+            });
+
+        if (method is null)
+        {
+            throw new MissingMethodException(
+                actionsType.FullName,
+                "HandleTwoFactorAuthenticationConfirmations(Boolean, Nullable<EMobileConfirmationType>, IReadOnlyCollection<UInt64>, Boolean)");
+        }
+
+        object? invocation;
+        try
+        {
+            invocation = method.Invoke(
+                bot.Actions,
+                [true, EMobileConfirmationType.Trade, tradeOfferIds, true]);
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
+            throw;
+        }
+
+        if (invocation is not Task task)
+        {
+            throw new InvalidOperationException("ASF confirmation API вернул неожиданный тип результата.");
+        }
+
+        await task.ConfigureAwait(false);
+        object? result = task.GetType().GetProperty("Result")?.GetValue(task);
+        if (result is null)
+        {
+            throw new InvalidOperationException("ASF confirmation API не вернул результат.");
+        }
+
+        Type resultType = result.GetType();
+        bool success = (bool)(resultType.GetField("Item1")?.GetValue(result)
+            ?? throw new InvalidOperationException("ASF не вернул результат подтверждения."));
+        string message = resultType.GetField("Item3")?.GetValue(result) as string ?? "";
+        return (success, message);
     }
 
     private static string GetPendingSecretPath(string nonce)
