@@ -74,6 +74,19 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("StackTrace", failure_region)
         self.assertIn("exceptionType", failure_region)
 
+    def test_all_plugin_json_options_explicitly_enable_metadata_resolver(self):
+        for relative_path in (
+            "integrations/asf_plugin/GameDeliveryPlugin.cs",
+            "integrations/asf_plugin/TradeDelivery.cs",
+        ):
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("using System.Text.Json.Serialization.Metadata;", source)
+            self.assertIn(
+                "TypeInfoResolver = new DefaultJsonTypeInfoResolver()",
+                source,
+                msg=f"{relative_path} must not depend on the host's reflection default",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
