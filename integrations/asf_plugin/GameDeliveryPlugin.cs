@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Composition;
 using System.Globalization;
 using System.Linq;
-using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
+using Newtonsoft.Json;
+using System.Text;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
@@ -22,11 +22,10 @@ public sealed class GameDeliveryPlugin : IBotCommand2
     private const string SendCommandName = "gamedelivery-send";
     private const string DiagnosticCommandName = "gamedelivery-diagnose";
     private const int MaxItemsPerPreview = 255;
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerSettings JsonOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+        ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
+        MissingMemberHandling = MissingMemberHandling.Ignore
     };
 
     public string Name => nameof(GameDeliveryPlugin);
@@ -93,7 +92,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             {
                 // The failure may have happened after Steam accepted the request.
                 // Fail closed: surface the exact exception type/message and prevent automatic retries.
-                return JsonSerializer.Serialize(new
+                return JsonConvert.SerializeObject(new
                 {
                     success = false,
                     mode = "send",
@@ -116,7 +115,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             string encoded = args[1].Replace('-', '+').Replace('_', '/');
             encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
             byte[] bytes = Convert.FromBase64String(encoded);
-            request = JsonSerializer.Deserialize<PreviewRequest>(bytes, JsonOptions);
+            request = JsonConvert.DeserializeObject<PreviewRequest>(Encoding.UTF8.GetString(bytes), JsonOptions);
         }
         catch (Exception exception) when (exception is FormatException or JsonException)
         {
@@ -212,7 +211,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             });
         }
 
-        return JsonSerializer.Serialize(new PreviewResponse
+        return JsonConvert.SerializeObject(new PreviewResponse
         {
             Success = true,
             Mode = "preview-only",
@@ -253,7 +252,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
                 Asset.SteamCommunityContextID,
                 language: "english").ConfigureAwait(false);
 
-            return JsonSerializer.Serialize(new
+            return JsonConvert.SerializeObject(new
             {
                 success = inventory is not null,
                 mode = "diagnostic-read-only",
@@ -281,7 +280,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         }
         catch (Exception exception)
         {
-            return JsonSerializer.Serialize(new
+            return JsonConvert.SerializeObject(new
             {
                 success = false,
                 mode = "diagnostic-read-only",
@@ -380,7 +379,7 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         return new string(message.Where(character => !char.IsControl(character)).Take(240).ToArray());
     }
 
-    private static string Failure(string message) => JsonSerializer.Serialize(new
+    private static string Failure(string message) => JsonConvert.SerializeObject(new
     {
         success = false,
         error = message,

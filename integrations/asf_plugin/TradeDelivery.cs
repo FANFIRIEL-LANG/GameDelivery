@@ -7,8 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
+using Newtonsoft.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,11 +22,10 @@ internal static class TradeDelivery
 {
     private const int MaxItems = 255;
     private static readonly SemaphoreSlim SendSemaphore = new(1, 1);
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerSettings JsonOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+        ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
+        MissingMemberHandling = MissingMemberHandling.Ignore
     };
 
     [DllImport("advapi32.dll", EntryPoint = "ConvertStringSecurityDescriptorToSecurityDescriptorW",
@@ -122,7 +120,7 @@ internal static class TradeDelivery
         {
             string encoded = encodedPayload.Replace('-', '+').Replace('_', '/');
             encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
-            request = JsonSerializer.Deserialize<SendRequest>(Convert.FromBase64String(encoded), JsonOptions);
+            request = JsonConvert.DeserializeObject<SendRequest>(Encoding.UTF8.GetString(Convert.FromBase64String(encoded)), JsonOptions);
         }
         catch (Exception exception) when (exception is FormatException or JsonException)
         {
@@ -155,7 +153,7 @@ internal static class TradeDelivery
         try
         {
             string json = await File.ReadAllTextAsync(secretPath).ConfigureAwait(false);
-            secret = JsonSerializer.Deserialize<PendingTradeSecret>(json, JsonOptions);
+            secret = JsonConvert.DeserializeObject<PendingTradeSecret>(json, JsonOptions);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -421,11 +419,11 @@ internal static class TradeDelivery
         }
 
         RestrictStoragePermissions(path, isDirectory: false);
-        Dictionary<string, SendRecord>? loaded = JsonSerializer.Deserialize<Dictionary<string, SendRecord>>(
+        Dictionary<string, SendRecord>? loaded = JsonConvert.DeserializeObject<Dictionary<string, SendRecord>>(
             File.ReadAllText(path), JsonOptions);
         if (loaded is null)
         {
-            throw new JsonException("Invalid delivery send record");
+            throw new JsonSerializationException("Invalid delivery send record");
         }
 
         return new Dictionary<string, SendRecord>(loaded, StringComparer.OrdinalIgnoreCase);
@@ -451,7 +449,7 @@ internal static class TradeDelivery
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            byte[] payload = new UTF8Encoding(false).GetBytes(JsonSerializer.Serialize(records, JsonOptions));
+            byte[] payload = new UTF8Encoding(false).GetBytes(JsonConvert.SerializeObject(records, JsonOptions));
             using (FileStream stream = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
                 // Apply the protected ACL before writing account/offer metadata to disk.
@@ -471,7 +469,7 @@ internal static class TradeDelivery
 
     private static string SerializeRecord(SendRecord record, bool duplicatePrevented, bool sendSucceeded = true)
     {
-        return JsonSerializer.Serialize(new
+        return JsonConvert.SerializeObject(new
         {
             success = true,
             mode = "sent",
@@ -491,7 +489,7 @@ internal static class TradeDelivery
         }, JsonOptions);
     }
 
-    private static string UnknownFailure(SendRecord record, string message, Exception? exception = null) => JsonSerializer.Serialize(new
+    private static string UnknownFailure(SendRecord record, string message, Exception? exception = null) => JsonConvert.SerializeObject(new
     {
         success = false,
         mode = "send",
@@ -511,7 +509,7 @@ internal static class TradeDelivery
         offerIds = record.OfferIds
     }, JsonOptions);
 
-    private static string Failure(string message, bool resultUnknown = false) => JsonSerializer.Serialize(new
+    private static string Failure(string message, bool resultUnknown = false) => JsonConvert.SerializeObject(new
     {
         success = false,
         mode = "send",

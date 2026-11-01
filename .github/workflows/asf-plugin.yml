@@ -58,6 +58,9 @@ jobs:
           test -s "$plugin_dll"
           mkdir -p dist/GameDelivery.ASFPlugin
           cp "$plugin_dll" dist/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll
+          json_dll=integrations/asf_plugin/bin/Release/net10.0/Newtonsoft.Json.dll
+          test -s "$json_dll"
+          cp "$json_dll" dist/GameDelivery.ASFPlugin/Newtonsoft.Json.dll
           cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
           printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nModes: live preview and explicitly confirmed guarded trade sending\n' "$GITHUB_SHA" "official ASF 6.3.10.6 ASF-generic.zip SHA256 118f9bb85d2d8d301536e96d304cbe8e7aa99a6aa1d1bb97a540e78b7c73b1ce" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
 

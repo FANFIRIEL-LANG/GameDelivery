@@ -75,18 +75,22 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("StackTrace", failure_region)
         self.assertIn("exceptionType", failure_region)
 
-    def test_all_plugin_json_options_explicitly_enable_metadata_resolver(self):
+    def test_plugin_json_uses_newtonsoft_without_system_text_json_reflection_metadata(self):
         for relative_path in (
             "integrations/asf_plugin/GameDeliveryPlugin.cs",
             "integrations/asf_plugin/TradeDelivery.cs",
         ):
             source = (ROOT / relative_path).read_text(encoding="utf-8")
-            self.assertIn("using System.Text.Json.Serialization.Metadata;", source)
-            self.assertIn(
-                "TypeInfoResolver = new DefaultJsonTypeInfoResolver()",
-                source,
-                msg=f"{relative_path} must not depend on the host's reflection default",
-            )
+            self.assertIn("using Newtonsoft.Json;", source)
+            self.assertIn("JsonConvert.SerializeObject(", source)
+            self.assertNotIn("System.Text.Json", source)
+            self.assertNotIn("DefaultJsonTypeInfoResolver", source)
+
+    def test_newtonsoft_dependency_is_packaged_with_plugin(self):
+        project = (ROOT / "integrations" / "asf_plugin" / "GameDelivery.ASFPlugin.csproj").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        self.assertIn('PackageReference Include="Newtonsoft.Json" Version="13.0.3"', project)
+        self.assertIn('Newtonsoft.Json.dll', workflow)
 
 
 if __name__ == "__main__":

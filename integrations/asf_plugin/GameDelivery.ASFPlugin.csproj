@@ -7,12 +7,16 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDependencyFile>false</GenerateDependencyFile>
-    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <PropertyGroup>
     <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)../../ASF</ASF_BIN_DIR>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
 
   <ItemGroup>
     <Reference Include="ArchiSteamFarm">
