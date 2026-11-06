@@ -1212,3 +1212,44 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 **Пользовательская проверка:** пока ничего не скачивать/не устанавливать и не повторять send command.
 
 **Неизменные ограничения:** только `feature/asf-bulk-account-import`; `main` не изменён; PR #4 остаётся Draft/open/unmerged с base `feature/steam-card-set-selection`.
+
+
+### 2026-11-07 — Generic успешно загружает плагин; win-x64 падает при MEF discovery; baseline уточнён
+
+**Код/workflow HEAD для актуального цикла:** `ed2006a29ee29517e84f8251e15c1fdc46413a59` (commit с последними baseline assertions).  
+**Предыдущий проверенный source/workflow HEAD:** `bae709f81fa6c6788f66197af5ce74f27658063b`.
+
+#### Подтверждённый сравнительный запуск на Windows
+
+В comparative job на HEAD `bae709f...`:
+- Официальный ASF Generic 6.3.11.7 и тот же `GameDelivery.ASFPlugin.dll` успешно прошли plugin initialization.
+- Лог JIT probe: `ASF-Generic: plugin loaded and ProcessSendCommand state machine JIT-compiled successfully.`
+- Официальный ASF win-x64 6.3.11.7 с тем же plugin artifact завершился ошибкой на `InitPlugins()` до `GameDeliveryPlugin.OnASFInit`.
+- Ошибка в trimmed host: `MissingMemberException` / `TypeLoadException`; stack включает `System.Signature.Init`, `RuntimeMethodInfo.get_Signature` / `get_ReturnParameter`, `System.Composition.Convention.PartConventionBuilder.BuildOnImportsSatisfiedNotification`, `ConventionBuilder.EvaluateThisTypeInfoAgainstTheConvention`, `TypeInspector.InspectTypeForPart`, `ContainerConfiguration.CreateContainer`, `PluginsCore.InitPlugins`.
+- Таким образом, Generic действительно загружает плагин и JIT-компилирует async state machine; trimmed win-x64 воспроизводит проблему во время MEF/reflection discovery. Это не доказывает, что отсутствующий метод — конкретно `SendTradeOffer`; плагин ещё не дошёл до своего OnASFInit. Это подтверждает средовую несовместимость при загрузке внешнего plugin assembly в исследованной win-x64 среде.
+
+#### Baseline test и ошибка тестового предположения
+
+- Добавлен отдельный baseline перед установкой GameDelivery, чтобы проверить старт официального win-x64 с его штатным набором plugin directories, а затем добавить GameDelivery и повторить сравнение.
+- Первый baseline script ошибочно требовал, чтобы каталог `plugins` был пустым. CI показал, что официальный ASF-win-x64 архив штатно содержит три каталога: `ArchiSteamFarm.OfficialPlugins.ItemsMatcher`, `ArchiSteamFarm.OfficialPlugins.MobileAuthenticator`, `ArchiSteamFarm.OfficialPlugins.SteamTokenDumper`. ASF в том прогоне даже не запускался; это была ошибка precondition, не baseline runtime failure.
+- Исправлено: baseline теперь сохраняет штатные bundled plugins и проверяет только, что `GameDelivery.ASFPlugin` ещё отсутствует. Затем запускает ASF на 20 секунд; после baseline workflow устанавливает GameDelivery plugin и запускает comparative Generic/win-x64 probe.
+- Добавлен regression contract test, который требует правильную baseline step и установку GameDelivery только после неё.
+- Последние code/workflow commits:
+  - `f3da8d70dcb5bb8ab63fd17a898cf88cd44e4f8a`: trimmed ASF baseline step;
+  - `419edfc2250c468aefe28230d1770bacaf8772f2`: contract test for baseline ordering;
+  - `6a9519767dfa9281f53c5a1de9377495081b402c`: исправлена логика baseline с учётом официальных bundled plugins;
+  - `ed2006a29ee29517e84f8251e15c1fdc46413a59`: contract assertions обновлены под новые baseline условия.
+- На промежуточном HEAD `f3da8d7` ASF plugin push #568 build-plugin success и Windows ACL success; trimmed runtime job был остановлен на baseline precondition, потому что он неверно принимал штатные каталоги за внешние плагины. На HEAD `419edfc` Tests push #1203 и PR #1204 стартовали, затем были cancelled в результате последующих обновлений branch; не считать их fail в коде.
+
+#### Текущие Actions для HEAD ed2006a
+
+- Tests push #1207 run `42302438720` — pending.
+- ASF plugin push #574 run `42302438721` — queued.
+- ASF plugin PR #573 run `42302423471` — queued.
+- Windows EXE PR #607 run `42302423485` — in_progress.
+- На предыдущем HEAD `6a951976`: ASF plugin push #572 run `42302416185`: build-plugin success, Windows ACL job in_progress, comparative runtime job queued; Tests push #1205 и PR #1206 были superseded/cancelled. Exact-HEAD свежие Tests/ASF runs для `ed2006a` должны быть проверены заново.
+
+**Следующий шаг:** дождаться нового exact-HEAD CI; убедиться, что baseline до установки GameDelivery запускает ASF с штатными плагинами и остаётся живым; затем установить GameDelivery в отдельный plugin folder и проверить MEF/JIT результат. Если baseline проходит, а после установки GameDelivery trimmed host падает при MEF discovery, локализуем сбой в совместимости GameDelivery plugin с trimmed host. Generic уже показал успешную загрузку и JIT; это остаётся кандидатным runtime вариантом, но пользовательскую систему пока не переключать без отдельной безопасной инструкции.
+
+**Безопасность:** отправка Steam offers не выполнялась; не просить пользователя повторять `gamedelivery-send`. Сейчас ничего не скачивать и не устанавливать. `main` не изменён; PR #4 остаётся Draft/open/unmerged, base `feature/steam-card-set-selection`.
+
