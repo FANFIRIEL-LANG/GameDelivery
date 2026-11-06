@@ -220,9 +220,11 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("Не удалось удалить одноразовый секрет", send)
         self.assertNotIn("catch (IOException) { } catch (UnauthorizedAccessException) { }", send[:offer_at])
 
-    def test_plugin_assembly_version_is_incremented_for_fixed_dispatch_artifact(self):
+    def test_plugin_assembly_version_matches_project_and_runtime_fallback(self):
         project = (ROOT / "integrations/asf_plugin/GameDelivery.ASFPlugin.csproj").read_text(encoding="utf-8")
+        source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         self.assertIn("<Version>1.0.2</Version>", project)
+        self.assertIn("?? new Version(1, 0, 2, 0)", source)
 
 
     def test_smoke_project_verifies_exact_asf_interfaces_export_and_version(self):

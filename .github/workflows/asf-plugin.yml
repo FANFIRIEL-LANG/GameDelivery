@@ -10,7 +10,6 @@ on:
       - tests/test_asf_client.py
       - tests/test_asf_plugin_contract.py
       - tests/asf_plugin_smoke/**
-      - tests/asf_plugin_smoke/**
       - integrations/asf_plugin/README.md
       - .github/workflows/asf-plugin.yml
   push:

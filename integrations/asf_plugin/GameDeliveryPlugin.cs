@@ -38,7 +38,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
 
     [JsonInclude]
     public Version Version => typeof(GameDeliveryPlugin).Assembly.GetName().Version
-        ?? new Version(1, 0, 1, 0);
+        ?? new Version(1, 0, 2, 0);
 
     public Task OnLoaded() => Task.CompletedTask;
 
