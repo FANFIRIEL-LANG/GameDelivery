@@ -255,6 +255,7 @@ class MainWindow(QMainWindow):
         # Migrate existing plaintext Steam tokens to the OS credential vault.
         # Keep the original DB value until the vault confirms the token was saved.
         with sqlite3.connect(self._database_path) as db:
+            db.execute("PRAGMA secure_delete = ON")
             legacy_urls = db.execute(
                 "SELECT order_id, recipient_trade_url FROM delivery_orders "
                 "WHERE recipient_trade_url <> ''"
