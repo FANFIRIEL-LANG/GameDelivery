@@ -291,11 +291,12 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         catch (Exception exception)
         {
             string safeMessage = SafeDiagnosticText(exception.Message);
+            string safeDetails = SafeDiagnosticText(exception.ToString());
             ASF.ArchiLogger.LogGenericError(
                 "GameDeliveryPlugin.OnBotCommand failed: command="
                 + (recognizedCommand ?? "unresolved")
                 + "; exception=" + exception.GetType().Name
-                + "; message=" + safeMessage);
+                + "; details=" + safeDetails);
 
             return JsonSerializer.Serialize(new
             {
@@ -307,7 +308,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                     ? "ASF прервал обработку отправки. Результат требует ручной сверки; автоматический повтор запрещён."
                     : "Ошибка обработчика GameDelivery ASF: " + exception.GetType().Name + ": " + safeMessage,
                 exceptionType = exception.GetType().FullName,
-                exceptionMessage = safeMessage
+                exceptionMessage = safeMessage,
+                exceptionDetails = safeDetails
             }, JsonOptions);
         }
     }
@@ -453,39 +455,45 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             return "unknown";
         }
 
-        // Keep this sanitizer independent from Regex and other APIs that can fail
-        // under a mismatched ASF runtime. Never allow diagnostic formatting to
-        // mask the original command error.
+        // Deliberately use only basic string/character operations here. This is
+        // the last-resort error path: it must not throw and hide the real failure.
         const string tokenMarker = "token=";
-        const string redacted = "[REDACTED]";
-        string sanitized = new string(message.Where(character => !char.IsControl(character)).Take(6000).ToArray());
-        System.Text.StringBuilder output = new(sanitized.Length);
+        const string redactedMarker = "token=[REDACTED]";
+        const int maxOutputLength = 6000;
+        System.Text.StringBuilder output = new(Math.Min(message.Length, maxOutputLength));
         int position = 0;
 
-        while (position < sanitized.Length)
+        while (position < message.Length && output.Length < maxOutputLength)
         {
-            int marker = sanitized.IndexOf(tokenMarker, position, StringComparison.OrdinalIgnoreCase);
-            if (marker < 0)
+            bool isTokenMarker = position + tokenMarker.Length <= message.Length;
+            for (int offset = 0; isTokenMarker && offset < tokenMarker.Length; offset++)
             {
-                output.Append(sanitized, position, sanitized.Length - position);
-                break;
+                if (char.ToUpperInvariant(message[position + offset]) != char.ToUpperInvariant(tokenMarker[offset]))
+                {
+                    isTokenMarker = false;
+                }
             }
 
-            output.Append(sanitized, position, marker - position);
-            output.Append(sanitized, marker, tokenMarker.Length);
-            output.Append(redacted);
-
-            int valueStart = marker + tokenMarker.Length;
-            int valueEnd = valueStart;
-            while (valueEnd < sanitized.Length
-                && !char.IsWhiteSpace(sanitized[valueEnd])
-                && sanitized[valueEnd] != '&'
-                && sanitized[valueEnd] != '#')
+            if (isTokenMarker)
             {
-                valueEnd++;
+                output.Append(redactedMarker);
+                position += tokenMarker.Length;
+                while (position < message.Length
+                    && !char.IsWhiteSpace(message[position])
+                    && message[position] != '&'
+                    && message[position] != '#')
+                {
+                    position++;
+                }
+
+                continue;
             }
 
-            position = valueEnd;
+            char current = message[position++];
+            if (!char.IsControl(current))
+            {
+                output.Append(current);
+            }
         }
 
         return output.ToString();

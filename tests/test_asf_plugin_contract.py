@@ -36,6 +36,22 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("exceptionType = exception.GetType().FullName", callback)
         self.assertIn("SafeDiagnosticText(exception.Message)", callback)
 
+    def test_command_error_diagnostic_preserves_original_stack_without_regex(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        callback_start = source.index("public async Task<string?> OnBotCommand")
+        callback_end = source.index("private static async Task<string> RunDiagnosticCommand", callback_start)
+        callback = source[callback_start:callback_end]
+        sanitizer_start = source.index("private static string SafeDiagnosticText")
+        sanitizer_end = source.index("private static string SafeMessage", sanitizer_start)
+        sanitizer = source[sanitizer_start:sanitizer_end]
+
+        self.assertIn("SafeDiagnosticText(exception.ToString())", callback)
+        self.assertIn("exceptionDetails = safeDetails", callback)
+        self.assertIn("details=" + " + safeDetails", callback)
+        self.assertIn("token=[REDACTED]", sanitizer)
+        self.assertNotIn("Regex", sanitizer)
+        self.assertNotIn(".IndexOf(", sanitizer)
+
     def test_diagnostic_command_reports_runtime_trade_send_api_signature(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static string Failure")]

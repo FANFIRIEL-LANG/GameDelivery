@@ -438,7 +438,12 @@ class ASFClient:
 
         if not isinstance(preview, dict) or preview.get("success") is not True:
             message = preview.get("error") if isinstance(preview, dict) else None
-            raise ASFError(str(message or "ASF не подтвердил черновик обмена")[:240])
+            details = preview.get("exceptionDetails") if isinstance(preview, dict) else None
+            detail_text = str(details).strip()[:900] if details else ""
+            combined = str(message or "ASF не подтвердил черновик обмена")
+            if detail_text:
+                combined += "\\nДиагностика ASF: " + detail_text
+            raise ASFError(combined[:1200])
         preview_bot = preview.get("botName")
         if (
             preview.get("mode") != "preview-only"

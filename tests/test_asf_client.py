@@ -107,6 +107,28 @@ class ASFClientTests(unittest.TestCase):
                 asset_ids=["100"],
             )
 
+    @patch.object(ASFClient, "request")
+    def test_preview_trade_offer_exposes_plugin_exception_details_for_diagnosis(self, request):
+        request.return_value = {
+            "Success": True,
+            "Result": json.dumps({
+                "success": False,
+                "error": "Ошибка обработчика GameDelivery ASF: MissingMethodException",
+                "exceptionType": "System.MissingMethodException",
+                "exceptionMessage": "Attempted to access a missing method.",
+                "exceptionDetails": "System.MissingMethodException: Attempted to access a missing method.\\n   at GameDeliveryPlugin.Preview(...)",
+            }),
+        }
+        with self.assertRaises(ASFError) as raised:
+            ASFClient().preview_trade_offer(
+                order_id="GD-ABC",
+                bot_name="Bot A",
+                trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123456&token=abc",
+                asset_ids=["100"],
+            )
+        self.assertIn("System.MissingMethodException", str(raised.exception))
+        self.assertIn("GameDeliveryPlugin.Preview", str(raised.exception))
+
     def test_preview_trade_offer_rejects_duplicate_assets_and_bad_trade_urls(self):
         client = ASFClient()
         with self.assertRaisesRegex(ValueError, "повторяющиеся"):

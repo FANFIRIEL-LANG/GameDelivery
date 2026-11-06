@@ -193,4 +193,32 @@ Assert(!sanitizedConfirmation.Contains("SensitiveTradeToken_123", StringComparis
 Assert(!sanitizedConfirmation.Contains("token=SensitiveTradeToken_123", StringComparison.Ordinal),
     "mobile confirmation text retained a token query parameter");
 
+static string InvokePluginDiagnosticSanitizer(string message)
+{
+    MethodInfo method = typeof(GameDeliveryPlugin).GetMethod(
+        "SafeDiagnosticText",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin diagnostic sanitizer was not found");
+
+    try
+    {
+        return (string)(method.Invoke(null, [message]) ?? "");
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            "The built plugin diagnostic sanitizer failed.",
+            exception.InnerException ?? exception);
+    }
+}
+
+string safeDiagnostic = InvokePluginDiagnosticSanitizer(
+    "MissingMethodException: token=NeverLogThisTradeToken&next=value\\n at GameDeliveryPlugin.Preview");
+Assert(!safeDiagnostic.Contains("NeverLogThisTradeToken", StringComparison.Ordinal),
+    "diagnostic sanitizer exposed a Steam token");
+Assert(safeDiagnostic.Contains("token=[REDACTED]&next=value", StringComparison.Ordinal),
+    "diagnostic sanitizer did not preserve the error context while redacting the token");
+Assert(!safeDiagnostic.Contains('\\n') && !safeDiagnostic.Contains('\\r'),
+    "diagnostic sanitizer retained control characters");
+
 Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");
