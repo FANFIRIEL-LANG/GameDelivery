@@ -438,7 +438,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
 
     @patch("app.asf_management.QTimer.singleShot")
     @patch("app.asf_management.subprocess.Popen")
-    @patch("app.asf_management.shutil.which", return_value=r"C:\\Program Files\\dotnet\\dotnet.exe")
+    @patch("app.asf_management.shutil.which", return_value=r"C:\Program Files\dotnet\dotnet.exe")
     @patch("app.asf_management.ASFClient.get_status", side_effect=OSError("IPC unavailable"))
     @patch("app.asf_management.ASFOutputReader.start")
     def test_start_asf_launches_generic_dll_through_dotnet(
@@ -464,7 +464,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
             args, kwargs = popen.call_args
             self.assertEqual(
                 args[0],
-                [r"C:\\Program Files\\dotnet\\dotnet.exe", str(generic_dll), "--process-required"],
+                [r"C:\Program Files\dotnet\dotnet.exe", str(generic_dll), "--process-required"],
             )
             self.assertEqual(kwargs["cwd"], str(home))
             self.assertIn("GameDelivery запустил ASF", self.widget.status.text())
