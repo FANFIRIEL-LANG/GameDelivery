@@ -385,6 +385,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                         window._trade_credentials.load_trade_url("GD-LEGACY-1", stored_url),
                         "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
                     )
+                    self.assertNotIn(b"Abc_123", database.read_bytes())
                 finally:
                     window.close()
                     window.deleteLater()
