@@ -169,7 +169,7 @@
 - [x] GREEN: app/main.py::_preview_selected_order_with_asf() теперь fail-closed отклоняет preview, если delivery_order_assets не равны steam_asset_reservations. Ошибка показывается до обращения к ASF.
 - [x] Полные Tests push run 42234343133 — success, 282 tests; PR run 42234360054 — success, 282 tests.
 - [x] ASF plugin push run 42234343234 — success; PR run 42234359777 — success. .NET smoke и точные ASF interfaces/MEF проходили; plugin DLL не менялся в этом этапе.
-- [ ] Windows executable PR run 42234359795 на момент обновления плана ещё выполнялся; отдельный package gate, не блокирует корректность preview test, но должен быть закрыт в релизном этапе.
+- [x] Windows EXE package workflow на финальном контрольном HEAD 3235530 завершился success: run 42235272472; Windows ACL test, build, packaged EXE smoke и artifact upload — все success.
 
 **Изменения:** tests/test_trade_delivery_ui.py; app/main.py.
 **Commits:** test harness RED source 578550fe4237e0d9a2042cccbc70104d1884a70c; production fix c4816aacb1ab925b61972a50c58f9d3c02bc14ed.
@@ -259,3 +259,28 @@
 **Этап 2:** завершён, commit 4e54000509e4811e4e448c4c0a5537b209564aaa; push/PR Tests по 281 тесту — success; ASF plugin push/PR — success.
 **Этап 8:** Windows EXE PR run 42233279452 ещё проверялся отдельно.
 **Следующий этап:** Этап 3 — добавить тест, который доказывает отказ от preview при несовпадении saved assets и active reservations; затем минимально исправить app/main.py.
+
+
+## CI checkpoint — 2026-11-06, HEAD 3235530
+
+**Branch:** feature/asf-bulk-account-import
+**HEAD:** 3235530d8e8dc41f225969f598295c5661386e36
+**PR #4:** open / draft / not merged; base feature/steam-card-set-selection.
+
+| Workflow | Run | Event | Result |
+|---|---:|---|---|
+| Tests | 42235262460 | push | success — 283 tests |
+| Tests | 42235272506 | pull_request | success — 283 tests |
+| ASF plugin — ASF 6.3.11.7 | 42235262499 | push | success |
+| ASF plugin — ASF 6.3.11.7 | 42235272525 | pull_request | success |
+| Build GameDelivery Windows executable | 42235272472 | pull_request | success; ACL test + package build + EXE smoke + upload |
+
+**Artifacts from this exact HEAD:**
+- ASF plugin Push: ID 13511300707; SHA-256 8a4142dca2504b420c9b9a4a2a7dab3d83703146b813d01d81b6decd9e9e2b88.
+- ASF plugin PR: ID 13509874607; SHA-256 09b0e605683f1408062c35c1a92baf06097423b028440f6616b1fe8f4dfcf269.
+- Windows x64 PR: ID 13511305899; SHA-256 a8e96d67884aebbd2ea9b4366c6014cdbf1770f6c62e0f4637c084b0eddbfbcc.
+- Artifacts expire 2026-12-06. CI artifact upload is not proof the package was installed on the user's PC.
+
+**Resolved CI regression from HEAD 0b1a73e:** strict offer-ID tests rejected values 0 and ², but expected error text did not match the ASFError returned by the client. The client message now explicitly says to inspect Steam outgoing offers and not retry. On HEAD 3235530 both Push/PR test suites pass. The Windows ACL workflow uses the same focused ASF client test module and now passes too.
+
+**Current task:** all automatic gates are green. Stage 3 remains complete. Next planned stage is Stage 4 — full audit of send pipeline, one-time trade secret, idempotency, state transitions and recovery. Do not start Stage 4 without recording the decision/progress separately; do not ask the user to repeat old commands.

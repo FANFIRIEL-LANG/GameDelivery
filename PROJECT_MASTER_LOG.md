@@ -955,3 +955,22 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Ограничения:** live preview в пользовательском ASF не выполнен; preview не отправляет трейд; новая DLL не требуется, потому что plugin source не менялся. Windows executable PR run 42234359795 ещё выполнялся на момент записи и будет повторно проверен перед общим финальным package gate.
 
 **Следующий этап:** Этап 4 — полный аудит send pipeline / одноразового секрета / state transitions / recovery; проверять TDD и не менять preview без нового доказательства.
+
+
+### 2026-11-06 — контроль Actions после исправления CI на HEAD 3235530
+
+**Рабочая ветка:** feature/asf-bulk-account-import. **HEAD:** 3235530d8e8dc41f225969f598295c5661386e36.
+
+**Проверка Actions на одном и том же HEAD:**
+- Tests push run 42235262460 — success, 283 tests.
+- Tests PR run 42235272506 — success, 283 tests.
+- ASF plugin push run 42235262499 — success; artifact GameDelivery-ASFPlugin ID 13511300707; SHA-256 8a4142dca2504b420c9b9a4a2a7dab3d83703146b813d01d81b6decd9e9e2b88.
+- ASF plugin PR run 42235272525 — success; artifact GameDelivery-ASFPlugin ID 13509874607; SHA-256 09b0e605683f1408062c35c1a92baf06097423b028440f6616b1fe8f4dfcf269.
+- Windows EXE PR run 42235272472 — success; Test Windows trade-secret ACL hardening, Build Windows GUI executable, Smoke test packaged executable, build info/package instructions, artifact upload all success. Artifact GameDelivery-Windows-x64 ID 13511305899; size 54,855,603 bytes; SHA-256 a8e96d67884aebbd2ea9b4366c6014cdbf1770f6c62e0f4637c084b0eddbfbcc.
+- Все три артефакта истекают 2026-12-06. Ни один из них не означает, что пользователь уже установил плагин или приложение и live Steam flow проверен.
+
+**Последний CI blocker устранён:** на HEAD 0b1a73e strict validation offerIds отклоняла неканонические значения 0 и ², но сообщение «ASF не подтвердил отправку ожидаемого состава заказа» не соответствовало тестовому ожиданию запрета повтора. В integrations/asf/client.py сообщение заменено на явную инструкцию проверить исходящие Steam offers и не повторять отправку. После этого новый HEAD 3235530 прошёл 283/283 tests на Push и PR; ASF plugin Push/PR success; Windows build/ACL/smoke success.
+
+**Этап 3:** остаётся завершённым; UI-only reservation check подтверждён 282 tests на commit c4816aa, затем 283 tests на следующем HEAD. Windows package gate теперь закрыт на HEAD 3235530.
+
+**Следующий этап:** Этап 4 — аудит send pipeline, одноразового секрета, semaphore/idempotency journal, статусов отправки и recovery. Никаких новых действий пользователя до окончания code review этого этапа; старые команды диагностики не повторять.
