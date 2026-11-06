@@ -934,3 +934,24 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Побочная находка для Этапа 3:** app/main.py _preview_selected_order_with_asf читает текущие reservation rows, но не сравнивает их с order asset rows. Send path сравнивает. Перед preview надо добавить fail-closed reservation equality check и regression test.
 
 **Следующий шаг:** Этап 3 — preview inventory/asset/reservation contract. Не просить пользователя повторно запускать команды; текущая DLL на его ASF пока не проверена.
+
+
+### 2026-11-06 — завершён Этап 3: fail-closed preview при отсутствии резерва
+
+**План:** docs/superpowers/plans/2026-11-06-gamedelivery-plugin-full-audit-phases.md.
+**Production fix commit:** c4816aacb1ab925b61972a50c58f9d3c02bc14ed; branch feature/asf-bulk-account-import.
+
+**Найденная проблема:** app/main.py::_preview_selected_order_with_asf() читала delivery_order_assets и steam_asset_reservations, но не сравнивала два набора перед ASF preview. Это позволяло показывать preview для активов, резерв которых уже исчез. Send path такую проверку уже имел.
+
+**TDD:**
+- Regression test test_preview_requires_exact_current_asset_reservations создан заранее.
+- Первый CI запуск показал только ошибку тестовой оснастки (пропущен MagicMock import); она была исправлена.
+- Корректная RED на SHA 578550fe4237e0d9a2042cccbc70104d1884a70c: test_preview_requires_exact_current_asset_reservations завершился FAIL, assertion confirmed that preview_trade_offer was called once when reservations were missing. PR run 42234242488 (тот же test проявился на push run 42234234970).
+- GREEN: после фикса c4816aacb1ab925b61972a50c58f9d3c02bc14ed полный Tests push 42234343133 и PR 42234360054 — success, по 282 tests; сам тест preview... — ok.
+- ASF plugin push 42234343234 и PR 42234359777 — success; .NET smoke/MEF/interface verification успешны.
+
+**Реализация:** перед вызовом ASF preview теперь требуется точное равенство сохранённого состава заказа и актуальных reservation rows; при несовпадении показывается предупреждение, ASF не вызывается.
+
+**Ограничения:** live preview в пользовательском ASF не выполнен; preview не отправляет трейд; новая DLL не требуется, потому что plugin source не менялся. Windows executable PR run 42234359795 ещё выполнялся на момент записи и будет повторно проверен перед общим финальным package gate.
+
+**Следующий этап:** Этап 4 — полный аудит send pipeline / одноразового секрета / state transitions / recovery; проверять TDD и не менять preview без нового доказательства.

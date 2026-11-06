@@ -154,21 +154,28 @@
 **Gate:** тесты доказывают, что unexpected exception после попытки dispatch не возвращает заказ в retryable состояние. Этап 2 завершён; live ASF/Steam не проверен.
 **Следующий этап:** Этап 3 — preview pipeline и инвентарь без отправки.
  
-### Этап 3 — Preview pipeline и инвентарь без отправки ⬜
 
-**Дополнительная находка при чтении app/main.py:** _preview_selected_order_with_asf() загружает reserved_assets из SQLite, но не сравнивает их с delivery_order_assets до вызова ASF. В send path такое сравнение есть. В результате UI может показать «проверенный черновик» для состава, который уже не зарезервирован. Отправка всё равно повторно проверяет резервы, но preview должен fail closed и показывать только действительный зарезервированный состав.
+### Этап 3 — Preview pipeline и инвентарь без отправки ✅
 
 **Область:** GameDeliveryPlugin.cs preview; ASFClient.preview_trade_offer; app/main.py preview; tests.
 
-- [ ] Проверить Steam Trade URL parsing, partner → SteamID64 conversion и обработку повторных query-параметров.
-- [ ] Проверить ограничения: один ASF bot на одно предложение, 1–255 assets, canonical positive asset IDs, отсутствие дубликатов.
-- [ ] Проверить live GetInventory(753, 6), connection state, точное совпадение Asset IDs и Tradable.
-- [ ] Проверить строгую сверку orderId, botName, targetSteamId64 и упорядоченного asset list на каждом boundary.
-- [ ] Проверить fail-closed поведение при null inventory, ASF API exception, malformed response и неполном составе.
-- [ ] Доказать тестами, что preview path не вызывает SendTradeOffer и не меняет order send status.
-- [ ] Запустить .NET smoke/contract tests и Python focused/full suite.
+**Подтверждённый поток:** UI читает order/recipient/status/assets/reservations; Python клиент валидирует Steam Trade URL, партнёра, token и канонические asset IDs, строит base64url JSON для /Api/Command; плагин проверяет Owner access, bot, connected state, individual Steam recipient, живой инвентарь 753/6, точный Asset ID, context и Tradable; ответ содержит order/bot/SteamID64/asset list, которые повторно сверяются Python-клиентом и UI. Preview path не вызывает SendTradeOffer.
 
-**Gate:** preview корректно подтверждает или отклоняет точный состав, не создавая offer и не меняя delivery state.
+**Найденный дефект:** preview path загружал текущие reservations из БД, но не сверял их с сохранённым составом заказа. Это позволяло запросить и показать preview для состава, который уже не был зарезервирован. Send path эту проверку уже выполнял.
+
+- [x] Добавлен тест test_preview_requires_exact_current_asset_reservations: при удалённой резервации ASF preview не должен вызываться.
+- [x] TDD RED: тест на старом коде упал ожидаемым assertion: preview_trade_offer был вызван один раз, хотя не должен. Run 42234242488 (PR) / 42234234970 (push) на SHA 578550fe4237e0d9a2042cccbc70104d1884a70c.
+- [x] Исправлена тестовая оснастка (импорт MagicMock; модальный QMessageBox.information заглушён и валидный fake response задан), чтобы тест не зависал и падал именно по production behavior.
+- [x] GREEN: app/main.py::_preview_selected_order_with_asf() теперь fail-closed отклоняет preview, если delivery_order_assets не равны steam_asset_reservations. Ошибка показывается до обращения к ASF.
+- [x] Полные Tests push run 42234343133 — success, 282 tests; PR run 42234360054 — success, 282 tests.
+- [x] ASF plugin push run 42234343234 — success; PR run 42234359777 — success. .NET smoke и точные ASF interfaces/MEF проходили; plugin DLL не менялся в этом этапе.
+- [ ] Windows executable PR run 42234359795 на момент обновления плана ещё выполнялся; отдельный package gate, не блокирует корректность preview test, но должен быть закрыт в релизном этапе.
+
+**Изменения:** tests/test_trade_delivery_ui.py; app/main.py.
+**Commits:** test harness RED source 578550fe4237e0d9a2042cccbc70104d1884a70c; production fix c4816aacb1ab925b61972a50c58f9d3c02bc14ed.
+**Артефакты:** ASF plugin code unchanged; no new user plugin installation required from this UI-only fix. Fresh artifact uploads are CI outputs, not a request to reinstall the ASF plugin.
+**Gate:** полный Python suite 282/282; preview blocked without exact reservations; no trade offer creation. Этап 3 завершён. Live Steam/ASF preview ещё не проверен.
+**Следующий этап:** Этап 4 — аудит send pipeline, одноразового секрета, идемпотентности и recovery.
 
 ### Этап 4 — Send pipeline, защита секретов и восстановление ⬜
 
