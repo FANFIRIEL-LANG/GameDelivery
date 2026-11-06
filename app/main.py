@@ -604,6 +604,14 @@ class MainWindow(QMainWindow):
         except (OSError, sqlite3.Error, ValueError, ASFError) as exc:
             QMessageBox.warning(self, "Проверка черновика через ASF", str(exc))
 
+    def _delete_trade_credential_best_effort(self, order_id):
+        try:
+            self._trade_credentials.delete_trade_url(order_id)
+        except OSError:
+            self.statusBar().showMessage(
+                "Не удалось удалить сохранённый Steam trade token из системного хранилища."
+            )
+
     def _send_selected_order_with_asf(self):
         request_started = False
         order_id = None
@@ -758,6 +766,7 @@ class MainWindow(QMainWindow):
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                         ("неизвестен результат отправки — проверь исходящие Steam", order_id, "sending — запрос ASF"),
                     )
+                self._delete_trade_credential_best_effort(order_id)
                 self._load_saved_orders()
                 QMessageBox.warning(
                     self,
@@ -783,6 +792,7 @@ class MainWindow(QMainWindow):
                         "trade_confirmation_status = ? WHERE order_id = ? AND status = ?",
                         (order_status, offer_id_text, confirmation_status, order_id, "sending — запрос ASF"),
                     )
+                self._delete_trade_credential_best_effort(order_id)
                 self._load_saved_orders()
                 self._load_order_assets()
                 QMessageBox.information(
@@ -842,6 +852,8 @@ class MainWindow(QMainWindow):
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                         (status_message, order_id, "sending — запрос ASF"),
                     )
+            if outcome.get("resultUnknown") is True:
+                self._delete_trade_credential_best_effort(order_id)
             self._load_saved_orders()
             if outcome.get("resultUnknown") is True:
                 QMessageBox.warning(self, "Результат отправки неизвестен", user_message + "\n\nПроверь исходящие предложения Steam; повторная отправка запрещена.")
@@ -858,6 +870,7 @@ class MainWindow(QMainWindow):
                         )
                 except sqlite3.Error:
                     pass
+                self._delete_trade_credential_best_effort(order_id)
             QMessageBox.warning(self, "Отправка через ASF не завершена", str(exc))
         finally:
             self._load_saved_orders()
@@ -1026,6 +1039,7 @@ class MainWindow(QMainWindow):
                     db.execute(
                         "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
                     )
+            self._delete_trade_credential_best_effort(order_id)
             self._load_saved_orders()
             self._load_order_assets()
             self.statusBar().showMessage(f"Заказ {order_id} отменён.")
