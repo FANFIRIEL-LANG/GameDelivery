@@ -398,8 +398,13 @@ class ASFClient:
         normalized_ids = [str(value).strip() for value in asset_ids]
         if not normalized_ids or len(normalized_ids) > 255:
             raise ValueError("Для проверки нужно от 1 до 255 asset ID")
-        if any(not value.isdigit() or int(value) <= 0 for value in normalized_ids):
-            raise ValueError("Asset ID должны быть положительными целыми числами")
+        if any(
+            not re.fullmatch(r"[0-9]+", value)
+            or int(value) <= 0
+            or str(int(value)) != value
+            for value in normalized_ids
+        ):
+            raise ValueError("Asset ID должны быть каноническими положительными целыми числами")
         if len(set(normalized_ids)) != len(normalized_ids):
             raise ValueError("В составе заказа найдены повторяющиеся asset ID")
 
@@ -549,10 +554,14 @@ class ASFClient:
             json.dumps(command_payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         ).decode("ascii").rstrip("=")
 
+        secret_file_created = False
+        command_dispatched = False
         try:
             with secret_path.open("x", encoding="utf-8") as handle:
+                secret_file_created = True
                 _restrict_pending_trade_permissions(secret_path)
                 json.dump(secret_payload, handle, ensure_ascii=True, separators=(",", ":"))
+            command_dispatched = True
             response = self.send_command("gamedelivery-send " + encoded_payload)
             result = _unwrap_result(response)
             if not isinstance(result, str):
@@ -611,10 +620,18 @@ class ASFClient:
             # Preserve the structured uncertainty flag so the UI can lock this order if needed.
             return outcome
         finally:
-            try:
-                secret_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if secret_file_created:
+                try:
+                    secret_path.unlink(missing_ok=True)
+                except OSError:
+                    if command_dispatched:
+                        raise ASFError(
+                            "Не удалось гарантированно удалить одноразовый секрет после обращения к ASF. "
+                            "Проверь исходящие предложения Steam; не повторяй отправку."
+                        ) from None
+                    raise ASFError(
+                        "Не удалось удалить одноразовый секрет отправки из защищённой папки GameDelivery."
+                    ) from None
 
     def restart(self, *, confirmed: bool = False) -> Any:
         """Restart ASF only after explicit user confirmation."""

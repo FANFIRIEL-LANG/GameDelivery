@@ -525,5 +525,76 @@ class ASFClientTests(unittest.TestCase):
         self.assertTrue(content.endswith("\n"))
 
 
+    def test_preview_trade_offer_rejects_noncanonical_asset_ids_before_ipc(self):
+        with patch.object(ASFClient, "request") as request:
+            with self.assertRaisesRegex(ValueError, "каноническими"):
+                ASFClient().preview_trade_offer(
+                    order_id="GD-ABC",
+                    bot_name="Bot A",
+                    trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123456&token=abc",
+                    asset_ids=["001"],
+                )
+            request.assert_not_called()
+
+    def test_send_trade_offer_rejects_noncanonical_asset_ids_before_secret_creation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                with patch.object(ASFClient, "send_command") as send_command:
+                    with self.assertRaisesRegex(ValueError, "каноническими"):
+                        ASFClient().send_trade_offer(
+                            order_id="GD-SEND-LEADING-ZERO",
+                            bot_name="card-bot",
+                            trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                            asset_ids=["001"],
+                        )
+            send_command.assert_not_called()
+            secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
+            self.assertFalse(secret_dir.exists())
+
+    def test_send_trade_offer_surfaces_secret_cleanup_failure_without_exposing_token(self):
+        with tempfile.TemporaryDirectory() as temp:
+            secret_path_holder = {}
+
+            def fake_send_command(command):
+                payload_encoded = command.split(" ", 1)[1]
+                payload_bytes = base64.urlsafe_b64decode(
+                    payload_encoded + "=" * ((4 - len(payload_encoded) % 4) % 4)
+                )
+                payload = json.loads(payload_bytes.decode("utf-8"))
+                secret_path = Path(temp) / "GameDelivery" / "pending_trade_requests" / (
+                    payload["CredentialNonce"] + ".json"
+                )
+                secret_path_holder["path"] = secret_path
+                return {
+                    "Success": True,
+                    "Result": json.dumps({
+                        "success": True,
+                        "mode": "sent",
+                        "sendEnabled": True,
+                        "orderId": "GD-CLEANUP",
+                        "botName": "card-bot",
+                        "targetSteamId64": 76561197960265728 + 12345,
+                        "assetCount": 1,
+                        "assets": [{"assetId": "123"}],
+                        "offerIds": ["456789"],
+                    }),
+                }
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                with patch.object(ASFClient, "send_command", side_effect=fake_send_command):
+                    with patch.object(Path, "unlink", side_effect=PermissionError("Tok-abc_1")):
+                        with self.assertRaisesRegex(ASFError, "не повторяй отправку") as raised:
+                            ASFClient().send_trade_offer(
+                                order_id="GD-CLEANUP",
+                                bot_name="card-bot",
+                                trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                                asset_ids=["123"],
+                            )
+
+            self.assertNotIn("Tok-abc_1", str(raised.exception))
+            self.assertTrue(secret_path_holder["path"].exists())
+            secret_path_holder["path"].unlink()
+
+
 if __name__ == "__main__":
     unittest.main()
