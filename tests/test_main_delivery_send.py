@@ -15,6 +15,7 @@ class DeliverySendFlowTests(unittest.TestCase):
     BOT_NAME = "bot-a"
     ASSET_ID = "123"
     TRADE_URL = "https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1"
+    SAFE_TRADE_URL = "https://steamcommunity.com/tradeoffer/new/?partner=12345"
     STEAM_ID64 = 76561197960265728 + 12345
 
     def _database(self, path: Path):
@@ -46,7 +47,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db.execute(
                 "INSERT INTO delivery_orders "
                 "(order_id, recipient_trade_url, status) VALUES (?, ?, ?)",
-                (self.ORDER_ID, self.TRADE_URL, "reserved — не отправлен"),
+                (self.ORDER_ID, self.SAFE_TRADE_URL, "reserved — не отправлен"),
             )
             db.execute(
                 "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
@@ -64,6 +65,10 @@ class DeliverySendFlowTests(unittest.TestCase):
             asf_management=SimpleNamespace(ipc_password=SimpleNamespace(text=lambda: "")),
             _selected_order_id=lambda: self.ORDER_ID,
             _validate_trade_url=lambda value: value,
+            _trade_credentials=SimpleNamespace(
+                load_trade_url=lambda order_id, stored_url: self.TRADE_URL,
+                delete_trade_url=lambda order_id: None,
+            ),
             _load_saved_orders=MagicMock(),
             _load_order_assets=MagicMock(),
             statusBar=lambda: status_bar,
