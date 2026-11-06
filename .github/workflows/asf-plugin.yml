@@ -209,7 +209,7 @@ jobs:
           $base = "https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7"
           Invoke-WebRequest -Uri "$base/ASF-win-x64.zip" -OutFile $archive
           $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($digest -ne "f90a63359f9c2d3984822a88bb5fc0b9ba14776c4a16a2601513ba18c5369e7c") {
+          if ($digest -ne "f90a63359f9c2d3984828a22bb5fc0b9ba14776c4a16a2601513ba18c5369e7c") {
             throw "Official ASF 6.3.11.7 win-x64 archive SHA-256 mismatch: $digest"
           }
           $destination = Join-Path $env:RUNNER_TEMP ASF-win-x64
