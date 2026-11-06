@@ -163,4 +163,34 @@ static void VerifyWindowsJournalAclWithExclusiveFileHandle()
 
 VerifyWindowsJournalAclWithExclusiveFileHandle();
 
+static string InvokeSafeMessageSanitizer(string message, string tradeToken)
+{
+    Type tradeDeliveryType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.TradeDelivery",
+        throwOnError: true)!;
+    MethodInfo method = tradeDeliveryType.GetMethod(
+        "SafeMessage",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin confirmation sanitizer was not found");
+
+    try
+    {
+        return (string)(method.Invoke(null, [message, tradeToken]) ?? "");
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            "The built plugin confirmation sanitizer failed.",
+            exception.InnerException ?? exception);
+    }
+}
+
+string sanitizedConfirmation = InvokeSafeMessageSanitizer(
+    "Steam confirmation failed for token=SensitiveTradeToken_123",
+    "SensitiveTradeToken_123");
+Assert(!sanitizedConfirmation.Contains("SensitiveTradeToken_123", StringComparison.Ordinal),
+    "mobile confirmation text exposed the Steam trade token");
+Assert(!sanitizedConfirmation.Contains("token=SensitiveTradeToken_123", StringComparison.Ordinal),
+    "mobile confirmation text retained a token query parameter");
+
 Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");
