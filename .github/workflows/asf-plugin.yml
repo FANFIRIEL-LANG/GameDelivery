@@ -9,6 +9,7 @@ on:
       - app/main.py
       - tests/test_asf_client.py
       - tests/test_asf_plugin_contract.py
+      - tests/asf_plugin_smoke/**
       - integrations/asf_plugin/README.md
       - .github/workflows/asf-plugin.yml
   push:
@@ -57,6 +58,13 @@ jobs:
 
       - name: Build GameDelivery ASF plugin against exact host assemblies
         run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$ASF_BIN_DIR
+
+      - name: Smoke test command parsing and exact ASF runtime interface
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_dll="$GITHUB_WORKSPACE/integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll"
+          dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj --configuration Release --property:ASF_BIN_DIR="$ASF_BIN_DIR" --property:PLUGIN_DLL="$plugin_dll"
 
       - name: Verify plugin has no Newtonsoft runtime dependency
         shell: bash

@@ -27,11 +27,14 @@ class ASFPluginContractTests(unittest.TestCase):
         dispatch_region = source[send_dispatch:send_dispatch + 1200]
 
         self.assertIn("catch (Exception exception)", dispatch_region)
-        self.assertIn("resultUnknown = true", dispatch_region)
-        self.assertIn("exception.GetType().Name", dispatch_region)
-        self.assertIn("exceptionType = exception.GetType().FullName", dispatch_region)
-        self.assertIn("targetSite = exception.TargetSite?.ToString()", dispatch_region)
-        self.assertIn("stackTrace = SafeDiagnosticText(exception.StackTrace)", dispatch_region)
+        callback_start = source.index("public async Task<string?> OnBotCommand")
+        callback_end = source.index("private static async Task<string> RunDiagnosticCommand", callback_start)
+        callback = source[callback_start:callback_end]
+        self.assertIn("catch (Exception exception)", callback)
+        self.assertIn("resultUnknown = isSend", callback)
+        self.assertIn("exception.GetType().Name", callback)
+        self.assertIn("exceptionType = exception.GetType().FullName", callback)
+        self.assertIn("SafeDiagnosticText(exception.Message)", callback)
 
     def test_diagnostic_command_reports_runtime_trade_send_api_signature(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
@@ -69,11 +72,14 @@ class ASFPluginContractTests(unittest.TestCase):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         send_call = source.index("targetBot.ArchiWebHandler.SendTradeOffer(")
         catch_region = source[send_call:source.index("finally", send_call)]
-        self.assertIn("exception);", catch_region)
+        self.assertIn("exception,", catch_region)
+        self.assertIn("secret.TradeToken", catch_region)
         failure_region = source[source.index("private static string UnknownFailure"):source.index("private static string Failure")]
         self.assertIn("exception is MissingMethodException", failure_region)
         self.assertIn("StackTrace", failure_region)
         self.assertIn("exceptionType", failure_region)
+        self.assertIn("tradeToken", failure_region)
+        self.assertIn("Replace(tradeToken, \"[REDACTED]\"", source)
 
     def test_plugin_json_uses_framework_system_text_json_without_newtonsoft(self):
         for relative_path in (
@@ -139,7 +145,7 @@ class ASFPluginContractTests(unittest.TestCase):
         preview_end = plugin.index("return JsonSerializer.Serialize(new PreviewResponse", preview_start)
         preview_validation = plugin[preview_start:preview_end]
         send_start = send.index("foreach (string rawAssetId in request.AssetIds)")
-        send_end = send.index("string fingerprint = ComputeFingerprint(request)", send_start)
+        send_end = send.index("SendRecord record = new()", send_start)
         send_validation = send[send_start:send_end]
 
         for validation in (preview_validation, send_validation):
@@ -155,7 +161,7 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("CommandArgumentParser.TryNormalize", source)
         self.assertIn("message", parser)
         self.assertIn("args", parser)
-        self.assertIn("CommandPrefix", parser)
+        self.assertIn("commandPrefix", parser)
         self.assertIn("DiagnosticCommandName", parser)
         self.assertIn("PreviewCommandName", parser)
         self.assertIn("SendCommandName", parser)
