@@ -1179,3 +1179,36 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 **Пользовательская проверка:** сейчас ничего скачивать и устанавливать не нужно. Не просить повторять `gamedelivery-send`. Сначала получить успешный безопасный CI и только затем давать точную инструкцию для read-only проверки.
 
 **Обязательное правило процесса:** этот runtime log, принятые меры, все ошибки/исправления CI, точные commit/run IDs и следующий шаг внесены в мастер-журнал в текущей сессии. При следующем содержательном изменении снова обновлять этот файл немедленно.
+
+
+### 2026-11-07 — Дополнение к runtime-аудиту: checksum исправлен, сравнительный job исправлен после PowerShell parser error
+
+**Текущий code/workflow HEAD:** `bae709f81fa6c6788f66197af5ce74f27658063b`  
+**Рабочая ветка:** `feature/asf-bulk-account-import`.
+
+#### Новые подтверждения и корректировки
+
+- Официальные release metadata для ASF 6.3.11.7 подтверждают:
+  - `ASF-generic.zip`: SHA-256 `cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb`;
+  - `ASF-win-x64.zip`: SHA-256 `f90a63359f9c2d3984828a22bb5fc0b9ba14776c4a16a2601513ba18c5369e7c`.
+- В workflow HEAD `9700992d2e6ca4732bc627716ecefc0cb09976ea` checksum win-x64 был набран с переставленными символами. Из-за этого Tests #1191 и ASF #560/#561 завершались failure до запуска сравнительного процесса. Исправлено в commit `0876a843997edffa51c70f1577621489060b99f4`; фактический hash теперь совпадает с официальным asset metadata.
+- После исправления SHA оба ASF архива были скачаны и успешно проверены в сравнительном job. Сам PowerShell script затем не стартовал из-за интерполяции `"$Variant:"` (parser error: двоеточие ошибочно трактовалось как продолжение имени переменной). Исправлены все пять таких мест на `"${Variant}:"` в commit `bae709f81fa6c6788f66197af5ce74f27658063b`. Это ошибка test harness, не evidence о работе Generic/trimmed host.
+- На HEAD `3608e2f87474265630586da67d890b2a76ea7799`: Tests push #1195 run `42301823647` — success; Tests PR #1196 run `42301831130` — success; ASF plugin build job #564 — success. Его comparative win-x64 job остановился на описанном PowerShell parser error; Windows ACL и Windows EXE jobs ещё выполнялись на момент проверки.
+- На HEAD `bae709f...` запущены Tests push #1197 run `42301888452` (in_progress) и ASF plugin push #565 run `42301888456` (in_progress). Новый PR-triggered exact-HEAD цикл проверяется отдельно; не считать эти runs успешными заранее.
+
+#### Уточнение safety wording по скриншоту пользователя
+
+Предыдущее сообщение UI `ASF завершил обработку до вызова SendTradeOffer. Торговое предложение не отправлялось` было слишком категоричным для данного стека. В `MissingMethodException` присутствует `AsyncMethodBuilderCore.Start<TStateMachine>`, и CLR может обнаружить отсутствующий метод при подготовке async state machine до входа в тело метода. Поэтому `sendDispatchStarted=false` — не доказательство того, что точный runtime binding failure расположен непосредственно перед `SendTradeOffer`. Более точное сообщение в коде теперь предупреждает, что отправка не подтверждена, и велит проверить исходящие Steam offers перед любым повтором.
+- Пользователю повторно запускать `gamedelivery-send` нельзя до разрешения ошибки и сверки outgoing offers.
+- Все CI проверки по trimming/JIT read-only: bot account, Steam credentials и реальный offer не используются.
+
+#### Следующий шаг
+
+1. Проверить новые Actions на HEAD `bae709f...`; дождаться Tests, ASF build, ACL, comparative Generic-vs-win-x64 и Windows package.
+2. Разобрать comparative job output. Ожидаемый результат: один и тот же plugin artifact должен пройти загрузку и JIT state machine в Generic; затем сравнить win-x64. При failure получить полный ASF log из соответствующего job.
+3. Если win-x64 продолжит падать в MEF, добавить контрольный запуск trimmed ASF без внешнего GameDelivery plugin для отделения поведения самого host от взаимодействия с плагином; затем решить вопрос совместимости/варианта установки.
+4. Только после successful exact-HEAD CI переходить к read-only проверке в пользовательской папке ASF; реальная отправка требует отдельного прямого разрешения.
+
+**Пользовательская проверка:** пока ничего не скачивать/не устанавливать и не повторять send command.
+
+**Неизменные ограничения:** только `feature/asf-bulk-account-import`; `main` не изменён; PR #4 остаётся Draft/open/unmerged с base `feature/steam-card-set-selection`.
