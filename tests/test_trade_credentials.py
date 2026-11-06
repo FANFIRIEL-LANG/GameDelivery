@@ -1,5 +1,9 @@
+import sys
+import types
 import unittest
+from unittest.mock import patch
 
+from integrations.asf import trade_credentials
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 
 
@@ -26,6 +30,49 @@ class SteamTradeCredentialStoreTests(unittest.TestCase):
     ORDER_ID = "GD-TRADE-SECRET-1"
     TRADE_URL = "https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1"
     SAFE_URL = "https://steamcommunity.com/tradeoffer/new/?partner=12345"
+
+    def test_windows_uses_explicit_credential_manager_backend(self):
+        windows_module = types.ModuleType("keyring.backends.Windows")
+
+        class FakeWinVaultKeyring:
+            pass
+
+        windows_module.WinVaultKeyring = FakeWinVaultKeyring
+        keyring_module = types.ModuleType("keyring")
+        keyring_module.__path__ = []
+        backends_module = types.ModuleType("keyring.backends")
+        backends_module.__path__ = []
+
+        with patch.object(trade_credentials.os, "name", "nt"):
+            with patch.dict(
+                sys.modules,
+                {
+                    "keyring": keyring_module,
+                    "keyring.backends": backends_module,
+                    "keyring.backends.Windows": windows_module,
+                },
+            ):
+                store = SteamTradeCredentialStore()
+
+        self.assertIsInstance(store._backend, FakeWinVaultKeyring)
+
+    def test_windows_fails_closed_when_credential_manager_backend_is_missing(self):
+        keyring_module = types.ModuleType("keyring")
+        keyring_module.__path__ = []
+        backends_module = types.ModuleType("keyring.backends")
+        backends_module.__path__ = []
+
+        with patch.object(trade_credentials.os, "name", "nt"):
+            with patch.dict(
+                sys.modules,
+                {
+                    "keyring": keyring_module,
+                    "keyring.backends": backends_module,
+                    "keyring.backends.Windows": None,
+                },
+            ):
+                with self.assertRaisesRegex(OSError, "Credential Manager"):
+                    SteamTradeCredentialStore()
 
     def test_store_keeps_only_partner_in_database_value_and_restores_url(self):
         backend = MemoryKeyring()
