@@ -595,7 +595,7 @@ class ASFClient:
                     )
                     or len(set(outcome["offerIds"])) != len(outcome["offerIds"])
                 ):
-                    raise ASFError("ASF не подтвердил отправку ожидаемого состава заказа.")
+                    raise ASFError("ASF не подтвердил корректный ID предложения. Проверь исходящие предложения Steam; не повторяй отправку.")
                 returned_assets = outcome.get("assets")
                 if not isinstance(returned_assets, list) or [
                     str(item.get("assetId", "")) for item in returned_assets if isinstance(item, dict)
