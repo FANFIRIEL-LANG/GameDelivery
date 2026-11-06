@@ -90,17 +90,17 @@ class SteamTradeCredentialStore:
     def load_trade_url(self, order_id: str, stored_url: str) -> str:
         partner, embedded_token = self._parts(stored_url, require_token=False)
         account = self._account(order_id)
-        token = embedded_token
-        if token is not None:
-            # Compatibility fallback for callers that reach a legacy row before migration.
-            self._save_token(account, token)
-        else:
-            try:
-                token = self._backend.get_password(self.SERVICE, account)
-            except Exception:
-                raise OSError(
-                    "Не удалось прочитать Steam trade token из системного хранилища учётных данных."
-                ) from None
+        if embedded_token is not None:
+            raise ValueError(
+                "Старая Steam Trade URL ещё не перенесена в системное хранилище. "
+                "Перезапусти миграцию заказов перед проверкой."
+            )
+        try:
+            token = self._backend.get_password(self.SERVICE, account)
+        except Exception:
+            raise OSError(
+                "Не удалось прочитать Steam trade token из системного хранилища учётных данных."
+            ) from None
         if not token or self._TOKEN_PATTERN.fullmatch(token) is None:
             raise ValueError(
                 "Steam trade token для этого заказа не найден в системном хранилище. "
