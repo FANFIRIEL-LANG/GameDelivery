@@ -85,8 +85,9 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("f90a63359f9c2d3984828a22bb5fc0b9ba14776c4a16a2601513ba18c5369e7c", workflow)
         self.assertIn("GAMEDELIVERY_VALIDATE_SEND_JIT", workflow)
         self.assertIn("needs: build-plugin", workflow)
-        self.assertIn("Verify trimmed ASF host starts without any external plugin", workflow)
-        self.assertIn("Official trimmed ASF stayed running for 20 seconds without external plugins.", workflow)
+        self.assertIn("Verify trimmed ASF host starts with official bundled plugins only", workflow)
+        self.assertIn("Official ASF-bundled plugin directories", workflow)
+        self.assertIn("Official trimmed ASF stayed running for 20 seconds with only its bundled plugins.", workflow)
         self.assertIn("Install GameDelivery plugin into trimmed win-x64 host", workflow)
         self.assertIn('"status":"success"', workflow)
 
