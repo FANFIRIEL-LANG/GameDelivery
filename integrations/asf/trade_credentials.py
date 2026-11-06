@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -14,9 +15,25 @@ class SteamTradeCredentialStore:
 
     def __init__(self, *, backend: Any | None = None) -> None:
         if backend is None:
-            import keyring
+            if os.name == "nt":
+                try:
+                    from keyring.backends.Windows import WinVaultKeyring
 
-            backend = keyring
+                    backend = WinVaultKeyring()
+                except Exception:
+                    raise OSError(
+                        "Windows Credential Manager недоступен. "
+                        "Сохранение Steam trade token заблокировано."
+                    ) from None
+            else:
+                try:
+                    import keyring
+
+                    backend = keyring.get_keyring()
+                except Exception:
+                    raise OSError(
+                        "Не удалось выбрать системное хранилище учётных данных."
+                    ) from None
         self._backend = backend
 
     @classmethod
