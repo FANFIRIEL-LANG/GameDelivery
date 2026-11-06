@@ -463,6 +463,40 @@ class ASFClientTests(unittest.TestCase):
             secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
             self.assertEqual(list(secret_dir.iterdir()), [])
 
+    def test_send_trade_offer_treats_unexpected_response_parse_error_after_dispatch_as_unknown(self):
+        with tempfile.TemporaryDirectory() as temp:
+            outcome = {
+                "success": False,
+                "mode": "send",
+                "sendEnabled": True,
+                "resultUnknown": True,
+                "error": "ASF could not confirm the result.",
+                "orderId": "GD-UNKNOWN-PARSE",
+                "botName": "card-bot",
+                "targetSteamId64": 76561197960265728 + 12345,
+                "assetCount": 1,
+                "offerIds": ["²"],
+                "assets": [{"assetId": "123"}],
+            }
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                with patch.object(
+                    ASFClient,
+                    "send_command",
+                    return_value={"Success": True, "Result": json.dumps(outcome)},
+                ) as send_command:
+                    with self.assertRaisesRegex(ASFError, "не повторяй отправку") as raised:
+                        ASFClient().send_trade_offer(
+                            order_id="GD-UNKNOWN-PARSE",
+                            bot_name="card-bot",
+                            trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                            asset_ids=["123"],
+                        )
+
+            send_command.assert_called_once()
+            self.assertNotIn("Tok-abc_1", str(raised.exception))
+            secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
+            self.assertEqual(list(secret_dir.iterdir()), [])
+
     def test_send_trade_offer_fails_closed_when_secret_file_acl_cannot_be_applied(self):
         with tempfile.TemporaryDirectory() as temp:
             secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
