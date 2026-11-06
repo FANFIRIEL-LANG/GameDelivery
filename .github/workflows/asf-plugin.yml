@@ -223,18 +223,21 @@ jobs:
           Set-Content -LiteralPath (Join-Path $configDirectory "ASF.json") -Value '{"IPC":false}' -Encoding utf8
           "ASF_WIN_X64_DIR=$($executable.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Verify trimmed ASF host starts without any external plugin
+      - name: Verify trimmed ASF host starts with official bundled plugins only
         shell: pwsh
         run: |
           $stdout = Join-Path $env:RUNNER_TEMP ASF-win-x64-baseline.stdout.log
           $stderr = Join-Path $env:RUNNER_TEMP ASF-win-x64-baseline.stderr.log
           $pluginsDirectory = Join-Path $env:ASF_WIN_X64_DIR "plugins"
-          if (Test-Path -LiteralPath $pluginsDirectory) {
-            $externalPluginDirectories = Get-ChildItem -LiteralPath $pluginsDirectory -Directory
-            if ($externalPluginDirectories.Count -gt 0) {
-              throw "Expected a clean trimmed ASF baseline without external plugins, found: $($externalPluginDirectories.Name -join ', ')"
-            }
+          $gameDeliveryPluginDirectory = Join-Path $pluginsDirectory "GameDelivery.ASFPlugin"
+          if (Test-Path -LiteralPath $gameDeliveryPluginDirectory) {
+            throw "The ASF baseline unexpectedly contains the GameDelivery plugin before the baseline run"
           }
+          $bundledPluginDirectories = @()
+          if (Test-Path -LiteralPath $pluginsDirectory) {
+            $bundledPluginDirectories = @(Get-ChildItem -LiteralPath $pluginsDirectory -Directory)
+          }
+          Write-Host "Official ASF-bundled plugin directories: $($bundledPluginDirectories.Name -join ', ')"
 
           $process = Start-Process -FilePath (Join-Path $env:ASF_WIN_X64_DIR "ArchiSteamFarm.exe") -WorkingDirectory $env:ASF_WIN_X64_DIR -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           try {
@@ -244,12 +247,12 @@ jobs:
             $combined = $outText + [Environment]::NewLine + $errText
 
             if ($combined.Contains("InitPlugins() Failed due to error:")) {
-              throw "Trimmed ASF failed its baseline startup even without an external plugin." + [Environment]::NewLine + $combined
+              throw "Trimmed ASF failed while initializing its official bundled plugins, before GameDelivery was installed." + [Environment]::NewLine + $combined
             }
             if ($process.HasExited) {
               throw "Trimmed ASF baseline exited before the observation window ended. ExitCode=$($process.ExitCode)" + [Environment]::NewLine + $combined
             }
-            Write-Host "Official trimmed ASF stayed running for 20 seconds without external plugins."
+            Write-Host "Official trimmed ASF stayed running for 20 seconds with only its bundled plugins."
           }
           finally {
             if (!$process.HasExited) {
