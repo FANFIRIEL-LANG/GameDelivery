@@ -111,3 +111,12 @@
 - No real trade offer was created in tests.
 
 **Remaining live verification:** user must replace the previous plugin DLL with the new `1.0.2.0` artifact while ASF is fully stopped, then start ASF and provide the new startup registration line and one response from `gamedelivery-diagnose Ewaylariell`. This is a new verification against a different binary, not a repeat of the old test. Until that happens, live command dispatch and actual Steam trade delivery must remain marked unverified.
+
+## Follow-up verification — 2026-11-06
+
+- Уточнено различие между pre-migration DLL с Newtonsoft.Json и промежуточной System.Text.Json DLL, которая ещё отображалась как V1.0.0.0: отсутствие явного `<Version>` в старом csproj не позволяло различить эти бинарники только по startup line.
+- По ASF 6.3.11.7 source подтверждена цепочка: plugin callback exception → `PluginsCore.OnBotCommand` возвращает null → `Commands.Response` отвечает «Неизвестная команда!».
+- Smoke harness исправлен: раньше parser исходник компилировался отдельно в smoke executable; теперь вызов идёт reflection непосредственно в собранную `GameDelivery.ASFPlugin.dll`. Регрессионный Python test проверяет отсутствие source-link и использование parser из plugin assembly. RED был подтверждён на CI, затем исправленный тест прошёл.
+- Final plugin version remains 1.0.2.0. CI on commit `00f7346ffcb414ef55c5cc70737b55cb57c4ff14`: ASF plugin push `42231813264` success; ASF plugin PR `42231803632` success; Tests push `42231813367` success (280 tests); Tests PR `42231803346` success (280 tests).
+- Artifact: `GameDelivery-ASFPlugin` ID `13510825591`, SHA-256 `6d4b57cef745bfc7a50d7768829b719f5a8232520b29f8390275090b4d3d1059`, expires 2026-12-06.
+- **Live gate remains open:** install the new artifact, verify the startup registration line and then one diagnostic command. No trade offer was created by CI; live Steam delivery is not yet verified.
