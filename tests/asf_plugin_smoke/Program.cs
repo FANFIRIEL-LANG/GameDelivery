@@ -6,6 +6,8 @@ using System.Composition.Convention;
 using System.Composition.Hosting;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 static void Assert(bool condition, string message)
 {
@@ -221,4 +223,49 @@ Assert(safeDiagnostic.Contains("token=[REDACTED]&next=value", StringComparison.O
 Assert(!safeDiagnostic.Contains((char)10) && !safeDiagnostic.Contains((char)13),
     "diagnostic sanitizer retained control characters");
 
+static void VerifyReflectionDisabledJsonResolver()
+{
+    Assert(!JsonSerializer.IsReflectionEnabledByDefault,
+        "JSON smoke test must run with reflection-based serialization disabled");
+
+    JsonSerializerOptions ReadPluginOptions(Type owner)
+    {
+        FieldInfo field = owner.GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException($"JSON options were not found on {owner.FullName}");
+        return field.GetValue(null) as JsonSerializerOptions
+            ?? throw new InvalidOperationException($"JSON options were not initialized on {owner.FullName}");
+    }
+
+    Type tradeType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.TradeDelivery", throwOnError: true)!;
+    JsonSerializerOptions[] optionSets = [
+        ReadPluginOptions(typeof(GameDeliveryPlugin)),
+        ReadPluginOptions(tradeType)
+    ];
+
+    foreach (JsonSerializerOptions options in optionSets)
+    {
+        Assert(options.TypeInfoResolver is DefaultJsonTypeInfoResolver,
+            "plugin JSON options do not explicitly configure DefaultJsonTypeInfoResolver");
+        string json = JsonSerializer.Serialize(new SmokeJsonProbe
+        {
+            OrderId = "GD-JSON-REFLECTION-OFF",
+            AssetIds = ["100", "200"]
+        }, options);
+        SmokeJsonProbe? roundTrip = JsonSerializer.Deserialize<SmokeJsonProbe>(json, options);
+        Assert(roundTrip is not null
+            && roundTrip.OrderId == "GD-JSON-REFLECTION-OFF"
+            && roundTrip.AssetIds.SequenceEqual(["100", "200"]),
+            "plugin JSON options failed serialize/deserialize with reflection default disabled");
+    }
+}
+
+VerifyReflectionDisabledJsonResolver();
+
 Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");
+
+sealed class SmokeJsonProbe
+{
+    public string OrderId { get; set; } = "";
+    public string[] AssetIds { get; set; } = [];
+}

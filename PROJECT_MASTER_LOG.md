@@ -1008,3 +1008,16 @@ Telegram Bot — настраиваемая дополнительная пан�
 - The repository had 18 older in-progress jobs stuck at Run unit tests and 28 queued runs for the working branch at this snapshot. This prevents a reliable final package gate. GitHub status feed did not provide a sufficiently current incident to attribute this to a confirmed platform outage.
 
 **Stage 4 status:** in progress, not complete. Remaining work: fresh Tests push/PR green, ASF plugin Push/PR green including sanitizer smoke, Windows EXE package green on the same code HEAD, final send-state review and artifact SHA verification. No user action requested yet.
+
+
+## 2026-11-06 — Live ASF JSON serialization blocker and focused fix
+
+User-provided ASF 6.3.11.7 log from the preview button proves the callback reaches JsonSerializer.Deserialize<PreviewRequest> and throws because reflection-based System.Text.Json serialization is disabled. The callback error handler then calls Serialize with the same implicit-resolver options and fails a second time. This is not evidence of a malformed Steam Trade URL: failure occurs at JSON deserialization before preview request validation; preview does not create a Steam offer.
+
+The same implicit-resolver configuration is present in TradeDelivery send request parsing, one-use secret parsing, idempotency journal read/write, and send/error response serialization. Therefore a preview-only change would be incomplete.
+
+Focused correction: explicitly configure DefaultJsonTypeInfoResolver in both existing JsonSerializerOptions objects. Set JsonSerializerIsReflectionEnabledByDefault=false in both plugin and smoke projects, and add a smoke that reads the actual production options through reflection and executes JSON round trips while the reflection default is disabled. Add a Python contract test and document the runtime requirement.
+
+Stage 4 remains in progress; Stage 5 runtime smoke and Stage 6 live preview remain pending until fresh CI and a read-only live check. No real trade send is authorized. No user download until exact-HEAD CI artifacts pass. Work remains only on feature/asf-bulk-account-import; do not alter main or PR base.
+
+Next step: run focused contract/smoke, then complete Tests + ASF plugin + Windows package checks on one exact HEAD and record exact run IDs and artifact hashes.

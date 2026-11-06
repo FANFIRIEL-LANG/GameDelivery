@@ -5,6 +5,7 @@ using System.Composition;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Text;
@@ -30,7 +31,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
     };
 
     [JsonInclude]

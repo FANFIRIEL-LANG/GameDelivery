@@ -315,3 +315,16 @@
 3. Obtain a fresh Windows EXE package build on the same final code HEAD and review package contents/hashes.
 4. Finish send-failure state-transition review and update this checkpoint with actual run IDs/results.
 5. Only then move to Stage 5. No user download or ASF installation request yet.
+
+
+### 2026-11-06 — ASF JSON reflection resolver runtime blocker
+
+**Live evidence:** on ASF 6.3.11.7, gamedelivery-preview reaches JsonSerializer.Deserialize<PreviewRequest> and fails because reflection-based serialization is disabled. The error handler then tries to serialize its diagnostic response with the same options, causing a second failure. No trade offer was created.
+
+**Scope:** both GameDeliveryPlugin.cs and TradeDelivery.cs configure JsonSerializerOptions without an explicit TypeInfoResolver. The latter contains send request, one-use secret, idempotency journal dictionary and send/error responses, so the defect is not limited to preview.
+
+**Fix under test:** explicitly set TypeInfoResolver = new DefaultJsonTypeInfoResolver() in both existing option sets. This is the explicit resolver configuration named by the runtime exception and preserves the existing DTO/anonymous-response contract. Both plugin and smoke projects explicitly set JsonSerializerIsReflectionEnabledByDefault=false; smoke reads the actual private options from both production classes and runs serialize/deserialize round trips using those options.
+
+**Stage status:** Stage 4 security audit remains in progress; Stage 5 runtime smoke remains pending until this focused smoke and the full ASF workflow pass. Stage 6 live preview remains pending. Stage 7 real send remains unauthorized. No user download or installation until fresh CI artifacts are green.
+
+**Next step:** execute the focused contract test and ASF plugin workflow, inspect any failure logs, then run full Tests and Windows package checks on the exact same branch HEAD.

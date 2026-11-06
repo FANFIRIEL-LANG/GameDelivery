@@ -112,6 +112,25 @@ class ASFPluginContractTests(unittest.TestCase):
             self.assertNotIn("JsonConvert", source)
             self.assertNotIn("JsonSerializationException", source)
 
+    def test_plugin_json_explicitly_configures_resolver_when_reflection_default_is_disabled(self):
+        for relative_path in (
+            "integrations/asf_plugin/GameDeliveryPlugin.cs",
+            "integrations/asf_plugin/TradeDelivery.cs",
+        ):
+            source = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("using System.Text.Json.Serialization.Metadata;", source)
+            self.assertIn("TypeInfoResolver = new DefaultJsonTypeInfoResolver()", source)
+        for relative_path in (
+            "integrations/asf_plugin/GameDelivery.ASFPlugin.csproj",
+            "tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj",
+        ):
+            project = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("<JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>", project)
+        smoke = (ROOT / "tests/asf_plugin_smoke/Program.cs").read_text(encoding="utf-8")
+        self.assertIn("JsonSerializer.IsReflectionEnabledByDefault", smoke)
+        self.assertIn("DefaultJsonTypeInfoResolver", smoke)
+        self.assertIn("JsonSerializer.Deserialize<SmokeJsonProbe>", smoke)
+
     def test_plugin_deserialization_dtos_have_public_parameterless_constructors(self):
         plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         trade = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")

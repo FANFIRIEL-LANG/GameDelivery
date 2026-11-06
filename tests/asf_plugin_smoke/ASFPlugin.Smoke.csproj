@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
     <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)../../.asf-bin</ASF_BIN_DIR>
     <PLUGIN_DLL Condition="'$(PLUGIN_DLL)' == ''">$(MSBuildThisFileDirectory)../../integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll</PLUGIN_DLL>
   </PropertyGroup>

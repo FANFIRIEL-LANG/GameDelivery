@@ -9,6 +9,7 @@
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <Version>1.0.2</Version>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
   <PropertyGroup>
     <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)../../ASF</ASF_BIN_DIR>
