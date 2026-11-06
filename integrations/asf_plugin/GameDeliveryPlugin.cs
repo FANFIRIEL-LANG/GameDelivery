@@ -119,6 +119,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         ulong steamID = 0)
     {
         bool isSend = false;
+        bool sendDispatchStarted = false;
         string? recognizedCommand = null;
 
         try
@@ -144,7 +145,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             ASF.ArchiLogger.LogGenericInfo(
                 "GameDeliveryPlugin.OnBotCommand: command=" + recognizedCommand
                 + "; argumentCount=" + (commandArgs.Length - 1).ToString(CultureInfo.InvariantCulture)
-                + "; bot=" + SafeMessage(bot.BotName) + ".");
+                + "; ipcContextBot=" + SafeMessage(bot.BotName) + ".");
 
             if (access != EAccess.Owner)
             {
@@ -175,7 +176,10 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
 
             if (isSend)
             {
-                return await TradeDelivery.ProcessSendCommand(commandArgs[1]).ConfigureAwait(false);
+                return await TradeDelivery.ProcessSendCommand(
+                    commandArgs[1],
+                    bot.BotName,
+                    () => sendDispatchStarted = true).ConfigureAwait(false);
             }
 
             PreviewRequest? request;
@@ -298,6 +302,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 "GameDeliveryPlugin.OnBotCommand failed: command="
                 + (recognizedCommand ?? "unresolved")
                 + "; exception=" + exception.GetType().Name
+                + "; ipcContextBot=" + SafeMessage(bot.BotName)
                 + "; details=" + safeDetails);
 
             return JsonSerializer.Serialize(new
@@ -305,9 +310,11 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 success = false,
                 mode = isSend ? "send" : "plugin-command",
                 sendEnabled = isSend,
-                resultUnknown = isSend,
+                resultUnknown = isSend && sendDispatchStarted,
                 error = isSend
-                    ? "ASF прервал обработку отправки. Результат требует ручной сверки; автоматический повтор запрещён."
+                    ? (sendDispatchStarted
+                        ? "ASF прервал обработку после начала отправки. Результат требует ручной сверки; автоматический повтор запрещён."
+                        : "ASF завершил обработку до вызова SendTradeOffer. Торговое предложение не отправлялось; исправь ошибку перед повторной проверкой.")
                     : "Ошибка обработчика GameDelivery ASF: " + exception.GetType().Name + ": " + safeMessage,
                 exceptionType = exception.GetType().FullName,
                 exceptionMessage = safeMessage,
