@@ -560,7 +560,6 @@ class MainWindow(QMainWindow):
                     "который ещё не отправлялся."
                 )
             recipient = self._trade_credentials.load_trade_url(order_id, recipient)
-            recipient = self._trade_credentials.load_trade_url(order_id, recipient)
             recipient = self._validate_trade_url(recipient)
             if not assets:
                 raise ValueError("У заказа нет сохранённого состава активов.")
@@ -634,6 +633,7 @@ class MainWindow(QMainWindow):
                     "Отправлять можно только подготовленный заказ со статусом «reserved — не отправлен». "
                     "Заказы с уже начатой или неизвестной отправкой повторно не запускаются."
                 )
+            recipient = self._trade_credentials.load_trade_url(order_id, recipient)
             recipient = self._validate_trade_url(recipient)
             if not assets:
                 raise ValueError("У заказа нет сохранённого состава активов.")
