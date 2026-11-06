@@ -281,9 +281,17 @@ class TradeDeliveryUITests(unittest.TestCase):
                     )
 
                 client = MagicMock()
+                client.preview_trade_offer.return_value = {
+                    "orderId": "GD-ORDER-1",
+                    "botName": "Bot A",
+                    "targetSteamId64": 76561197960389184,
+                    "assetCount": 1,
+                    "assets": [{"assetId": "1234567890", "name": "Example Card"}],
+                }
                 with (
                     patch("app.main.ASFClient", return_value=client),
                     patch("app.main.QMessageBox.warning") as warning,
+                    patch("app.main.QMessageBox.information"),
                 ):
                     window._preview_selected_order_with_asf()
 
