@@ -47,6 +47,15 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
 
     public Task OnASFInit(IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties = null)
     {
+        if (string.Equals(
+            Environment.GetEnvironmentVariable("GAMEDELIVERY_VALIDATE_SEND_JIT"),
+            "1",
+            StringComparison.Ordinal))
+        {
+            string probe = RunSendStateMachineJitProbe();
+            ASF.ArchiLogger.LogGenericInfo("GameDeliveryPlugin send state-machine JIT probe: " + probe);
+        }
+
         try
         {
             Type? pluginsCore = typeof(Bot).Assembly.GetType(
@@ -107,15 +116,6 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             ASF.ArchiLogger.LogGenericWarning(
                 "GameDeliveryPlugin: ошибка проверки регистрации обработчика команд: "
                 + exception.GetType().Name + ": " + SafeMessage(exception.Message));
-        }
-
-        if (string.Equals(
-            Environment.GetEnvironmentVariable("GAMEDELIVERY_VALIDATE_SEND_JIT"),
-            "1",
-            StringComparison.Ordinal))
-        {
-            string probe = RunSendStateMachineJitProbe();
-            ASF.ArchiLogger.LogGenericInfo("GameDeliveryPlugin send state-machine JIT probe: " + probe);
         }
 
         return Task.CompletedTask;
@@ -379,9 +379,9 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 + (recognizedCommand ?? "unresolved")
                 + "; exception=" + exception.GetType().Name
                 + "; ipcContextBot=" + SafeMessage(bot.BotName)
-                + "; missingMemberName=" + SafeMessage(missingMemberName)
-                + "; missingClassName=" + SafeMessage(missingClassName)
-                + "; missingSignature=" + SafeMessage(missingSignature)
+                + "; missingMemberName=" + SafeMessage(missingMemberName ?? "not-available")
+                + "; missingClassName=" + SafeMessage(missingClassName ?? "not-available")
+                + "; missingSignature=" + SafeMessage(missingSignature ?? "not-available")
                 + "; details=" + safeDetails);
 
             return JsonSerializer.Serialize(new
