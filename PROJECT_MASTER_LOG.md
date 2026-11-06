@@ -1021,3 +1021,43 @@ Focused correction: explicitly configure DefaultJsonTypeInfoResolver in both exi
 Stage 4 remains in progress; Stage 5 runtime smoke and Stage 6 live preview remain pending until fresh CI and a read-only live check. No real trade send is authorized. No user download until exact-HEAD CI artifacts pass. Work remains only on feature/asf-bulk-account-import; do not alter main or PR base.
 
 Next step: run focused contract/smoke, then complete Tests + ASF plugin + Windows package checks on one exact HEAD and record exact run IDs and artifact hashes.
+
+
+## 2026-11-07 — ASF send pipeline corrections and exact-HEAD CI checkpoint
+
+**Branch:** `feature/asf-bulk-account-import`  
+**Tested code HEAD:** `1066b45fa77888f5f8c205cd66fb19db228aec4c`  
+**PR #4:** open / Draft / not merged; head is the working branch; base remains `feature/steam-card-set-selection`.  
+**main:** no changes were made to main; all code and journal writes in this checkpoint target the working branch.
+
+### Confirmed architecture
+
+GameDelivery remains the UI/order owner. It chooses the order, target ASF bot, recipient and asset IDs; it stores the Steam Trade URL token in the OS credential vault, not in the IPC command or SQLite. The ASF plugin is a narrow in-process adapter: ASF invokes its `IBotCommand2` callback through the local IPC command endpoint; the callback's `Bot` parameter is the IPC/default-bot context, while the sender is resolved separately from the request's `BotName`. The plugin reads the selected bot's live 753/6 inventory and uses that bot's ASF `ArchiWebHandler.SendTradeOffer` and mobile confirmation API only for the explicit send command. Preview remains read-only.
+
+### Changes in tested source
+
+- Replaced the mixed `ulong == SteamID` self-trade comparison with an explicit `ulong`/SteamID64 comparison helper. The .NET smoke test now invokes this helper from the built plugin DLL for same-account and different-account cases.
+- Added an explicit dispatch-boundary callback immediately before `SendTradeOffer`. Unexpected plugin-callback exceptions are now marked `resultUnknown=true` only after that boundary; failures before the call return a known pre-send failure, preserving the retryable order/credential path.
+- Split callback logging into `ipcContextBot`; TradeDelivery logs `requestedSenderBot` and `resolvedSenderBot` separately.
+- Added contract tests for the self-trade guard, send phase classification and the three bot-identity log fields.
+- Red-phase check on an intermediate test commit produced the expected failures for the three missing code behaviors. Those code behaviors were then implemented. A later failure was only a brittle test assertion tied to line formatting; the assertion was rewritten to check arguments independently.
+
+### Exact-HEAD Actions — all successful
+
+On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
+- Tests run `42294601707` (#1166): success; complete suite `300/300`.
+- ASF plugin run `42294601720` (#539): `build-plugin` success against official ASF 6.3.11.7; `windows-storage-acl-smoke` success.
+- Windows package run `42294601847` (#587): Windows trade-secret ACL test, GUI executable build, packaged executable smoke and artifact upload all success.
+- ASF artifact `GameDelivery-ASFPlugin`, ID `13541805858`, SHA-256 `de7934129eebb4315b9dd76878bbdbd5db82b0830924d20f687036d4e95a1de1`.
+- Windows artifact `GameDelivery-Windows-x64`, ID `13542210475`, 54,860,571 bytes, SHA-256 `949439ac2a73bd14cc788340ee43f1d9e33528d2a44a5471898df7a275fe6546`.
+- Both artifacts were generated from the same tested code HEAD and expire 2026-12-06.
+
+### What is not yet proven / next gates
+
+- The original live `MissingMethodException` still has no captured `MemberName` / `ClassName` from the user's running ASF process. SteamKit2 3.5.0 source in ASF 6.3.11.7 does define the `SteamID -> ulong` implicit operator; the old mixed-type expression was still an unnecessary runtime binding point, but it was not proven to be the unique root cause.
+- Existing send diagnostics already return exception type/message, `missingMethod` message, `TargetSite` and stack trace for exceptions caught in the send block. Structured missing-member `MemberName` / `ClassName` fields and clear UI display for pre-send exceptions remain a follow-up.
+- The new smoke executes the compiled DLL's SteamID64 guard and JSON resolver; it does **not** yet execute the entire `ProcessSendCommand` safe pre-send pipeline with a controlled ASF Bot/inventory seam. That must be added before declaring the plugin runtime path fully proven.
+- No live preview or real Steam send was run in this checkpoint. No actual trade send is authorized. Next user interaction, after artifact install, must be `gamedelivery-diagnose` and/or read-only `gamedelivery-preview` only. Do not ask the user to run `gamedelivery-send` until preview is confirmed.
+- No user download is required for a real send test; artifacts are available only for the next controlled read-only validation. Never treat CI success as proof of the user's installed ASF runtime.
+
+**Stage status:** the code-level send fixes and exact-HEAD CI gate are complete. Live read-only validation, full safe pre-send integration smoke, and exact `MissingMethodException` root-cause capture remain open. PR #4 remains Draft and must not be merged or retargeted without explicit permission.
