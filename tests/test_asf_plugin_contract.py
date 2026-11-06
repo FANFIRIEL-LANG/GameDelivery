@@ -149,5 +149,75 @@ class ASFPluginContractTests(unittest.TestCase):
             self.assertNotIn("TradingCard", validation)
 
 
+    def test_plugin_normalizes_custom_command_from_args_and_raw_message(self):
+        source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        parser = (ROOT / "integrations/asf_plugin/CommandArgumentParser.cs").read_text(encoding="utf-8")
+        self.assertIn("CommandArgumentParser.TryNormalize", source)
+        self.assertIn("message", parser)
+        self.assertIn("args", parser)
+        self.assertIn("CommandPrefix", parser)
+        self.assertIn("DiagnosticCommandName", parser)
+        self.assertIn("PreviewCommandName", parser)
+        self.assertIn("SendCommandName", parser)
+
+    def test_plugin_verifies_command_handler_registration_during_asf_initialization(self):
+        source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        self.assertIn("class GameDeliveryPlugin : IASF, IBotCommand2", source)
+        self.assertIn("OnASFInit(", source)
+        self.assertIn("ActivePlugins", source)
+        self.assertIn("IBotCommand2", source)
+        self.assertIn("LogGenericInfo", source)
+
+    def test_command_callback_contains_all_exceptions_and_emits_safe_entry_log(self):
+        source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        start = source.index("public async Task<string?> OnBotCommand")
+        end = source.index("private static async Task<string> RunDiagnosticCommand", start)
+        callback = source[start:end]
+        self.assertIn("try", callback)
+        self.assertIn("catch (Exception exception)", callback)
+        self.assertIn("LogGenericInfo", callback)
+        self.assertIn("argumentCount", callback)
+        self.assertNotIn("args[1]", callback[callback.index("LogGenericInfo"):callback.index("try")])
+
+    def test_send_lock_covers_idempotency_inventory_preflight_and_external_send(self):
+        source = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        start = source.index("public static async Task<string> ProcessSendCommand")
+        end = source.index("private static string GetPendingSecretPath", start)
+        send = source[start:end]
+        lock_at = send.index("SendSemaphore.WaitAsync")
+        records_at = send.index("LoadSendRecords()")
+        duplicate_at = send.index("records.TryGetValue")
+        inventory_at = send.index("targetBot.Actions.GetInventory")
+        offer_at = send.index("targetBot.ArchiWebHandler.SendTradeOffer(")
+        self.assertLess(lock_at, records_at)
+        self.assertLess(records_at, duplicate_at)
+        self.assertLess(duplicate_at, inventory_at)
+        self.assertLess(inventory_at, offer_at)
+        self.assertIn("SendSemaphore.Release()", send)
+
+    def test_preview_and_send_reject_noncanonical_numeric_asset_ids(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        send = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        self.assertIn("id.ToString(CultureInfo.InvariantCulture)", plugin)
+        self.assertIn("id.ToString(CultureInfo.InvariantCulture)", send)
+        self.assertIn("StringComparison.Ordinal", plugin)
+        self.assertIn("StringComparison.Ordinal", send)
+
+    def test_pending_trade_secret_must_be_deleted_before_external_send(self):
+        source = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        start = source.index("public static async Task<string> ProcessSendCommand")
+        end = source.index("private static string GetPendingSecretPath", start)
+        send = source[start:end]
+        delete_at = send.index("File.Delete(secretPath)")
+        offer_at = send.index("targetBot.ArchiWebHandler.SendTradeOffer(")
+        self.assertLess(delete_at, offer_at)
+        self.assertIn("Не удалось удалить одноразовый секрет", send)
+        self.assertNotIn("catch (IOException) { } catch (UnauthorizedAccessException) { }", send[:offer_at])
+
+    def test_plugin_assembly_version_is_incremented_for_fixed_dispatch_artifact(self):
+        project = (ROOT / "integrations/asf_plugin/GameDelivery.ASFPlugin.csproj").read_text(encoding="utf-8")
+        self.assertIn("<Version>1.0.1</Version>", project)
+
+
 if __name__ == "__main__":
     unittest.main()
