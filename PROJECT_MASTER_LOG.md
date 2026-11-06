@@ -1412,3 +1412,30 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 **Статус CI:** на момент записи exact-HEAD Actions ещё не проверен. До успешного прохождения обязательного Generic runtime gate, тестов и Windows build не предлагать пользователю скачивание/проверку. Generic launcher в GUI ранее уже имел unit-тесты на запуск \`ArchiSteamFarm.dll\` через \`dotnet.exe\`, автоопределение и переключение config path; новый gate расширяет проверку фактическим запуском ASF Generic с plugin.
 
 **Ограничения:** main не изменён; PR #4 остаётся открытым, его base не менялся; реальная Steam-авторизация, загрузка живого инвентаря и отправка trade offer не проверялись. Следующий этап после CI — отдельно определить безопасный живой read-only тест Generic с локальным ASF и тестовым ботом, не запускать \`gamedelivery-send\`.
+
+
+### 2026-11-07 — Exact-HEAD CI: ASF Generic runtime и Windows сборка прошли
+
+**Проверенный implementation HEAD:** \`29914333540acf356b2aae42bb9d55533184d441\`.
+
+**GitHub Actions на этом же HEAD:**
+- PR Tests run \`42309050510\`, job \`128205728364\` — success.
+- Push Tests run \`42309044022\`, job \`128205695813\` — success.
+- ASF plugin run \`42309050498\` — success:
+  - build-plugin \`128205662621\` — success;
+  - windows-storage-acl-smoke \`128205662824\` — success;
+  - generic-runtime-smoke \`128205798990\` — success;
+  - win-x64-trimmed-runtime-smoke \`128205800749\` — skipped по условию manual workflow_dispatch.
+- Windows EXE run \`42309050529\`, job \`128205662333\` — success; включены сборка, запуск \`GameDelivery.exe --self-test\`, подготовка и загрузка ZIP-артефакта.
+
+**Фактическое подтверждение Generic runtime gate:** лог Windows runner содержит:
+\`ASF Generic: GameDelivery loaded; IBotCommand2 handler registered; ProcessSendCommand state machine JIT-compiled.\`
+Таким образом, ASF Generic 6.3.11.7 запустил плагин, зарегистрировал обработчик ASF-команд и успешно JIT-компилировал async send state machine. Smoke выполнялся без Bot, Steam credentials, IPC-команды или реального trade offer.
+
+**Артефакты Actions:**
+- Windows package: \`GameDelivery-Windows-x64\`, artifact ID \`13547616843\`, 54,860,605 bytes, run \`42309050529\`.
+- ASF plugin package: \`GameDelivery-ASFPlugin\`, artifact ID \`13547946503\`, 36,831 bytes, SHA-256 \`addfcac060689b7fb1dd0068a279d6102c6e9c372cc61ddbc101d50113b35e88\`, run \`42309050498\`.
+
+**Вывод этапа:** техническая совместимость загрузки GameDelivery plugin с ASF Generic и регистрация ASF command handler подтверждены CI. Это ещё не доказывает работу с конкретными пользовательскими ботами и Steam API на ПК пользователя. Следующий шаг — контролируемый пользовательский smoke: Generic как отдельный ASF home, GameDelivery запускает выбранный \`ArchiSteamFarm.dll\` через dotnet, проверка видимости ботов и read-only \`gamedelivery-diagnose\` на одном подключённом тестовом/выделенном боте. До завершения read-only проверки не запускать \`gamedelivery-send\`.
+
+**Состояние PR:** PR #4 остаётся draft/open; base остаётся \`feature/steam-card-set-selection\`; merge не выполнялся. \`main\` не изменён. Trimmed win-x64 не проверялся в обязательном gate и остаётся отдельной нерешённой совместимостью.
