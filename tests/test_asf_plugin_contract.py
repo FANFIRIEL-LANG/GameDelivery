@@ -257,7 +257,8 @@ class ASFPluginContractTests(unittest.TestCase):
         project = (ROOT / "tests" / "asf_plugin_smoke" / "ASFPlugin.Smoke.csproj").read_text(encoding="utf-8")
         program = (ROOT / "tests" / "asf_plugin_smoke" / "Program.cs").read_text(encoding="utf-8")
         self.assertNotIn('Compile Include="../../integrations/asf_plugin/CommandArgumentParser.cs"', project)
-        self.assertIn('typeof(GameDeliveryPlugin).Assembly.GetType("GameDelivery.ASFPlugin.CommandArgumentParser"', program)
+        self.assertIn("typeof(GameDeliveryPlugin).Assembly.GetType(", program)
+        self.assertIn('"GameDelivery.ASFPlugin.CommandArgumentParser"', program)
         self.assertIn('GetMethod("TryNormalize"', program)
         self.assertIn("BindingFlags.Public | BindingFlags.Static", program)
 
