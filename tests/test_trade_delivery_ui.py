@@ -12,6 +12,21 @@ from app.main import MainWindow
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
+from integrations.asf.trade_credentials import SteamTradeCredentialStore
+
+
+class MemoryKeyring:
+    def __init__(self):
+        self.values = {}
+
+    def set_password(self, service, account, password):
+        self.values[(service, account)] = password
+
+    def get_password(self, service, account):
+        return self.values.get((service, account))
+
+    def delete_password(self, service, account):
+        self.values.pop((service, account), None)
 
 
 class TradeDeliveryUITests(unittest.TestCase):
@@ -54,6 +69,10 @@ class TradeDeliveryUITests(unittest.TestCase):
 
     def _populate_order(self, window, database):
         window._ensure_delivery_order_schema()
+        safe_trade_url = window._trade_credentials.store_trade_url(
+            "GD-ORDER-1",
+            "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
+        )
         with sqlite3.connect(database) as db:
             db.execute(
                 "INSERT INTO delivery_orders "
@@ -61,7 +80,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                 "VALUES (?, ?, ?, ?, ?)",
                 (
                     "GD-ORDER-1",
-                    "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
+                    safe_trade_url,
                     "reserved — не отправлен",
                     1,
                     "manual",
@@ -87,6 +106,7 @@ class TradeDeliveryUITests(unittest.TestCase):
         self._make_database(database)
         with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
             window = MainWindow()
+            window._trade_credentials = SteamTradeCredentialStore(backend=MemoryKeyring())
             try:
                 self._populate_order(window, database)
                 body(window)
@@ -297,6 +317,61 @@ class TradeDeliveryUITests(unittest.TestCase):
 
                 client.preview_trade_offer.assert_not_called()
                 warning.assert_called_once()
+
+            self._run_with_window(database, exercise)
+
+    def test_legacy_trade_url_is_migrated_out_of_sqlite_on_schema_open(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            self._make_database(database)
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                window._trade_credentials = SteamTradeCredentialStore(backend=MemoryKeyring())
+                try:
+                    with sqlite3.connect(database) as db:
+                        db.execute(
+                            "INSERT INTO delivery_orders "
+                            "(order_id, recipient_trade_url, status, asset_count, source_platform) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (
+                                "GD-LEGACY-1",
+                                "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
+                                "reserved — не отправлен",
+                                1,
+                                "manual",
+                            ),
+                        )
+
+                    window._ensure_delivery_order_schema()
+
+                    with sqlite3.connect(database) as db:
+                        stored_url = db.execute(
+                            "SELECT recipient_trade_url FROM delivery_orders WHERE order_id = ?",
+                            ("GD-LEGACY-1",),
+                        ).fetchone()[0]
+                    self.assertEqual(
+                        stored_url,
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456",
+                    )
+                    self.assertEqual(
+                        window._trade_credentials.load_trade_url("GD-LEGACY-1", stored_url),
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
+                    )
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+    def test_order_details_never_display_trade_token(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+
+            def exercise(window):
+                with patch("app.main.QMessageBox.information") as info:
+                    window._show_order_details(0)
+                rendered = str(info.call_args.args[2])
+                self.assertNotIn("Abc_123", rendered)
+                self.assertIn("токен хранится отдельно", rendered)
 
             self._run_with_window(database, exercise)
 
