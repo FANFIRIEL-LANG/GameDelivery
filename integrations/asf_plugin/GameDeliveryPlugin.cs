@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using System.Text;
 using System.Threading.Tasks;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using ArchiSteamFarm.Core;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
@@ -108,7 +109,68 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 + exception.GetType().Name + ": " + SafeMessage(exception.Message));
         }
 
+        if (string.Equals(
+            Environment.GetEnvironmentVariable("GAMEDELIVERY_VALIDATE_SEND_JIT"),
+            "1",
+            StringComparison.Ordinal))
+        {
+            string probe = RunSendStateMachineJitProbe();
+            ASF.ArchiLogger.LogGenericInfo("GameDeliveryPlugin send state-machine JIT probe: " + probe);
+        }
+
         return Task.CompletedTask;
+    }
+
+    private static string RunSendStateMachineJitProbe()
+    {
+        try
+        {
+            MethodInfo processSendMethod = typeof(TradeDelivery).GetMethod(
+                "ProcessSendCommand",
+                BindingFlags.Public | BindingFlags.Static)
+                ?? throw new MissingMethodException(typeof(TradeDelivery).FullName, "ProcessSendCommand");
+
+            AsyncStateMachineAttribute? asyncStateMachine = processSendMethod
+                .GetCustomAttribute<AsyncStateMachineAttribute>();
+            Type stateMachineType = asyncStateMachine?.StateMachineType
+                ?? throw new InvalidOperationException("ProcessSendCommand async state machine metadata was not found");
+
+            MethodInfo moveNext = stateMachineType.GetMethod(
+                "MoveNext",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new MissingMethodException(stateMachineType.FullName, "MoveNext");
+
+            RuntimeHelpers.PrepareMethod(moveNext.MethodHandle);
+            return JsonSerializer.Serialize(new
+            {
+                status = "success",
+                stateMachineType = stateMachineType.FullName,
+                method = moveNext.Name
+            }, JsonOptions);
+        }
+        catch (Exception exception)
+        {
+            MissingMemberException? missingMember = FindMissingMemberException(exception);
+            string? memberName = missingMember is null
+                ? null
+                : GetMissingMemberField(missingMember, "MemberName") as string;
+            string? className = missingMember is null
+                ? null
+                : GetMissingMemberField(missingMember, "ClassName") as string;
+            byte[]? signature = missingMember is null
+                ? null
+                : GetMissingMemberField(missingMember, "Signature") as byte[];
+
+            return JsonSerializer.Serialize(new
+            {
+                status = "failed",
+                exceptionType = exception.GetType().FullName,
+                exceptionMessage = SafeDiagnosticText(exception.ToString()),
+                missingMemberName = memberName,
+                missingClassName = className,
+                missingSignature = signature is { Length: > 0 } ? Convert.ToHexString(signature) : null
+            }, JsonOptions);
+        }
     }
 
     public async Task<string?> OnBotCommand(
