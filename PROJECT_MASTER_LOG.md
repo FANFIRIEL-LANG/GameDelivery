@@ -1309,3 +1309,14 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 - В каталог `plugins/GameDelivery.ASFPlugin/` помещается DLL из CI artifact `GameDelivery-ASFPlugin`, не исходники проекта и не весь zip ASF.
 - Старую папку ASF не удалять и не смешивать Generic с win-x64. После установки сначала выполнить только запуск ASF и read-only проверку загрузки/диагностики плагина; `gamedelivery-send` пока не запускать.
 - Эта инструкция соответствует каталогу, который использует наш CI при установке DLL в официальный ASF host. Она не означает, что Generic уже проверен на пользовательском ПК; runtime send не проверялся.
+
+
+### 2026-11-07 — Уточнение структуры ASF Generic и исправление неточного объяснения
+
+- Пользователь заметил, что в корне ASF рядом с `ArchiSteamFarm.exe` лежат DLL/файлы, которые визуально похожи на плагины. Предыдущее объяснение не разделяло host assemblies и настоящие ASF plugins достаточно ясно.
+- Официальная документация ASF для пользователей подтверждает: ASF загружает пользовательские плагины из каталога `plugins` внутри ASF home; рекомендуется отдельный подкаталог на каждый плагин, например `plugins/MyPlugin`, и все бинарные файлы конкретного плагина следует помещать внутрь него. Источник: https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Plugins-ru-RU
+- DLL в корне рядом с `ArchiSteamFarm.exe` могут быть сборками самого ASF, SteamKit2 или зависимостями .NET/MEF, которые нужны хосту и плагинам; само по себе расположение рядом с EXE не делает такую DLL отдельным устанавливаемым плагином.
+- В проверенном официальном ASF win-x64 archive CI обнаружил штатные каталоги плагинов в `plugins`: `ArchiSteamFarm.OfficialPlugins.ItemsMatcher`, `ArchiSteamFarm.OfficialPlugins.MobileAuthenticator`, `ArchiSteamFarm.OfficialPlugins.SteamTokenDumper`. Их нельзя удалять или перемещать при создании baseline.
+- Правильная установка GameDelivery для Generic остаётся: `<ASF home>/plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll`. Каталог `plugins` можно создать вручную, если его нет. DLL не класть рядом с `ArchiSteamFarm.exe` только потому, что в корне находятся другие DLL.
+- Если пользователь называет конкретные DLL в корне «другими плагинами», до дальнейшего утверждения об их назначении нужно сверить их точные имена/скриншот, не объявлять их автоматически ни плагинами, ни зависимостями.
+- Источники для ответа: https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Plugins-ru-RU и https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Plugins
