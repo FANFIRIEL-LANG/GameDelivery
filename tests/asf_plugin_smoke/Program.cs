@@ -262,6 +262,35 @@ static void VerifyReflectionDisabledJsonResolver()
 
 VerifyReflectionDisabledJsonResolver();
 
+static bool InvokeSelfTradeGuard(ulong botSteamId64, ulong recipientSteamId64)
+{
+    Type tradeType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.TradeDelivery",
+        throwOnError: true)!;
+    MethodInfo method = tradeType.GetMethod(
+        "IsSameSteamAccount",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin SteamID64 self-trade guard was not found");
+
+    try
+    {
+        return (bool)(method.Invoke(null, [botSteamId64, recipientSteamId64]) ?? false);
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            "The built plugin SteamID64 self-trade guard failed.",
+            exception.InnerException ?? exception);
+    }
+}
+
+Assert(
+    InvokeSelfTradeGuard(76561197960265729UL, 76561197960265729UL),
+    "SteamID64 guard did not detect a self-trade");
+Assert(
+    !InvokeSelfTradeGuard(76561197960265729UL, 76561197960265730UL),
+    "SteamID64 guard rejected a different recipient");
+
 Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");
 
 sealed class SmokeJsonProbe
