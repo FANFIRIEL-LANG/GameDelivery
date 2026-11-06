@@ -329,8 +329,6 @@ class ASFManagementWidget(QWidget):
 
     def _autodetect_asf_executable(self, config_dir: Path):
         current = self.asf_executable_path.text().strip()
-        if current and Path(current).is_file():
-            return
         # A saved path is valid only for the same ASF home as the selected config folder.
         if current and Path(current).is_file() and Path(current).parent.resolve() == config_dir.parent.resolve():
             return
