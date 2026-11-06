@@ -352,5 +352,33 @@ class DeliverySendFlowTests(unittest.TestCase):
             self.assertEqual(status, "reserved — не отправлен")
             client.send_trade_offer.assert_called_once()
 
+    def test_recovery_of_interrupted_send_deletes_trade_credential(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            with sqlite3.connect(db_path) as db:
+                db.execute(
+                    "UPDATE delivery_orders SET status = ?, trade_confirmation_status = '' WHERE order_id = ?",
+                    ("sending — запрос ASF", self.ORDER_ID),
+                )
+
+            window = self._fake_window(db_path)
+            window._delete_trade_credential_best_effort = MagicMock()
+
+            recovered = MainWindow._recover_interrupted_delivery_orders(window)
+
+            self.assertEqual(recovered, 1)
+            window._delete_trade_credential_best_effort.assert_called_once_with(self.ORDER_ID)
+            with sqlite3.connect(db_path) as db:
+                row = db.execute(
+                    "SELECT status, trade_confirmation_status FROM delivery_orders WHERE order_id = ?",
+                    (self.ORDER_ID,),
+                ).fetchone()
+            self.assertEqual(
+                row,
+                ("неизвестен результат отправки — проверь исходящие Steam", "unknown"),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
