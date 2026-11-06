@@ -106,7 +106,8 @@ class ASFPluginContractTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
         readme = (ROOT / "integrations" / "asf_plugin" / "README.md").read_text(encoding="utf-8")
         self.assertIn("6.3.11.7", workflow)
-        self.assertIn("SHA512SUMS", workflow)
+        self.assertIn("sha256sum --check", workflow)
+        self.assertIn("cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb", workflow)
         self.assertNotIn("6.3.10.6", workflow)
         self.assertIn("ASF 6.3.11.7", readme)
 
