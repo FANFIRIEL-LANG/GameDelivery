@@ -491,6 +491,32 @@ class ASFManagementWidgetTests(unittest.TestCase):
 
             self.assertEqual(self.widget.asf_executable_path.text(), str(generic_dll))
 
+    @patch("app.asf_management.QFileDialog.getOpenFileName")
+    def test_selecting_generic_dll_switches_config_path_from_old_asf_home(self, choose_file):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old_home = root / "old-asf"
+            old_home.mkdir()
+            old_config = old_home / "config"
+            old_config.mkdir()
+            old_exe = old_home / "ArchiSteamFarm.exe"
+            old_exe.write_bytes(b"old executable")
+            generic_home = root / "ASF-generic"
+            generic_home.mkdir()
+            generic_config = generic_home / "config"
+            generic_config.mkdir()
+            generic_dll = generic_home / "ArchiSteamFarm.dll"
+            generic_dll.write_bytes(b"generic assembly")
+
+            self.widget.config_path.setText(str(old_config))
+            self.widget.asf_executable_path.setText(str(old_exe))
+            choose_file.return_value = (str(generic_dll), "ASF Generic (*.dll)")
+
+            self.widget.choose_asf_executable()
+
+            self.assertEqual(self.widget.asf_executable_path.text(), str(generic_dll))
+            self.assertEqual(self.widget.config_path.text(), str(generic_config))
+
     def test_import_rolls_back_partial_mafile_and_prior_accounts_on_copy_error(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
