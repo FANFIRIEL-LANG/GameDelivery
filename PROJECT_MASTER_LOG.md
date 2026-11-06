@@ -1386,3 +1386,29 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 **Решение по пользовательской проверке:** GameDelivery Windows EXE собран и unit tests прошли, но общий ASF plugin workflow не зелёный. Пользователю пока не предлагать скачивание/ручную проверку интеграции и не считать runtime путь подтверждённым на его машине. Generic остаётся временным вариантом для отдельной установки ASF; торговые команды не запускать.
 
 **Следующий шаг:** продолжить адресное расследование trim/MEF compatibility для win-x64, сохранив проходящие Generic load/JIT и Windows smoke. Не маскировать ошибку и не делать вывод, что SendTradeOffer — отсутствующий member без извлечённой MissingMember metadata.
+
+### 2026-11-07 — ASF Generic выделен в обязательный runtime gate
+
+**Решение пользователя:** сосредоточить проверку на том, будет ли GameDelivery работать с ASF Generic. Расследование несовместимости trimmed \`win-x64\` не должно отвлекать от этого этапа и блокировать проверку Generic.
+
+**Изменения в \`.github/workflows/asf-plugin.yml\`:**
+- Добавлен отдельный обязательный job \`generic-runtime-smoke\` на Windows runner.
+- Job скачивает официальный ASF 6.3.11.7 Generic, сверяет SHA-256 архива, устанавливает собранный GameDelivery plugin в \`plugins/GameDelivery.ASFPlugin\`, запускает реальный ASF Generic через \`dotnet ArchiSteamFarm.dll\`.
+- Проверка ждёт два независимых подтверждения из реального лога ASF: успешную JIT-компиляцию async state machine \`TradeDelivery.ProcessSendCommand\` и успешную регистрацию GameDelivery как \`IBotCommand2\` handler (\`commandHandlers > 0\`, \`thisIsIBotCommand2=True\`, \`thisIsRegistered=True\`). Ранее скрипт останавливал Generic сразу после JIT-сообщения и не дожидался подтверждения регистрации обработчика.
+- На runtime smoke не создаются боты, Steam credentials не предоставляются, IPC-команды не отправляются, Steam trade offer не создаётся.
+- Существующий job \`win-x64-trimmed-runtime-smoke\` оставлен только для ручного запуска через \`workflow_dispatch\`; он больше не участвует в обязательном PR/push gate. Проблема trimmed не объявлена исправленной и не замаскирована.
+
+**Регрессионный тест:**
+- В \`tests/test_asf_plugin_contract.py\` добавлен контрактный тест отдельного Generic gate, checksum, корректного artifact path, JIT-проверки, регистрации \`IBotCommand2\` и ручного режима trimmed job.
+
+**Коммиты в feature/asf-bulk-account-import:**
+- \`e527565a5cfec43990e23c195751f4d6aaf76324\` — отдельный ASF Generic runtime gate.
+- \`b0e68110969056047ed718da254aa3cbe88b578b\` — исправлен путь artifact в новом job.
+- \`102de3da457b5c266b82168955c61ae454c2b7dd\` — добавлен контрактный тест Generic gate.
+- \`ec0256d755883e623d50c987529590819d9f18b3\` — тест дополнен проверкой artifact path.
+
+**HEAD после изменений:** \`ec0256d755883e623d50c987529590819d9f18b3\`.
+
+**Статус CI:** на момент записи exact-HEAD Actions ещё не проверен. До успешного прохождения обязательного Generic runtime gate, тестов и Windows build не предлагать пользователю скачивание/проверку. Generic launcher в GUI ранее уже имел unit-тесты на запуск \`ArchiSteamFarm.dll\` через \`dotnet.exe\`, автоопределение и переключение config path; новый gate расширяет проверку фактическим запуском ASF Generic с plugin.
+
+**Ограничения:** main не изменён; PR #4 остаётся открытым, его base не менялся; реальная Steam-авторизация, загрузка живого инвентаря и отправка trade offer не проверялись. Следующий этап после CI — отдельно определить безопасный живой read-only тест Generic с локальным ASF и тестовым ботом, не запускать \`gamedelivery-send\`.
