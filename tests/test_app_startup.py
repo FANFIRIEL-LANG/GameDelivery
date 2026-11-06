@@ -10,14 +10,42 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QListWidgetItem
 from app.main import MainWindow
+from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
+
+
+class _MemoryCredentialBackend:
+    def __init__(self):
+        self.values = {}
+
+    def get_password(self, service, account):
+        return self.values.get((service, account))
+
+    def set_password(self, service, account, password):
+        self.values[(service, account)] = password
+
+    def delete_password(self, service, account):
+        self.values.pop((service, account), None)
 
 
 class AppStartupSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        cls.credential_backend = _MemoryCredentialBackend()
+        cls.credential_store_patch = patch(
+            "app.main.SteamTradeCredentialStore",
+            side_effect=lambda: SteamTradeCredentialStore(backend=cls.credential_backend),
+        )
+        cls.credential_store_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.credential_store_patch.stop()
+
+    def setUp(self):
+        self.credential_backend.values.clear()
 
     def test_corrupted_database_shows_clear_error_and_preserves_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
