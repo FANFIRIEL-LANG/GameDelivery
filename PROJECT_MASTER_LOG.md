@@ -41,6 +41,8 @@
    - Режимы можно комбинировать. При комбинации соблюдать их одновременно: например, `/genius /nofluff` означает глубокую проработку с краткой подачей, а `/truth /odds` — честную оценку вероятностей с обозначением неопределённости.
    - Эти обозначения — пользовательские инструкции к стилю и способу ответа, а не команды PowerShell, Git или функции приложения. Не включать их автоматически, если пользователь явно их не запросил.
    15. **Не гонять пользователя по кругу.** Не просить повторно вводить уже выполненные команды, запускать те же проверки или присылать повторно уже предоставленные логи, если не изменились условия и повтор не нужен для конкретной проверки. Перед любым запросом к пользователю сверить историю текущей сессии и мастер-журнал. После неудачного результата сначала самостоятельно изучить исходники, фактическую ветку/коммит, логи и артефакты; определить причину и подготовить исправление. Если пользовательское действие действительно необходимо, давать один новый, конкретный шаг и объяснять, чем он отличается от предыдущего и что именно проверяет. Не выдавать догадки за причину и не маскировать отсутствие прогресса повторением инструкций.
+16. **Обязательный источник контекста — `PROJECT_MASTER_LOG.md` в источниках текущего чата/проекта.** Перед ЛЮБОЙ работой по GameDelivery ассистент обязан открыть и прочитать именно этот файл через Project Files/источники чата. Нельзя начинать работу только по памяти, сводке, предыдущей переписке или одной лишь копии на GitHub. Если источник недоступен или не удаётся прочитать — остановить работу и сообщить об этом; не продолжать разработку вслепую.
+17. **Двойная синхронизация `PROJECT_MASTER_LOG.md` обязательна.** После каждого существенного изменения кода, проверки, решения или смены статуса нужно обновить полный файл в источнике чата/проекта и продублировать то же полное содержимое в `PROJECT_MASTER_LOG.md` на рабочей ветке GitHub. Оба экземпляра должны быть побайтно идентичны (с одинаковыми LF-переносами строк). После записи проверить идентичность по SHA-256 или Git blob SHA и повторно прочитать обе версии. Если обновить источник чата/проекта технически нельзя, честно отметить синхронизацию как незавершённую, выдать пользователю обновлённый файл для замены источника и не заявлять, что оба экземпляра синхронизированы. Не продолжать следующую задачу, пока расхождение не устранено или явно не зафиксировано как блокер.
 
 
 ---
@@ -1389,53 +1391,63 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 
 ### 2026-11-07 — ASF Generic выделен в обязательный runtime gate
 
-**Решение пользователя:** сосредоточить проверку на том, будет ли GameDelivery работать с ASF Generic. Расследование несовместимости trimmed \`win-x64\` не должно отвлекать от этого этапа и блокировать проверку Generic.
+**Решение пользователя:** сосредоточить проверку на том, будет ли GameDelivery работать с ASF Generic. Расследование несовместимости trimmed `win-x64` не должно отвлекать от этого этапа и блокировать проверку Generic.
 
-**Изменения в \`.github/workflows/asf-plugin.yml\`:**
-- Добавлен отдельный обязательный job \`generic-runtime-smoke\` на Windows runner.
-- Job скачивает официальный ASF 6.3.11.7 Generic, сверяет SHA-256 архива, устанавливает собранный GameDelivery plugin в \`plugins/GameDelivery.ASFPlugin\`, запускает реальный ASF Generic через \`dotnet ArchiSteamFarm.dll\`.
-- Проверка ждёт два независимых подтверждения из реального лога ASF: успешную JIT-компиляцию async state machine \`TradeDelivery.ProcessSendCommand\` и успешную регистрацию GameDelivery как \`IBotCommand2\` handler (\`commandHandlers > 0\`, \`thisIsIBotCommand2=True\`, \`thisIsRegistered=True\`). Ранее скрипт останавливал Generic сразу после JIT-сообщения и не дожидался подтверждения регистрации обработчика.
+**Изменения в `.github/workflows/asf-plugin.yml`:**
+- Добавлен отдельный обязательный job `generic-runtime-smoke` на Windows runner.
+- Job скачивает официальный ASF 6.3.11.7 Generic, сверяет SHA-256 архива, устанавливает собранный GameDelivery plugin в `plugins/GameDelivery.ASFPlugin`, запускает реальный ASF Generic через `dotnet ArchiSteamFarm.dll`.
+- Проверка ждёт два независимых подтверждения из реального лога ASF: успешную JIT-компиляцию async state machine `TradeDelivery.ProcessSendCommand` и успешную регистрацию GameDelivery как `IBotCommand2` handler (`commandHandlers > 0`, `thisIsIBotCommand2=True`, `thisIsRegistered=True`). Ранее скрипт останавливал Generic сразу после JIT-сообщения и не дожидался подтверждения регистрации обработчика.
 - На runtime smoke не создаются боты, Steam credentials не предоставляются, IPC-команды не отправляются, Steam trade offer не создаётся.
-- Существующий job \`win-x64-trimmed-runtime-smoke\` оставлен только для ручного запуска через \`workflow_dispatch\`; он больше не участвует в обязательном PR/push gate. Проблема trimmed не объявлена исправленной и не замаскирована.
+- Существующий job `win-x64-trimmed-runtime-smoke` оставлен только для ручного запуска через `workflow_dispatch`; он больше не участвует в обязательном PR/push gate. Проблема trimmed не объявлена исправленной и не замаскирована.
 
 **Регрессионный тест:**
-- В \`tests/test_asf_plugin_contract.py\` добавлен контрактный тест отдельного Generic gate, checksum, корректного artifact path, JIT-проверки, регистрации \`IBotCommand2\` и ручного режима trimmed job.
+- В `tests/test_asf_plugin_contract.py` добавлен контрактный тест отдельного Generic gate, checksum, корректного artifact path, JIT-проверки, регистрации `IBotCommand2` и ручного режима trimmed job.
 
 **Коммиты в feature/asf-bulk-account-import:**
-- \`e527565a5cfec43990e23c195751f4d6aaf76324\` — отдельный ASF Generic runtime gate.
-- \`b0e68110969056047ed718da254aa3cbe88b578b\` — исправлен путь artifact в новом job.
-- \`102de3da457b5c266b82168955c61ae454c2b7dd\` — добавлен контрактный тест Generic gate.
-- \`ec0256d755883e623d50c987529590819d9f18b3\` — тест дополнен проверкой artifact path.
+- `e527565a5cfec43990e23c195751f4d6aaf76324` — отдельный ASF Generic runtime gate.
+- `b0e68110969056047ed718da254aa3cbe88b578b` — исправлен путь artifact в новом job.
+- `102de3da457b5c266b82168955c61ae454c2b7dd` — добавлен контрактный тест Generic gate.
+- `ec0256d755883e623d50c987529590819d9f18b3` — тест дополнен проверкой artifact path.
 
-**HEAD после изменений:** \`ec0256d755883e623d50c987529590819d9f18b3\`.
+**HEAD после изменений:** `ec0256d755883e623d50c987529590819d9f18b3`.
 
-**Статус CI:** на момент записи exact-HEAD Actions ещё не проверен. До успешного прохождения обязательного Generic runtime gate, тестов и Windows build не предлагать пользователю скачивание/проверку. Generic launcher в GUI ранее уже имел unit-тесты на запуск \`ArchiSteamFarm.dll\` через \`dotnet.exe\`, автоопределение и переключение config path; новый gate расширяет проверку фактическим запуском ASF Generic с plugin.
+**Статус CI:** на момент записи exact-HEAD Actions ещё не проверен. До успешного прохождения обязательного Generic runtime gate, тестов и Windows build не предлагать пользователю скачивание/проверку. Generic launcher в GUI ранее уже имел unit-тесты на запуск `ArchiSteamFarm.dll` через `dotnet.exe`, автоопределение и переключение config path; новый gate расширяет проверку фактическим запуском ASF Generic с plugin.
 
-**Ограничения:** main не изменён; PR #4 остаётся открытым, его base не менялся; реальная Steam-авторизация, загрузка живого инвентаря и отправка trade offer не проверялись. Следующий этап после CI — отдельно определить безопасный живой read-only тест Generic с локальным ASF и тестовым ботом, не запускать \`gamedelivery-send\`.
+**Ограничения:** main не изменён; PR #4 остаётся открытым, его base не менялся; реальная Steam-авторизация, загрузка живого инвентаря и отправка trade offer не проверялись. Следующий этап после CI — отдельно определить безопасный живой read-only тест Generic с локальным ASF и тестовым ботом, не запускать `gamedelivery-send`.
 
 
 ### 2026-11-07 — Exact-HEAD CI: ASF Generic runtime и Windows сборка прошли
 
-**Проверенный implementation HEAD:** \`29914333540acf356b2aae42bb9d55533184d441\`.
+**Проверенный implementation HEAD:** `29914333540acf356b2aae42bb9d55533184d441`.
 
 **GitHub Actions на этом же HEAD:**
-- PR Tests run \`42309050510\`, job \`128205728364\` — success.
-- Push Tests run \`42309044022\`, job \`128205695813\` — success.
-- ASF plugin run \`42309050498\` — success:
-  - build-plugin \`128205662621\` — success;
-  - windows-storage-acl-smoke \`128205662824\` — success;
-  - generic-runtime-smoke \`128205798990\` — success;
-  - win-x64-trimmed-runtime-smoke \`128205800749\` — skipped по условию manual workflow_dispatch.
-- Windows EXE run \`42309050529\`, job \`128205662333\` — success; включены сборка, запуск \`GameDelivery.exe --self-test\`, подготовка и загрузка ZIP-артефакта.
+- PR Tests run `42309050510`, job `128205728364` — success.
+- Push Tests run `42309044022`, job `128205695813` — success.
+- ASF plugin run `42309050498` — success:
+  - build-plugin `128205662621` — success;
+  - windows-storage-acl-smoke `128205662824` — success;
+  - generic-runtime-smoke `128205798990` — success;
+  - win-x64-trimmed-runtime-smoke `128205800749` — skipped по условию manual workflow_dispatch.
+- Windows EXE run `42309050529`, job `128205662333` — success; включены сборка, запуск `GameDelivery.exe --self-test`, подготовка и загрузка ZIP-артефакта.
 
 **Фактическое подтверждение Generic runtime gate:** лог Windows runner содержит:
-\`ASF Generic: GameDelivery loaded; IBotCommand2 handler registered; ProcessSendCommand state machine JIT-compiled.\`
+`ASF Generic: GameDelivery loaded; IBotCommand2 handler registered; ProcessSendCommand state machine JIT-compiled.`
 Таким образом, ASF Generic 6.3.11.7 запустил плагин, зарегистрировал обработчик ASF-команд и успешно JIT-компилировал async send state machine. Smoke выполнялся без Bot, Steam credentials, IPC-команды или реального trade offer.
 
 **Артефакты Actions:**
-- Windows package: \`GameDelivery-Windows-x64\`, artifact ID \`13547616843\`, 54,860,605 bytes, run \`42309050529\`.
-- ASF plugin package: \`GameDelivery-ASFPlugin\`, artifact ID \`13547946503\`, 36,831 bytes, SHA-256 \`addfcac060689b7fb1dd0068a279d6102c6e9c372cc61ddbc101d50113b35e88\`, run \`42309050498\`.
+- Windows package: `GameDelivery-Windows-x64`, artifact ID `13547616843`, 54,860,605 bytes, run `42309050529`.
+- ASF plugin package: `GameDelivery-ASFPlugin`, artifact ID `13547946503`, 36,831 bytes, SHA-256 `addfcac060689b7fb1dd0068a279d6102c6e9c372cc61ddbc101d50113b35e88`, run `42309050498`.
 
-**Вывод этапа:** техническая совместимость загрузки GameDelivery plugin с ASF Generic и регистрация ASF command handler подтверждены CI. Это ещё не доказывает работу с конкретными пользовательскими ботами и Steam API на ПК пользователя. Следующий шаг — контролируемый пользовательский smoke: Generic как отдельный ASF home, GameDelivery запускает выбранный \`ArchiSteamFarm.dll\` через dotnet, проверка видимости ботов и read-only \`gamedelivery-diagnose\` на одном подключённом тестовом/выделенном боте. До завершения read-only проверки не запускать \`gamedelivery-send\`.
+**Вывод этапа:** техническая совместимость загрузки GameDelivery plugin с ASF Generic и регистрация ASF command handler подтверждены CI. Это ещё не доказывает работу с конкретными пользовательскими ботами и Steam API на ПК пользователя. Следующий шаг — контролируемый пользовательский smoke: Generic как отдельный ASF home, GameDelivery запускает выбранный `ArchiSteamFarm.dll` через dotnet, проверка видимости ботов и read-only `gamedelivery-diagnose` на одном подключённом тестовом/выделенном боте. До завершения read-only проверки не запускать `gamedelivery-send`.
 
-**Состояние PR:** PR #4 остаётся draft/open; base остаётся \`feature/steam-card-set-selection\`; merge не выполнялся. \`main\` не изменён. Trimmed win-x64 не проверялся в обязательном gate и остаётся отдельной нерешённой совместимостью.
+**Состояние PR:** PR #4 остаётся draft/open; base остаётся `feature/steam-card-set-selection`; merge не выполнялся. `main` не изменён. Trimmed win-x64 не проверялся в обязательном gate и остаётся отдельной нерешённой совместимостью.
+
+
+### 2026-11-07 — Обязательное использование и двойная синхронизация PROJECT_MASTER_LOG.md
+
+- Пользователь потребовал всегда использовать `PROJECT_MASTER_LOG.md` из источников текущего чата/проекта как обязательный контекст перед любой работой по GameDelivery.
+- Перед текущей правкой файл был прочитан через Project Files (`file_00000000277c8210b23688e3276c093f`) и материализован в `/mnt/data/project_source/PROJECT_MASTER_LOG.md`.
+- До изменений SHA-256 файла источника и смонтированной копии совпал: `4719442e66c2e6feb1e4241915712b619cbfaa45d9ed045b52447d64b21147ea`. Git blob SHA совпал с GitHub blob SHA: `ee341b323ad14a0beb50721af4a8cd331d696d10`.
+- В раздел «Обязательные правила работы» добавлены правила: (1) всегда читать Project source до начала работы; (2) после каждой существенной итерации синхронизировать полное содержимое source и GitHub; (3) проверять идентичность двух версий; (4) при невозможности обновить Project source явно фиксировать блокер и не заявлять о синхронизации.
+- Исправлено 96 случаев лишнего обратного слеша перед Markdown backtick в двух последних записях, чтобы кодовые фрагменты отображались корректно.
+- Следующее обязательное действие: обновлённый файл должен заменить предыдущую версию в источниках Project. Доступные Files-инструменты позволяют прочитать и материализовать Project source, но не предоставляют операцию перезаписи Project attachment; поэтому обновлённый файл нужно прикрепить/заменить через интерфейс источников проекта. До такой замены не утверждать, что Project source уже обновлён на сервере.
