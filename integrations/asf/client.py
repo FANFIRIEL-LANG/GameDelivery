@@ -624,6 +624,15 @@ class ASFClient:
 
             # Preserve the structured uncertainty flag so the UI can lock this order if needed.
             return outcome
+        except Exception as exception:
+            # Once the command has been dispatched, even an unexpected local parsing/validation
+            # error means the Steam-side outcome cannot be proven safe to retry.
+            if command_dispatched and not isinstance(exception, ASFError):
+                raise ASFError(
+                    "ASF получил команду отправки, но ответ нельзя однозначно обработать. "
+                    "Проверь исходящие предложения Steam; не повторяй отправку."
+                ) from None
+            raise
         finally:
             if secret_file_created:
                 try:
