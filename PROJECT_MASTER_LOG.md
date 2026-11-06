@@ -1119,3 +1119,63 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 
 Пользователь повторно подчеркнул, что каждый содержательный ответ и каждое действие по проекту должны отражаться в `PROJECT_MASTER_LOG.md`, чтобы не терялся контекст, выполненные изменения, результаты проверок и следующие шаги. Применять существующее правило журнала без исключений: после каждой такой итерации обновлять файл в той же сессии и подтверждать фактический commit записи. Не ограничиваться обещанием внести запись позднее.
 
+
+
+### 2026-11-07 — Повторный runtime MissingMethodException и воспроизведение ASF win-x64 plugin-load failure
+
+**Пользовательский runtime log:** 2026-11-07 00:49:00, ASF 6.3.11.7, command `gamedelivery-send`, IPC context bot `Ewaylariell`. Верхний стек:
+`MissingMethodException → TradeDelivery.ProcessSendCommand(...) → AsyncMethodBuilderCore.Start<TStateMachine>(...) → GameDeliveryPlugin.OnBotCommand(...)`.
+
+#### Правильная интерпретация ошибки и отправки
+
+- Исключение возникает при запуске async state machine `ProcessSendCommand`; CLR может обнаружить отсутствующий method/member до входа в тело async-метода. Поэтому `sendDispatchStarted == false` сам по себе не доказывает, что отсутствие метода было непосредственно перед `SendTradeOffer`, и не позволяет объявить точную причину.
+- До появления достоверной диагностики пользователь не должен повторно запускать `gamedelivery-send`. Перед любым будущим повтором требуется отдельно сверить исходящие Steam offers; в этой сессии никакая торговая операция не отправлялась.
+- Текст ошибки в коде смягчён: `ASF завершил обработку до запуска обработчика отправки. Торговое предложение не подтверждено; проверь исходящие предложения Steam перед любым повтором.`
+- `MissingMemberException.MemberName`, `ClassName`, `Signature` в .NET 10 являются protected fields, а не публичными свойствами. Предыдущая прямая попытка обращения через C# не скомпилировалась; чтение переведено на `GetField(..., BindingFlags.Instance | BindingFlags.NonPublic)` с безопасным reflection, сигнатура выводится как hex. Ошибки такого fallback не должны менять состояние отправки.
+- Внешний catch `OnBotCommand` теперь ищет MissingMemberException по цепочке InnerException, возвращает структурированные `missingMemberName`, `missingClassName`, `missingSignature` и пишет их в ASF log. `gamedelivery-diagnose` дополнен read-only диагностикой `ArchiSteamFarm.SharedInfo.IsRuntimeTrimmed`.
+- Добавлен opt-in тестовый JIT probe (только при `GAMEDELIVERY_VALIDATE_SEND_JIT=1`): находит async state machine метода `TradeDelivery.ProcessSendCommand` и вызывает `RuntimeHelpers.PrepareMethod(MoveNext.MethodHandle)`. Метод отправки не вызывается, бот/Steam credentials не нужны, Steam offer не создаётся.
+
+#### Фактическое воспроизведение на официальном ASF win-x64
+
+На предыдущем тестовом HEAD `44b7df094d5bc9316ef9e73386ec523f5cff005d` добавленный CI job скачал официальный ASF 6.3.11.7 `ASF-win-x64.zip`, проверил архив и разместил GameDelivery plugin в `plugins/GameDelivery.ASFPlugin`. ASF дошёл до `InitPlugins()`, затем упал до вызова `GameDeliveryPlugin.OnASFInit`.
+
+Зафиксированная часть стека:
+- `System.MissingMemberException`, затем `System.TypeLoadException`;
+- `System.Signature.Init` → `System.Signature..ctor` → `RuntimeMethodInfo.get_Signature` / `get_ReturnParameter`;
+- `System.Composition.Convention.PartConventionBuilder.BuildOnImportsSatisfiedNotification`;
+- `ConventionBuilder.EvaluateThisTypeInfoAgainstTheConvention`;
+- `System.Composition.TypedParts.Discovery.TypeInspector.InspectTypeForPart`;
+- `ContainerConfiguration.CreateContainer` → `ArchiSteamFarm.Plugins.PluginsCore.InitPlugins`.
+
+Это доказывает проблему во время MEF/reflection discovery с внешним GameDelivery plugin в проверенном win-x64 запуске; это ещё не доказывает, что причина — конкретно удалённый `SendTradeOffer`. Ошибка возникает раньше, до callback плагина. Generic против trimmed runtime нужно сравнить на том же Windows runner. Сам первый CI job также передавал неподдерживаемый аргумент `--process-required`; ASF сообщил об unknown argument. Этот аргумент удалён в последующей версии workflow.
+
+#### Изменения после предыдущей записи и CI
+
+- Commit `3f2db053b6f999c10eabb622674728dd86297820`: structured missing-member metadata, runtime trimming diagnostic probe.
+- Commit `2358907b1447a82beee5f8b756dd72ac1f3f2c25`: корректное чтение protected .NET MissingMemberException fields через reflection.
+- Commit `62567244b74427d2e8cfd3442d4420fd4b5f1afa`: исправлены contract tests после первых RED CI (тесты строк/переносов, protected field checks).
+- Commit `d3fec67ca2b6be285da0d4badf2c9f22ab63a75b`: opt-in JIT probe async state machine.
+- Commit `c9ccb779b619b34e0c9a1f89948c3e4ed7e53a43` / `8be19f6b85dfb4864c5fc82516e40394ea3da71b`: первый win-x64 runtime smoke job и regression contracts.
+- Commit `44b7df094d5bc9316ef9e73386ec523f5cff005d`: JIT probe перенесён в начало OnASFInit; диагностика phase error уточнена.
+- На `44b7df0`: Tests PR #1190 run `42301141941` — success; Tests push #1189 run `42301132791` — success; Windows EXE PR #599 run `42301141977` — success; ASF Generic build и Windows ACL jobs success. Новый win-x64 runtime job завершился failure на MEF plugin discovery (run PR `42301141930`, job `128179086627`; push `42301132816`, job `128179056349`).
+- Commit `9700992d2e6ca4732bc627716ecefc0cb09976ea`: заменён win-x64-only job на сравнительный запуск одного plugin package в официальных Generic и win-x64 host с JIT probe.
+- На `9700992` первый сравнительный запуск оказался заблокирован ошибкой в контрольной строке SHA-256 win-x64: workflow содержал неверно набранный digest. Это не результат сравнения вариантов. Actual release asset metadata сообщает SHA-256 `f90a63359f9c2d3984828a22bb5fc0b9ba14776c4a16a2601513ba18c5369e7c`.
+- На `9700992`: Tests push #1191 run `42301521801` failed только на contract test, который проверяет точный digest в workflow; ASF push #560 run `42301521866` прошёл build-plugin и Windows ACL, но trimmed smoke остановился на SHA mismatch; PR workflow #561 также остановился на том же SHA mismatch. Ошибки вызваны неверной константой, исправлены ниже.
+- Commit `0876a843997edffa51c70f1577621489060b99f4`: исправлен ASF win-x64 SHA-256 в workflow на точное значение из официальных release metadata. Contract test уже ожидает тот же правильный digest.
+
+#### Текущий Actions gate на HEAD 0876a843
+
+На момент записи запущены:
+- Tests push #1193: run `42301697734` — in_progress.
+- ASF plugin push #562: run `42301697723` — in_progress; Generic build уже success, Windows ACL job in_progress, comparative `win-x64-trimmed-runtime-smoke` job `128180931785` in_progress.
+- Tests PR #1194: run `42301706799` — in_progress.
+- ASF plugin PR #563: run `42301706763` — in_progress.
+- Windows EXE PR #601: run `42301706618` — in_progress.
+
+Не объявлять эти workflow успешными, пока каждый job не завершён с `success`. Особое внимание — comparative Generic + win-x64 runtime job; в нём нужно сохранить полный output при неудаче, чтобы установить, загружается ли plugin в Generic, а затем сравнить результат trimmed host. Оба запуска read-only; никакой Bot login, Steam credentials или offer не используются.
+
+**Следующий шаг:** дождаться завершения exact-HEAD Actions на `0876a843`; изучить Generic vs trimmed runtime result; при необходимости добавить baseline ASF trimmed без внешних plugins для изоляции; затем исправлять конкретный MEF/trim incompatibility или зафиксировать подтверждённое ограничение и рекомендацию Generic. Не менять `main`, не менять PR #4 base, не сливать PR.
+
+**Пользовательская проверка:** сейчас ничего скачивать и устанавливать не нужно. Не просить повторять `gamedelivery-send`. Сначала получить успешный безопасный CI и только затем давать точную инструкцию для read-only проверки.
+
+**Обязательное правило процесса:** этот runtime log, принятые меры, все ошибки/исправления CI, точные commit/run IDs и следующий шаг внесены в мастер-журнал в текущей сессии. При следующем содержательном изменении снова обновлять этот файл немедленно.
