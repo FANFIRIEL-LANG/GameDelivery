@@ -305,11 +305,7 @@ class ASFManagementWidget(QWidget):
         executable = Path(path)
         self.asf_executable_path.setText(str(executable))
         self._settings.setValue("asf/executable_path", str(executable))
-        if not self.config_path.text().strip():
-            default_config = executable.parent / "config"
-            if default_config.is_dir():
-                self.config_path.setText(str(default_config))
-                self._settings.setValue("asf/config_path", str(default_config))
+        self._autodetect_config_dir(executable.parent)
         if self.auto_start_asf_checkbox.isChecked():
             QTimer.singleShot(150, self.start_asf)
             self._autodetect_config_dir(Path(path).parent)
@@ -318,7 +314,7 @@ class ASFManagementWidget(QWidget):
 
     def _autodetect_config_dir(self, asf_home: Path):
         current = self.config_path.text().strip()
-        if current and Path(current).is_dir():
+        if current and Path(current).is_dir() and Path(current).parent.resolve() == asf_home.resolve():
             return
         for name in ("config", "Config"):
             candidate = asf_home / name
