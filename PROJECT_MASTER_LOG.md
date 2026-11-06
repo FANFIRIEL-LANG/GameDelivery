@@ -974,3 +974,37 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Этап 3:** остаётся завершённым; UI-only reservation check подтверждён 282 tests на commit c4816aa, затем 283 tests на следующем HEAD. Windows package gate теперь закрыт на HEAD 3235530.
 
 **Следующий этап:** Этап 4 — аудит send pipeline, одноразового секрета, semaphore/idempotency journal, статусов отправки и recovery. Никаких новых действий пользователя до окончания code review этого этапа; старые команды диагностики не повторять.
+
+### 2026-11-06 — Stage 4 security audit progress checkpoint (HEAD 2de4791)
+
+**Branch:** feature/asf-bulk-account-import  
+**HEAD:** 2de47912794a8f1802263ee989264b7c9ea1bc36  
+**PR #4:** open / draft / not merged; base feature/steam-card-set-selection.  
+**main ref verified unchanged:** f27f567336cd1249d60cfbfa237314f2b54c0352.
+
+**Confirmed issue:** full Steam Trade URL (including token) was stored in SQLite column delivery_orders.recipient_trade_url and displayed in order details. The one-use ASF secret mechanism did not protect this second persistent copy.
+
+**Changes on the working branch:**
+- Added OS credential-vault store in integrations/asf/trade_credentials.py; per-order token is stored/verified through keyring, and SQLite now retains only the safe partner URL.
+- Added legacy-row migration; token is saved in vault before SQLite is updated. PRAGMA secure_delete = ON is applied during migration to scrub replaced content.
+- Preview/send recover the complete URL from the vault only in memory. Missing/unavailable credentials fail closed.
+- Best-effort secret deletion is wired for successful send, uncertain send, and order cancellation; retryable pre-dispatch errors retain credentials.
+- Added tests for token storage, migration, missing/unavailable vault, inline URL rejection, DB token redaction and cleanup.
+- TradeDelivery.cs now sanitizes the mobile-confirmation message with the exact trade token before persisting SendRecord.Message or returning it.
+- tests/asf_plugin_smoke/Program.cs invokes that sanitizer from the compiled DLL and asserts that the token is absent.
+- tests.yml now has bounded test steps and event/ref-scoped concurrency to avoid future unbounded test jobs.
+
+**Review checks executed locally in this session:**
+- Six isolated SteamTradeCredentialStore tests — passed.
+- SQLite secure-delete reproduction — passed; old token bytes were absent from the DB file after replacement.
+- Existing Windows ASF plugin ACL smoke succeeded on an earlier source checkpoint while the temp journal file was held with FileShare.None; latest sanitizer smoke still needs a fresh run.
+
+**Actions snapshot on the exact current HEAD:**
+- Tests push 42244623221 — queued.
+- Tests PR 42244634009 — queued.
+- ASF plugin PR 42244633963 — queued.
+- Windows EXE PR 42244633974 — queued.
+- No artifacts exist for this HEAD. Do not install/download older artifacts.
+- The repository had 18 older in-progress jobs stuck at Run unit tests and 28 queued runs for the working branch at this snapshot. This prevents a reliable final package gate. GitHub status feed did not provide a sufficiently current incident to attribute this to a confirmed platform outage.
+
+**Stage 4 status:** in progress, not complete. Remaining work: fresh Tests push/PR green, ASF plugin Push/PR green including sanitizer smoke, Windows EXE package green on the same code HEAD, final send-state review and artifact SHA verification. No user action requested yet.
