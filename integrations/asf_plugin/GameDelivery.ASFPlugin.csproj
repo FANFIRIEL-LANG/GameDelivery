@@ -13,11 +13,8 @@
     <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)../../ASF</ASF_BIN_DIR>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Compile against the exact Newtonsoft.Json assembly supplied by the ASF host. -->
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>$(ASF_BIN_DIR)/Newtonsoft.Json.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+    <!-- ASF Windows distributions provide Newtonsoft.Json 13.0.0.0 at runtime; use NuGet only for compile-time metadata. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" IncludeAssets="compile" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="ArchiSteamFarm">
