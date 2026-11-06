@@ -77,11 +77,12 @@ jobs:
           mkdir -p dist/GameDelivery.ASFPlugin
           cp "$plugin_dll" dist/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll
           cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
-          printf 'GameDelivery ASF plugin
-GameDelivery commit: %s
-ASF source contract: official ASF 6.3.11.7 release binaries
-Modes: live preview and explicitly confirmed guarded trade sending
-' "$GITHUB_SHA" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+          {
+            printf 'GameDelivery ASF plugin\n'
+            printf 'GameDelivery commit: %s\n' "$GITHUB_SHA"
+            printf 'ASF source contract: official ASF 6.3.11.7 release binaries\n'
+            printf 'Modes: live preview and explicitly confirmed guarded trade sending\n'
+          } > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
           test "$(find dist/GameDelivery.ASFPlugin -maxdepth 1 -type f | wc -l)" -eq 3
 
       - name: Upload installable plugin package
