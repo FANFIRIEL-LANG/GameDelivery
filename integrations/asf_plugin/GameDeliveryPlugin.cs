@@ -453,14 +453,43 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             return "unknown";
         }
 
+        // Keep this sanitizer independent from Regex and other APIs that can fail
+        // under a mismatched ASF runtime. Never allow diagnostic formatting to
+        // mask the original command error.
+        const string tokenMarker = "token=";
+        const string redacted = "[REDACTED]";
         string sanitized = new string(message.Where(character => !char.IsControl(character)).Take(6000).ToArray());
-        return Regex.Replace(
-            sanitized,
-            @"(?i)(token\s*=\s*)[^&\s]+",
-            "$1[REDACTED]",
-            RegexOptions.CultureInvariant);
-    }
+        System.Text.StringBuilder output = new(sanitized.Length);
+        int position = 0;
 
+        while (position < sanitized.Length)
+        {
+            int marker = sanitized.IndexOf(tokenMarker, position, StringComparison.OrdinalIgnoreCase);
+            if (marker < 0)
+            {
+                output.Append(sanitized, position, sanitized.Length - position);
+                break;
+            }
+
+            output.Append(sanitized, position, marker - position);
+            output.Append(sanitized, marker, tokenMarker.Length);
+            output.Append(redacted);
+
+            int valueStart = marker + tokenMarker.Length;
+            int valueEnd = valueStart;
+            while (valueEnd < sanitized.Length
+                && !char.IsWhiteSpace(sanitized[valueEnd])
+                && sanitized[valueEnd] != '&'
+                && sanitized[valueEnd] != '#')
+            {
+                valueEnd++;
+            }
+
+            position = valueEnd;
+        }
+
+        return output.ToString();
+    }
     private static string SafeMessage(string? message)
     {
         if (string.IsNullOrWhiteSpace(message))
