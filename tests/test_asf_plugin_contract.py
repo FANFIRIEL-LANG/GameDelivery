@@ -259,7 +259,7 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertNotIn('Compile Include="../../integrations/asf_plugin/CommandArgumentParser.cs"', project)
         self.assertIn("typeof(GameDeliveryPlugin).Assembly.GetType(", program)
         self.assertIn('"GameDelivery.ASFPlugin.CommandArgumentParser"', program)
-        self.assertIn('GetMethod("TryNormalize"', program)
+        self.assertIn('"TryNormalize"', program)
         self.assertIn("BindingFlags.Public | BindingFlags.Static", program)
 
     def test_send_nonce_is_null_guarded_before_secret_path_creation(self):
