@@ -69,6 +69,7 @@ class DeliverySendFlowTests(unittest.TestCase):
                 load_trade_url=lambda order_id, stored_url: self.TRADE_URL,
                 delete_trade_url=lambda order_id: None,
             ),
+            _delete_trade_credential_best_effort=lambda order_id: None,
             _load_saved_orders=MagicMock(),
             _load_order_assets=MagicMock(),
             statusBar=lambda: status_bar,
