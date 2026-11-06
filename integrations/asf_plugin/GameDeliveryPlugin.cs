@@ -299,9 +299,18 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             string safeMessage = SafeDiagnosticText(exception.Message);
             string safeDetails = SafeDiagnosticText(exception.ToString());
             MissingMemberException? missingMember = FindMissingMemberException(exception);
-            string? missingMemberName = missingMember?.MemberName;
-            string? missingClassName = missingMember?.ClassName;
-            string? missingSignature = missingMember?.Signature;
+            string? missingMemberName = missingMember is null
+                ? null
+                : GetMissingMemberField(missingMember, "MemberName") as string;
+            string? missingClassName = missingMember is null
+                ? null
+                : GetMissingMemberField(missingMember, "ClassName") as string;
+            byte[]? signatureBytes = missingMember is null
+                ? null
+                : GetMissingMemberField(missingMember, "Signature") as byte[];
+            string? missingSignature = signatureBytes is { Length: > 0 }
+                ? Convert.ToHexString(signatureBytes)
+                : null;
 
             ASF.ArchiLogger.LogGenericError(
                 "GameDeliveryPlugin.OnBotCommand failed: command="
@@ -345,6 +354,14 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         }
 
         return null;
+    }
+
+    private static object? GetMissingMemberField(MissingMemberException exception, string fieldName)
+    {
+        FieldInfo? field = typeof(MissingMemberException).GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        return field?.GetValue(exception);
     }
 
     private static async Task<string> RunDiagnosticCommand(Bot bot)
@@ -426,9 +443,16 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 runtimeTrimming,
                 exceptionType = exception.GetType().FullName,
                 exceptionMessage = SafeMessage(exception.Message),
-                missingMemberName = FindMissingMemberException(exception)?.MemberName,
-                missingClassName = FindMissingMemberException(exception)?.ClassName,
-                missingSignature = FindMissingMemberException(exception)?.Signature,
+                missingMemberName = FindMissingMemberException(exception) is MissingMemberException missingMember
+                    ? GetMissingMemberField(missingMember, "MemberName") as string
+                    : null,
+                missingClassName = FindMissingMemberException(exception) is MissingMemberException missingClass
+                    ? GetMissingMemberField(missingClass, "ClassName") as string
+                    : null,
+                missingSignature = FindMissingMemberException(exception) is MissingMemberException missingSignatureException
+                    && GetMissingMemberField(missingSignatureException, "Signature") is byte[] signatureBytes
+                    ? Convert.ToHexString(signatureBytes)
+                    : null,
                 stackTrace = exception.StackTrace is string stackTrace ? SafeDiagnosticText(stackTrace) : null,
                 message = "Ошибка диагностического чтения инвентаря. Отправка не выполнялась."
             }, JsonOptions);
