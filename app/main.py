@@ -29,11 +29,11 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
-        except (OSError, sqlite3.Error) as exc:
+        except (OSError, sqlite3.Error, ValueError) as exc:
             message = (
-                "GameDelivery не может открыть или обновить локальную базу данных. "
-                "Исходные данные не сбрасывались. Проверь доступ к файлу и сделай резервную копию "
-                "перед восстановлением.\n\n"
+                "GameDelivery не может безопасно открыть локальные заказы или системное хранилище "
+                "секретов. Исходные данные не сбрасывались. Проверь доступ к базе и хранилищу "
+                "учётных данных; перед восстановлением сделай резервную копию.\n\n"
                 f"Подробности: {type(exc).__name__}"
             )
             QMessageBox.critical(self, "Ошибка локальной базы данных", message)
