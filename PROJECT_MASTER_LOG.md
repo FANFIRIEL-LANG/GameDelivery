@@ -801,3 +801,10 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Исправление:** после распаковки workflow находит каталог фактического `ArchiSteamFarm.dll`, проверяет соседние shared DLL (SteamKit2, Newtonsoft.Json, System.Composition.AttributedModel), сохраняет абсолютный `ASF_BIN_DIR` в `GITHUB_ENV` и использует его при dotnet build. Добавлен contract test против возврата к предположению о корне архива.
 
 **Контроль:** официальный asset остаётся pinned по SHA-256; C.2 не начат; результат сборки/пакета ожидает нового CI run.
+
+
+### 2026-11-06 — диагностируем точный состав официального ASF архива
+
+На commit `18f37e1` скачивание generic ZIP и SHA-256 прошли успешно; каталог `ArchiSteamFarm.dll` был найден, но один из последующих тестов наличия соседних shared DLL завершился с кодом 1. Лог не содержит причины, поскольку команды `test -s` молчат при ошибке.
+
+В следующий workflow добавлен вывод фактических путей к четырём ожидаемым сборкам ASF (ArchiSteamFarm, SteamKit2, Newtonsoft.Json, System.Composition.AttributedModel), чтобы исправить reference model по реальному содержимому архива, а не предполагать его.
