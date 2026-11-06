@@ -59,7 +59,7 @@ Assert(typeof(IASF).IsAssignableFrom(typeof(GameDeliveryPlugin)),
     "plugin does not implement the exact IASF interface from the pinned ASF assembly");
 Assert(typeof(IBotCommand2).IsAssignableFrom(typeof(GameDeliveryPlugin)),
     "plugin does not implement the exact IBotCommand2 interface from the pinned ASF assembly");
-Assert(typeof(IBotCommand2).GetInterfaceMap(typeof(GameDeliveryPlugin)).TargetMethods
+Assert(typeof(GameDeliveryPlugin).GetInterfaceMap(typeof(IBotCommand2)).TargetMethods
         .Any(method => method.Name == "OnBotCommand"),
     "IBotCommand2.OnBotCommand has no implementation mapping");
 Assert(typeof(GameDeliveryPlugin).GetCustomAttributesData()
