@@ -47,6 +47,8 @@ jobs:
           echo "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb  /tmp/ASF-generic.zip" | sha256sum --check
           mkdir -p .asf-bin
           unzip -q /tmp/ASF-generic.zip -d .asf-bin
+          echo "ASF generic archive assembly layout:"
+          find .asf-bin -type f \( -name ArchiSteamFarm.dll -o -name SteamKit2.dll -o -name Newtonsoft.Json.dll -o -name System.Composition.AttributedModel.dll \) -print
           asf_bin_dir=$(dirname "$(find .asf-bin -type f -name ArchiSteamFarm.dll -print -quit)")
           test -n "$asf_bin_dir"
           test -s "$asf_bin_dir/SteamKit2.dll"
