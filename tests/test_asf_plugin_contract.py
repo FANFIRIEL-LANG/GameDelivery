@@ -65,6 +65,31 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("confirmationMethods", diagnostic_region)
         self.assertIn("GetAssemblyDiagnostics", diagnostic_region)
 
+    def test_plugin_callback_returns_structured_missing_member_metadata(self):
+        source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        callback_start = source.index("public async Task<string?> OnBotCommand")
+        callback_end = source.index("private static MissingMemberException? FindMissingMemberException", callback_start)
+        callback = source[callback_start:callback_end]
+        self.assertIn("FindMissingMemberException(exception)", callback)
+        self.assertIn("missingMemberName", callback)
+        self.assertIn("missingClassName", callback)
+        self.assertIn("missingSignature", callback)
+        self.assertIn("MissingMemberException? FindMissingMemberException", source)
+        self.assertIn("current.InnerException", source)
+        self.assertIn("missingMember.MemberName", source)
+        self.assertIn("missingMember.ClassName", source)
+        self.assertIn("missingMember.Signature", source)
+
+    def test_diagnostic_reports_runtime_trimming_without_static_member_binding(self):
+        source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static object GetRuntimeTrimmingDiagnostics")]
+        probe = source[source.index("private static object GetRuntimeTrimmingDiagnostics"):source.index("private static object GetAssemblyDiagnostics")]
+        self.assertIn("runtimeTrimming", diagnostic_region)
+        self.assertIn('GetType("ArchiSteamFarm.SharedInfo"', probe)
+        self.assertIn('"IsRuntimeTrimmed"', probe)
+        self.assertIn("property.GetValue(null)", probe)
+        self.assertNotIn("SharedInfo.IsRuntimeTrimmed", source)
+
     def test_diagnostic_command_checks_inventory_without_trade_send(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         self.assertIn('DiagnosticCommandName = "gamedelivery-diagnose"', source)
