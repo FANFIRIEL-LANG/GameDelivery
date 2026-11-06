@@ -76,16 +76,20 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("missingSignature", callback)
         self.assertIn("MissingMemberException? FindMissingMemberException", source)
         self.assertIn("current.InnerException", source)
-        self.assertIn("missingMember.MemberName", source)
-        self.assertIn("missingMember.ClassName", source)
-        self.assertIn("missingMember.Signature", source)
+        self.assertIn('GetMissingMemberField(missingMember, "MemberName")', source)
+        self.assertIn('GetMissingMemberField(missingMember, "ClassName")', source)
+        self.assertIn('GetMissingMemberField(missingMember, "Signature")', source)
+        self.assertIn("BindingFlags.Instance | BindingFlags.NonPublic", source)
+        self.assertIn("field?.GetValue(exception)", source)
+        self.assertIn("Convert.ToHexString(signatureBytes)", source)
 
     def test_diagnostic_reports_runtime_trimming_without_static_member_binding(self):
         source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static object GetRuntimeTrimmingDiagnostics")]
         probe = source[source.index("private static object GetRuntimeTrimmingDiagnostics"):source.index("private static object GetAssemblyDiagnostics")]
         self.assertIn("runtimeTrimming", diagnostic_region)
-        self.assertIn('GetType("ArchiSteamFarm.SharedInfo"', probe)
+        self.assertIn("typeof(Bot).Assembly.GetType(", probe)
+        self.assertIn('"ArchiSteamFarm.SharedInfo"', probe)
         self.assertIn('"IsRuntimeTrimmed"', probe)
         self.assertIn("property.GetValue(null)", probe)
         self.assertNotIn("SharedInfo.IsRuntimeTrimmed", source)
