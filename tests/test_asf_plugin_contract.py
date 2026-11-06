@@ -86,11 +86,19 @@ class ASFPluginContractTests(unittest.TestCase):
             self.assertNotIn("System.Text.Json", source)
             self.assertNotIn("DefaultJsonTypeInfoResolver", source)
 
-    def test_newtonsoft_dependency_is_packaged_with_plugin(self):
+    def test_plugin_uses_host_newtonsoft_and_does_not_package_shared_runtime_dependencies(self):
         project = (ROOT / "integrations" / "asf_plugin" / "GameDelivery.ASFPlugin.csproj").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
-        self.assertIn('PackageReference Include="Newtonsoft.Json" Version="13.0.3"', project)
-        self.assertIn('Newtonsoft.Json.dll', workflow)
+        self.assertIn('<Reference Include="Newtonsoft.Json">', project)
+        self.assertIn('<HintPath>$(ASF_BIN_DIR)/Newtonsoft.Json.dll</HintPath>', project)
+        self.assertIn('<Private>false</Private>', project)
+        self.assertIn('<CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>', project)
+        self.assertNotIn('PackageReference Include="Newtonsoft.Json"', project)
+        self.assertIn('test -s .asf-bin/Newtonsoft.Json.dll', workflow)
+        self.assertIn('Unexpected host-shared dependency in plugin output', workflow)
+        self.assertIn('GameDelivery.ASFPlugin.dll', workflow)
+        self.assertNotIn('json_dll=', workflow)
+        self.assertNotIn('cp "$json_dll"', workflow)
 
 
 

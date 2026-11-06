@@ -730,3 +730,28 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Открытые вопросы и риски:** необходимо проверить, включает ли официальный ASF 6.3.11.7 Newtonsoft.Json.dll и какую конкретно assembly version он предоставляет; после исправления при повторном сбое нужен полный loader exception, включая LoaderExceptions, а не только общий ReflectionTypeLoadException.  
 **Точный следующий шаг:** сверить официальный release archive, исправить csproj/workflow/package smoke test и запустить ASF plugin workflow только в feature/asf-bulk-account-import.  
 **Разрешение пользователя на следующий этап:** C.2 не разрешён и не начат.
+
+
+### 2026-11-06 — исправлена модель runtime-зависимостей ASF-плагина
+
+**Этап/блок:** исправление загрузки ASF plugin в рамках C.1; C.2 не начат.  
+**Цель:** привести компиляцию и пакет GameDelivery plugin к официальной модели ASF 6.3.11.7 и исключить дублирование host-shared библиотек.
+
+**Что подтверждено перед изменением:**
+- Официальный ASF 6.3.11.7 release asset `ASF-generic.zip`: SHA-256 `cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb`.
+- Официальный пример ASF 6.3.11.7 для custom plugins помечает библиотеки host runtime как compile-only; ASF plugin docs рекомендуют не упаковывать DLL, которые уже поставляются ASF.
+- Исходный GameDelivery project копировал Newtonsoft.Json 13.0.3 в output через PackageReference + CopyLocalLockFileAssemblies=true, а workflow дополнительно копировал DLL в папку плагина.
+- Пользовательская ошибка происходит при reflection type scan на старте ASF, поэтому проверка пакета должна охватывать не только compile, но и output/package composition.
+
+**Изменённые файлы:**
+- `integrations/asf_plugin/GameDelivery.ASFPlugin.csproj`: Newtonsoft.Json теперь берётся как прямой reference из `ASF_BIN_DIR/Newtonsoft.Json.dll`, с `Private=false`; `CopyLocalLockFileAssemblies=false`. Это гарантирует compile-time contract с тем же Newtonsoft, который будет в host.
+- `.github/workflows/asf-plugin.yml`: скачивается официальный release asset ASF 6.3.11.7, проверяется release SHA-256; workflow требует Newtonsoft.Json.dll и System.Composition.AttributedModel.dll в официальном ASF package; после build проверяет отсутствие ASF-shared DLL в output; package больше не копирует Newtonsoft.Json и содержит только plugin DLL, README и BUILD_INFO.
+- `tests/test_asf_plugin_contract.py`: прежний тест, утверждавший обязательную поставку Newtonsoft DLL, заменён regression test на host-provided Newtonsoft reference и отсутствие shared runtime dependencies.
+- `integrations/asf_plugin/README.md`: отражена новая точная структура plugin package и совместимость с ASF 6.3.11.7.
+
+**Проверки:** исходники и CI пока не запущены для этого изменения; необходим ASF plugin workflow, затем полный Tests workflow. Live загрузка в пользовательском ASF не подтверждена.  
+**Что должен скачать/проверить пользователь:** пока не требуется до успешного завершения CI и проверки содержимого артефакта.  
+**Результат:** изменения внесены; сборка и runtime load ещё не подтверждены.  
+**Открытые вопросы и риски:** если ReflectionTypeLoadException сохранится после установки корректно собранного пакета, точный LoaderExceptions должен быть получен через loader diagnostics; версия assembly Newtonsoft может совпадать, но проблема могла включать и иной missing type/assembly.  
+**Точный следующий шаг:** проверить созданный commit, запустить доступные CI на рабочей ветке, скачать только успешный ASF plugin artifact и провести live-start ASF без трогания пользовательских данных.  
+**Разрешение пользователя на следующий этап:** C.2 не разрешён и не начат.

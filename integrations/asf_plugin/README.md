@@ -16,7 +16,7 @@ The GitHub Actions artifact is named `GameDelivery-ASFPlugin`. It contains the p
 3. Confirm the resulting path is `plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll`.
 4. Start ASF through GameDelivery and check its console/log for `GameDeliveryPlugin` being loaded.
 
-The plugin is compiled against the official ASF 6.3.11.7 release assemblies. The CI build checks the downloaded archive against the release SHA512SUMS manifest and records the target version in `BUILD_INFO.txt`. Install this package with ASF 6.3.11.7. Do not copy `ArchiSteamFarm.dll`, `SteamKit2.dll`, or other ASF assemblies from the build into the installed ASF folder. For another ASF version, rebuild against that exact installation using the instructions below.
+The plugin is compiled against the official ASF 6.3.11.7 release assemblies, including the exact `Newtonsoft.Json.dll` supplied by ASF. The CI build verifies the official `ASF-generic.zip` SHA-256 and rejects a plugin output/package that bundles host-shared assemblies (`ArchiSteamFarm.dll`, `SteamKit2.dll`, `Newtonsoft.Json.dll`, or `System.Composition.AttributedModel.dll`). Install this package with ASF 6.3.11.7. The plugin package intentionally contains only `GameDelivery.ASFPlugin.dll`, this README, and `BUILD_INFO.txt`; ASF supplies its own shared runtime dependencies. For another ASF version, rebuild against that exact installation using the instructions below.
 
 ## What preview does
 
