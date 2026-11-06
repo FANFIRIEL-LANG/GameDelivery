@@ -134,9 +134,9 @@ class ASFManagementWidget(QWidget):
         asf_process_row = QHBoxLayout()
         self.asf_executable_path = QLineEdit()
         self.asf_executable_path.setReadOnly(True)
-        self.asf_executable_path.setPlaceholderText("ArchiSteamFarm.exe — путь сохраняется в GameDelivery")
+        self.asf_executable_path.setPlaceholderText("ArchiSteamFarm.exe или ArchiSteamFarm.dll — путь сохраняется в GameDelivery")
         self.asf_executable_path.setText(str(self._settings.value("asf/executable_path", "")))
-        self.asf_executable_button = QPushButton("Файл ASF.exe…")
+        self.asf_executable_button = QPushButton("Файл ASF…")
         self.start_asf_button = QPushButton("Запустить ASF")
         self.stop_asf_button = QPushButton("Остановить ASF")
         self.asf_console_button = QPushButton("Консоль ASF")
@@ -297,8 +297,8 @@ class ASFManagementWidget(QWidget):
     def choose_asf_executable(self):
         start_dir = str(Path(self.config_path.text()).parent) if self.config_path.text().strip() else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Выбрать исполняемый файл ASF", start_dir,
-            "ASF executable (*.exe);;All files (*)",
+            self, "Выбрать файл ASF", start_dir,
+            "ASF executable or Generic assembly (*.exe *.dll);;Windows ASF (*.exe);;ASF Generic (*.dll);;All files (*)",
         )
         if not path:
             return
@@ -331,7 +331,10 @@ class ASFManagementWidget(QWidget):
         current = self.asf_executable_path.text().strip()
         if current and Path(current).is_file():
             return
-        for name in ("ArchiSteamFarm.exe", "ASF.exe"):
+        # A saved path is valid only for the same ASF home as the selected config folder.
+        if current and Path(current).is_file() and Path(current).parent.resolve() == config_dir.parent.resolve():
+            return
+        for name in ("ArchiSteamFarm.exe", "ASF.exe", "ArchiSteamFarm.dll"):
             candidate = config_dir.parent / name
             if candidate.is_file():
                 self.asf_executable_path.setText(str(candidate))
@@ -368,18 +371,32 @@ class ASFManagementWidget(QWidget):
             return
 
         executable = Path(self.asf_executable_path.text().strip()) if self.asf_executable_path.text().strip() else None
-        if executable is None or not executable.is_file():
-            config_dir = Path(self.config_path.text().strip()) if self.config_path.text().strip() else None
-            if config_dir and config_dir.is_dir():
-                self._autodetect_asf_executable(config_dir)
-                candidate = self.asf_executable_path.text().strip()
-                executable = Path(candidate) if candidate else None
+        config_dir = Path(self.config_path.text().strip()) if self.config_path.text().strip() else None
+        if config_dir and config_dir.is_dir():
+            self._autodetect_asf_executable(config_dir)
+            candidate = self.asf_executable_path.text().strip()
+            if candidate:
+                executable = Path(candidate)
         if executable is None or not executable.is_file():
             self.status.setText(
-                "Не найден ArchiSteamFarm.exe. Выбери файл ASF один раз кнопкой «Файл ASF.exe…»."
+                "Не найден ArchiSteamFarm.exe или ArchiSteamFarm.dll. Выбери файл ASF кнопкой «Файл ASF…»."
             )
             return
         self._autodetect_config_dir(executable.parent)
+        is_generic = executable.suffix.casefold() == ".dll"
+        if is_generic and executable.name.casefold() != "archisteamfarm.dll":
+            self.status.setText("Для ASF Generic выбери именно ArchiSteamFarm.dll.")
+            return
+        if executable.suffix.casefold() not in {".exe", ".dll"}:
+            self.status.setText("Поддерживаются ArchiSteamFarm.exe и ArchiSteamFarm.dll.")
+            return
+        command = [str(executable), "--process-required"]
+        if is_generic:
+            dotnet = shutil.which("dotnet")
+            if not dotnet:
+                self.status.setText("Не найден dotnet.exe. Установи .NET 10 Runtime и проверь PATH.")
+                return
+            command = [dotnet, str(executable), "--process-required"]
         # Keep ASF global rate-limit settings user-controlled; do not override LoginLimiterDelay.
         if self._asf_process is not None and self._asf_process.poll() is None:
             self._asf_ipc_attempts = 0
@@ -393,7 +410,7 @@ class ASFManagementWidget(QWidget):
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             try:
                 process = subprocess.Popen(
-                    [str(executable), "--process-required"],
+                    command,
                     cwd=str(executable.parent),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
