@@ -327,10 +327,9 @@ class ASFPluginContractTests(unittest.TestCase):
 
         self.assertIn("bool sendDispatchStarted = false;", callback)
         self.assertIn("TradeDelivery.ProcessSendCommand(", callback)
-        self.assertIn(
-            "commandArgs[1],\\n                    bot.BotName,\\n                    () => sendDispatchStarted = true",
-            callback,
-        )
+        self.assertIn("commandArgs[1],", callback)
+        self.assertIn("bot.BotName,", callback)
+        self.assertIn("() => sendDispatchStarted = true", callback)
         self.assertIn("resultUnknown = isSend && sendDispatchStarted", callback)
         self.assertIn("Action onExternalDispatchStarted", send)
         self.assertIn("onExternalDispatchStarted();", send)
