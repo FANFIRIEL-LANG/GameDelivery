@@ -88,6 +88,7 @@ class ASFPluginContractTests(unittest.TestCase):
             self.assertIn("PropertyNameCaseInsensitive = true", source)
             self.assertNotIn("Newtonsoft", source)
             self.assertNotIn("JsonConvert", source)
+            self.assertNotIn("JsonSerializationException", source)
 
     def test_plugin_deserialization_dtos_have_public_parameterless_constructors(self):
         plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")

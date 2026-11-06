@@ -422,7 +422,7 @@ internal static class TradeDelivery
             File.ReadAllText(path), JsonOptions);
         if (loaded is null)
         {
-            throw new JsonSerializationException("Invalid delivery send record");
+            throw new JsonException("Invalid delivery send record");
         }
 
         return new Dictionary<string, SendRecord>(loaded, StringComparer.OrdinalIgnoreCase);

@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -n 'Newtonsoft.Json\|JsonConvert' integrations/asf_plugin --include='*.cs' --include='*.csproj'; then
+          if grep -R -n 'Newtonsoft.Json\|JsonConvert\|JsonSerializationException' integrations/asf_plugin --include='*.cs' --include='*.csproj'; then
             echo "Unexpected Newtonsoft.Json usage in ASF plugin source" >&2
             exit 1
           fi
