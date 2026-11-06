@@ -65,6 +65,28 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("confirmationMethods", diagnostic_region)
         self.assertIn("GetAssemblyDiagnostics", diagnostic_region)
 
+    def test_opt_in_send_state_machine_jit_probe_does_not_execute_trade_send(self):
+        source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        self.assertIn('Environment.GetEnvironmentVariable("GAMEDELIVERY_VALIDATE_SEND_JIT")', source)
+        self.assertIn("RunSendStateMachineJitProbe()", source)
+        probe_start = source.index("private static string RunSendStateMachineJitProbe")
+        probe_end = source.index("public async Task<string?> OnBotCommand", probe_start)
+        probe = source[probe_start:probe_end]
+        self.assertIn("AsyncStateMachineAttribute", probe)
+        self.assertIn("RuntimeHelpers.PrepareMethod(moveNext.MethodHandle)", probe)
+        self.assertNotIn("SendTradeOffer(", probe)
+        self.assertIn('status = "success"', probe)
+        self.assertIn('status = "failed"', probe)
+
+    def test_asf_plugin_workflow_runs_official_trimmed_win_x64_host(self):
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        self.assertIn("win-x64-trimmed-runtime-smoke:", workflow)
+        self.assertIn("ASF-win-x64.zip", workflow)
+        self.assertIn("f90a63359f9c2d3984828a22bb5fc0b9ba14776c4a16a2601513ba18c5369e7c", workflow)
+        self.assertIn("GAMEDELIVERY_VALIDATE_SEND_JIT", workflow)
+        self.assertIn("needs: build-plugin", workflow)
+        self.assertIn('"status":"success"', workflow)
+
     def test_plugin_callback_returns_structured_missing_member_metadata(self):
         source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         callback_start = source.index("public async Task<string?> OnBotCommand")
