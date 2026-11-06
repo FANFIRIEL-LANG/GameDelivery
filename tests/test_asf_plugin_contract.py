@@ -162,9 +162,9 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("message", parser)
         self.assertIn("args", parser)
         self.assertIn("commandPrefix", parser)
-        self.assertIn("DiagnosticCommandName", parser)
-        self.assertIn("PreviewCommandName", parser)
-        self.assertIn("SendCommandName", parser)
+        self.assertIn('"gamedelivery-diagnose"', parser)
+        self.assertIn('"gamedelivery-preview"', parser)
+        self.assertIn('"gamedelivery-send"', parser)
 
     def test_plugin_verifies_command_handler_registration_during_asf_initialization(self):
         source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
