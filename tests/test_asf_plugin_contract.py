@@ -86,6 +86,7 @@ class ASFPluginContractTests(unittest.TestCase):
         trimmed_job = workflow[trimmed_start:]
 
         self.assertIn("needs: build-plugin", generic_job)
+        self.assertIn("path: ${{ runner.temp }}/GameDelivery-ASFPlugin", generic_job)
         self.assertIn("ASF-generic.zip", generic_job)
         self.assertIn("cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb", generic_job)
         self.assertIn("Verify Generic plugin load, command registration, and send-state-machine JIT", generic_job)
