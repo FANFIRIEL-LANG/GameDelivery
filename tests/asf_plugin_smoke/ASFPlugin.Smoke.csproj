@@ -10,7 +10,6 @@
     <PLUGIN_DLL Condition="'$(PLUGIN_DLL)' == ''">$(MSBuildThisFileDirectory)../../integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll</PLUGIN_DLL>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../integrations/asf_plugin/CommandArgumentParser.cs" Link="CommandArgumentParser.cs" />
     <Reference Include="ArchiSteamFarm">
       <HintPath>$(ASF_BIN_DIR)/ArchiSteamFarm.dll</HintPath>
       <Private>true</Private>
