@@ -1061,3 +1061,23 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 - No user download is required for a real send test; artifacts are available only for the next controlled read-only validation. Never treat CI success as proof of the user's installed ASF runtime.
 
 **Stage status:** the code-level send fixes and exact-HEAD CI gate are complete. Live read-only validation, full safe pre-send integration smoke, and exact `MissingMethodException` root-cause capture remain open. PR #4 remains Draft and must not be merged or retargeted without explicit permission.
+
+
+### 2026-11-07 — ASF win-x64 trimming mismatch identified
+
+**New official-source finding (ASF 6.3.11.7):**
+- In the tagged `.github/workflows/publish.yml`, the `generic` variant is published without `PublishTrimmed`; every OS-specific variant uses `PublishSingleFile=true`, `PublishTrimmed=true`, the selected RID, and `--self-contained`.
+- Tagged `Directory.Build.props` defines `ASF_RUNTIME_TRIMMED` when `PublishTrimmed=true`.
+- Tagged `ArchiSteamFarm/SharedInfo.cs` exposes public `SharedInfo.IsRuntimeTrimmed`, backed by `BuildInfo.IsRuntimeTrimmed`.
+- Official ASF wiki says Generic is an intended option where a custom plugin requires the Generic setup to work correctly.
+- GameDelivery's current `.github/workflows/asf-plugin.yml` downloads and verifies `ASF-generic.zip` and builds/smokes the plugin against those Generic assemblies. This does **not** validate the user's reported `win-x64` trimmed runtime.
+
+**Assessment:** this is now a strong environment-mismatch hypothesis for the live `MissingMethodException`, not yet proof of the exact missing member. The old mixed `ulong`/SteamKit `SteamID` expression was removed, eliminating one unnecessary implicit-operator binding point, but no captured `MemberName` / `ClassName` from the user's process exists yet. Other calls made only by the dynamically loaded plugin may also be affected by trimming.
+
+**Required next validation:**
+1. Add a separate ASF plugin build/smoke target against the official 6.3.11.7 `ASF-win-x64.zip`, alongside—not instead of—the existing Generic target.
+2. Exercise the plugin diagnostic path on both variants and report runtime variant / `SharedInfo.IsRuntimeTrimmed` where safely available.
+3. Return structured `MissingMemberException.MemberName`, `ClassName`, `TargetSite` and stack details for pre-send and send catches, with token redaction.
+4. If the trimmed host fails and Generic passes, recommend Generic for this custom plugin (the machine already reports .NET 10.0.14); do not ask for a real trade send. Otherwise continue diagnosis using the exact missing member.
+
+**Safety/status:** no live Steam send; no code changes made for this trimming hypothesis in this checkpoint. Keep working only on `feature/asf-bulk-account-import`; `main` and PR #4 base remain untouched. Do not install the previous artifact merely because Generic CI passed.
