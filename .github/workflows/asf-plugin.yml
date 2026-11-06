@@ -133,7 +133,7 @@ jobs:
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP ASF-generic.zip
-          $base = https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7
+          $base = "https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7"
           Invoke-WebRequest -Uri "$base/ASF-generic.zip" -OutFile $archive
           $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($digest -ne "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb") {
