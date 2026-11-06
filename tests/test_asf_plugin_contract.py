@@ -102,6 +102,12 @@ class ASFPluginContractTests(unittest.TestCase):
 
 
 
+    def test_plugin_workflow_uses_a_yaml_block_for_multiline_build_info(self):
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        self.assertIn("          {\n            printf", workflow)
+        self.assertIn("          } > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt", workflow)
+        self.assertNotIn("printf \'GameDelivery ASF plugin\\nGameDelivery commit:", workflow)
+
     def test_plugin_build_targets_the_installed_asf_release(self):
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
         readme = (ROOT / "integrations" / "asf_plugin" / "README.md").read_text(encoding="utf-8")
