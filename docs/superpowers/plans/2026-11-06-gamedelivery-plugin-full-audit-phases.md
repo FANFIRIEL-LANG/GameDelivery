@@ -114,7 +114,7 @@
 
 **Ограничение:** runtime на компьютере пользователя ещё не проверен. Установка текущей DLL и одна диагностическая команда относятся к Этапу 5, не к этому этапу.
 
-### Этап 2 — Python ASF client и сквозной IPC-контракт 🟡 (следующий этап)
+### Этап 2 — Python ASF client и сквозной IPC-контракт ✅
 
 **Область:**
 - integrations/asf/client.py
@@ -124,20 +124,39 @@
 - tests/test_trade_delivery_ui.py
 - ASF 6.3.11.7 IPC /Api/Command contract
 
-**Задача:** доказать, что запросы, сформированные UI, доходят до ASF в правильном формате, ответы корректно разбираются, ошибки транспортного уровня не маскируются и состояние заказа не становится повторно отправляемым после уже состоявшегося dispatch.
+**Подтверждённый контракт ASF 6.3.11.7:**
+- CommandController принимает POST /Api/Command, выбирает Bot.GetDefaultBot(), снимает настроенный CommandPrefix и вызывает targetBot.Commands.Response(EAccess.Owner, command).
+- Commands.Response передаёт неизвестные команды в PluginsCore.OnBotCommand; plugin response возвращается как GenericResponse<string> с полем Result.
+- ASFClient.request и _unwrap_result корректно извлекают Result (с регистронезависимым поиском Success/Result).
+- Python preview строит JSON/base64url payload, не помещает trade token в команду и проверяет order/bot/SteamID64/asset IDs в ответе.
+- Python send хранит trade token только в одноразовом защищённом файле, а в ASF передаёт nonce; UI разделяет локальные ошибки до dispatch и ASFError с неопределённым исходом после dispatch.
 
-- [ ] Проследить точный формат /Api/Command request, ASF Success/Result envelope и тип результата custom command.
-- [ ] Проследить preview request: Python JSON → base64url → ASF IPC → args/message → C# DTO → JSON response → Python validation.
-- [ ] Проследить send request: одноразовый nonce, secret file, dispatch marker, IPC timeout, response parsing и очистка секрета.
-- [ ] Проверить классификацию pre-dispatch errors vs post-dispatch unknown result на всех исключениях.
-- [ ] Проверить, что UI не возвращает заказ в retryable status после потенциально состоявшегося trade dispatch.
-- [ ] Добавить/исправить точечные regression tests на реальные контракты, не ограничиваться проверкой строк в исходнике.
-- [ ] Запустить focused Python tests, затем полный tests workflow.
-- [ ] Обновить журнал и зафиксировать точный commit/run IDs.
+**Найденный дефект:** если ASF уже получил команду отправки, но ответ содержит malformed offer ID, проверка str.isdigit() могла принять символ вроде superscript ², после чего int() выбрасывал ValueError. app/main.py трактует ValueError из клиента как локальную ошибку до dispatch и возвращает заказ в retryable status. Это небезопасно: ошибка разбора результата после попытки внешней отправки должна блокировать повтор.
 
-**Gate:** все пути IPC имеют проверенный request/response contract; ошибка до dispatch отделена от неизвестного результата после dispatch; повторная отправка при неизвестном результате блокируется.
+- [x] Проследить точный /Api/Command request, ASF Success/Result envelope и custom command result type.
+- [x] Проследить preview request: Python JSON → base64url → ASF IPC → args/message → C# DTO → JSON response → Python validation.
+- [x] Проследить send request: одноразовый nonce, secret file, dispatch marker, IPC result parsing и очистку секрета.
+- [x] Подтвердить опасную классификацию malformed post-dispatch response через regression test.
+- [x] TDD RED: новый test_send_trade_offer_treats_unexpected_response_parse_error_after_dispatch_as_unknown упал на ValueError при int("²") на commit 08dc20b4.
+- [x] GREEN: integrations/asf/client.py теперь перехватывает непредвиденные исключения после command_dispatched; всё, что не ASFError, превращается в безопасный ASFError с указанием проверить исходящие Steam и не повторять. Локальные ошибки до dispatch остаются ValueError/OSError.
+- [x] Проверить, что одноразовый секрет удаляется, trade token не раскрывается, а ошибка после dispatch не может попасть в retryable ветку UI.
+- [x] Полный Python suite: push run 42233271868 — success, 281 tests; PR run 42233279698 — success, 281 tests.
+- [x] ASF plugin build/smoke: push run 42233271867 — success; PR run 42233279523 — success.
+- [x] Записать commit SHA, Actions IDs и артефакты.
 
+**Изменения этапа:** tests/test_asf_client.py; integrations/asf/client.py.
+**Исправление:** commit 4e54000509e4811e4e448c4c0a5537b209564aaa.
+**Plugin artifacts, собранные с тем же HEAD:**
+- push run 42233271867: artifact 13508613685; SHA-256 b44844680e033e527ae532ca31a1232c1a9f47bf71d7c393a024fdf58429d9f9.
+- PR run 42233279523: artifact 13510537170; SHA-256 735392ad36aaeccd756b098f09e4dbc1162b5ac1f07b0f0e21df1873bdaeea67.
+Оба — installable GameDelivery-ASFPlugin пакеты; production plugin DLL не менялся на этом этапе, поэтому эти артефакты не являются обязательным новым пользовательским обновлением.
+**Windows EXE:** PR run 42233279452 оставался in_progress на момент последней проверки; это отдельная упаковочная проверка, не меняющая выводы Python client tests. Следить за ней на этапе 8 / финальной проверке.
+**Gate:** тесты доказывают, что unexpected exception после попытки dispatch не возвращает заказ в retryable состояние. Этап 2 завершён; live ASF/Steam не проверен.
+**Следующий этап:** Этап 3 — preview pipeline и инвентарь без отправки.
+ 
 ### Этап 3 — Preview pipeline и инвентарь без отправки ⬜
+
+**Дополнительная находка при чтении app/main.py:** _preview_selected_order_with_asf() загружает reserved_assets из SQLite, но не сравнивает их с delivery_order_assets до вызова ASF. В send path такое сравнение есть. В результате UI может показать «проверенный черновик» для состава, который уже не зарезервирован. Отправка всё равно повторно проверяет резервы, но preview должен fail closed и показывать только действительный зарезервированный состав.
 
 **Область:** GameDeliveryPlugin.cs preview; ASFClient.preview_trade_offer; app/main.py preview; tests.
 
@@ -224,3 +243,12 @@
 7. один точный следующий шаг.
 
 Новый чат/исполнитель должен сначала сверить HEAD и этот ledger с GitHub. Завершённые этапы не повторять. Если новый коммит появился после последней записи, определить его diff и Actions до любых новых изменений. Нельзя считать этап завершённым по одному лишь наличию кода или успешному workflow.
+
+
+## Контрольная точка после Этапа 2
+
+**Current HEAD:** 4e54000509e4811e4e448c4c0a5537b209564aaa
+**PR #4:** open/draft/not merged.
+**Этап 2:** завершён, commit 4e54000509e4811e4e448c4c0a5537b209564aaa; push/PR Tests по 281 тесту — success; ASF plugin push/PR — success.
+**Этап 8:** Windows EXE PR run 42233279452 ещё проверялся отдельно.
+**Следующий этап:** Этап 3 — добавить тест, который доказывает отказ от preview при несовпадении saved assets и active reservations; затем минимально исправить app/main.py.

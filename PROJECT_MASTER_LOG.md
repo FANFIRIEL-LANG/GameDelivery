@@ -913,3 +913,24 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Новая структура работ:** Этап 0 — восстановление контекста (done); Этап 1 — ASF load/command dispatch (code + CI done, live pending); Этап 2 — Python client/UI ↔ ASF IPC contract (следующий); Этап 3 — preview; Этап 4 — send safety/recovery; Этап 5 — один runtime smoke; Этап 6 — live preview; Этап 7 — controlled single send только с отдельным разрешением; Этап 8 — финальный review/Actions/package checks.
 
 **Правило продолжения:** этапы выполнять отдельно, не запускать массовую правку всего проекта; после каждого этапа обновлять и этот журнал, и новый phased plan с commit SHA, тестами, Actions run IDs, артефактом, рисками и точным следующим шагом. Не просить пользователя повторять команды, уже проверенные на старой DLL. Следующий исполнитель обязан начать с Этапа 2 и сверить Actions/HEAD, а не начинать весь аудит с нуля.
+
+
+### 2026-11-06 — завершён Этап 2: сквозной ASF IPC и классификация ошибок отправки
+
+**План:** docs/superpowers/plans/2026-11-06-gamedelivery-plugin-full-audit-phases.md.
+**Commit фикса:** 4e54000509e4811e4e448c4c0a5537b209564aaa; рабочая ветка feature/asf-bulk-account-import.
+
+**Подтверждённый ASF IPC 6.3.11.7:** POST /Api/Command → CommandController → Bot.GetDefaultBot() → Commands.Response(EAccess.Owner); ASF снимает настроенный prefix; unknown command идёт в PluginsCore.OnBotCommand; ответ оборачивается GenericResponse<string>. Python _unwrap_result корректно извлекает Result. Неправильный endpoint/обязательный ! не являются причиной прежнего unknown response.
+
+**TDD defect:** добавленный regression test сначала упал на ValueError при разборе post-dispatch offer ID "²" (str.isdigit() == True, int() → ValueError). Это могло вернуть заказ в retryable status после попытки dispatch. В integrations/asf/client.py добавлена классификация: любое неожиданное исключение после command_dispatched переводится в ASFError с явным запретом повторной отправки; ошибки до dispatch по-прежнему остаются локальными ValueError/OSError.
+
+**CI на commit:**
+- Tests push run 42233271868 — success, 281 tests (2.788? push duration reported 3.859s).
+- Tests PR run 42233279698 — success, 281 tests (2.788s).
+- ASF plugin push run 42233271867 — success; artifact 13508613685; SHA-256 b44844680e033e527ae532ca31a1232c1a9f47bf71d7c393a024fdf58429d9f9.
+- ASF plugin PR run 42233279523 — success; artifact 13510537170; SHA-256 735392ad36aaeccd756b098f09e4dbc1162b5ac1f07b0f0e21df1873bdaeea67.
+- Windows EXE PR run 42233279452 — in_progress на момент записи; отдельный package workflow, будет повторно проверен на финальном gate.
+
+**Побочная находка для Этапа 3:** app/main.py _preview_selected_order_with_asf читает текущие reservation rows, но не сравнивает их с order asset rows. Send path сравнивает. Перед preview надо добавить fail-closed reservation equality check и regression test.
+
+**Следующий шаг:** Этап 3 — preview inventory/asset/reservation contract. Не просить пользователя повторно запускать команды; текущая DLL на его ASF пока не проверена.
