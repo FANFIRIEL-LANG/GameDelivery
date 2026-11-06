@@ -50,37 +50,25 @@ internal static class CommandArgumentParser
             .Select(token => token.Trim())
             .ToArray();
 
-        for (int commandIndex = 0; commandIndex < tokens.Length; commandIndex++)
+        if (tokens.Length == 0)
         {
-            string candidate = tokens[commandIndex];
-            if (!string.IsNullOrEmpty(commandPrefix)
-                && candidate.StartsWith(commandPrefix, StringComparison.Ordinal))
-            {
-                candidate = candidate[commandPrefix.Length..];
-            }
-
-            if (!CommandNames.Contains(candidate))
-            {
-                continue;
-            }
-
-            List<string> result = new(tokens.Length)
-            {
-                candidate
-            };
-
-            for (int index = 0; index < tokens.Length; index++)
-            {
-                if (index != commandIndex)
-                {
-                    result.Add(tokens[index]);
-                }
-            }
-
-            normalizedArgs = result.ToArray();
-            return true;
+            return false;
         }
 
-        return false;
+        string commandName = tokens[0];
+        if (!string.IsNullOrEmpty(commandPrefix)
+            && commandName.StartsWith(commandPrefix, StringComparison.Ordinal))
+        {
+            commandName = commandName[commandPrefix.Length..];
+        }
+
+        if (!CommandNames.Contains(commandName))
+        {
+            return false;
+        }
+
+        tokens[0] = commandName;
+        normalizedArgs = tokens;
+        return true;
     }
 }

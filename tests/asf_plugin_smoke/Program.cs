@@ -33,12 +33,12 @@ Assert(tokens.SequenceEqual(["gamedelivery-diagnose", "Ewaylariell"]), "prefix w
 
 Assert(
     CommandArgumentParser.TryNormalize(
-        "Ewaylariell gamedelivery-diagnose",
-        ["Ewaylariell", "gamedelivery-diagnose"],
+        "gamedelivery-diagnose Ewaylariell",
+        ["unparsed"],
         "!",
         out tokens),
-    "command following a bot selector was not recognized");
-Assert(tokens.SequenceEqual(["gamedelivery-diagnose", "Ewaylariell"]), "bot selector was not normalized");
+    "raw-message fallback was not used when args did not contain the custom command");
+Assert(tokens.SequenceEqual(["gamedelivery-diagnose", "Ewaylariell"]), "raw-message fallback changed command arguments");
 
 Assert(
     CommandArgumentParser.TryNormalize(
@@ -50,8 +50,8 @@ Assert(
 Assert(tokens.Length == 2 && tokens[1] == "eyJvcmRlcklkIjoiMSJ9", "preview payload was modified");
 
 Assert(
-    !CommandArgumentParser.TryNormalize("status Ewaylariell", ["status", "Ewaylariell"], "!", out _),
-    "unrelated ASF command was intercepted");
+    !CommandArgumentParser.TryNormalize("status gamedelivery-diagnose", ["status", "gamedelivery-diagnose"], "!", out _),
+    "custom command token inside an unrelated ASF command was intercepted");
 
 Assert(typeof(IPlugin).IsAssignableFrom(typeof(GameDeliveryPlugin)),
     "plugin does not implement the exact IPlugin interface from the pinned ASF assembly");
