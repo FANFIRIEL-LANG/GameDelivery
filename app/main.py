@@ -25,8 +25,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GameDelivery — локальная панель")
-        self._trade_credentials = SteamTradeCredentialStore()
         try:
+            self._trade_credentials = SteamTradeCredentialStore()
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
         except (OSError, sqlite3.Error, ValueError) as exc:
