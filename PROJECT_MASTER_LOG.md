@@ -1370,3 +1370,19 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 - При просмотре фактического содержимого теста обнаружено двойное экранирование переноса строки в одном `with` statement; исправлено на корректный Python line continuation.
 - Коммит: f8e3509d5429a75eae5446ecb99153aba860a9f8.
 - CI для предыдущего HEAD d12e69acf962354505d628f88e922a775cd9b415 не считать финальной проверкой после этого исправления; требуется новый exact-HEAD прогон.
+
+### 2026-11-07 — Проверен exact-HEAD CI для ASF Generic launcher
+
+**Проверенный HEAD:** 71d32bd90155e364ebfd6a489e2853911184f86a (рабочая ветка feature/asf-bulk-account-import; PR #4 остаётся draft/open, base feature/steam-card-set-selection).
+
+**GitHub Actions:**
+- Tests PR run 42307443122 — success; job test 128200282225 — success.
+- Tests push run 42307435712 — success; job test 128200258841 — success.
+- Windows EXE build run 42307443123 — success; job build-windows 128200242873 — success.
+- ASF plugin run 42307443096 — failure; build-plugin 128200243014 — success; windows-storage-acl-smoke 128200242591 — success; win-x64-trimmed-runtime-smoke 128200349741 — failure.
+
+**Причина оставшегося блокера:** в том же exact-HEAD runtime smoke ASF Generic успешно загружает GameDelivery plugin и JIT-компилирует ProcessSendCommand state machine. Официальный ASF win-x64 trimmed с тем же plugin снова падает на MEF plugin discovery до GameDeliveryPlugin.OnASFInit: MissingMemberException / TypeLoadException в System.Signature.Init -> RuntimeMethodInfo.FetchReturnParameter/get_ReturnParameter -> System.Composition.Convention.PartConventionBuilder.BuildOnImportsSatisfiedNotification -> TypeInspector.InspectTypeForPart. Это подтверждает прежний trimming/MEF блокер; не свидетельствует о поломке Generic.
+
+**Решение по пользовательской проверке:** GameDelivery Windows EXE собран и unit tests прошли, но общий ASF plugin workflow не зелёный. Пользователю пока не предлагать скачивание/ручную проверку интеграции и не считать runtime путь подтверждённым на его машине. Generic остаётся временным вариантом для отдельной установки ASF; торговые команды не запускать.
+
+**Следующий шаг:** продолжить адресное расследование trim/MEF compatibility для win-x64, сохранив проходящие Generic load/JIT и Windows smoke. Не маскировать ошибку и не делать вывод, что SendTradeOffer — отсутствующий member без извлечённой MissingMember metadata.
