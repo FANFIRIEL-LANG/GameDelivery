@@ -770,3 +770,14 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Изменённые файлы:** `.github/workflows/asf-plugin.yml`, `tests/test_asf_plugin_contract.py`, данный журнал.
 
 **Точный следующий шаг:** проверить свежий ASF job, build и package artifact на новом commit. C.2 не начинать.
+
+
+### 2026-11-06 — нормализованы ASF workflow triggers
+
+**Этап:** C.1. C.2 не начат.
+
+**Изменения:** тест ASF contract теперь проверяет закреплённый SHA-256, а не устаревший SHA512SUMS; ASF workflow переведён на явный `workflow_dispatch` и единый согласованный набор путей для push/PR, включая README. Ранее ASF run указывал failure с нулём jobs; GitHub API не предоставлял job logs. Поэтому причину pre-job failure достоверно установить пока нельзя; не выдаём её за ошибку сборки плагина.
+
+**CI:** на HEAD `9565d62` Tests push прошёл успешно; Tests PR прошёл успешно; Windows EXE ещё выполнялся на момент проверки; ASF run завершался с failure и без job. Новые triggers должны быть подтверждены отдельным запуском.
+
+**Следующий шаг:** проверить ASF job, smoke-load тест ASF Generic и artifact. Пакет не выдавать, пока все проверки не завершатся успешно.
