@@ -47,13 +47,15 @@ jobs:
           echo "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb  /tmp/ASF-generic.zip" | sha256sum --check
           mkdir -p .asf-bin
           unzip -q /tmp/ASF-generic.zip -d .asf-bin
-          test -s .asf-bin/ArchiSteamFarm.dll
-          test -s .asf-bin/SteamKit2.dll
-          test -s .asf-bin/Newtonsoft.Json.dll
-          test -s .asf-bin/System.Composition.AttributedModel.dll
+          asf_bin_dir=$(dirname "$(find .asf-bin -type f -name ArchiSteamFarm.dll -print -quit)")
+          test -n "$asf_bin_dir"
+          test -s "$asf_bin_dir/SteamKit2.dll"
+          test -s "$asf_bin_dir/Newtonsoft.Json.dll"
+          test -s "$asf_bin_dir/System.Composition.AttributedModel.dll"
+          echo "ASF_BIN_DIR=$GITHUB_WORKSPACE/$asf_bin_dir" >> "$GITHUB_ENV"
 
       - name: Build GameDelivery ASF plugin against exact host assemblies
-        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$GITHUB_WORKSPACE/.asf-bin
+        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$ASF_BIN_DIR
 
       - name: Verify plugin output does not contain host-shared dependencies
         shell: bash
