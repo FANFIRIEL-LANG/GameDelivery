@@ -52,7 +52,6 @@ jobs:
           asf_bin_dir=$(dirname "$(find .asf-bin -type f -name ArchiSteamFarm.dll -print -quit)")
           test -n "$asf_bin_dir"
           test -s "$asf_bin_dir/SteamKit2.dll"
-          test -s "$asf_bin_dir/Newtonsoft.Json.dll"
           test -s "$asf_bin_dir/System.Composition.AttributedModel.dll"
           echo "ASF_BIN_DIR=$GITHUB_WORKSPACE/$asf_bin_dir" >> "$GITHUB_ENV"
 
