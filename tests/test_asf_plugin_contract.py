@@ -47,7 +47,7 @@ class ASFPluginContractTests(unittest.TestCase):
 
         self.assertIn("SafeDiagnosticText(exception.ToString())", callback)
         self.assertIn("exceptionDetails = safeDetails", callback)
-        self.assertIn("details=" + " + safeDetails", callback)
+        self.assertIn('"; details=" + safeDetails', callback)
         self.assertIn("token=[REDACTED]", sanitizer)
         self.assertNotIn("Regex", sanitizer)
         self.assertNotIn(".IndexOf(", sanitizer)

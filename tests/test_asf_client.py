@@ -116,7 +116,7 @@ class ASFClientTests(unittest.TestCase):
                 "error": "Ошибка обработчика GameDelivery ASF: MissingMethodException",
                 "exceptionType": "System.MissingMethodException",
                 "exceptionMessage": "Attempted to access a missing method.",
-                "exceptionDetails": "System.MissingMethodException: Attempted to access a missing method.\\n   at GameDeliveryPlugin.Preview(...)",
+                "exceptionDetails": "System.MissingMethodException: Attempted to access a missing method.\n   at GameDeliveryPlugin.Preview(...)",
             }),
         }
         with self.assertRaises(ASFError) as raised:

@@ -442,7 +442,7 @@ class ASFClient:
             detail_text = str(details).strip()[:900] if details else ""
             combined = str(message or "ASF не подтвердил черновик обмена")
             if detail_text:
-                combined += "\\nДиагностика ASF: " + detail_text
+                combined += "\nДиагностика ASF: " + detail_text
             raise ASFError(combined[:1200])
         preview_bot = preview.get("botName")
         if (

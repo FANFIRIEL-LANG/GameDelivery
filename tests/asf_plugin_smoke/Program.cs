@@ -213,12 +213,12 @@ static string InvokePluginDiagnosticSanitizer(string message)
 }
 
 string safeDiagnostic = InvokePluginDiagnosticSanitizer(
-    "MissingMethodException: token=NeverLogThisTradeToken&next=value\\n at GameDeliveryPlugin.Preview");
+    "MissingMethodException: token=NeverLogThisTradeToken&next=value\n at GameDeliveryPlugin.Preview");
 Assert(!safeDiagnostic.Contains("NeverLogThisTradeToken", StringComparison.Ordinal),
     "diagnostic sanitizer exposed a Steam token");
 Assert(safeDiagnostic.Contains("token=[REDACTED]&next=value", StringComparison.Ordinal),
     "diagnostic sanitizer did not preserve the error context while redacting the token");
-Assert(!safeDiagnostic.Contains('\\n') && !safeDiagnostic.Contains('\\r'),
+Assert(!safeDiagnostic.Contains((char)10) && !safeDiagnostic.Contains((char)13),
     "diagnostic sanitizer retained control characters");
 
 Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");
