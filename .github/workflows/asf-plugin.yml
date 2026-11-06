@@ -20,6 +20,7 @@ on:
       - app/main.py
       - tests/test_asf_client.py
       - tests/test_asf_plugin_contract.py
+      - integrations/asf_plugin/README.md
       - .github/workflows/asf-plugin.yml
 
 permissions:
