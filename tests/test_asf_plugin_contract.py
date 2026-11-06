@@ -108,6 +108,12 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("          } > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt", workflow)
         self.assertNotIn("printf \'GameDelivery ASF plugin\\nGameDelivery commit:", workflow)
 
+    def test_plugin_workflow_resolves_nested_asf_archive_directory(self):
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        self.assertIn('find .asf-bin -type f -name ArchiSteamFarm.dll', workflow)
+        self.assertIn('ASF_BIN_DIR=$GITHUB_WORKSPACE/$asf_bin_dir', workflow)
+        self.assertNotIn('.asf-bin/ArchiSteamFarm.dll', workflow)
+
     def test_plugin_build_targets_the_installed_asf_release(self):
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
         readme = (ROOT / "integrations" / "asf_plugin" / "README.md").read_text(encoding="utf-8")
