@@ -302,5 +302,49 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("GetPendingSecretPath(request.CredentialNonce!)", source)
 
 
+
+    def test_self_trade_guard_uses_native_steamid64_comparison(self):
+        source = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        self.assertIn(
+            "IsSameSteamAccount(targetBot.SteamID, request.TargetSteamId64)",
+            source,
+        )
+        self.assertNotIn("targetBot.SteamID == recipient", source)
+        self.assertIn(
+            "internal static bool IsSameSteamAccount(ulong botSteamId64, ulong recipientSteamId64)",
+            source,
+        )
+
+    def test_send_unknown_result_requires_external_dispatch_to_have_started(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        trade = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        callback_start = plugin.index("public async Task<string?> OnBotCommand")
+        callback_end = plugin.index("private static async Task<string> RunDiagnosticCommand", callback_start)
+        callback = plugin[callback_start:callback_end]
+        send_start = trade.index("public static async Task<string> ProcessSendCommand")
+        send_end = trade.index("private static string GetPendingSecretPath", send_start)
+        send = trade[send_start:send_end]
+
+        self.assertIn("bool sendDispatchStarted = false;", callback)
+        self.assertIn(
+            "TradeDelivery.ProcessSendCommand(commandArgs[1], bot.BotName, () => sendDispatchStarted = true)",
+            callback,
+        )
+        self.assertIn("resultUnknown = isSend && sendDispatchStarted", callback)
+        self.assertIn("Action onExternalDispatchStarted", send)
+        self.assertIn("onExternalDispatchStarted();", send)
+        self.assertLess(
+            send.index("onExternalDispatchStarted();"),
+            send.index("targetBot.ArchiWebHandler.SendTradeOffer("),
+        )
+
+    def test_send_logs_distinguish_ipc_context_bot_from_selected_sender(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        trade = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        self.assertIn("ipcContextBot=", plugin)
+        self.assertIn("requestedSenderBot=", trade)
+        self.assertIn("resolvedSenderBot=", trade)
+
+
 if __name__ == "__main__":
     unittest.main()
