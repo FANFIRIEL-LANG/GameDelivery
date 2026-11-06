@@ -167,7 +167,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: GameDelivery-ASFPlugin
-          path: \${{ runner.temp }}/GameDelivery-ASFPlugin
+          path: ${{ runner.temp }}/GameDelivery-ASFPlugin
 
       - name: Setup .NET 10 for ASF Generic
         uses: actions/setup-dotnet@v4
