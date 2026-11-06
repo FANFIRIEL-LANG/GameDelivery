@@ -371,7 +371,7 @@ internal static class TradeDelivery
                             mobileTradeOfferIds,
                             waitIfNeeded: true).ConfigureAwait(false);
                     confirmationPending = !twoFactorSuccess;
-                    record.Message = SafeMessage(confirmationMessage);
+                    record.Message = SafeMessage(confirmationMessage, secret.TradeToken);
                 }
 
                 record.State = confirmationPending ? "awaiting_confirmation" : "sent";
@@ -539,14 +539,15 @@ internal static class TradeDelivery
         error = message
     }, JsonOptions);
 
-    private static string SafeMessage(string? message)
+    private static string SafeMessage(string? message, string? tradeToken = null)
     {
         if (string.IsNullOrWhiteSpace(message))
         {
             return "не удалось завершить подтверждение в мобильном приложении";
         }
 
-        return new string(message.Where(character => !char.IsControl(character)).Take(180).ToArray());
+        string sanitized = SafeDiagnosticText(message, tradeToken);
+        return new string(sanitized.Where(character => !char.IsControl(character)).Take(180).ToArray());
     }
 
     private static string SafeDiagnosticText(string? message, string? tradeToken = null)
