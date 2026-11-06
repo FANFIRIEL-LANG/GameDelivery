@@ -1253,3 +1253,42 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 
 **Безопасность:** отправка Steam offers не выполнялась; не просить пользователя повторять `gamedelivery-send`. Сейчас ничего не скачивать и не устанавливать. `main` не изменён; PR #4 остаётся Draft/open/unmerged, base `feature/steam-card-set-selection`.
 
+
+
+### 2026-11-07 — Решение по ASF Generic после пользовательской установки и финального baseline сравнения
+
+**Подтверждённый HEAD:** `21064c21fade380fbac0ad5566272c89547a5011`  
+**PR #4:** Draft/open/unmerged; base `feature/steam-card-set-selection`; main не затронут.
+
+#### Подтверждённые runtime результаты на одном Windows runner
+
+- Generic control host: официальный ASF 6.3.11.7 Generic, один и тот же DLL `GameDelivery.ASFPlugin.dll`. Лог: `ASF-Generic: plugin loaded and ProcessSendCommand state machine JIT-compiled successfully.`
+- win-x64 trimmed host: тот же DLL; чистый baseline до установки GameDelivery успешно прошёл 20-секундный запуск со штатными bundled plugins ASF. Следовательно, сам официальный trimmed ASF без GameDelivery работоспособен.
+- После установки GameDelivery в тот же win-x64 host ASF падает на `InitPlugins()` с `System.MissingMemberException`, до `GameDeliveryPlugin.OnASFInit`. Это локализует текущую несовместимость на загрузку внешнего GameDelivery plugin в trimmed win-x64/MEF discovery, а не на базовый старт ASF.
+- На сравнительном job run `42302518791` / job `128183725734`: Generic plugin load + async send state-machine JIT — success; win-x64 plugin load — failure. Нет Bot, Steam credentials, вызова send method или реального offer.
+- Текущие PR Actions на exact HEAD `21064c21fade380fbac0ad5566272c89547a5011`:
+  - Tests #1210 run `42302518734`: success.
+  - Windows EXE #609 run `42302518904`: success.
+  - ASF plugin #576 run `42302518791`: overall failure только из-за comparative win-x64 trimmed runtime job; Generic build и Windows ACL smoke jobs — success.
+- Предыдущая ошибка baseline condition из-за штатных каталогов ASF plugins исправлена: официальный bundled plugins теперь сохраняются; baseline реально стартует и проходит.
+
+#### Решение для пользователя
+
+- Временно использовать ASF **Generic 6.3.11.7**, поскольку это единственный из проверенных вариантов, на котором внешний GameDelivery plugin загружается и проходит JIT compile async send state machine.
+- Не использовать win-x64 с текущей сборкой GameDelivery plugin до отдельного исправления MEF/trim compatibility и повторного успешного runtime smoke.
+- Generic требует установленный .NET 10 runtime (предпочтительно ASP.NET Core Runtime 10.0.x, так как ASF Generic использует ASP.NET Core shared framework). Наличие runtime, bundled внутри self-contained win-x64, не гарантирует, что он отдельно установлен для Generic.
+- Перед заменой ASF сохранить полную резервную копию текущей папки ASF, особенно `config`, `database`, `logs`, `plugins` и другие пользовательские данные. Не удалять старую папку и не смешивать файлы Generic с win-x64; распаковать Generic в отдельную папку, затем перенести/скопировать конфигурацию и данные контролируемо.
+- Не запускать `gamedelivery-send` до read-only проверки, что plugin loaded и команда диагностики проходит. После предыдущего MissingMethodException перед повторной отправкой отдельно сверить исходящие Steam offers.
+- Пользователь сообщил, что уже скачал/выполнил предыдущие шаги. Не предполагать, что это само по себе вызвало ошибку; предыдущий сбой воспроизводится независимо в CI при подключении DLL к trimmed win-x64.
+
+#### Следующий инженерный шаг
+
+1. Сохранить Generic как временный поддерживаемый путь и продолжить расследование win-x64.
+2. Выяснить точный тип/метод, который MEF discovery пытается прочитать, и почему trimming удаляет нужную reflection metadata. Проверить plugin interface attributes, MEF conventions и linker roots; не обходить MEF случайными reflection hacks.
+3. Добавить targeted trimming annotations/descriptor либо перестроить discovery-compatible plugin shape, только если это подтверждено runtime evidence.
+4. Сохранить Generic runtime smoke как обязательный контроль, а trimmed win-x64 — отдельный gate. Не считать ASF plugin workflow зелёным, пока оба требуемых gate не завершились успешно.
+5. Никаких реальных Steam trade tests без отдельного прямого разрешения.
+
+**Пользовательская инструкция сейчас:** можно переходить на ASF Generic, но перед заменой сохранить старую папку целиком. Сначала установить/проверить .NET 10 ASP.NET Core Runtime; старый ASF не удалять. Точную инструкцию по переносу конфигурации дать отдельно, не смешивать каталоги.
+
+**Процесс:** это решение, результаты baseline, CI IDs, текущие ограничения и следующие шаги записаны в PROJECT_MASTER_LOG.md. Продолжать обновлять файл после каждой содержательной итерации.
