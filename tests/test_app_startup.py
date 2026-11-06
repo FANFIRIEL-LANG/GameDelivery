@@ -62,7 +62,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                 critical.assert_called_once()
                 title, message = critical.call_args.args[1:3]
                 self.assertEqual(title, "Ошибка локальной базы данных")
-                self.assertIn("не может открыть или обновить локальную базу данных", message)
+                self.assertIn("не может безопасно открыть локальные заказы или системное хранилище секретов", message)
                 self.assertIn("резервную копию", message)
                 self.assertEqual(window.startup_error_label.text(), message)
                 self.assertIsNone(window.tabs if hasattr(window, "tabs") else None)
@@ -450,12 +450,18 @@ class AppStartupSmokeTests(unittest.TestCase):
                         order,
                         (
                             "playerok", "deal-123", "Steam Card Set", "buyer-a",
-                            "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
+                            "https://steamcommunity.com/tradeoffer/new/?partner=123456",
                             "reserved — не отправлен", 1, "PAID", "250",
                             "https://playerok.com/deal/deal-123",
                         ),
                     )
                     self.assertEqual(reserved_assets, [("Bot A", "567")])
+                    self.assertEqual(
+                        self.credential_backend.values[
+                            (SteamTradeCredentialStore.SERVICE, local_order_id)
+                        ],
+                        "Abc_123",
+                    )
                     with sqlite3.connect(database) as db:
                         order_assets = db.execute(
                             "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"

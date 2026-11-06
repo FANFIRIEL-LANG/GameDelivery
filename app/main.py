@@ -270,8 +270,16 @@ class MainWindow(QMainWindow):
                     )
 
     def _recover_interrupted_delivery_orders(self) -> int:
-        """Fail closed for orders whose send request was interrupted by a crash."""
+        """Fail closed for interrupted sends and remove their saved Steam trade tokens."""
         with sqlite3.connect(self._database_path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            interrupted_order_ids = [
+                row[0]
+                for row in db.execute(
+                    "SELECT order_id FROM delivery_orders WHERE status = ?",
+                    ("sending — запрос ASF",),
+                ).fetchall()
+            ]
             cursor = db.execute(
                 "UPDATE delivery_orders "
                 "SET status = ?, trade_confirmation_status = 'unknown' "
@@ -281,7 +289,13 @@ class MainWindow(QMainWindow):
                     "sending — запрос ASF",
                 ),
             )
-            return cursor.rowcount
+            recovered_count = cursor.rowcount
+
+        # The order is now locked against retry in SQLite. Remove the credential only
+        # after that state is committed, so a failed DB write cannot lose the token.
+        for order_id in interrupted_order_ids:
+            self._delete_trade_credential_best_effort(order_id)
+        return recovered_count
 
 
     def _import_marketplace_order(self, marketplace_order):
