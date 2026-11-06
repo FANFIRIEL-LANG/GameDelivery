@@ -808,3 +808,12 @@ Telegram Bot — настраиваемая дополнительная пан�
 На commit `18f37e1` скачивание generic ZIP и SHA-256 прошли успешно; каталог `ArchiSteamFarm.dll` был найден, но один из последующих тестов наличия соседних shared DLL завершился с кодом 1. Лог не содержит причины, поскольку команды `test -s` молчат при ошибке.
 
 В следующий workflow добавлен вывод фактических путей к четырём ожидаемым сборкам ASF (ArchiSteamFarm, SteamKit2, Newtonsoft.Json, System.Composition.AttributedModel), чтобы исправить reference model по реальному содержимому архива, а не предполагать его.
+
+
+### 2026-11-06 — правильная compile-time ссылка Newtonsoft.Json
+
+**Подтверждение из ASF 6.3.11.7 generic ZIP:** после успешной проверки SHA-256 архив содержит `ArchiSteamFarm.dll`, `SteamKit2.dll` и `System.Composition.AttributedModel.dll` в корне, но не содержит `Newtonsoft.Json.dll`. Именно этот отсутствующий файл ломал предыдущую проверку до dotnet build.
+
+**Исправление:** `Newtonsoft.Json 13.0.3` возвращён как NuGet `PackageReference` с `IncludeAssets="compile"`. NuGet assembly имеет file/package version 13.0.3 и CLR assembly version 13.0.0.0, совпадающий с тем, что пользователь проверил в установленном Windows ASF. `CopyLocalLockFileAssemblies=false` остаётся; workflow проверяет отсутствие Newtonsoft и остальных host-shared DLL в output и не пакует их. Условие проверки отсутствующего в generic ZIP Newtonsoft удалено.
+
+**Риск/граница:** generic ZIP не подтверждает наличие Newtonsoft в runtime именно пользовательской Windows-сборке; это подтверждено его предыдущей локальной проверкой версии/единственного файла. Build проверит compile contract и отсутствие дубля в пакете; runtime load на его ASF окончательно проверяется только после успешного CI, контролируемым запуском.
