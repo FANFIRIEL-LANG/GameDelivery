@@ -104,4 +104,63 @@ Assert(exports.OfType<IBotCommand2>().Count() == 1,
 Assert(typeof(GameDeliveryPlugin).Assembly.GetName().Version == new Version(1, 0, 2, 0),
     "plugin assembly version is not the expected fixed version 1.0.2.0");
 
+static void InvokeStoragePermissionRestriction(string path, bool isDirectory)
+{
+    Type tradeDeliveryType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.TradeDelivery",
+        throwOnError: true)!;
+    MethodInfo method = tradeDeliveryType.GetMethod(
+        "RestrictStoragePermissions",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin storage ACL method was not found");
+
+    try
+    {
+        method.Invoke(null, [path, isDirectory]);
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            "The built plugin storage ACL method failed.",
+            exception.InnerException ?? exception);
+    }
+}
+
+static void VerifyWindowsJournalAclWithExclusiveFileHandle()
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        return;
+    }
+
+    string directory = System.IO.Path.Combine(
+        System.IO.Path.GetTempPath(),
+        "GameDelivery-ACL-" + Guid.NewGuid().ToString("N"));
+    System.IO.Directory.CreateDirectory(directory);
+
+    try
+    {
+        InvokeStoragePermissionRestriction(directory, isDirectory: true);
+        string journalPath = System.IO.Path.Combine(directory, "sent_offers.json.tmp");
+
+        using System.IO.FileStream stream = new(
+            journalPath,
+            System.IO.FileMode.CreateNew,
+            System.IO.FileAccess.Write,
+            System.IO.FileShare.None);
+
+        // This mirrors SaveSendRecords: the ACL is applied after FileStream opens
+        // the temporary file exclusively and before any journal bytes are written.
+        InvokeStoragePermissionRestriction(journalPath, isDirectory: false);
+        stream.WriteByte((byte)'{');
+        stream.Flush(flushToDisk: true);
+    }
+    finally
+    {
+        System.IO.Directory.Delete(directory, recursive: true);
+    }
+}
+
+VerifyWindowsJournalAclWithExclusiveFileHandle();
+
 Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");
