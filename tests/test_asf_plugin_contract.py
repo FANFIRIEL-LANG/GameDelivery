@@ -78,6 +78,25 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn('status = "success"', probe)
         self.assertIn('status = "failed"', probe)
 
+    def test_asf_generic_runtime_gate_waits_for_command_registration_and_jit(self):
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        generic_start = workflow.index("  generic-runtime-smoke:")
+        trimmed_start = workflow.index("  win-x64-trimmed-runtime-smoke:")
+        generic_job = workflow[generic_start:trimmed_start]
+        trimmed_job = workflow[trimmed_start:]
+
+        self.assertIn("needs: build-plugin", generic_job)
+        self.assertIn("ASF-generic.zip", generic_job)
+        self.assertIn("cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb", generic_job)
+        self.assertIn("Verify Generic plugin load, command registration, and send-state-machine JIT", generic_job)
+        self.assertIn("GAMEDELIVERY_VALIDATE_SEND_JIT", generic_job)
+        self.assertIn('"status":"success"', generic_job)
+        self.assertIn("commandHandlers=[1-9][0-9]*", generic_job)
+        self.assertIn("thisIsIBotCommand2=True", generic_job)
+        self.assertIn("thisIsRegistered=True", generic_job)
+        self.assertIn("No Bot, Steam credentials, IPC command, or trade offer was used.", generic_job)
+        self.assertIn("if: github.event_name == 'workflow_dispatch'", trimmed_job)
+
     def test_asf_plugin_workflow_runs_official_trimmed_win_x64_host(self):
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
         self.assertIn("win-x64-trimmed-runtime-smoke:", workflow)
