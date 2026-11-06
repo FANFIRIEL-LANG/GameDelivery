@@ -1331,3 +1331,28 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 - Для Generic нужен установленный .NET SDK или как минимум ASP.NET Core Runtime подходящей версии (ASF 6.3.11.7 target net10.0). Если команда `dotnet` не найдена либо runtime отсутствует, установить .NET 10 ASP.NET Core Runtime.
 - Пользователю предложено сначала проверить наличие `ArchiSteamFarm.dll` в распакованной папке; не запускать старый ASF и не выполнять trade command.
 - Источник: https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Setting-up-ru-RU
+
+### 2026-11-07 — Добавлена поддержка запуска ASF Generic из GameDelivery
+
+**Запрос пользователя:** после перехода на ASF Generic GameDelivery должна самостоятельно запускать ASF, несмотря на отсутствие ArchiSteamFarm.exe.
+
+**Изменения в рабочей ветке feature/asf-bulk-account-import:**
+- app/asf_management.py: селектор ASF принимает ArchiSteamFarm.exe и ArchiSteamFarm.dll.
+- Автоопределение ищет Windows EXE и Generic DLL в каталоге ASF; сохранённый путь от другой установки больше не блокирует выбор Generic.
+- Windows-вариант по-прежнему запускается напрямую через EXE с --process-required.
+- Generic запускается через dotnet.exe из PATH: dotnet ArchiSteamFarm.dll --process-required.
+- Рабочей директорией остаётся каталог выбранной установки ASF, чтобы относительные пути config, database и plugins разрешались правильно.
+- Если dotnet отсутствует или выбран не ArchiSteamFarm.dll, UI показывает ошибку и не запускает процесс.
+- tests/test_asf_management.py: добавлены тест запуска Generic через dotnet и тест переключения со старого сохранённого EXE на Generic DLL; прежние тесты Windows EXE сохранены.
+
+**Коммиты:**
+- 35f7b048239b18ba335d78c3ae7af736a4a18554 — поддержка Generic launch.
+- f0437c8c1978cbf43f96b0aab2079d7a0814eae8 — тесты Generic.
+- 55db17b286229d5b685fd01bd7b4d7ede1848d1b — корректное переключение пути ASF.
+- 95df90a18917f8278603dd19a5b16cf4ac759c1f — исправление Windows dotnet path assertion.
+
+**Проверки:** исходники и тесты обновлены в рабочей ветке. Локальные тесты в этой среде не запускались; требуется exact-HEAD GitHub Actions. Успешная сборка/CI ещё не подтверждены. Пользовательскую проверку не начинать до успешного CI и выдачи проверенного артефакта.
+
+**Пользовательская проверка:** пока ничего скачивать и проверять не нужно. После CI будет указана точная сборка и сценарий проверки. Steam trade/send не запускать.
+
+**Ограничения:** main не изменён; PR #4 не слит и его base не менялся. Поддержка Generic добавлена только в процесс запуска; остальные настройки ASF, IPC, боты и торговая логика не менялись.
