@@ -5,6 +5,7 @@ using System.Composition;
 using System.Composition.Convention;
 using System.Composition.Hosting;
 using System.Linq;
+using System.Reflection;
 
 static void Assert(bool condition, string message)
 {
@@ -14,10 +15,29 @@ static void Assert(bool condition, string message)
     }
 }
 
+static bool TryNormalizeFromBuiltPlugin(
+    string message,
+    string[] args,
+    string commandPrefix,
+    out string[] normalizedArgs)
+{
+    Type parserType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.CommandArgumentParser",
+        throwOnError: true)!;
+    MethodInfo method = parserType.GetMethod(
+        "TryNormalize",
+        BindingFlags.Public | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin command parser method was not found");
+    object?[] parameters = [message, args, commandPrefix, null];
+    bool result = (bool)(method.Invoke(null, parameters) ?? false);
+    normalizedArgs = parameters[3] as string[] ?? [];
+    return result;
+}
+
 string[] tokens;
 
 Assert(
-    CommandArgumentParser.TryNormalize(
+    TryNormalizeFromBuiltPlugin(
         "gamedelivery-diagnose Ewaylariell",
         ["gamedelivery-diagnose", "Ewaylariell"],
         "!",
@@ -26,7 +46,7 @@ Assert(
 Assert(tokens.SequenceEqual(["gamedelivery-diagnose", "Ewaylariell"]), "plain command arguments changed");
 
 Assert(
-    CommandArgumentParser.TryNormalize(
+    TryNormalizeFromBuiltPlugin(
         "!gamedelivery-diagnose Ewaylariell",
         ["!gamedelivery-diagnose", "Ewaylariell"],
         "!",
@@ -35,7 +55,7 @@ Assert(
 Assert(tokens.SequenceEqual(["gamedelivery-diagnose", "Ewaylariell"]), "prefix was not stripped exactly");
 
 Assert(
-    CommandArgumentParser.TryNormalize(
+    TryNormalizeFromBuiltPlugin(
         "gamedelivery-diagnose Ewaylariell",
         ["unparsed"],
         "!",
@@ -44,7 +64,7 @@ Assert(
 Assert(tokens.SequenceEqual(["gamedelivery-diagnose", "Ewaylariell"]), "raw-message fallback changed command arguments");
 
 Assert(
-    CommandArgumentParser.TryNormalize(
+    TryNormalizeFromBuiltPlugin(
         "gamedelivery-preview eyJvcmRlcklkIjoiMSJ9",
         ["gamedelivery-preview", "eyJvcmRlcklkIjoiMSJ9"],
         "!",
@@ -53,7 +73,7 @@ Assert(
 Assert(tokens.Length == 2 && tokens[1] == "eyJvcmRlcklkIjoiMSJ9", "preview payload was modified");
 
 Assert(
-    !CommandArgumentParser.TryNormalize("status gamedelivery-diagnose", ["status", "gamedelivery-diagnose"], "!", out _),
+    !TryNormalizeFromBuiltPlugin("status gamedelivery-diagnose", ["status", "gamedelivery-diagnose"], "!", out _),
     "custom command token inside an unrelated ASF command was intercepted");
 
 Assert(typeof(IPlugin).IsAssignableFrom(typeof(GameDeliveryPlugin)),
