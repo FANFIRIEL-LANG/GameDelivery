@@ -18,12 +18,14 @@ from app.proxy_settings import ProxySettingsWidget
 from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
 from integrations.asf.client import ASFClient, ASFError
+from integrations.asf.trade_credentials import SteamTradeCredentialStore
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GameDelivery — локальная панель")
+        self._trade_credentials = SteamTradeCredentialStore()
         try:
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
@@ -250,6 +252,22 @@ class MainWindow(QMainWindow):
                 )
             """)
 
+        # Migrate existing plaintext Steam tokens to the OS credential vault.
+        # Keep the original DB value until the vault confirms the token was saved.
+        with sqlite3.connect(self._database_path) as db:
+            legacy_urls = db.execute(
+                "SELECT order_id, recipient_trade_url FROM delivery_orders "
+                "WHERE recipient_trade_url <> ''"
+            ).fetchall()
+            for order_id, stored_url in legacy_urls:
+                safe_url = self._trade_credentials.migrate_legacy_url(order_id, stored_url)
+                if safe_url != stored_url:
+                    db.execute(
+                        "UPDATE delivery_orders SET recipient_trade_url = ? "
+                        "WHERE order_id = ? AND recipient_trade_url = ?",
+                        (safe_url, order_id, stored_url),
+                    )
+
     def _recover_interrupted_delivery_orders(self) -> int:
         """Fail closed for orders whose send request was interrupted by a crash."""
         with sqlite3.connect(self._database_path) as db:
@@ -466,7 +484,10 @@ class MainWindow(QMainWindow):
                     for x in result["conflicts"]
                 ))
 
+            credential_stored = False
             try:
+                safe_recipient = self._trade_credentials.store_trade_url(order_id, recipient)
+                credential_stored = True
                 with sqlite3.connect(self._database_path) as db:
                     db.execute("BEGIN IMMEDIATE")
                     if existing_order_id:
@@ -479,14 +500,14 @@ class MainWindow(QMainWindow):
                             "UPDATE delivery_orders SET recipient_trade_url = ?, "
                             "status = 'reserved — не отправлен', asset_count = ? "
                             "WHERE order_id = ? AND status = 'imported — ожидание подготовки'",
-                            (recipient, len(selected), order_id),
+                            (safe_recipient, len(selected), order_id),
                         )
                     else:
                         db.execute(
                             "INSERT INTO delivery_orders "
                             "(order_id, recipient_trade_url, status, asset_count, source_platform) "
                             "VALUES (?, ?, 'reserved — не отправлен', ?, 'manual')",
-                            (order_id, recipient, len(selected)),
+                            (order_id, safe_recipient, len(selected)),
                         )
                     db.executemany(
                         "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
@@ -494,6 +515,11 @@ class MainWindow(QMainWindow):
                     )
             except Exception:
                 reservations.release(order_id)
+                if credential_stored:
+                    try:
+                        self._trade_credentials.delete_trade_url(order_id)
+                    except OSError:
+                        pass
                 raise
 
             self._load_saved_orders()
@@ -533,6 +559,8 @@ class MainWindow(QMainWindow):
                     "Проверить через ASF можно только подготовленный заказ, "
                     "который ещё не отправлялся."
                 )
+            recipient = self._trade_credentials.load_trade_url(order_id, recipient)
+            recipient = self._trade_credentials.load_trade_url(order_id, recipient)
             recipient = self._validate_trade_url(recipient)
             if not assets:
                 raise ValueError("У заказа нет сохранённого состава активов.")
@@ -924,7 +952,12 @@ class MainWindow(QMainWindow):
                 f"Сумма на площадке при последнем обновлении: {order[7] or '—'}",
                 f"Ссылка на сделку: {order[8] or '—'}",
             ])
-        lines.extend([f"Steam trade URL: {order[0] or 'не указан'}", "", "Зарезервированные активы:"])
+        lines.extend([
+            f"Steam trade URL: {order[0] or 'не указан'}",
+            "Токен Steam хранится отдельно в системном хранилище учётных данных.",
+            "",
+            "Зарезервированные активы:",
+        ])
         lines.extend(f"• {bot} — asset {asset}" for bot, asset in assets)
         if not assets:
             lines.append("Состав не сохранён (старый заказ).")
