@@ -1320,3 +1320,14 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 - Правильная установка GameDelivery для Generic остаётся: `<ASF home>/plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll`. Каталог `plugins` можно создать вручную, если его нет. DLL не класть рядом с `ArchiSteamFarm.exe` только потому, что в корне находятся другие DLL.
 - Если пользователь называет конкретные DLL в корне «другими плагинами», до дальнейшего утверждения об их назначении нужно сверить их точные имена/скриншот, не объявлять их автоматически ни плагинами, ни зависимостями.
 - Источники для ответа: https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Plugins-ru-RU и https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Plugins
+
+
+### 2026-11-07 — Запуск ASF Generic в Windows
+
+- Исправлено объяснение: ASF Generic не содержит Windows self-contained `ArchiSteamFarm.exe`. Основной entrypoint — `ArchiSteamFarm.dll`; Generic archive также включает helper script `ArchiSteamFarm.cmd` рядом с DLL.
+- Официальные способы запуска в Windows:
+  - открыть `ArchiSteamFarm.cmd` двойным щелчком;
+  - открыть PowerShell в каталоге Generic и выполнить `dotnet .\ArchiSteamFarm.dll`.
+- Для Generic нужен установленный .NET SDK или как минимум ASP.NET Core Runtime подходящей версии (ASF 6.3.11.7 target net10.0). Если команда `dotnet` не найдена либо runtime отсутствует, установить .NET 10 ASP.NET Core Runtime.
+- Пользователю предложено сначала проверить наличие `ArchiSteamFarm.dll` в распакованной папке; не запускать старый ASF и не выполнять trade command.
+- Источник: https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Setting-up-ru-RU
