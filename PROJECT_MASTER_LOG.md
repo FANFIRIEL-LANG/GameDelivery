@@ -4,7 +4,7 @@
 >
 > **Правило ведения:** перед любой работой прочитать этот файл и связанный план, проверить GitHub-ветку и код. После каждого обсуждения, повлиявшего на проект, и после каждого изменения вносить запись сюда в рамках текущей сессии. Не считать записью факт, который не проверен. Не менять статус задачи без доказательства.
 
-**Последнее обновление:** 2026-11-06  
+**Последнее обновление:** 2026-11-07  
 **Репозиторий:** https://github.com/FANFIRIEL-LANG/GameDelivery  
 **Рабочая ветка:** `feature/asf-bulk-account-import`  
 **Подтверждённый HEAD на момент создания журнала:** `006dfce3e97da7611722234b8dfbcbd4c9698f1d`  
@@ -1081,3 +1081,41 @@ On tested code HEAD `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
 4. If the trimmed host fails and Generic passes, recommend Generic for this custom plugin (the machine already reports .NET 10.0.14); do not ask for a real trade send. Otherwise continue diagnosis using the exact missing member.
 
 **Safety/status:** no live Steam send; no code changes made for this trimming hypothesis in this checkpoint. Keep working only on `feature/asf-bulk-account-import`; `main` and PR #4 base remain untouched. Do not install the previous artifact merely because Generic CI passed.
+
+
+### 2026-11-07 — Actions повторно проверены; все три workflow зелёные на HEAD 2e3fb79
+
+**Рабочая ветка:** `feature/asf-bulk-account-import`  
+**HEAD, подтверждённый workflow runs и artifact metadata:** `2e3fb791473ddf48a8cb3409fbd3ca1cc4676e6b`  
+**Основание проверки:** три PR-triggered Actions run, связанные с указанным commit SHA; у ASF и Windows артефактов metadata также содержит тот же `head_sha` и ту же рабочую ветку.
+
+#### Результаты Actions
+
+- **Tests** — run `42297718596`, workflow run #1172: `completed / success`. Успешны все шаги, включая compile Python, тесты хранения/миграции Steam trade credentials, полный unit test suite. Артефактов у этого workflow нет.
+- **ASF plugin — ASF 6.3.11.7** — run `42297718451`, workflow run #542: `completed / success`. Успешны оба job:
+  - `build-plugin`: скачивание и проверка официальных ASF 6.3.11.7 binaries, сборка against exact host assemblies, smoke command parsing/runtime interface, проверки зависимостей и упаковка плагина;
+  - `windows-storage-acl-smoke`: Windows smoke тест ACL журнала при эксклюзивно открытом файле.
+  - Artifact `GameDelivery-ASFPlugin`, ID `13541963371`, size 32,767 bytes, SHA-256 `b1063506cf8b3052406a099a90f844fe70f05e94f2ed0e6b19bf1eacfa8f8d4c`, expires 2026-12-06.
+- **Build GameDelivery Windows executable** — run `42297718467`, workflow run #590: `completed / success`. Успешны compile, Windows trade-secret ACL hardening, GUI EXE build, packaged executable smoke test, package instructions и artifact upload.
+  - Artifact `GameDelivery-Windows-x64`, ID `13541784616`, size 54,859,219 bytes, SHA-256 `0ccbf9fb9fe06f70cbe7fcdcd226cb3facb2a5db8f0405be472146744d0a34cb`, expires 2026-12-06.
+
+**Итог:** все три GitHub Actions workflow успешны на одном и том же HEAD `2e3fb79`. Windows package gate закрыт для этого коммита. Эти CI результаты подтверждают сборку и smoke test пакета приложения/плагина, но не подтверждают live работу в ASF у пользователя и не подтверждают отправку Steam trade.
+
+#### Важное ограничение ASF trimming — не закрыто
+
+Успешный ASF workflow всё ещё проверяет Generic-вариант ASF 6.3.11.7. Он не запускает плагин внутри официального self-contained `win-x64` host с `PublishTrimmed=true`. Следовательно, ранее зафиксированная гипотеза trimming остаётся непроверенной; зелёный статус ASF workflow нельзя трактовать как доказательство совместимости с trimmed win-x64 runtime.
+
+#### Следующие действия
+
+1. Изучить текущий `.github/workflows/asf-plugin.yml` и существующий smoke harness, затем добавить отдельный Windows job для официального ASF 6.3.11.7 win-x64 trimmed runtime, не удаляя Generic coverage.
+2. В этом job загрузить плагин как внешний ASF plugin и проверить его диагностический/read-only путь без реальных Steam-трейдов; отдельно получить безопасную диагностику `SharedInfo.IsRuntimeTrimmed`, если accessor доступен в процессе.
+3. Добавить структурированные поля `MissingMemberException.MemberName` и `ClassName` во все релевантные catch-пути, сохранив redaction секретов и корректную границу `resultUnknown`.
+4. Повторить полный CI на новом точном HEAD; только после этого решать, нужна ли пользователю отдельная тестовая установка Generic или win-x64.
+5. Реальную отправку предметов не выполнять без отдельного прямого разрешения пользователя.
+
+**Пользовательская проверка:** сейчас скачивать и проверять ничего не нужно. Текущие артефакты не закрывают win-x64 trimming mismatch, поэтому не выдавать их за финальное исправление прежней runtime-ошибки.
+
+#### Процессное правило, подтверждённое пользователем
+
+Пользователь повторно подчеркнул, что каждый содержательный ответ и каждое действие по проекту должны отражаться в `PROJECT_MASTER_LOG.md`, чтобы не терялся контекст, выполненные изменения, результаты проверок и следующие шаги. Применять существующее правило журнала без исключений: после каждой такой итерации обновлять файл в той же сессии и подтверждать фактический commit записи. Не ограничиваться обещанием внести запись позднее.
+
