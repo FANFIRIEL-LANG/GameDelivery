@@ -153,7 +153,7 @@ internal static class TradeDelivery
         }
 
         PendingTradeSecret? secret;
-        string secretPath = GetPendingSecretPath(request.CredentialNonce);
+        string secretPath = GetPendingSecretPath(request.CredentialNonce!);
         try
         {
             RestrictStoragePermissions(secretPath, isDirectory: false);

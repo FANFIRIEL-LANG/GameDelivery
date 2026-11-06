@@ -6,7 +6,7 @@ The plugin exposes three commands through ASF's custom command handler:
 - `gamedelivery-preview` re-checks a proposed order against the current ASF inventory and **never sends**.
 - `gamedelivery-send` is used only after GameDelivery's order screen repeats the live preview, shows the exact selected assets, and receives explicit operator confirmation.
 
-The command handler is compatible with ASF 6.3.11.7: the command prefix is optional in the ASF console and IPC, and used when sending commands through Steam chat. At startup version 1.0.1 logs whether ASF's active plugin collection includes this exact `IBotCommand2` handler. Recognized callbacks log only command name and argument count, never the encoded payload or trade token.
+The command handler is compatible with ASF 6.3.11.7: the command prefix is optional in the ASF console and IPC, and used when sending commands through Steam chat. At startup version 1.0.2 logs whether ASF's active plugin collection includes this exact `IBotCommand2` handler. Recognized callbacks log only command name and argument count, never the encoded payload or trade token.
 
 A CI build does not prove that sending works against the ASF instance installed on a customer's PC. Validate this integration with a controlled test account and a low-risk test order before handling real sales.
 

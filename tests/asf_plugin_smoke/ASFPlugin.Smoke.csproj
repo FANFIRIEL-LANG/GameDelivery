@@ -23,6 +23,22 @@
       <HintPath>$(ASF_BIN_DIR)/System.Composition.AttributedModel.dll</HintPath>
       <Private>true</Private>
     </Reference>
+    <Reference Include="System.Composition.Convention">
+      <HintPath>$(ASF_BIN_DIR)/System.Composition.Convention.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Composition.Hosting">
+      <HintPath>$(ASF_BIN_DIR)/System.Composition.Hosting.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Composition.Runtime">
+      <HintPath>$(ASF_BIN_DIR)/System.Composition.Runtime.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Composition.TypedParts">
+      <HintPath>$(ASF_BIN_DIR)/System.Composition.TypedParts.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
     <Reference Include="GameDelivery.ASFPlugin">
       <HintPath>$(PLUGIN_DLL)</HintPath>
       <Private>true</Private>

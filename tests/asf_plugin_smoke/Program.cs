@@ -1,6 +1,9 @@
 using ArchiSteamFarm.Plugins.Interfaces;
 using GameDelivery.ASFPlugin;
 using System;
+using System.Composition;
+using System.Composition.Convention;
+using System.Composition.Hosting;
 using System.Linq;
 
 static void Assert(bool condition, string message)
@@ -65,7 +68,20 @@ Assert(typeof(GameDeliveryPlugin).GetInterfaceMap(typeof(IBotCommand2)).TargetMe
 Assert(typeof(GameDeliveryPlugin).GetCustomAttributesData()
         .Any(attribute => attribute.AttributeType.FullName == "System.Composition.ExportAttribute"),
     "plugin has no MEF Export attribute");
-Assert(typeof(GameDeliveryPlugin).Assembly.GetName().Version == new Version(1, 0, 1, 0),
-    "plugin assembly version is not the expected fixed version 1.0.1.0");
 
-Console.WriteLine("ASF plugin command dispatch and runtime compatibility smoke tests passed.");
+ConventionBuilder conventions = new();
+conventions.ForTypesDerivedFrom<IPlugin>().Export<IPlugin>();
+using CompositionHost container = new ContainerConfiguration()
+    .WithAssemblies([typeof(GameDeliveryPlugin).Assembly], conventions)
+    .CreateContainer();
+IPlugin[] exports = container.GetExports<IPlugin>().ToArray();
+GameDeliveryPlugin[] gameDeliveryExports = exports.OfType<GameDeliveryPlugin>().ToArray();
+Assert(gameDeliveryExports.Length == 1,
+    "ASF-style MEF composition did not discover exactly one GameDeliveryPlugin");
+Assert(exports.OfType<IBotCommand2>().Count() == 1,
+    "ASF-style MEF composition did not expose the plugin as an IBotCommand2 handler");
+
+Assert(typeof(GameDeliveryPlugin).Assembly.GetName().Version == new Version(1, 0, 2, 0),
+    "plugin assembly version is not the expected fixed version 1.0.2.0");
+
+Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");

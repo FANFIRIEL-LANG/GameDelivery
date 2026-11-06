@@ -238,5 +238,22 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("Smoke test command parsing and exact ASF runtime interface", workflow)
 
 
+    def test_smoke_project_uses_the_same_mef_export_discovery_as_asf(self):
+        project = (ROOT / "tests" / "asf_plugin_smoke" / "ASFPlugin.Smoke.csproj").read_text(encoding="utf-8")
+        program = (ROOT / "tests" / "asf_plugin_smoke" / "Program.cs").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        self.assertIn("System.Composition.Hosting.dll", project)
+        self.assertIn("System.Composition.Convention.dll", project)
+        self.assertIn("new ContainerConfiguration()", program)
+        self.assertIn(".WithAssemblies([typeof(GameDeliveryPlugin).Assembly], conventions)", program)
+        self.assertIn("container.GetExports<IPlugin>()", program)
+        self.assertIn("exports.OfType<IBotCommand2>()", program)
+        self.assertIn("System.Composition.$composition_assembly.dll", workflow)
+
+    def test_send_nonce_is_null_guarded_before_secret_path_creation(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
+        self.assertIn("GetPendingSecretPath(request.CredentialNonce!)", source)
+
+
 if __name__ == "__main__":
     unittest.main()
