@@ -48,7 +48,7 @@ jobs:
           mkdir -p .asf-bin
           unzip -q /tmp/ASF-generic.zip -d .asf-bin
           echo "ASF generic archive assembly layout:"
-          find .asf-bin -type f \( -name ArchiSteamFarm.dll -o -name SteamKit2.dll -o -name Newtonsoft.Json.dll -o -name System.Composition.AttributedModel.dll \) -print
+          find .asf-bin -type f \( -name ArchiSteamFarm.dll -o -name SteamKit2.dll -o -name System.Composition.AttributedModel.dll \) -print
           asf_bin_dir=$(dirname "$(find .asf-bin -type f -name ArchiSteamFarm.dll -print -quit)")
           test -n "$asf_bin_dir"
           test -s "$asf_bin_dir/SteamKit2.dll"
@@ -58,13 +58,22 @@ jobs:
       - name: Build GameDelivery ASF plugin against exact host assemblies
         run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$ASF_BIN_DIR
 
+      - name: Verify plugin has no Newtonsoft runtime dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -n 'Newtonsoft.Json\|JsonConvert' integrations/asf_plugin --include='*.cs' --include='*.csproj'; then
+            echo "Unexpected Newtonsoft.Json usage in ASF plugin source" >&2
+            exit 1
+          fi
+
       - name: Verify plugin output does not contain host-shared dependencies
         shell: bash
         run: |
           set -euo pipefail
           output=integrations/asf_plugin/bin/Release/net10.0
           test -s "$output/GameDelivery.ASFPlugin.dll"
-          for shared in ArchiSteamFarm.dll SteamKit2.dll Newtonsoft.Json.dll System.Composition.AttributedModel.dll; do
+          for shared in ArchiSteamFarm.dll SteamKit2.dll System.Composition.AttributedModel.dll; do
             if test -e "$output/$shared"; then
               echo "Unexpected host-shared dependency in plugin output: $shared" >&2
               exit 1

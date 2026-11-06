@@ -75,29 +75,38 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("StackTrace", failure_region)
         self.assertIn("exceptionType", failure_region)
 
-    def test_plugin_json_uses_newtonsoft_without_system_text_json_reflection_metadata(self):
+    def test_plugin_json_uses_framework_system_text_json_without_newtonsoft(self):
         for relative_path in (
             "integrations/asf_plugin/GameDeliveryPlugin.cs",
             "integrations/asf_plugin/TradeDelivery.cs",
         ):
             source = (ROOT / relative_path).read_text(encoding="utf-8")
-            self.assertIn("using Newtonsoft.Json;", source)
-            self.assertIn("JsonConvert.SerializeObject(", source)
-            self.assertNotIn("System.Text.Json", source)
-            self.assertNotIn("DefaultJsonTypeInfoResolver", source)
+            self.assertIn("using System.Text.Json;", source)
+            self.assertIn("JsonSerializer.Serialize(", source)
+            self.assertIn("JsonSerializer.Deserialize<", source)
+            self.assertIn("PropertyNamingPolicy = JsonNamingPolicy.CamelCase", source)
+            self.assertIn("PropertyNameCaseInsensitive = true", source)
+            self.assertNotIn("Newtonsoft", source)
+            self.assertNotIn("JsonConvert", source)
 
-    def test_plugin_uses_host_newtonsoft_and_does_not_package_shared_runtime_dependencies(self):
+    def test_plugin_deserialization_dtos_have_public_parameterless_constructors(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        trade = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        self.assertIn("public PreviewRequest() { }", plugin)
+        self.assertIn("public SendRequest() { }", trade)
+        self.assertIn("public PendingTradeSecret() { }", trade)
+        self.assertIn("public SendRecord() { }", trade)
+
+    def test_plugin_has_no_external_json_package_and_does_not_package_shared_runtime_dependencies(self):
         project = (ROOT / "integrations" / "asf_plugin" / "GameDelivery.ASFPlugin.csproj").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
-        self.assertIn('<PackageReference Include="Newtonsoft.Json" Version="13.0.3" IncludeAssets="compile" />', project)
+        self.assertNotIn("Newtonsoft.Json", project)
+        self.assertNotIn("PackageReference", project)
         self.assertIn('<Private>false</Private>', project)
         self.assertIn('<CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>', project)
-        self.assertNotIn('IncludeAssets="runtime"', project)
+        self.assertIn("Verify plugin has no Newtonsoft runtime dependency", workflow)
         self.assertIn('Unexpected host-shared dependency in plugin output', workflow)
         self.assertIn('GameDelivery.ASFPlugin.dll', workflow)
-        self.assertNotIn('json_dll=', workflow)
-        self.assertNotIn('cp "$json_dll"', workflow)
-
 
 
     def test_plugin_workflow_uses_a_yaml_block_for_multiline_build_info(self):
@@ -126,7 +135,7 @@ class ASFPluginContractTests(unittest.TestCase):
         send = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
 
         preview_start = plugin.index("foreach (string rawAssetId in request.AssetIds)")
-        preview_end = plugin.index("return JsonConvert.SerializeObject(new PreviewResponse", preview_start)
+        preview_end = plugin.index("return JsonSerializer.Serialize(new PreviewResponse", preview_start)
         preview_validation = plugin[preview_start:preview_end]
         send_start = send.index("foreach (string rawAssetId in request.AssetIds)")
         send_end = send.index("string fingerprint = ComputeFingerprint(request)", send_start)

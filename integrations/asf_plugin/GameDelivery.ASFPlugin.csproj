@@ -12,10 +12,7 @@
   <PropertyGroup>
     <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)../../ASF</ASF_BIN_DIR>
   </PropertyGroup>
-  <ItemGroup>
-    <!-- ASF Windows distributions provide Newtonsoft.Json 13.0.0.0 at runtime; use NuGet only for compile-time metadata. -->
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" IncludeAssets="compile" />
-  </ItemGroup>
+  <!-- JSON uses the System.Text.Json implementation included in the .NET 10 shared framework. -->
   <ItemGroup>
     <Reference Include="ArchiSteamFarm">
       <HintPath>$(ASF_BIN_DIR)/ArchiSteamFarm.dll</HintPath>
