@@ -457,7 +457,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
             process.poll.return_value = None
             self.widget.asf_executable_path.setText(str(generic_dll))
             self.widget.config_path.setText(str(config_dir))
-            with patch("app.asf_management.Path.home", return_value=home), \\
+            with patch("app.asf_management.Path.home", return_value=home), \
                  patch.object(self.widget, "_ipc_port_is_open", return_value=False):
                 self.widget.start_asf()
 
