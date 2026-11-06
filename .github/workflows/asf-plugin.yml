@@ -258,22 +258,22 @@ jobs:
 
                 if ($combined.Contains("GameDeliveryPlugin send state-machine JIT probe:")) {
                   if ($combined.Contains('"status":"success"')) {
-                    Write-Host "$Variant: plugin loaded and ProcessSendCommand state machine JIT-compiled successfully."
+                    Write-Host "${Variant}: plugin loaded and ProcessSendCommand state machine JIT-compiled successfully."
                     return
                   }
-                  throw "$Variant: plugin loaded but the send state-machine JIT probe failed." + [Environment]::NewLine + $combined
+                  throw "${Variant}: plugin loaded but the send state-machine JIT probe failed." + [Environment]::NewLine + $combined
                 }
 
                 if ($combined.Contains("InitPlugins() Failed due to error:")) {
-                  throw "$Variant: ASF failed during MEF plugin initialization before GameDeliveryPlugin.OnASFInit." + [Environment]::NewLine + $combined
+                  throw "${Variant}: ASF failed during MEF plugin initialization before GameDeliveryPlugin.OnASFInit." + [Environment]::NewLine + $combined
                 }
 
                 if ($process.HasExited) {
-                  throw "$Variant: ASF exited before the GameDelivery send state-machine JIT probe ran. ExitCode=$($process.ExitCode)" + [Environment]::NewLine + $combined
+                  throw "${Variant}: ASF exited before the GameDelivery send state-machine JIT probe ran. ExitCode=$($process.ExitCode)" + [Environment]::NewLine + $combined
                 }
               }
 
-              throw "$Variant: timed out waiting for the GameDelivery send state-machine JIT probe." + [Environment]::NewLine + $combined
+              throw "${Variant}: timed out waiting for the GameDelivery send state-machine JIT probe." + [Environment]::NewLine + $combined
             }
             finally {
               if (!$process.HasExited) {
