@@ -222,7 +222,7 @@ class ASFPluginContractTests(unittest.TestCase):
 
     def test_plugin_assembly_version_is_incremented_for_fixed_dispatch_artifact(self):
         project = (ROOT / "integrations/asf_plugin/GameDelivery.ASFPlugin.csproj").read_text(encoding="utf-8")
-        self.assertIn("<Version>1.0.1</Version>", project)
+        self.assertIn("<Version>1.0.2</Version>", project)
 
 
     def test_smoke_project_verifies_exact_asf_interfaces_export_and_version(self):
@@ -234,7 +234,7 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("typeof(IASF).IsAssignableFrom", program)
         self.assertIn("typeof(IBotCommand2).IsAssignableFrom", program)
         self.assertIn("System.Composition.ExportAttribute", program)
-        self.assertIn("new Version(1, 0, 1, 0)", program)
+        self.assertIn("new Version(1, 0, 2, 0)", program)
         self.assertIn("Smoke test command parsing and exact ASF runtime interface", workflow)
 
 
