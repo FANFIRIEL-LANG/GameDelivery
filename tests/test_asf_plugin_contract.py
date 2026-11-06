@@ -326,8 +326,9 @@ class ASFPluginContractTests(unittest.TestCase):
         send = trade[send_start:send_end]
 
         self.assertIn("bool sendDispatchStarted = false;", callback)
+        self.assertIn("TradeDelivery.ProcessSendCommand(", callback)
         self.assertIn(
-            "TradeDelivery.ProcessSendCommand(commandArgs[1], bot.BotName, () => sendDispatchStarted = true)",
+            "commandArgs[1],\\n                    bot.BotName,\\n                    () => sendDispatchStarted = true",
             callback,
         )
         self.assertIn("resultUnknown = isSend && sendDispatchStarted", callback)
