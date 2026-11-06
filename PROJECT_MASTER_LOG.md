@@ -696,3 +696,37 @@ Telegram Bot — настраиваемая дополнительная пан�
 - По прямому запросу пользователя в обязательные правила добавлены `/truth`, `/nofluff`, `/odds` и `/genius`.
 - Зафиксированы назначение каждого режима, правила оценки вероятностей, возможность комбинирования и условие включения только по явному запросу.
 - Изменения ограничены этим журналом; код приложения, подробный план этапов, PR и другие ветки не изменялись.
+
+
+### 2026-11-06 — диагностика аварийного запуска ASF из-за загрузки GameDelivery plugin
+
+**Этап/блок:** диагностика текущей проблемы ASF plugin в рамках C.1; C.2 не начат.  
+**Цель:** установить причину `ReflectionTypeLoadException` при `PluginsCore.InitPlugins()` в ASF 6.3.11.7 без повторных пользовательских проверок.
+
+**Что изучено:**
+- По скриншоту пользователя: ASF 6.3.11.7 / .NET 10.0.14 при старте сообщает `Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed`, затем `System.Reflection.ReflectionTypeLoadException: Unable to load one or more of the requested types.`
+- Пользователь подтвердил, что единственная `Newtonsoft.Json.dll` внутри `C:\\ASF-win-x64` находится в `plugins/GameDelivery.ASFPlugin`; DLL имеет assembly version 13.0.0.0 и размер 712,464 байта. Других копий под каталогом ASF не найдено.
+- Текущий `integrations/asf_plugin/GameDelivery.ASFPlugin.csproj` на рабочей ветке подключает `Newtonsoft.Json` 13.0.3 обычным PackageReference, включает `CopyLocalLockFileAssemblies=true`, и не задаёт `IncludeAssets=compile`.
+- Текущий `.github/workflows/asf-plugin.yml` принудительно копирует output `Newtonsoft.Json.dll` в инсталляционный пакет рядом с plugin DLL.
+- Официальный пример проекта ASF 6.3.11.7 использует для разделяемых host dependencies `IncludeAssets="compile"` (например, SteamKit2, System.Composition.AttributedModel), а ASF plugin docs рекомендуют не включать в plugin output библиотеки, которые уже входят в ASF.
+- .NET plugin guidance уточняет, что разрешение private dependencies зависит от AssemblyLoadContext и AssemblyDependencyResolver/deps.json. В нашем проекте `GenerateDependencyFile=false`, поэтому простое присутствие DLL рядом не гарантирует, что host выберет её при сканировании типов.
+
+**Подтверждённые выводы:**
+- Ошибка возникает на этапе загрузки/reflection типов до обработки команд GameDelivery; к скорости Steam login она напрямую не относится.
+- Номер версии и public key Newtonsoft.Json DLL совпадают с запрошенной сборкой, а дублирующей DLL в корне ASF нет.
+- Сборочная конфигурация отклоняется от официального паттерна ASF по доставке host-shared dependencies. Это конкретный дефект, который необходимо исправить в первую очередь.
+- При этом точный тип/метод, который не загрузился, из имеющегося скриншота не известен; нельзя утверждать, что Newtonsoft.Json — единственная причина. Требуется диагностический loader exception после исправления пакета.
+
+**Решение для исправления:**
+- Для этого ASF plugin исключить Newtonsoft.Json из приватной поставки, если официальная ASF 6.3.11.7 сборка содержит совместимую версию, и сверять это в CI непосредственно по extracted ASF-generic.zip.
+- Подключить Newtonsoft.Json как compile-time-only dependency (и убрать forced copy из workflow), аналогично ASF примеру; установить regression check, который проверяет package contents: только GameDelivery plugin DLL + README + BUILD_INFO и не включает ASF-shared assemblies.
+- Не удалять DLL из установленного у пользователя каталога вручную; дать новую проверенную сборку, в которой пакетная конфигурация корректна.
+- Перед выпуском проверить сборку против реального состава официального ASF 6.3.11.7, проверить успешное обнаружение/загрузку плагина в автоматизированном plugin-load smoke harness, а не только компиляцию.
+
+**Изменённые файлы:** пока не менялись.  
+**Проверки:** чтение исходников, workflow и официального ASF plugin guidance выполнено; новую сборку ещё не создавали; live load не подтверждён.  
+**Что должен скачать/проверить пользователь:** пока не требуется.  
+**Результат:** вероятная причина найдена в неверной модели упаковки shared dependency; точная runtime причина пока не подтверждена до исправления и теста.  
+**Открытые вопросы и риски:** необходимо проверить, включает ли официальный ASF 6.3.11.7 Newtonsoft.Json.dll и какую конкретно assembly version он предоставляет; после исправления при повторном сбое нужен полный loader exception, включая LoaderExceptions, а не только общий ReflectionTypeLoadException.  
+**Точный следующий шаг:** сверить официальный release archive, исправить csproj/workflow/package smoke test и запустить ASF plugin workflow только в feature/asf-bulk-account-import.  
+**Разрешение пользователя на следующий этап:** C.2 не разрешён и не начат.
