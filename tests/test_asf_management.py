@@ -436,6 +436,61 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.widget._close_asf_log()
             self.widget._asf_process = None
 
+    @patch("app.asf_management.QTimer.singleShot")
+    @patch("app.asf_management.subprocess.Popen")
+    @patch("app.asf_management.shutil.which", return_value=r"C:\\Program Files\\dotnet\\dotnet.exe")
+    @patch("app.asf_management.ASFClient.get_status", side_effect=OSError("IPC unavailable"))
+    @patch("app.asf_management.ASFOutputReader.start")
+    def test_start_asf_launches_generic_dll_through_dotnet(
+        self, reader_start, get_status, which, popen, single_shot
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            generic_dll = home / "ArchiSteamFarm.dll"
+            generic_dll.write_bytes(b"test assembly")
+            config_dir = home / "config"
+            config_dir.mkdir()
+            (config_dir / "ASF.json").write_text(
+                json.dumps({"IPC": True, "IPCPassword": "local-secret"}), encoding="utf-8"
+            )
+            process = popen.return_value
+            process.poll.return_value = None
+            self.widget.asf_executable_path.setText(str(generic_dll))
+            self.widget.config_path.setText(str(config_dir))
+            with patch("app.asf_management.Path.home", return_value=home), \\
+                 patch.object(self.widget, "_ipc_port_is_open", return_value=False):
+                self.widget.start_asf()
+
+            args, kwargs = popen.call_args
+            self.assertEqual(
+                args[0],
+                [r"C:\\Program Files\\dotnet\\dotnet.exe", str(generic_dll), "--process-required"],
+            )
+            self.assertEqual(kwargs["cwd"], str(home))
+            self.assertIn("GameDelivery запустил ASF", self.widget.status.text())
+            which.assert_called_once_with("dotnet")
+            self.widget._close_asf_log()
+            self.widget._asf_process = None
+
+    def test_config_selection_autodetects_generic_dll_even_if_old_exe_path_is_saved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            old_home = Path(temp) / "old-asf"
+            old_home.mkdir()
+            old_exe = old_home / "ArchiSteamFarm.exe"
+            old_exe.write_bytes(b"old executable")
+            generic_home = Path(temp) / "ASF-generic"
+            generic_home.mkdir()
+            generic_dll = generic_home / "ArchiSteamFarm.dll"
+            generic_dll.write_bytes(b"generic assembly")
+            config_dir = generic_home / "config"
+            config_dir.mkdir()
+
+            self.widget.asf_executable_path.setText(str(old_exe))
+            self.widget.config_path.setText(str(config_dir))
+            self.widget._autodetect_asf_executable(config_dir)
+
+            self.assertEqual(self.widget.asf_executable_path.text(), str(generic_dll))
+
     def test_import_rolls_back_partial_mafile_and_prior_accounts_on_copy_error(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
