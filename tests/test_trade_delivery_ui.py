@@ -150,7 +150,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                 info.assert_called_once()
                 with sqlite3.connect(database) as db:
                     row = db.execute(
-                        "SELECT status, trade_offer_id, trade_confirmation_status "
+                        "SELECT status, trade_offer_id, trade_confirmation_status, recipient_trade_url "
                         "FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
                     ).fetchone()
@@ -158,7 +158,20 @@ class TradeDeliveryUITests(unittest.TestCase):
                         "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
                         ("GD-ORDER-1",),
                     ).fetchall()
-                self.assertEqual(row, ("sent — ожидание покупателя", "9876543210", "handled"))
+                self.assertEqual(
+                    row,
+                    (
+                        "sent — ожидание покупателя",
+                        "9876543210",
+                        "handled",
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456",
+                    ),
+                )
+                self.assertIsNone(
+                    window._trade_credentials._backend.get_password(
+                        window._trade_credentials.SERVICE, "GD-ORDER-1"
+                    )
+                )
                 self.assertEqual(reservation, [("Bot A", "1234567890")])
                 self.assertFalse(window.send_offer_button.isEnabled())
 
@@ -192,6 +205,11 @@ class TradeDeliveryUITests(unittest.TestCase):
                         ("GD-ORDER-1",),
                     ).fetchone()[0]
                 self.assertEqual(status, "неизвестен результат отправки — проверь исходящие Steam")
+                self.assertIsNone(
+                    window._trade_credentials._backend.get_password(
+                        window._trade_credentials.SERVICE, "GD-ORDER-1"
+                    )
+                )
                 self.assertFalse(window.send_offer_button.isEnabled())
 
             self._run_with_window(database, exercise)
@@ -231,6 +249,11 @@ class TradeDeliveryUITests(unittest.TestCase):
                     ).fetchall()
                 self.assertEqual(status, "cancelled — резерв снят")
                 self.assertEqual(reservations, [])
+                self.assertIsNone(
+                    window._trade_credentials._backend.get_password(
+                        window._trade_credentials.SERVICE, "GD-ORDER-1"
+                    )
+                )
 
             self._run_with_window(database, exercise)
 
@@ -262,6 +285,11 @@ class TradeDeliveryUITests(unittest.TestCase):
                     ).fetchall()
                 self.assertEqual(status, "cancelled — результат отправки требует сверки")
                 self.assertEqual(reservations, [("Bot A", "1234567890")])
+                self.assertIsNone(
+                    window._trade_credentials._backend.get_password(
+                        window._trade_credentials.SERVICE, "GD-ORDER-1"
+                    )
+                )
                 self.assertFalse(window.send_offer_button.isEnabled())
 
             self._run_with_window(database, exercise)
