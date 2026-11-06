@@ -1,11 +1,16 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Composition;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using System.Text;
 using System.Threading.Tasks;
+using System.Reflection;
+using ArchiSteamFarm.Core;
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
 using ArchiSteamFarm.Steam.Data;
@@ -16,7 +21,7 @@ using SteamKit2;
 namespace GameDelivery.ASFPlugin;
 
 [Export(typeof(IPlugin))]
-public sealed class GameDeliveryPlugin : IBotCommand2
+public sealed class GameDeliveryPlugin : IASF, IBotCommand2
 {
     private const string PreviewCommandName = "gamedelivery-preview";
     private const string SendCommandName = "gamedelivery-send";
@@ -28,12 +33,81 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         PropertyNameCaseInsensitive = true
     };
 
+    [JsonInclude]
     public string Name => nameof(GameDeliveryPlugin);
 
+    [JsonInclude]
     public Version Version => typeof(GameDeliveryPlugin).Assembly.GetName().Version
-        ?? new Version(1, 0, 0, 0);
+        ?? new Version(1, 0, 1, 0);
 
     public Task OnLoaded() => Task.CompletedTask;
+
+    public Task OnASFInit(IReadOnlyDictionary<string, JsonElement>? additionalConfigProperties = null)
+    {
+        try
+        {
+            Type? pluginsCore = typeof(Bot).Assembly.GetType(
+                "ArchiSteamFarm.Plugins.PluginsCore",
+                throwOnError: false);
+            PropertyInfo? activePluginsProperty = pluginsCore?.GetProperty(
+                "ActivePlugins",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            IEnumerable? activePlugins = activePluginsProperty?.GetValue(null) as IEnumerable;
+
+            if (activePlugins is null)
+            {
+                ASF.ArchiLogger.LogGenericWarning(
+                    "GameDeliveryPlugin: не удалось проверить регистрацию IBotCommand2 в ASF.");
+                return Task.CompletedTask;
+            }
+
+            int activePluginCount = 0;
+            int commandHandlerCount = 0;
+            bool thisPluginRegistered = false;
+
+            foreach (object? activePlugin in activePlugins)
+            {
+                if (activePlugin is null)
+                {
+                    continue;
+                }
+
+                activePluginCount++;
+                if (activePlugin is IBotCommand2)
+                {
+                    commandHandlerCount++;
+                }
+
+                if (ReferenceEquals(activePlugin, this))
+                {
+                    thisPluginRegistered = true;
+                }
+            }
+
+            string registration = "GameDeliveryPlugin ASF registration: "
+                + "activePlugins=" + activePluginCount.ToString(CultureInfo.InvariantCulture)
+                + "; commandHandlers=" + commandHandlerCount.ToString(CultureInfo.InvariantCulture)
+                + "; thisIsIBotCommand2=" + (this is IBotCommand2).ToString()
+                + "; thisIsRegistered=" + thisPluginRegistered.ToString() + ".";
+
+            if (thisPluginRegistered && commandHandlerCount > 0)
+            {
+                ASF.ArchiLogger.LogGenericInfo(registration);
+            }
+            else
+            {
+                ASF.ArchiLogger.LogGenericWarning(registration);
+            }
+        }
+        catch (Exception exception)
+        {
+            ASF.ArchiLogger.LogGenericWarning(
+                "GameDeliveryPlugin: ошибка проверки регистрации обработчика команд: "
+                + exception.GetType().Name + ": " + SafeMessage(exception.Message));
+        }
+
+        return Task.CompletedTask;
+    }
 
     public async Task<string?> OnBotCommand(
         Bot bot,
@@ -42,182 +116,200 @@ public sealed class GameDeliveryPlugin : IBotCommand2
         string[] args,
         ulong steamID = 0)
     {
-        if (args.Length == 0)
-        {
-            return null;
-        }
+        bool isSend = false;
+        string? recognizedCommand = null;
 
-        bool isPreview = string.Equals(args[0], PreviewCommandName, StringComparison.OrdinalIgnoreCase);
-        bool isSend = string.Equals(args[0], SendCommandName, StringComparison.OrdinalIgnoreCase);
-        bool isDiagnostic = string.Equals(args[0], DiagnosticCommandName, StringComparison.OrdinalIgnoreCase);
-        if (!isPreview && !isSend && !isDiagnostic)
-        {
-            return null;
-        }
-
-        if (access != EAccess.Owner)
-        {
-            return Failure("Команда доступна только ASF Owner.");
-        }
-
-        if (isDiagnostic)
-        {
-            if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1]))
-            {
-                return Failure("Укажи имя бота: gamedelivery-diagnose <BotName>.");
-            }
-
-            Bot? diagnosticBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
-                string.Equals(candidate.BotName, args[1], StringComparison.OrdinalIgnoreCase));
-            if (diagnosticBot is null)
-            {
-                return Failure("Бот " + SafeMessage(args[1]) + " не найден в текущем экземпляре ASF.");
-            }
-
-            return await RunDiagnosticCommand(diagnosticBot).ConfigureAwait(false);
-        }
-
-        if (args.Length != 2 || args[1].Length > 16000)
-        {
-            return Failure("Некорректный запрос GameDelivery.");
-        }
-
-        if (isSend)
-        {
-            try
-            {
-                return await TradeDelivery.ProcessSendCommand(args[1]).ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                // The failure may have happened after Steam accepted the request.
-                // Fail closed: surface the exact exception type/message and prevent automatic retries.
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    mode = "send",
-                    sendEnabled = true,
-                    resultUnknown = true,
-                    error = "ASF прервал обработку отправки: "
-                        + exception.GetType().Name + ": " + SafeMessage(exception.Message)
-                        + ". Проверь исходящие предложения Steam; повторная отправка заблокирована.",
-                    exceptionType = exception.GetType().FullName,
-                    exceptionMessage = SafeDiagnosticText(exception.Message),
-                    targetSite = exception.TargetSite?.ToString(),
-                    stackTrace = SafeDiagnosticText(exception.StackTrace)
-                }, JsonOptions);
-            }
-        }
-
-        PreviewRequest? request;
         try
         {
-            string encoded = args[1].Replace('-', '+').Replace('_', '/');
-            encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
-            byte[] bytes = Convert.FromBase64String(encoded);
-            request = JsonSerializer.Deserialize<PreviewRequest>(Encoding.UTF8.GetString(bytes), JsonOptions);
-        }
-        catch (Exception exception) when (exception is FormatException or JsonException)
-        {
-            return Failure("Не удалось разобрать запрос черновика GameDelivery.");
-        }
-
-        if (request is null
-            || string.IsNullOrWhiteSpace(request.OrderId)
-            || string.IsNullOrWhiteSpace(request.BotName)
-            || request.TargetSteamId64 == 0
-            || request.AssetIds is null
-            || request.AssetIds.Count is < 1 or > MaxItemsPerPreview)
-        {
-            return Failure("В запросе черновика отсутствуют обязательные поля.");
-        }
-
-        if (request.AssetIds.Any(string.IsNullOrWhiteSpace)
-            || request.AssetIds.Distinct(StringComparer.Ordinal).Count() != request.AssetIds.Count)
-        {
-            return Failure("Список asset ID пустой или содержит повторы.");
-        }
-
-        if (request.AssetIds.Any(value =>
-                !ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong id) || id == 0))
-        {
-            return Failure("В списке есть некорректный asset ID.");
-        }
-
-        SteamID recipient = new(request.TargetSteamId64);
-        if (!recipient.IsIndividualAccount)
-        {
-            return Failure("Получатель не является индивидуальным Steam-аккаунтом.");
-        }
-
-        Bot? targetBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
-            string.Equals(candidate.BotName, request.BotName, StringComparison.OrdinalIgnoreCase));
-        if (targetBot is null)
-        {
-            return Failure("Выбранный бот не найден в текущем экземпляре ASF.");
-        }
-
-        if (!targetBot.IsConnectedAndLoggedOn)
-        {
-            return Failure("Выбранный бот ASF не подключён к Steam.");
-        }
-
-        (HashSet<Asset>? inventory, string inventoryMessage) = await targetBot.Actions.GetInventory(
-            Asset.SteamAppID,
-            Asset.SteamCommunityContextID,
-            language: "english").ConfigureAwait(false);
-
-        if (inventory is null)
-        {
-            return Failure("Не удалось проверить актуальный инвентарь ASF: " + SafeMessage(inventoryMessage));
-        }
-
-        Dictionary<ulong, Asset> byAssetId = inventory
-            .Where(asset => asset.AssetID > 0)
-            .GroupBy(asset => asset.AssetID)
-            .ToDictionary(group => group.Key, group => group.First());
-
-        List<PreviewAsset> previewAssets = new(request.AssetIds.Count);
-        foreach (string rawAssetId in request.AssetIds)
-        {
-            ulong assetId = ulong.Parse(rawAssetId, NumberStyles.None, CultureInfo.InvariantCulture);
-            if (!byAssetId.TryGetValue(assetId, out Asset? asset))
+            if (!CommandArgumentParser.TryNormalize(
+                message,
+                args,
+                ASF.GlobalConfig?.CommandPrefix,
+                out string[] commandArgs))
             {
-                return Failure("Актив " + rawAssetId + " не найден в актуальном инвентаре выбранного бота.");
+                return null;
             }
 
-            if (asset.AppID != Asset.SteamAppID || asset.ContextID != Asset.SteamCommunityContextID)
+            recognizedCommand = commandArgs[0];
+            bool isPreview = string.Equals(recognizedCommand, PreviewCommandName, StringComparison.OrdinalIgnoreCase);
+            isSend = string.Equals(recognizedCommand, SendCommandName, StringComparison.OrdinalIgnoreCase);
+            bool isDiagnostic = string.Equals(recognizedCommand, DiagnosticCommandName, StringComparison.OrdinalIgnoreCase);
+            if (!isPreview && !isSend && !isDiagnostic)
             {
-                return Failure("Актив " + rawAssetId + " относится к неподдерживаемому контексту.");
+                return null;
             }
 
-            if (!asset.Tradable)
+            ASF.ArchiLogger.LogGenericInfo(
+                "GameDeliveryPlugin.OnBotCommand: command=" + recognizedCommand
+                + "; argumentCount=" + (commandArgs.Length - 1).ToString(CultureInfo.InvariantCulture)
+                + "; bot=" + SafeMessage(bot.BotName) + ".");
+
+            if (access != EAccess.Owner)
             {
-                return Failure("Актив " + rawAssetId + " сейчас нельзя передать.");
+                return Failure("Команда доступна только ASF Owner.");
             }
 
-            previewAssets.Add(new PreviewAsset
+            if (isDiagnostic)
             {
-                AssetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
-                Name = asset.Description?.Name ?? "Steam Community item",
-                ClassId = asset.ClassID.ToString(CultureInfo.InvariantCulture),
-                InstanceId = asset.InstanceID.ToString(CultureInfo.InvariantCulture),
-                Tradable = true
-            });
+                if (commandArgs.Length != 2 || string.IsNullOrWhiteSpace(commandArgs[1]))
+                {
+                    return Failure("Укажи имя бота: gamedelivery-diagnose <BotName>.");
+                }
+
+                Bot? diagnosticBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
+                    string.Equals(candidate.BotName, commandArgs[1], StringComparison.OrdinalIgnoreCase));
+                if (diagnosticBot is null)
+                {
+                    return Failure("Бот " + SafeMessage(commandArgs[1]) + " не найден в текущем экземпляре ASF.");
+                }
+
+                return await RunDiagnosticCommand(diagnosticBot).ConfigureAwait(false);
+            }
+
+            if (commandArgs.Length != 2 || commandArgs[1].Length > 16000)
+            {
+                return Failure("Некорректный запрос GameDelivery.");
+            }
+
+            if (isSend)
+            {
+                return await TradeDelivery.ProcessSendCommand(commandArgs[1]).ConfigureAwait(false);
+            }
+
+            PreviewRequest? request;
+            try
+            {
+                string encoded = commandArgs[1].Replace('-', '+').Replace('_', '/');
+                encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
+                byte[] bytes = Convert.FromBase64String(encoded);
+                request = JsonSerializer.Deserialize<PreviewRequest>(Encoding.UTF8.GetString(bytes), JsonOptions);
+            }
+            catch (Exception exception) when (exception is FormatException or JsonException)
+            {
+                return Failure("Не удалось разобрать запрос черновика GameDelivery.");
+            }
+
+            if (request is null
+                || string.IsNullOrWhiteSpace(request.OrderId)
+                || string.IsNullOrWhiteSpace(request.BotName)
+                || request.TargetSteamId64 == 0
+                || request.AssetIds is null
+                || request.AssetIds.Count is < 1 or > MaxItemsPerPreview)
+            {
+                return Failure("В запросе черновика отсутствуют обязательные поля.");
+            }
+
+            if (request.AssetIds.Any(string.IsNullOrWhiteSpace)
+                || request.AssetIds.Distinct(StringComparer.Ordinal).Count() != request.AssetIds.Count)
+            {
+                return Failure("Список asset ID пустой или содержит повторы.");
+            }
+
+            if (request.AssetIds.Any(value =>
+                    !ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong id)
+                    || id == 0
+                    || !string.Equals(value, id.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)))
+            {
+                return Failure("Список asset ID содержит некорректные или неканонические значения.");
+            }
+
+            SteamID recipient = new(request.TargetSteamId64);
+            if (!recipient.IsIndividualAccount)
+            {
+                return Failure("Получатель не является индивидуальным Steam-аккаунтом.");
+            }
+
+            Bot? targetBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
+                string.Equals(candidate.BotName, request.BotName, StringComparison.OrdinalIgnoreCase));
+            if (targetBot is null)
+            {
+                return Failure("Выбранный бот не найден в текущем экземпляре ASF.");
+            }
+
+            if (!targetBot.IsConnectedAndLoggedOn)
+            {
+                return Failure("Выбранный бот ASF не подключён к Steam.");
+            }
+
+            (HashSet<Asset>? inventory, string inventoryMessage) = await targetBot.Actions.GetInventory(
+                Asset.SteamAppID,
+                Asset.SteamCommunityContextID,
+                language: "english").ConfigureAwait(false);
+
+            if (inventory is null)
+            {
+                return Failure("Не удалось проверить актуальный инвентарь ASF: " + SafeMessage(inventoryMessage));
+            }
+
+            Dictionary<ulong, Asset> byAssetId = inventory
+                .Where(asset => asset.AssetID > 0)
+                .GroupBy(asset => asset.AssetID)
+                .ToDictionary(group => group.Key, group => group.First());
+
+            List<PreviewAsset> previewAssets = new(request.AssetIds.Count);
+            foreach (string rawAssetId in request.AssetIds)
+            {
+                ulong assetId = ulong.Parse(rawAssetId, NumberStyles.None, CultureInfo.InvariantCulture);
+                if (!byAssetId.TryGetValue(assetId, out Asset? asset))
+                {
+                    return Failure("Актив " + rawAssetId + " не найден в актуальном инвентаре выбранного бота.");
+                }
+
+                if (asset.AppID != Asset.SteamAppID || asset.ContextID != Asset.SteamCommunityContextID)
+                {
+                    return Failure("Актив " + rawAssetId + " относится к неподдерживаемому контексту.");
+                }
+
+                if (!asset.Tradable)
+                {
+                    return Failure("Актив " + rawAssetId + " сейчас нельзя передать.");
+                }
+
+                previewAssets.Add(new PreviewAsset
+                {
+                    AssetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
+                    Name = asset.Description?.Name ?? "Steam Community item",
+                    ClassId = asset.ClassID.ToString(CultureInfo.InvariantCulture),
+                    InstanceId = asset.InstanceID.ToString(CultureInfo.InvariantCulture),
+                    Tradable = true
+                });
+            }
+
+            return JsonSerializer.Serialize(new PreviewResponse
+            {
+                Success = true,
+                Mode = "preview-only",
+                SendEnabled = false,
+                OrderId = request.OrderId.Trim(),
+                BotName = targetBot.BotName,
+                TargetSteamId64 = request.TargetSteamId64,
+                AssetCount = previewAssets.Count,
+                Assets = previewAssets,
+                Message = "ASF подтвердил состав черновика. Торговое предложение не создавалось и не отправлялось."
+            }, JsonOptions);
         }
-
-        return JsonSerializer.Serialize(new PreviewResponse
+        catch (Exception exception)
         {
-            Success = true,
-            Mode = "preview-only",
-            SendEnabled = false,
-            OrderId = request.OrderId.Trim(),
-            BotName = targetBot.BotName,
-            TargetSteamId64 = request.TargetSteamId64,
-            AssetCount = previewAssets.Count,
-            Assets = previewAssets,
-            Message = "ASF подтвердил состав черновика. Торговое предложение не создавалось и не отправлялось."
-        }, JsonOptions);
+            string safeMessage = SafeDiagnosticText(exception.Message);
+            ASF.ArchiLogger.LogGenericError(
+                "GameDeliveryPlugin.OnBotCommand failed: command="
+                + (recognizedCommand ?? "unresolved")
+                + "; exception=" + exception.GetType().Name
+                + "; message=" + safeMessage);
+
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                mode = isSend ? "send" : "plugin-command",
+                sendEnabled = isSend,
+                resultUnknown = isSend,
+                error = isSend
+                    ? "ASF прервал обработку отправки. Результат требует ручной сверки; автоматический повтор запрещён."
+                    : "Ошибка обработчика GameDelivery ASF: " + exception.GetType().Name + ": " + safeMessage,
+                exceptionType = exception.GetType().FullName,
+                exceptionMessage = safeMessage
+            }, JsonOptions);
+        }
     }
 
     private static async Task<string> RunDiagnosticCommand(Bot bot)
@@ -361,7 +453,12 @@ public sealed class GameDeliveryPlugin : IBotCommand2
             return "unknown";
         }
 
-        return new string(message.Where(character => !char.IsControl(character)).Take(6000).ToArray());
+        string sanitized = new string(message.Where(character => !char.IsControl(character)).Take(6000).ToArray());
+        return Regex.Replace(
+            sanitized,
+            @"(?i)(token\\s*=\\s*)[^&\\s\""']+",
+            "$1[REDACTED]",
+            RegexOptions.CultureInvariant);
     }
 
     private static string SafeMessage(string? message)

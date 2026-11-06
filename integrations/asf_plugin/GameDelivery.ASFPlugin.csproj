@@ -7,6 +7,7 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDependencyFile>false</GenerateDependencyFile>
+    <Version>1.0.1</Version>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <PropertyGroup>
