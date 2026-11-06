@@ -120,7 +120,9 @@ internal static class TradeDelivery
         {
             string encoded = encodedPayload.Replace('-', '+').Replace('_', '/');
             encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
-            request = JsonSerializer.Deserialize<SendRequest>(Encoding.UTF8.GetString(Convert.FromBase64String(encoded)), JsonOptions);
+            request = JsonSerializer.Deserialize<SendRequest>(
+                Encoding.UTF8.GetString(Convert.FromBase64String(encoded)),
+                JsonOptions);
         }
         catch (Exception exception) when (exception is FormatException or JsonException)
         {
@@ -143,25 +145,40 @@ internal static class TradeDelivery
         if (request.AssetIds.Any(string.IsNullOrWhiteSpace)
             || request.AssetIds.Distinct(StringComparer.Ordinal).Count() != request.AssetIds.Count
             || request.AssetIds.Any(value =>
-                !ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong id) || id == 0))
+                !ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong id)
+                || id == 0
+                || !string.Equals(value, id.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)))
         {
-            return Failure("Список asset ID пустой, содержит повторы или некорректные значения.");
+            return Failure("Список asset ID пустой, содержит повторы, неканонические или некорректные значения.");
         }
 
         PendingTradeSecret? secret;
         string secretPath = GetPendingSecretPath(request.CredentialNonce);
         try
         {
+            RestrictStoragePermissions(secretPath, isDirectory: false);
             string json = await File.ReadAllTextAsync(secretPath).ConfigureAwait(false);
             secret = JsonSerializer.Deserialize<PendingTradeSecret>(json, JsonOptions);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or JsonException)
         {
             return Failure("Одноразовый секрет отправки отсутствует или не читается. Предложение не отправлено.");
         }
-        finally
+
+        try
         {
-            try { File.Delete(secretPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            File.Delete(secretPath);
+            if (File.Exists(secretPath))
+            {
+                throw new IOException("The one-use trade secret still exists after deletion");
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return Failure(
+                "Не удалось удалить одноразовый секрет отправки. Предложение заблокировано; "
+                + "проверь доступ к локальному файлу.");
         }
 
         if (secret is null
@@ -183,75 +200,6 @@ internal static class TradeDelivery
             return Failure("Получатель не является индивидуальным Steam-аккаунтом.");
         }
 
-        Bot? targetBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
-            string.Equals(candidate.BotName, request.BotName, StringComparison.OrdinalIgnoreCase));
-        if (targetBot is null)
-        {
-            return Failure("Выбранный бот не найден в текущем экземпляре ASF.");
-        }
-
-        if (!targetBot.IsConnectedAndLoggedOn)
-        {
-            return Failure("Выбранный бот ASF не подключён к Steam.");
-        }
-
-        if (targetBot.SteamID == recipient)
-        {
-            return Failure("Нельзя отправлять предложение самому себе.");
-        }
-
-        HashSet<Asset>? inventory;
-        string inventoryMessage;
-        try
-        {
-            (inventory, inventoryMessage) = await targetBot.Actions.GetInventory(
-                Asset.SteamAppID,
-                Asset.SteamCommunityContextID,
-                language: "english").ConfigureAwait(false);
-        }
-        catch (MissingMethodException exception)
-        {
-            return Failure(
-                "Проверка инвентаря ASF завершилась ошибкой до отправки: MissingMethodException: "
-                + SafeMessage(exception.Message)
-                + ". Предложение не отправлялось.",
-                resultUnknown: false);
-        }
-        catch (Exception exception)
-        {
-            return Failure(
-                "Проверка инвентаря ASF завершилась ошибкой до отправки: "
-                + exception.GetType().Name + ": " + SafeMessage(exception.Message)
-                + ". Предложение не отправлялось.",
-                resultUnknown: false);
-        }
-
-        if (inventory is null)
-        {
-            return Failure("Не удалось проверить актуальный инвентарь ASF: " + SafeMessage(inventoryMessage));
-        }
-
-        Dictionary<ulong, Asset> byAssetId = inventory
-            .Where(asset => asset.AssetID > 0)
-            .GroupBy(asset => asset.AssetID)
-            .ToDictionary(group => group.Key, group => group.First());
-        List<Asset> selectedAssets = new(request.AssetIds.Count);
-        List<string> names = new(request.AssetIds.Count);
-        foreach (string rawAssetId in request.AssetIds)
-        {
-            ulong assetId = ulong.Parse(rawAssetId, NumberStyles.None, CultureInfo.InvariantCulture);
-            if (!byAssetId.TryGetValue(assetId, out Asset? asset)
-                || asset.AppID != Asset.SteamAppID
-                || asset.ContextID != Asset.SteamCommunityContextID
-                || !asset.Tradable)
-            {
-                return Failure("Актив " + rawAssetId + " отсутствует в Steam Community inventory (753/6) или сейчас не передаваем.");
-            }
-
-            selectedAssets.Add(asset);
-            names.Add(asset.AssetID.ToString(CultureInfo.InvariantCulture));
-        }
-
         string fingerprint = ComputeFingerprint(request);
         await SendSemaphore.WaitAsync().ConfigureAwait(false);
         try
@@ -261,7 +209,8 @@ internal static class TradeDelivery
             {
                 records = LoadSendRecords();
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException or JsonException)
             {
                 return Failure("Нельзя прочитать журнал защиты от повторной отправки. Отправка заблокирована.");
             }
@@ -284,6 +233,73 @@ internal static class TradeDelivery
                     "Для этого заказа уже была попытка отправки с неопределённым результатом. "
                     + "Проверь исходящие предложения Steam; повторная отправка заблокирована.",
                     resultUnknown: true);
+            }
+
+            Bot? targetBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
+                string.Equals(candidate.BotName, request.BotName, StringComparison.OrdinalIgnoreCase));
+            if (targetBot is null)
+            {
+                return Failure("Выбранный бот не найден в текущем экземпляре ASF.");
+            }
+
+            if (!targetBot.IsConnectedAndLoggedOn)
+            {
+                return Failure("Выбранный бот ASF не подключён к Steam.");
+            }
+
+            if (targetBot.SteamID == recipient)
+            {
+                return Failure("Нельзя отправлять предложение самому себе.");
+            }
+
+            HashSet<Asset>? inventory;
+            string inventoryMessage;
+            try
+            {
+                (inventory, inventoryMessage) = await targetBot.Actions.GetInventory(
+                    Asset.SteamAppID,
+                    Asset.SteamCommunityContextID,
+                    language: "english").ConfigureAwait(false);
+            }
+            catch (MissingMethodException exception)
+            {
+                return Failure(
+                    "Проверка инвентаря ASF завершилась ошибкой до отправки: MissingMethodException: "
+                    + SafeMessage(exception.Message)
+                    + ". Предложение не отправлялось.",
+                    resultUnknown: false);
+            }
+            catch (Exception exception)
+            {
+                return Failure(
+                    "Проверка инвентаря ASF завершилась ошибкой до отправки: "
+                    + exception.GetType().Name + ": " + SafeMessage(exception.Message)
+                    + ". Предложение не отправлялось.",
+                    resultUnknown: false);
+            }
+
+            if (inventory is null)
+            {
+                return Failure("Не удалось проверить актуальный инвентарь ASF: " + SafeMessage(inventoryMessage));
+            }
+
+            Dictionary<ulong, Asset> byAssetId = inventory
+                .Where(asset => asset.AssetID > 0)
+                .GroupBy(asset => asset.AssetID)
+                .ToDictionary(group => group.Key, group => group.First());
+            List<Asset> selectedAssets = new(request.AssetIds.Count);
+            foreach (string rawAssetId in request.AssetIds)
+            {
+                ulong assetId = ulong.Parse(rawAssetId, NumberStyles.None, CultureInfo.InvariantCulture);
+                if (!byAssetId.TryGetValue(assetId, out Asset? asset)
+                    || asset.AppID != Asset.SteamAppID
+                    || asset.ContextID != Asset.SteamCommunityContextID
+                    || !asset.Tradable)
+                {
+                    return Failure("Актив " + rawAssetId + " отсутствует в Steam Community inventory (753/6) или сейчас не передаваем.");
+                }
+
+                selectedAssets.Add(asset);
             }
 
             SendRecord record = new()
@@ -342,8 +358,9 @@ internal static class TradeDelivery
                         record.Message = unknownMessage + " Локальный журнал тоже не удалось обновить.";
                     }
 
-                    return UnknownFailure(record, record.Message ?? unknownMessage);
+                    return UnknownFailure(record, record.Message ?? unknownMessage, tradeToken: secret.TradeToken);
                 }
+
                 bool confirmationPending = mobileTradeOfferIds?.Count > 0;
                 if (confirmationPending && targetBot.HasMobileAuthenticator)
                 {
@@ -373,7 +390,8 @@ internal static class TradeDelivery
                 return UnknownFailure(
                     record,
                     "Не удалось однозначно подтвердить результат отправки. Проверь исходящие предложения Steam; повторная отправка заблокирована.",
-                    exception);
+                    exception,
+                    secret.TradeToken);
             }
         }
         finally
@@ -488,7 +506,11 @@ internal static class TradeDelivery
         }, JsonOptions);
     }
 
-    private static string UnknownFailure(SendRecord record, string message, Exception? exception = null) => JsonSerializer.Serialize(new
+    private static string UnknownFailure(
+        SendRecord record,
+        string message,
+        Exception? exception = null,
+        string? tradeToken = null) => JsonSerializer.Serialize(new
     {
         success = false,
         mode = "send",
@@ -496,10 +518,10 @@ internal static class TradeDelivery
         resultUnknown = true,
         error = message,
         exceptionType = exception?.GetType().FullName,
-        exceptionMessage = exception is null ? null : SafeDiagnosticText(exception.Message),
-        missingMethod = exception is MissingMethodException ? SafeDiagnosticText(exception.Message) : null,
-        targetSite = exception?.TargetSite?.ToString() is string targetSite ? SafeDiagnosticText(targetSite) : null,
-        stackTrace = exception?.StackTrace is string stackTrace ? SafeDiagnosticText(stackTrace) : null,
+        exceptionMessage = exception is null ? null : SafeDiagnosticText(exception.Message, tradeToken),
+        missingMethod = exception is MissingMethodException ? SafeDiagnosticText(exception.Message, tradeToken) : null,
+        targetSite = exception?.TargetSite?.ToString() is string targetSite ? SafeDiagnosticText(targetSite, tradeToken) : null,
+        stackTrace = exception?.StackTrace is string stackTrace ? SafeDiagnosticText(stackTrace, tradeToken) : null,
         orderId = record.OrderId,
         botName = record.BotName,
         targetSteamId64 = record.TargetSteamId64,
@@ -527,14 +549,24 @@ internal static class TradeDelivery
         return new string(message.Where(character => !char.IsControl(character)).Take(180).ToArray());
     }
 
-    private static string SafeDiagnosticText(string? message)
+    private static string SafeDiagnosticText(string? message, string? tradeToken = null)
     {
         if (string.IsNullOrWhiteSpace(message))
         {
             return "unknown";
         }
 
-        return new string(message.Where(character => !char.IsControl(character)).Take(2400).ToArray());
+        string sanitized = new string(message.Where(character => !char.IsControl(character)).Take(2400).ToArray());
+        if (!string.IsNullOrWhiteSpace(tradeToken))
+        {
+            sanitized = sanitized.Replace(tradeToken, "[REDACTED]", StringComparison.Ordinal);
+        }
+
+        return Regex.Replace(
+            sanitized,
+            @"(?i)(token\s*=\s*)[^&\s]+",
+            "$1[REDACTED]",
+            RegexOptions.CultureInvariant);
     }
 
     private sealed class SendRequest

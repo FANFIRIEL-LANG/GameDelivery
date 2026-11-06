@@ -456,7 +456,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         string sanitized = new string(message.Where(character => !char.IsControl(character)).Take(6000).ToArray());
         return Regex.Replace(
             sanitized,
-            @"(?i)(token\\s*=\\s*)[^&\\s\""']+",
+            @"(?i)(token\s*=\s*)[^&\s]+",
             "$1[REDACTED]",
             RegexOptions.CultureInvariant);
     }
