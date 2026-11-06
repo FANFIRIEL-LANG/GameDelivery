@@ -225,5 +225,18 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("<Version>1.0.1</Version>", project)
 
 
+    def test_smoke_project_verifies_exact_asf_interfaces_export_and_version(self):
+        project = (ROOT / "tests" / "asf_plugin_smoke" / "ASFPlugin.Smoke.csproj").read_text(encoding="utf-8")
+        program = (ROOT / "tests" / "asf_plugin_smoke" / "Program.cs").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        self.assertIn("GameDelivery.ASFPlugin.dll", project)
+        self.assertIn("typeof(IPlugin).IsAssignableFrom", program)
+        self.assertIn("typeof(IASF).IsAssignableFrom", program)
+        self.assertIn("typeof(IBotCommand2).IsAssignableFrom", program)
+        self.assertIn("System.Composition.ExportAttribute", program)
+        self.assertIn("new Version(1, 0, 1, 0)", program)
+        self.assertIn("Smoke test command parsing and exact ASF runtime interface", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
