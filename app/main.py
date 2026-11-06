@@ -536,6 +536,11 @@ class MainWindow(QMainWindow):
             recipient = self._validate_trade_url(recipient)
             if not assets:
                 raise ValueError("У заказа нет сохранённого состава активов.")
+            if assets != reserved_assets:
+                raise ValueError(
+                    "Состав заказа не совпадает с действующими резервами активов. "
+                    "Обнови резерв перед проверкой черновика."
+                )
             bot_names = {bot_name for bot_name, _asset_id in assets}
             if len(bot_names) != 1:
                 raise ValueError(
