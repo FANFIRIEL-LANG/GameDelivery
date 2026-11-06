@@ -553,7 +553,8 @@ class ProxySettingsWidget(QWidget):
         answer = QMessageBox.question(
             self, "Применить все назначения",
             f"Записать веб-прокси в ASF для {len(profiles)} ботов? Будут изменены только "
-            "WebProxy, WebProxyUsername и WebProxyPassword. Глобальный SteamProtocols не меняется.",
+            "WebProxy, WebProxyUsername и WebProxyPassword. После успешного применения можно "
+            "отдельно подтвердить глобальный SteamProtocols=4 для Steam CM.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -578,8 +579,9 @@ class ProxySettingsWidget(QWidget):
         else:
             self.status.setText(
                 f"Веб-прокси применены и проверены ASF для {len(applied)} ботов. "
-                "Steam CM и фактическая маршрутизация отдельно не подтверждены."
+                "Фактическая маршрутизация Steam CM требует отдельной проверки."
             )
+            self._confirm_steam_cm_proxy(client)
 
     def enable_steam_cm_proxy(self):
         ipc_password, accepted = self._ask_ipc_password()

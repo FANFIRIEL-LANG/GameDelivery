@@ -10,9 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem, QLineEdit, QListWidget, QListWidgetItem
-from app.asf_management import (
-    ASFManagementWidget, ensure_asf_login_limiter_delay, decode_asf_output_line,
-)
+from app.asf_management import ASFManagementWidget, decode_asf_output_line
 from app.bot_selector import connect_account_search
 
 
@@ -20,41 +18,6 @@ class ASFManagementWidgetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
-
-    def test_asf_login_limiter_delay_is_reduced_to_three_without_changing_other_settings(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config_dir = Path(directory)
-            config_path = config_dir / "ASF.json"
-            config_path.write_text(
-                json.dumps({"IPC": True, "LoginLimiterDelay": 5, "WebLimiterDelay": 300}),
-                encoding="utf-8",
-            )
-
-            self.assertTrue(ensure_asf_login_limiter_delay(config_dir))
-            updated = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(updated["LoginLimiterDelay"], 3)
-            self.assertEqual(updated["IPC"], True)
-            self.assertEqual(updated["WebLimiterDelay"], 300)
-
-    def test_asf_login_limiter_delay_does_not_rewrite_when_already_three(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config_dir = Path(directory)
-            config_path = config_dir / "ASF.json"
-            config_path.write_text(json.dumps({"LoginLimiterDelay": 3}), encoding="utf-8")
-            original = config_path.read_bytes()
-
-            self.assertFalse(ensure_asf_login_limiter_delay(config_dir))
-            self.assertEqual(config_path.read_bytes(), original)
-
-    def test_asf_login_limiter_delay_creates_global_config_when_missing(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config_dir = Path(directory)
-
-            self.assertTrue(ensure_asf_login_limiter_delay(config_dir))
-            self.assertEqual(
-                json.loads((config_dir / "ASF.json").read_text(encoding="utf-8")),
-                {"LoginLimiterDelay": 3},
-            )
 
     def test_account_search_hides_nonmatching_rows_without_changing_checked_state(self):
         search = QLineEdit()
@@ -447,21 +410,28 @@ class ASFManagementWidgetTests(unittest.TestCase):
     @patch("app.asf_management.subprocess.Popen")
     @patch("app.asf_management.ASFClient.get_status", side_effect=OSError("IPC unavailable"))
     @patch("app.asf_management.ASFOutputReader.start")
-    def test_start_asf_launches_process_with_process_required(self, reader_start, get_status, popen, single_shot):
+    def test_start_asf_preserves_explicit_global_login_limiter_delay(self, reader_start, get_status, popen, single_shot):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
             executable = home / "ArchiSteamFarm.exe"
             executable.write_bytes(b"test executable")
+            config_dir = home / "config"
+            config_dir.mkdir()
+            global_config_path = config_dir / "ASF.json"
+            global_config = {"IPC": True, "LoginLimiterDelay": 0, "WebLimiterDelay": 300}
+            global_config_path.write_text(json.dumps(global_config), encoding="utf-8")
             process = popen.return_value
             process.poll.return_value = None
             self.widget.asf_executable_path.setText(str(executable))
-            with patch("app.asf_management.Path.home", return_value=home), \
-                 patch.object(self.widget, "_ipc_port_is_open", return_value=False):
-                self.widget.start_asf()
+            self.widget.config_path.setText(str(config_dir))
+            with patch("app.asf_management.Path.home", return_value=home):
+                with patch.object(self.widget, "_ipc_port_is_open", return_value=False):
+                    self.widget.start_asf()
             args, kwargs = popen.call_args
             self.assertEqual(args[0], [str(executable), "--process-required"])
             self.assertEqual(kwargs["cwd"], str(home))
             self.assertTrue((home / ".gamedelivery" / "asf-supervisor.log").is_file())
+            self.assertEqual(json.loads(global_config_path.read_text(encoding="utf-8")), global_config)
             self.assertIn("GameDelivery запустил ASF", self.widget.status.text())
             self.widget._close_asf_log()
             self.widget._asf_process = None

@@ -133,6 +133,46 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertNotIn("private-proxy-password", self.widget.status.text())
         self.assertNotIn("private-proxy-password", self.widget.pool_status.text())
 
+    def test_apply_all_profiles_offers_global_steam_cm_proxy_after_successful_batch(self):
+        self.widget.store.save(
+            "bot-a",
+            SteamProxy("socks5", "proxy.example", 1080, "proxy-user", "private-proxy-password"),
+        )
+        client = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+
+        with (
+            patch.object(self.widget, "_ask_ipc_password", return_value=("ipc-password", True)),
+            patch("app.proxy_settings.ASFClient", return_value=client),
+            patch(
+                "app.proxy_settings.QMessageBox.question",
+                side_effect=[
+                    QMessageBox.StandardButton.Yes,
+                    QMessageBox.StandardButton.Yes,
+                ],
+            ) as question,
+            patch(
+                "app.proxy_settings.QMessageBox.warning",
+                return_value=QMessageBox.StandardButton.Yes,
+            ) as confirmation,
+            patch("app.proxy_settings.QMessageBox.information"),
+        ):
+            self.widget.apply_all_profiles()
+
+        client.apply_proxy_settings.assert_called_once_with(
+            "bot-a",
+            {
+                "WebProxy": "socks5://proxy.example:1080",
+                "WebProxyUsername": "proxy-user",
+                "WebProxyPassword": "private-proxy-password",
+            },
+        )
+        client.apply_global_steam_protocols.assert_called_once_with(
+            confirmed_instance_wide_change=True
+        )
+        self.assertEqual(question.call_count, 2)
+        confirmation.assert_called_once()
+        self.assertNotIn("private-proxy-password", self.widget.status.text())
+
     def test_audit_proxy_configs_checks_real_json_password_without_revealing_it(self):
         import json
         from PySide6.QtCore import QSettings
