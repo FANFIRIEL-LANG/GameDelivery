@@ -117,3 +117,41 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+  windows-storage-acl-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download and verify official ASF 6.3.11.7 release binaries
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP ASF-generic.zip
+          $base = https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7
+          Invoke-WebRequest -Uri "$base/ASF-generic.zip" -OutFile $archive
+          $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb") {
+            throw "Official ASF 6.3.11.7 archive SHA-256 mismatch: $digest"
+          }
+          Expand-Archive -Path $archive -DestinationPath .asf-bin -Force
+          $assembly = Get-ChildItem -Path .asf-bin -Filter ArchiSteamFarm.dll -Recurse | Select-Object -First 1
+          if ($null -eq $assembly) {
+            throw "ArchiSteamFarm.dll was not found in the verified release archive"
+          }
+          "ASF_BIN_DIR=$($assembly.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build GameDelivery ASF plugin on Windows
+        shell: pwsh
+        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR="$env:ASF_BIN_DIR"
+
+      - name: Smoke test Windows journal ACL while the file is exclusively open
+        shell: pwsh
+        run: |
+          $plugin = Join-Path $PWD integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll
+          dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj --configuration Release -p:ASF_BIN_DIR="$env:ASF_BIN_DIR" -p:PLUGIN_DLL="$plugin"
