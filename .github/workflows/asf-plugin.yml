@@ -155,3 +155,82 @@ jobs:
         run: |
           $plugin = Join-Path $PWD integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll
           dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj --configuration Release -p:ASF_BIN_DIR="$env:ASF_BIN_DIR" -p:PLUGIN_DLL="$plugin"
+
+  win-x64-trimmed-runtime-smoke:
+    runs-on: windows-latest
+    needs: build-plugin
+    steps:
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+
+      - name: Download installable GameDelivery ASF plugin artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GameDelivery-ASFPlugin
+          path: ${{ runner.temp }}/GameDelivery-ASFPlugin
+
+      - name: Download and verify official ASF 6.3.11.7 win-x64 trimmed release
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP ASF-win-x64.zip
+          $base = "https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7"
+          Invoke-WebRequest -Uri "$base/ASF-win-x64.zip" -OutFile $archive
+          $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "f90a63359f9c2d3984828a22bb5fc0b9ba14776c4a16a2601513ba18c5369e7c") {
+            throw "Official ASF 6.3.11.7 win-x64 archive SHA-256 mismatch: $digest"
+          }
+          $destination = Join-Path $env:RUNNER_TEMP ASF-win-x64
+          Expand-Archive -Path $archive -DestinationPath $destination -Force
+          $executable = Get-ChildItem -Path $destination -Filter ArchiSteamFarm.exe -Recurse | Select-Object -First 1
+          if ($null -eq $executable) {
+            throw "ArchiSteamFarm.exe was not found in the verified win-x64 archive"
+          }
+          $pluginSource = Join-Path $env:RUNNER_TEMP "GameDelivery-ASFPlugin/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll"
+          if (!(Test-Path -LiteralPath $pluginSource)) {
+            throw "GameDelivery ASF plugin DLL was not found in the downloaded artifact"
+          }
+          $pluginDirectory = Join-Path $executable.DirectoryName "plugins/GameDelivery.ASFPlugin"
+          New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
+          Copy-Item -LiteralPath $pluginSource -Destination (Join-Path $pluginDirectory "GameDelivery.ASFPlugin.dll") -Force
+          $configDirectory = Join-Path $executable.DirectoryName "config"
+          New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $configDirectory "ASF.json") -Value '{"IPC":false}' -Encoding utf8
+          "ASF_WIN_X64_DIR=$($executable.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Start official trimmed ASF and force JIT compilation of send state machine without executing it
+        shell: pwsh
+        run: |
+          $env:GAMEDELIVERY_VALIDATE_SEND_JIT = "1"
+          $stdout = Join-Path $env:RUNNER_TEMP ASF-win-x64.stdout.log
+          $stderr = Join-Path $env:RUNNER_TEMP ASF-win-x64.stderr.log
+          $process = Start-Process -FilePath (Join-Path $env:ASF_WIN_X64_DIR "ArchiSteamFarm.exe") -ArgumentList "--process-required" -WorkingDirectory $env:ASF_WIN_X64_DIR -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $deadline = (Get-Date).AddSeconds(45)
+          $combined = ""
+          try {
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 1
+              $outText = if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout -Raw } else { "" }
+              $errText = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { "" }
+              $combined = $outText + [Environment]::NewLine + $errText
+              if ($combined.Contains("GameDeliveryPlugin send state-machine JIT probe:")) {
+                break
+              }
+              if ($process.HasExited) {
+                throw "ASF exited before the GameDelivery send state-machine JIT probe ran. ExitCode=$($process.ExitCode)" + [Environment]::NewLine + $combined
+              }
+            }
+
+            if (!$combined.Contains("GameDeliveryPlugin send state-machine JIT probe:")) {
+              throw "Timed out waiting for the trimmed ASF JIT probe." + [Environment]::NewLine + $combined
+            }
+            if (!$combined.Contains('"status":"success"')) {
+              throw "Trimmed ASF could not JIT-compile GameDelivery ProcessSendCommand state machine." + [Environment]::NewLine + $combined
+            }
+            Write-Host "Trimmed ASF successfully JIT-compiled the GameDelivery send state machine without executing it."
+          }
+          finally {
+            if (!$process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+            }
+          }
+
