@@ -115,8 +115,16 @@ internal static class TradeDelivery
         }
     }
 
-    public static async Task<string> ProcessSendCommand(string encodedPayload)
+    internal static bool IsSameSteamAccount(ulong botSteamId64, ulong recipientSteamId64)
+        => botSteamId64 == recipientSteamId64;
+
+    public static async Task<string> ProcessSendCommand(
+        string encodedPayload,
+        string ipcContextBotName,
+        Action onExternalDispatchStarted)
     {
+        ArgumentNullException.ThrowIfNull(ipcContextBotName);
+        ArgumentNullException.ThrowIfNull(onExternalDispatchStarted);
         SendRequest? request;
         try
         {
@@ -244,12 +252,20 @@ internal static class TradeDelivery
                 return Failure("Выбранный бот не найден в текущем экземпляре ASF.");
             }
 
+            targetBot.ArchiLogger.LogGenericInfo(
+                "GameDelivery send: ipcContextBot=" + SafeMessage(ipcContextBotName)
+                + "; requestedSenderBot=" + SafeMessage(request.BotName)
+                + "; resolvedSenderBot=" + SafeMessage(targetBot.BotName)
+                + "; recipientSteamId64=" + request.TargetSteamId64.ToString(CultureInfo.InvariantCulture)
+                + "; orderId=" + SafeMessage(request.OrderId)
+                + "; assetCount=" + request.AssetIds.Count.ToString(CultureInfo.InvariantCulture) + ".");
+
             if (!targetBot.IsConnectedAndLoggedOn)
             {
                 return Failure("Выбранный бот ASF не подключён к Steam.");
             }
 
-            if (targetBot.SteamID == recipient)
+            if (IsSameSteamAccount(targetBot.SteamID, request.TargetSteamId64))
             {
                 return Failure("Нельзя отправлять предложение самому себе.");
             }
@@ -326,6 +342,8 @@ internal static class TradeDelivery
 
             try
             {
+                // From this point onward the result may be unknown if ASF or Steam fails.
+                onExternalDispatchStarted();
                 (bool success, HashSet<ulong>? tradeOfferIds, HashSet<ulong>? mobileTradeOfferIds) =
                     await targetBot.ArchiWebHandler.SendTradeOffer(
                         request.TargetSteamId64,
