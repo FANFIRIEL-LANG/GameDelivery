@@ -298,11 +298,19 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         {
             string safeMessage = SafeDiagnosticText(exception.Message);
             string safeDetails = SafeDiagnosticText(exception.ToString());
+            MissingMemberException? missingMember = FindMissingMemberException(exception);
+            string? missingMemberName = missingMember?.MemberName;
+            string? missingClassName = missingMember?.ClassName;
+            string? missingSignature = missingMember?.Signature;
+
             ASF.ArchiLogger.LogGenericError(
                 "GameDeliveryPlugin.OnBotCommand failed: command="
                 + (recognizedCommand ?? "unresolved")
                 + "; exception=" + exception.GetType().Name
                 + "; ipcContextBot=" + SafeMessage(bot.BotName)
+                + "; missingMemberName=" + SafeMessage(missingMemberName)
+                + "; missingClassName=" + SafeMessage(missingClassName)
+                + "; missingSignature=" + SafeMessage(missingSignature)
                 + "; details=" + safeDetails);
 
             return JsonSerializer.Serialize(new
@@ -314,13 +322,29 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 error = isSend
                     ? (sendDispatchStarted
                         ? "ASF прервал обработку после начала отправки. Результат требует ручной сверки; автоматический повтор запрещён."
-                        : "ASF завершил обработку до вызова SendTradeOffer. Торговое предложение не отправлялось; исправь ошибку перед повторной проверкой.")
+                        : "ASF завершил обработку до запуска обработчика отправки. Торговое предложение не подтверждено; проверь исходящие предложения Steam перед любым повтором.")
                     : "Ошибка обработчика GameDelivery ASF: " + exception.GetType().Name + ": " + safeMessage,
                 exceptionType = exception.GetType().FullName,
                 exceptionMessage = safeMessage,
-                exceptionDetails = safeDetails
+                exceptionDetails = safeDetails,
+                missingMemberName,
+                missingClassName,
+                missingSignature
             }, JsonOptions);
         }
+    }
+
+    private static MissingMemberException? FindMissingMemberException(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is MissingMemberException missingMember)
+            {
+                return missingMember;
+            }
+        }
+
+        return null;
     }
 
     private static async Task<string> RunDiagnosticCommand(Bot bot)
@@ -335,6 +359,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         string confirmationMethods = GetMethodSignatures(
             actions.GetType(), "HandleTwoFactorAuthenticationConfirmations");
         string sendTradeOfferMethods = GetMethodSignatures(webHandler.GetType(), "SendTradeOffer");
+        object runtimeTrimming = GetRuntimeTrimmingDiagnostics();
         string[] pluginReferences = pluginAssembly.GetReferencedAssemblies()
             .Select(reference => reference.FullName ?? reference.Name ?? "unknown")
             .Where(name => name.Contains("ArchiSteamFarm", StringComparison.OrdinalIgnoreCase)
@@ -369,6 +394,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 webHandlerType = webHandler.GetType().FullName ?? webHandler.GetType().Name,
                 webHandlerAssembly = GetAssemblyDiagnostics(webHandler.GetType().Assembly),
                 sendTradeOfferMethods,
+                runtimeTrimming,
                 inventoryCount = inventory?.Count,
                 inventoryMessage = inventory is null ? SafeMessage(inventoryMessage) : null,
                 message = inventory is null
@@ -397,10 +423,57 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 webHandlerType = webHandler.GetType().FullName ?? webHandler.GetType().Name,
                 webHandlerAssembly = GetAssemblyDiagnostics(webHandler.GetType().Assembly),
                 sendTradeOfferMethods,
+                runtimeTrimming,
                 exceptionType = exception.GetType().FullName,
                 exceptionMessage = SafeMessage(exception.Message),
+                missingMemberName = FindMissingMemberException(exception)?.MemberName,
+                missingClassName = FindMissingMemberException(exception)?.ClassName,
+                missingSignature = FindMissingMemberException(exception)?.Signature,
+                stackTrace = exception.StackTrace is string stackTrace ? SafeDiagnosticText(stackTrace) : null,
                 message = "Ошибка диагностического чтения инвентаря. Отправка не выполнялась."
             }, JsonOptions);
+        }
+    }
+
+    private static object GetRuntimeTrimmingDiagnostics()
+    {
+        try
+        {
+            Type? sharedInfoType = typeof(Bot).Assembly.GetType(
+                "ArchiSteamFarm.SharedInfo",
+                throwOnError: false);
+            if (sharedInfoType is null)
+            {
+                return new { status = "shared-info-type-not-found" };
+            }
+
+            PropertyInfo? property = sharedInfoType.GetProperty(
+                "IsRuntimeTrimmed",
+                BindingFlags.Public | BindingFlags.Static);
+            if (property is null)
+            {
+                return new
+                {
+                    status = "runtime-trimmed-property-not-found",
+                    sharedInfoType = sharedInfoType.FullName
+                };
+            }
+
+            return new
+            {
+                status = "ok",
+                sharedInfoType = sharedInfoType.FullName,
+                isRuntimeTrimmed = property.GetValue(null)
+            };
+        }
+        catch (Exception exception)
+        {
+            return new
+            {
+                status = "probe-error",
+                exceptionType = exception.GetType().FullName,
+                exceptionMessage = SafeMessage(exception.Message)
+            };
         }
     }
 
