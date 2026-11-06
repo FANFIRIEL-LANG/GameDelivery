@@ -181,11 +181,11 @@
 
 **Область:** TradeDelivery.cs; ASFClient.send_trade_offer; app/main.py send; local SQLite delivery state; tests.
 
-- [ ] Проследить одноразовый trade secret end-to-end: генерация nonce, защищённая запись, сравнение order/bot/recipient/assets/token, удаление до вызова ASF send.
+- [x] Проследить одноразовый trade secret end-to-end: генерация nonce, защищённая запись, сравнение order/bot/recipient/assets/token, удаление до вызова ASF send.
 - [ ] Проверить ACL на Windows и POSIX, поведение при ошибке chmod/ACL, неполной записи и невозможности удалить файл.
-- [ ] Проверить semaphore, idempotency journal, сохранение состояния sending до внешнего вызова и реакцию на повторный вызов.
+- [x] Провести code review semaphore, idempotency journal, сохранения состояния sending до внешнего вызова и реакции на повторный вызов; регрессионные тесты остаются частью CI gate.
 - [ ] Проверить все точки отказа до и после SendTradeOffer: MissingMethodException, HTTP/Steam error, timeout, пустые offer IDs, success=false, mobile confirmation failure и journal write failure.
-- [ ] Проверить, что trade token отсутствует в логах, исключениях, UI, IPC payload, тестовых артефактах и Git.
+- [ ] Завершить проверку отсутствия trade token в логах, исключениях, UI, IPC payload, тестовых артефактах и Git. Исправлено хранение в SQLite и добавлена очистка текста mobile confirmation; полный CI gate ещё не пройден.
 - [ ] Проверить обработку известного offer ID, pending mobile confirmation, unknown result и recipient acceptance как разных состояний.
 - [ ] Добавить регрессионные тесты для каждой найденной дырки; каждое исправление — отдельный TDD цикл.
 - [ ] Запустить focused tests, полный Python suite и ASF plugin workflow.
@@ -284,3 +284,34 @@
 **Resolved CI regression from HEAD 0b1a73e:** strict offer-ID tests rejected values 0 and ², but expected error text did not match the ASFError returned by the client. The client message now explicitly says to inspect Steam outgoing offers and not retry. On HEAD 3235530 both Push/PR test suites pass. The Windows ACL workflow uses the same focused ASF client test module and now passes too.
 
 **Current task:** all automatic gates are green. Stage 3 remains complete. Next planned stage is Stage 4 — full audit of send pipeline, one-time trade secret, idempotency, state transitions and recovery. Do not start Stage 4 without recording the decision/progress separately; do not ask the user to repeat old commands.
+
+## Stage 4 progress checkpoint — 2026-11-06, HEAD 2de4791
+
+**Current branch:** feature/asf-bulk-account-import  
+**HEAD:** 2de47912794a8f1802263ee989264b7c9ea1bc36  
+**PR #4:** open / draft / not merged; base feature/steam-card-set-selection.  
+**main:** remains at f27f567336cd1249d60cfbfa237314f2b54c0352; no merge performed.
+
+### Findings and changes
+- Confirmed plaintext Steam Trade URL tokens were stored in the delivery_orders.recipient_trade_url column and shown in order details.
+- Added integrations/asf/trade_credentials.py: stores tokens under per-order keys in the OS credential vault (Windows Credential Manager via keyring); SQLite stores only normalized partner URL.
+- Existing order rows migrate on schema open. The token is written and verified in the vault before the SQLite URL is replaced. PRAGMA secure_delete = ON is enabled during migration.
+- New send and preview flows restore the full URL only in memory. Terminal outcomes (sent, unknown, cancelled) attempt to delete the per-order vault secret; retryable pre-dispatch failures keep it.
+- Added tests for vault storage, legacy migration, missing/unavailable vault, inline-token rejection, SQLite migration/redaction, and cleanup on terminal states.
+- ASF mobile confirmation message is now redacted against the exact trade token before it is stored in the idempotency journal or returned to UI.
+- Added a smoke assertion that invokes the sanitizer from the built plugin DLL.
+- Windows ASF job previously proved the actual plugin ACL routine works while the temporary journal file is opened with FileShare.None. The current sanitizer change still requires a fresh plugin workflow pass.
+- Local isolated checks in this review sandbox: 6 trade-credential tests passed; SQLite secure_delete reproduction confirmed the legacy token bytes are absent after update. These checks do not replace GitHub CI.
+
+### CI and blocker
+- GitHub Actions runs on the latest HEAD 2de4791 are queued: Tests push 42244623221; Tests PR 42244634009; ASF plugin PR 42244633963; Windows EXE PR 42244633974.
+- At the latest repository snapshot, 18 old jobs remained in progress (all stuck on the full unittest step) and 28 runs for this branch were queued. The latest 2de4791 runs had not started; no fresh artifact exists.
+- .github/workflows/tests.yml now adds event/ref-scoped concurrency, an 8-minute job timeout, and separate 90/120/180-second timeouts for credential, trade UI, and full-suite tests. The isolated steps will identify which test stalls once a runner becomes available.
+- Do not attribute the runner backlog to a confirmed GitHub outage: the official status feed's latest observed snapshot reported Actions operational, but that snapshot was not current enough to explain this repository's queue.
+
+### Remaining before Stage 4 gate
+1. Obtain successful fresh Tests push + PR on the exact HEAD, including the UI migration/redaction tests and complete suite.
+2. Obtain fresh ASF plugin Push/PR builds and Windows journal ACL + sanitizer smoke success.
+3. Obtain a fresh Windows EXE package build on the same final code HEAD and review package contents/hashes.
+4. Finish send-failure state-transition review and update this checkpoint with actual run IDs/results.
+5. Only then move to Stage 5. No user download or ASF installation request yet.
