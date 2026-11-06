@@ -891,3 +891,25 @@ Telegram Bot — настраиваемая дополнительная пан�
 - Smoke/CI не создавали торговых предложений и не подтверждают live Steam delivery.
 
 **Следующий необходимый шаг:** одна ручная проверка новой DLL 1.0.2.0 в локальном ASF 6.3.11.7. После полной остановки ASF заменить старую папку плагина содержимым именно артефакта `13510825591`, запустить ASF и проверить строку регистрации. Только после подтверждения `thisIsRegistered=True` выполнить одну диагностику `gamedelivery-diagnose Ewaylariell`. Это проверка новой версии с регистрационным и callback instrumentation, а не повторение уже провалившегося теста на старой DLL. До неё live command dispatch и реальная Steam trade delivery остаются не подтверждены.
+
+
+### 2026-11-06 — введён поэтапный план полного аудита ASF plugin
+
+**Новый единый план:** [docs/superpowers/plans/2026-11-06-gamedelivery-plugin-full-audit-phases.md](docs/superpowers/plans/2026-11-06-gamedelivery-plugin-full-audit-phases.md). Он дополняет, а не заменяет завершённые задачи в [2026-11-06-asf-plugin-command-dispatch-audit.md](docs/superpowers/plans/2026-11-06-asf-plugin-command-dispatch-audit.md).
+
+**Контрольная точка:** branch `feature/asf-bulk-account-import`; HEAD до записи плана `95d8ff69a9430de2354e5e5545d50dcc060d65c8`. PR #4 остаётся open/draft/not merged; base `feature/steam-card-set-selection`. `main` не менялся.
+
+**Важно — уже выполненная работа сохранена:** Newtonsoft migration, callback registration/logging, command parser, send safety changes и smoke test, реально вызывающий parser из собранной DLL. Не повторять эти исправления без нового доказательства дефекта. Текущая live-проблема ещё не закрыта: логи пользователя показывали DLL V1.0.0.0, а установленность текущей V1.0.2.0 не подтверждена.
+
+**Actions snapshot на HEAD `95d8ff6`:**
+- ASF plugin PR run `42232166024` — success; artifact `13508697553`; SHA-256 `69da2f9c966e84e504ee561c6a14a3a231cfc6923834d57a52612deb0fff7f70`.
+- Tests PR run `42232166023` — success.
+- Tests push run `42232158414` — success.
+- Windows EXE PR run `42232165607` — in_progress на последней проверке; не является условием сборки ASF plugin, но остаётся частью приложения.
+- Предыдущие промежуточные красные Tests runs относились к новому regression test, который обнаружил, что smoke harness компилировал parser отдельно от DLL. Harness и тест исправлены; последующие runs для текущего HEAD зелёные.
+
+**Проверенная причина legacy случая:** Newtonsoft FileNotFound внутри callback скрывался ASF 6.3.11.7 как «Неизвестная команда!», поскольку ASF превращает необработанное plugin callback exception в null response. Добавление `!` не было исправлением: префикс необязателен в консоли ASF.
+
+**Новая структура работ:** Этап 0 — восстановление контекста (done); Этап 1 — ASF load/command dispatch (code + CI done, live pending); Этап 2 — Python client/UI ↔ ASF IPC contract (следующий); Этап 3 — preview; Этап 4 — send safety/recovery; Этап 5 — один runtime smoke; Этап 6 — live preview; Этап 7 — controlled single send только с отдельным разрешением; Этап 8 — финальный review/Actions/package checks.
+
+**Правило продолжения:** этапы выполнять отдельно, не запускать массовую правку всего проекта; после каждого этапа обновлять и этот журнал, и новый phased plan с commit SHA, тестами, Actions run IDs, артефактом, рисками и точным следующим шагом. Не просить пользователя повторять команды, уже проверенные на старой DLL. Следующий исполнитель обязан начать с Этапа 2 и сверить Actions/HEAD, а не начинать весь аудит с нуля.
