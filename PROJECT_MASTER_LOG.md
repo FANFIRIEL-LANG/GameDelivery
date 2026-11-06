@@ -755,3 +755,18 @@ Telegram Bot — настраиваемая дополнительная пан�
 **Открытые вопросы и риски:** если ReflectionTypeLoadException сохранится после установки корректно собранного пакета, точный LoaderExceptions должен быть получен через loader diagnostics; версия assembly Newtonsoft может совпадать, но проблема могла включать и иной missing type/assembly.  
 **Точный следующий шаг:** проверить созданный commit, запустить доступные CI на рабочей ветке, скачать только успешный ASF plugin artifact и провести live-start ASF без трогания пользовательских данных.  
 **Разрешение пользователя на следующий этап:** C.2 не разрешён и не начат.
+
+
+### 2026-11-06 — исправлена проверка workflow path filters
+
+**Этап/блок:** C.1, CI исправления; C.2 не начат.
+
+**Причина:** на commit `43938fc` GitHub создал ASF workflow run с conclusion=failure, но `total_count=0` jobs. Сравнение с последним успешным запуском `5a4e98c` показало, что из path filters нового workflow исчез `integrations/asf_plugin/README.md`, присутствовавший в рабочей конфигурации. Для данного изменения это существенный путь; восстановлен в обоих фильтрах `push` и `pull_request`.
+
+**Также исправлено:** контрактный тест теперь проверяет используемую workflow SHA-256 верификацию официального ASF 6.3.11.7 архива вместо устаревшего SHA512SUMS assertion.
+
+**Статус проверок на `43938fc`:** Tests push и Tests PR успешны; Windows EXE PR выполнялся; ASF workflow создан, но завершился без job. Новый запуск после восстановления path filters обязателен.
+
+**Изменённые файлы:** `.github/workflows/asf-plugin.yml`, `tests/test_asf_plugin_contract.py`, данный журнал.
+
+**Точный следующий шаг:** проверить свежий ASF job, build и package artifact на новом commit. C.2 не начинать.
