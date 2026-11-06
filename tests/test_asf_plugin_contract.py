@@ -252,6 +252,15 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("exports.OfType<IBotCommand2>()", program)
         self.assertIn("System.Composition.$composition_assembly.dll", workflow)
 
+
+    def test_smoke_executes_command_parser_from_the_built_plugin_assembly(self):
+        project = (ROOT / "tests" / "asf_plugin_smoke" / "ASFPlugin.Smoke.csproj").read_text(encoding="utf-8")
+        program = (ROOT / "tests" / "asf_plugin_smoke" / "Program.cs").read_text(encoding="utf-8")
+        self.assertNotIn('Compile Include="../../integrations/asf_plugin/CommandArgumentParser.cs"', project)
+        self.assertIn('typeof(GameDeliveryPlugin).Assembly.GetType("GameDelivery.ASFPlugin.CommandArgumentParser"', program)
+        self.assertIn('GetMethod("TryNormalize"', program)
+        self.assertIn("BindingFlags.Public | BindingFlags.Static", program)
+
     def test_send_nonce_is_null_guarded_before_secret_path_creation(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         self.assertIn("GetPendingSecretPath(request.CredentialNonce!)", source)
