@@ -243,10 +243,9 @@ internal static class TradeDelivery
             if (!byAssetId.TryGetValue(assetId, out Asset? asset)
                 || asset.AppID != Asset.SteamAppID
                 || asset.ContextID != Asset.SteamCommunityContextID
-                || !asset.Tradable
-                || !string.Equals(asset.Type.ToString(), "TradingCard", StringComparison.Ordinal))
+                || !asset.Tradable)
             {
-                return Failure("Актив " + rawAssetId + " не найден, не передаваем или не является обычной Steam-карточкой.");
+                return Failure("Актив " + rawAssetId + " отсутствует в Steam Community inventory (753/6) или сейчас не передаваем.");
             }
 
             selectedAssets.Add(asset);

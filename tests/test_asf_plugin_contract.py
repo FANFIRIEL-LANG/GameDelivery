@@ -93,5 +93,32 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn('Newtonsoft.Json.dll', workflow)
 
 
+
+    def test_plugin_build_targets_the_installed_asf_release(self):
+        workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        readme = (ROOT / "integrations" / "asf_plugin" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("6.3.11.7", workflow)
+        self.assertIn("SHA512SUMS", workflow)
+        self.assertNotIn("6.3.10.6", workflow)
+        self.assertIn("ASF 6.3.11.7", readme)
+
+    def test_preview_and_send_accept_any_tradable_steam_community_item(self):
+        plugin = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        send = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
+
+        preview_start = plugin.index("foreach (string rawAssetId in request.AssetIds)")
+        preview_end = plugin.index("return JsonConvert.SerializeObject(new PreviewResponse", preview_start)
+        preview_validation = plugin[preview_start:preview_end]
+        send_start = send.index("foreach (string rawAssetId in request.AssetIds)")
+        send_end = send.index("string fingerprint = ComputeFingerprint(request)", send_start)
+        send_validation = send[send_start:send_end]
+
+        for validation in (preview_validation, send_validation):
+            self.assertIn("asset.AppID != Asset.SteamAppID", validation)
+            self.assertIn("asset.ContextID != Asset.SteamCommunityContextID", validation)
+            self.assertIn("!asset.Tradable", validation)
+            self.assertNotIn("TradingCard", validation)
+
+
 if __name__ == "__main__":
     unittest.main()

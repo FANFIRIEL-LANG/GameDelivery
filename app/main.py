@@ -560,7 +560,7 @@ class MainWindow(QMainWindow):
                 "Проверенный состав:",
             ]
             lines.extend(
-                f"• {asset.get('name', 'Steam-карточка')} — asset {asset['assetId']}"
+                f"• {asset.get('name', 'Steam-предмет')} — asset {asset['assetId']}"
                 for asset in preview["assets"]
             )
             lines.extend([

@@ -196,15 +196,10 @@ public sealed class GameDeliveryPlugin : IBotCommand2
                 return Failure("Актив " + rawAssetId + " сейчас нельзя передать.");
             }
 
-            if (!string.Equals(asset.Type.ToString(), "TradingCard", StringComparison.Ordinal))
-            {
-                return Failure("Актив " + rawAssetId + " не является обычной Steam-карточкой.");
-            }
-
             previewAssets.Add(new PreviewAsset
             {
                 AssetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
-                Name = asset.Description?.Name ?? "Steam Trading Card",
+                Name = asset.Description?.Name ?? "Steam Community item",
                 ClassId = asset.ClassID.ToString(CultureInfo.InvariantCulture),
                 InstanceId = asset.InstanceID.ToString(CultureInfo.InvariantCulture),
                 Tradable = true

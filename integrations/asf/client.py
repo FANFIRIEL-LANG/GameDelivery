@@ -485,7 +485,7 @@ class ASFClient:
         trade_url: str,
         asset_ids: Iterable[str],
     ) -> dict[str, Any]:
-        """Send one reviewed card offer via ASF; the trade token is passed only in a one-use local file."""
+        """Send one reviewed Steam Community inventory offer via ASF; keep the trade token in a one-use local file."""
         order = order_id.strip()
         bot = bot_name.strip()
         if not order or len(order) > 128 or any(ord(ch) < 32 for ch in order):

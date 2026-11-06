@@ -1,4 +1,4 @@
-name: ASF plugin — stable 6.3.10.6
+name: ASF plugin — ASF 6.3.11.7
 
 on:
   pull_request:
@@ -34,14 +34,16 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Download official ASF 6.3.10.6 release binaries
+      - name: Download and verify official ASF 6.3.11.7 release binaries
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --retry 3 \
-            https://sourceforge.net/projects/archisteamfarm.mirror/files/6.3.10.6/ASF-generic.zip/download \
-            --output /tmp/ASF-generic.zip
-          echo "118f9bb85d2d8d301536e96d304cbe8e7aa99a6aa1d1bb97a540e78b7c73b1ce  /tmp/ASF-generic.zip" | sha256sum --check
+          base=https://sourceforge.net/projects/archisteamfarm.mirror/files/6.3.11.7
+          curl --fail --location --retry 3 "$base/ASF-generic.zip/download" --output /tmp/ASF-generic.zip
+          curl --fail --location --retry 3 "$base/SHA512SUMS/download" --output /tmp/ASF-SHA512SUMS
+          awk '$2 == "ASF-generic.zip" || $2 == "*ASF-generic.zip" { print $1 "  /tmp/ASF-generic.zip"; found=1 } END { exit !found }' /tmp/ASF-SHA512SUMS > /tmp/ASF-generic.sha512
+          test -s /tmp/ASF-generic.sha512
+          sha512sum --check /tmp/ASF-generic.sha512
           mkdir -p .asf-bin
           unzip -q /tmp/ASF-generic.zip -d .asf-bin
           test -s .asf-bin/ArchiSteamFarm.dll
@@ -62,7 +64,7 @@ jobs:
           test -s "$json_dll"
           cp "$json_dll" dist/GameDelivery.ASFPlugin/Newtonsoft.Json.dll
           cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
-          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nModes: live preview and explicitly confirmed guarded trade sending\n' "$GITHUB_SHA" "official ASF 6.3.10.6 ASF-generic.zip SHA256 118f9bb85d2d8d301536e96d304cbe8e7aa99a6aa1d1bb97a540e78b7c73b1ce" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nModes: live preview and explicitly confirmed guarded trade sending\n' "$GITHUB_SHA" "official ASF 6.3.11.7 ASF-generic.zip verified against its release SHA512SUMS manifest" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
 
       - name: Upload installable plugin package
         uses: actions/upload-artifact@v4
