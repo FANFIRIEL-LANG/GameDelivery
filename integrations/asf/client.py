@@ -588,7 +588,12 @@ class ASFClient:
                     or outcome.get("assetCount") != len(normalized_ids)
                     or not isinstance(outcome.get("offerIds"), list)
                     or not outcome["offerIds"]
-                    or any(not str(value).isdigit() for value in outcome["offerIds"])
+                    or any(
+                        not isinstance(value, str)
+                        or re.fullmatch(r"[1-9][0-9]*", value) is None
+                        for value in outcome["offerIds"]
+                    )
+                    or len(set(outcome["offerIds"])) != len(outcome["offerIds"])
                 ):
                     raise ASFError("ASF не подтвердил отправку ожидаемого состава заказа.")
                 returned_assets = outcome.get("assets")
