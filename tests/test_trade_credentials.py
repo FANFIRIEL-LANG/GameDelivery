@@ -54,6 +54,15 @@ class SteamTradeCredentialStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "системном хранилище"):
             store.load_trade_url(self.ORDER_ID, self.SAFE_URL)
 
+    def test_load_rejects_inline_legacy_token_until_migration_runs(self):
+        backend = MemoryKeyring()
+        store = SteamTradeCredentialStore(backend=backend)
+
+        with self.assertRaisesRegex(ValueError, "не перенесена"):
+            store.load_trade_url(self.ORDER_ID, self.TRADE_URL)
+
+        self.assertEqual(backend.values, {})
+
     def test_store_fails_closed_when_keyring_is_unavailable(self):
         store = SteamTradeCredentialStore(backend=BrokenKeyring())
 
