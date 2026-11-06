@@ -328,3 +328,25 @@
 **Stage status:** Stage 4 security audit remains in progress; Stage 5 runtime smoke remains pending until this focused smoke and the full ASF workflow pass. Stage 6 live preview remains pending. Stage 7 real send remains unauthorized. No user download or installation until fresh CI artifacts are green.
 
 **Next step:** execute the focused contract test and ASF plugin workflow, inspect any failure logs, then run full Tests and Windows package checks on the exact same branch HEAD.
+
+
+### 2026-11-07 — Send-pipeline correction checkpoint (tested source HEAD 1066b45)
+
+**Confirmed ASF command route:** ASF 6.3.11.7's IPC `CommandPost` dispatches through its default bot context and `IBotCommand2` is explicitly intended for otherwise unrecognized commands from IPC/console/Steam. The plugin must therefore treat the callback Bot as `ipcContextBot` only and resolve the actual sender from the request's `BotName`. The selected sender is then used for its live inventory and `ArchiWebHandler.SendTradeOffer`.
+
+**Implemented:**
+1. The self-trade guard compares two SteamID64 `ulong` values, avoiding the unnecessary SteamKit implicit operator binding.
+2. Added an explicit callback immediately before `SendTradeOffer`; pre-dispatch failures are known/retryable, while failures after dispatch are unknown/manual-review only.
+3. Logging now separates `ipcContextBot`, `requestedSenderBot`, and `resolvedSenderBot`.
+4. Added contract checks and a .NET smoke invoking the compiled plugin guard for equal and unequal IDs.
+
+**Exact HEAD CI:** `1066b45fa77888f5f8c205cd66fb19db228aec4c`:
+- Tests #1166 / run 42294601707 — success, 300 tests.
+- ASF plugin #539 / run 42294601720 — build success against official ASF 6.3.11.7 and Windows journal ACL smoke success.
+- Windows EXE #587 / run 42294601847 — ACL hardening, GUI build, packaged smoke and artifact upload success.
+- Plugin artifact 13541805858 SHA-256 `de7934129eebb4315b9dd76878bbdbd5db82b0830924d20f687036d4e95a1de1`.
+- Windows artifact 13542210475 SHA-256 `949439ac2a73bd14cc788340ee43f1d9e33528d2a44a5471898df7a275fe6546`.
+
+**Not done:** No live preview/send was performed. The smoke does not yet exercise the complete safe pre-send pipeline with a controlled ASF Bot/inventory seam. Existing UnknownFailure carries exception type/message, MissingMethodException message, TargetSite and stack trace, but structured MissingMemberException.MemberName/ClassName and UI exposure for pre-send errors remain open. The user's actual MissingMethodException root cause is therefore not conclusively identified.
+
+**Next:** add a deterministic safe pre-send harness using exact ASF 6.3.11.7 assemblies without calling Steam send; add structured MissingMemberException metadata for pre-send and send exceptions with token redaction; then request only an installed read-only diagnose/preview. Keep real send disabled until preview is confirmed. PR #4 remains Draft; do not merge or retarget.
