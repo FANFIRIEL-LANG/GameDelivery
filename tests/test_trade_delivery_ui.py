@@ -400,7 +400,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                     window._show_order_details(0)
                 rendered = str(info.call_args.args[2])
                 self.assertNotIn("Abc_123", rendered)
-                self.assertIn("токен хранится отдельно", rendered)
+                self.assertIn("Токен Steam хранится отдельно", rendered)
 
             self._run_with_window(database, exercise)
 
