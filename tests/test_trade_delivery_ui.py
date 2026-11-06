@@ -269,5 +269,29 @@ class TradeDeliveryUITests(unittest.TestCase):
             self._run_with_window(database, exercise)
 
 
+    def test_preview_requires_exact_current_asset_reservations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+
+            def exercise(window):
+                with sqlite3.connect(database) as db:
+                    db.execute(
+                        "DELETE FROM steam_asset_reservations WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    )
+
+                client = MagicMock()
+                with (
+                    patch("app.main.ASFClient", return_value=client),
+                    patch("app.main.QMessageBox.warning") as warning,
+                ):
+                    window._preview_selected_order_with_asf()
+
+                client.preview_trade_offer.assert_not_called()
+                warning.assert_called_once()
+
+            self._run_with_window(database, exercise)
+
+
 if __name__ == "__main__":
     unittest.main()
