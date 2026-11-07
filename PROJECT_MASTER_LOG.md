@@ -1880,3 +1880,36 @@ Telegram — дополнительный канал уведомлений; е�
 
 **Следующий шаг:** завершить техническое проектирование C.2 и подтвердить источники данных на существующих Steam/ASF механизмах. До этого не менять пользовательскую БД, не запускать миграции и не переписывать большой UI. После утверждения C.2 отдельно перейти к C.3.
 
+
+---
+
+## 2026-11-07 — C.2: предварительная проверка технической основы Steam badge-aware подборщика
+
+**Статус:** проведена статическая проверка существующих модулей GameDelivery и внешней документации Steam. Это техническая разведка C.2; код и пользовательская БД не менялись.
+
+### Подтверждено в исходниках GameDelivery
+
+- `games/steam_cards/recipient_badge.py` уже содержит `RecipientBadge` и `evaluate_recipient_badge_capacity`, но считает только `5 - current_level`. Полные наборы, уже лежащие в инвентаре покупателя, в расчёте не учитываются.
+- `games/steam_cards/order_preflight.py` подготавливает/резервирует наборы для одной игры за вызов. Глобального планировщика заказа на несколько игр с приоритетом максимального числа значков, доведённых до уровня 5, пока нет.
+- `games/steam_cards/shared_sets.py` уже агрегирует полные наборы между инвентарями нескольких ботов и сохраняет точную привязку каждого актива к `(bot_name, asset_id)`. Этот механизм — полезная основа для нового алгоритма; не переписывать без необходимости.
+- `selection.py` и `shared_sets.py` определяют типы карточек по именам, найденным в inventory snapshots. Если какой-либо тип отсутствует у всех ботов, один только инвентарь не доказывает, что его нет в составе набора. Поэтому состав набора должен поступать из отдельного authoritative badge metadata.
+- `games/steam_cards/asf_inventory.py` сопоставляет assets с descriptions по `classid + instanceid`, но нормализованная `CardCopy` сохраняет `market_hash_name` и display name, а не class/instance IDs. Snapshot сохраняет `market_hash_name`. Необходимо проверить точное соответствие Steam badge metadata `markethash` и inventory `market_hash_name` на нескольких играх; до проверки не считать его гарантированным.
+- Текущий ASF IPC client получает инвентарь собственных ботов через `/Api/Bot/{bot}/Inventory/{appID}/{contextID}`. Готового provider для инвентаря покупателя и его badge progress в текущем коде не найдено.
+- `MainWindow` пока не вызывает `SteamCardOrderPreflight`; фактический UI-путь использует ручной выбор активов. Наличие standalone preflight не означает, что новая логика уже работает в заказах.
+
+### Внешние источники и ограничения
+
+- Официальная FAQ Steam сообщает, что вкладка Badges in Progress показывает состав набора, имеющиеся карточки и недостающие карточки; обычный игровой значок можно изготовить максимум пять раз. Источник: https://steamcommunity.com/tradingcards/faq/Steam
+- В reverse-engineered описании внутреннего endpoint Steam Community `/profiles/{steamid}/ajaxgetbadgeinfo/{appid}` указаны `badgedata.level`, `badgedata.maxlevel` и `badgedata.rgCards[]` с `name`, `title`, изображениями, `owned` и `markethash`. Документация помечает endpoint как authenticated, опубликована не Steam и датирована 2022 годом. Источник: https://github-wiki-see.page/m/Revadike/InternalSteamWebAPI/wiki/Get-Badge-Info
+- Endpoint выше — только кандидат для проверки. Не считать его стабильным или разрешённым production API до проверки актуального ответа, возможности читать чужой профиль, поведения при разных настройках приватности и точного значения `owned`.
+- Официальная FAQ и reverse-engineered описание не доказывают, что badge data можно получать через ASF bot session. Это отдельный технический gate. Не подключать платные внешние Steam data APIs как обязательную зависимость.
+
+### Следующие технические задачи C.2
+
+1. Проверить на собственных ASF-ботах получение полного состава обычного набора из badge metadata, включая карточки, которых нет в inventory всех ботов.
+2. Проверить стабильное сопоставление `markethash` с `market_hash_name` и при необходимости с `classid + instanceid`.
+3. Найти и проверить допустимый способ читать badge level и inventory покупателя с учётом того, что текущий ASF inventory route относится к собственным ботам.
+4. Подтвердить, как Steam сообщает о закрытом профиле, скрытых значках/game details и закрытом инвентаре, и как единая инструкция открытия приватности устраняет каждую блокировку.
+5. Расширить доменные тесты: inventory complete sets, badge level 0–5, многоботовые наборы, multi-game optimization, exact order quantity, no-send on shortage, privacy retry и multiple trade legs.
+
+**Вывод:** проект уже содержит полезные части (badge capacity, complete-set selection, cross-bot aggregation и reservations), но текущая реализация не соответствует согласованному workflow целиком. Главные пробелы — authoritative card-set catalog, buyer inventory/badge provider, учёт полных наборов покупателя и multi-game optimizer. C.2 остаётся в работе; до закрытия не менять пользовательскую БД, миграции и большой UI.
