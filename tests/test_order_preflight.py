@@ -14,8 +14,8 @@ class OrderPreflightTests(unittest.TestCase):
         self.reservations = AssetReservationStore(Path(self.temp.name) / "db.sqlite")
         self.service = SteamCardOrderPreflight(self.reservations)
         self.inventories = {
-            "Bot A": [CardCopy("a1", "Game", "A"), CardCopy("a2", "Game", "B")],
-            "Bot B": [CardCopy("b1", "Game", "A"), CardCopy("b2", "Game", "B")],
+            "Bot A": [CardCopy("101", "Game", "A"), CardCopy("102", "Game", "B")],
+            "Bot B": [CardCopy("201", "Game", "A"), CardCopy("202", "Game", "B")],
         }
 
     def tearDown(self):
@@ -42,6 +42,46 @@ class OrderPreflightTests(unittest.TestCase):
         self.assertEqual(len(result.reserved_assets), 2)
         self.assertIn("ручной проверке", result.message)
         self.assertIn("не выполнялась", result.message)
+
+    def test_foil_cards_are_never_reserved_when_normal_copy_exists(self):
+        inventories = {
+            "Bot A": [
+                CardCopy("foil-a", "Game", "A", is_foil=True),
+                CardCopy("normal-a", "Game", "A"),
+                CardCopy("normal-b", "Game", "B"),
+            ],
+        }
+        result = self.service.prepare(
+            order_id="foil-exclusion", game_name="Game", requested_sets=1,
+            inventories=inventories,
+            recipient_badges=[RecipientBadge("Game", 0)], badge_data_verified=True,
+        )
+        self.assertTrue(result.ready_for_manual_review)
+        self.assertEqual(
+            set(result.reserved_assets),
+            {("Bot A", "normal-a"), ("Bot A", "normal-b")},
+        )
+        self.assertNotIn(("Bot A", "foil-a"), result.reserved_assets)
+        self.assertNotIn(
+            ("Bot A", "foil-a"),
+            {(row["bot_name"], row["asset_id"])
+             for row in self.reservations.list_for_order("foil-exclusion")},
+        )
+
+    def test_foil_card_cannot_replace_missing_normal_card(self):
+        inventories = {
+            "Bot A": [
+                CardCopy("foil-a", "Game", "A", is_foil=True),
+                CardCopy("normal-b", "Game", "B"),
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "полных наборов"):
+            self.service.prepare(
+                order_id="foil-only", game_name="Game", requested_sets=1,
+                inventories=inventories,
+                recipient_badges=[RecipientBadge("Game", 0)], badge_data_verified=True,
+            )
+        self.assertEqual(self.reservations.list_for_order("foil-only"), [])
 
     def test_badge_capacity_blocks_order(self):
         result = self.service.prepare(

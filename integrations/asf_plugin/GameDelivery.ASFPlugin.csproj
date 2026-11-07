@@ -7,13 +7,14 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDependencyFile>false</GenerateDependencyFile>
+    <Version>1.0.2</Version>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
-
   <PropertyGroup>
     <ASF_BIN_DIR Condition="'$(ASF_BIN_DIR)' == ''">$(MSBuildThisFileDirectory)../../ASF</ASF_BIN_DIR>
   </PropertyGroup>
-
+  <!-- JSON uses the System.Text.Json implementation included in the .NET 10 shared framework. -->
   <ItemGroup>
     <Reference Include="ArchiSteamFarm">
       <HintPath>$(ASF_BIN_DIR)/ArchiSteamFarm.dll</HintPath>

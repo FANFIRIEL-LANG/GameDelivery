@@ -136,6 +136,42 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
                 f"Для карточки {item_name or asset_id} ASF не подтвердил передаваемость; "
                 "старый снимок сохранён"
             )
+        def image_url(field: str) -> str:
+            field_key = _key(description, field)
+            raw = str(description.get(field_key, "") or "").strip() if field_key else ""
+            if not raw:
+                return ""
+            if raw.startswith("//"):
+                return "https:" + raw
+            if raw.startswith("https://") or raw.startswith("http://"):
+                return raw
+            if raw.startswith("/economy/image/"):
+                return "https://community.cloudflare.steamstatic.com" + raw
+            return "https://community.cloudflare.steamstatic.com/economy/image/" + raw.lstrip("/")
+
+        market_key = _key(description, "market_hash_name")
+        market_hash_name = str(description.get(market_key, "") or "").strip() if market_key else ""
+        item_quality = ""
+        if isinstance(tags, list):
+            for tag in tags:
+                if not isinstance(tag, dict):
+                    continue
+                category_key = _key(tag, "category")
+                internal_key = _key(tag, "internal_name")
+                localized_key = _key(tag, "localized_tag_name")
+                category = str(tag.get(category_key, "") if category_key else "").casefold()
+                internal = str(tag.get(internal_key, "") if internal_key else "").casefold()
+                localized = str(tag.get(localized_key, "") if localized_key else "").strip()
+                if category in {"exterior", "quality"}:
+                    quality_map = {
+                        "factory new": "FN", "minimal wear": "MW",
+                        "field-tested": "FT", "well-worn": "WW",
+                        "battle-scarred": "BS",
+                    }
+                    item_quality = quality_map.get(localized.casefold(), quality_map.get(internal, ""))
+                    if item_quality:
+                        break
+
         cards.append(CardCopy(
             asset_id=asset_id,
             game_name=actual_game_name,
@@ -143,5 +179,9 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
             is_trading_card=is_card,
             is_foil=is_foil,
             is_tradable=is_tradable,
+            icon_url=image_url("icon_url"),
+            icon_url_large=image_url("icon_url_large"),
+            market_hash_name=market_hash_name,
+            item_quality=item_quality,
         ))
     return cards

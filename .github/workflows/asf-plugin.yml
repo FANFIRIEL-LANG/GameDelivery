@@ -1,23 +1,29 @@
-name: ASF plugin — stable 6.3.10.6
+name: ASF plugin — ASF 6.3.11.7
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - integrations/asf_plugin/**
       - integrations/asf/client.py
       - app/main.py
       - tests/test_asf_client.py
+      - tests/test_asf_plugin_contract.py
+      - tests/asf_plugin_smoke/**
+      - integrations/asf_plugin/README.md
       - .github/workflows/asf-plugin.yml
   push:
     branches:
-      - feature/steam-card-set-selection
+      - feature/asf-bulk-account-import
     paths:
       - integrations/asf_plugin/**
       - integrations/asf/client.py
       - app/main.py
       - tests/test_asf_client.py
-      - .github/workflows/asf-plugin.yml
+      - tests/test_asf_plugin_contract.py
+      - tests/asf_plugin_smoke/**
       - integrations/asf_plugin/README.md
+      - .github/workflows/asf-plugin.yml
 
 permissions:
   contents: read
@@ -34,18 +40,58 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Checkout stable ASF 6.3.10.6 source
-        uses: actions/checkout@v4
-        with:
-          repository: JustArchiNET/ArchiSteamFarm
-          ref: c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9
-          path: .asf-src
+      - name: Download and verify official ASF 6.3.11.7 release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7
+          curl --fail --location --retry 3 "$base/ASF-generic.zip" --output /tmp/ASF-generic.zip
+          echo "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb  /tmp/ASF-generic.zip" | sha256sum --check
+          mkdir -p .asf-bin
+          unzip -q /tmp/ASF-generic.zip -d .asf-bin
+          echo "ASF generic archive assembly layout:"
+          find .asf-bin -type f \( -name ArchiSteamFarm.dll -o -name SteamKit2.dll -o -name System.Composition.AttributedModel.dll \) -print
+          asf_bin_dir=$(dirname "$(find .asf-bin -type f -name ArchiSteamFarm.dll -print -quit)")
+          test -n "$asf_bin_dir"
+          test -s "$asf_bin_dir/SteamKit2.dll"
+          for composition_assembly in AttributedModel Convention Hosting Runtime TypedParts; do
+            test -s "$asf_bin_dir/System.Composition.$composition_assembly.dll"
+          done
+          echo "Verified ASF MEF assemblies:"
+          find "$asf_bin_dir" -maxdepth 1 -type f -name 'System.Composition.*.dll' -printf '%f\\n' | sort
+          echo "ASF_BIN_DIR=$GITHUB_WORKSPACE/$asf_bin_dir" >> "$GITHUB_ENV"
 
-      - name: Build ASF API assemblies
-        run: dotnet build .asf-src/ArchiSteamFarm/ArchiSteamFarm.csproj --configuration Release
+      - name: Build GameDelivery ASF plugin against exact host assemblies
+        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$ASF_BIN_DIR
 
-      - name: Build GameDelivery ASF plugin
-        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=$GITHUB_WORKSPACE/.asf-src/ArchiSteamFarm/bin/Release/net10.0
+      - name: Smoke test command parsing and exact ASF runtime interface
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_dll="$GITHUB_WORKSPACE/integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll"
+          dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj --configuration Release --property:ASF_BIN_DIR="$ASF_BIN_DIR" --property:PLUGIN_DLL="$plugin_dll"
+
+      - name: Verify plugin has no Newtonsoft runtime dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -n 'Newtonsoft.Json\|JsonConvert\|JsonSerializationException' integrations/asf_plugin --include='*.cs' --include='*.csproj'; then
+            echo "Unexpected Newtonsoft.Json usage in ASF plugin source" >&2
+            exit 1
+          fi
+
+      - name: Verify plugin output does not contain host-shared dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=integrations/asf_plugin/bin/Release/net10.0
+          test -s "$output/GameDelivery.ASFPlugin.dll"
+          for shared in ArchiSteamFarm.dll SteamKit2.dll System.Composition.AttributedModel.dll; do
+            if test -e "$output/$shared"; then
+              echo "Unexpected host-shared dependency in plugin output: $shared" >&2
+              exit 1
+            fi
+          done
 
       - name: Prepare installable plugin package
         shell: bash
@@ -56,12 +102,329 @@ jobs:
           mkdir -p dist/GameDelivery.ASFPlugin
           cp "$plugin_dll" dist/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll
           cp integrations/asf_plugin/README.md dist/GameDelivery.ASFPlugin/README.md
-          printf 'GameDelivery ASF plugin\nGameDelivery commit: %s\nASF source contract: %s\nMode: preview-only; trade sending disabled\n' "$GITHUB_SHA" "ASF 6.3.10.6 commit c156c7ba6a2ebbfce5bdf70d9f1a69ac77e23ee9" > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+          {
+            printf 'GameDelivery ASF plugin\n'
+            printf 'GameDelivery commit: %s\n' "$GITHUB_SHA"
+            printf 'ASF source contract: official ASF 6.3.11.7 release binaries\n'
+            printf 'Modes: live preview and explicitly confirmed guarded trade sending\n'
+          } > dist/GameDelivery.ASFPlugin/BUILD_INFO.txt
+          test "$(find dist/GameDelivery.ASFPlugin -maxdepth 1 -type f | wc -l)" -eq 3
 
       - name: Upload installable plugin package
         uses: actions/upload-artifact@v4
         with:
-          name: GameDelivery-ASFPlugin-preview-only
+          name: GameDelivery-ASFPlugin
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+  windows-storage-acl-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download and verify official ASF 6.3.11.7 release binaries
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP ASF-generic.zip
+          $base = "https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7"
+          Invoke-WebRequest -Uri "$base/ASF-generic.zip" -OutFile $archive
+          $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb") {
+            throw "Official ASF 6.3.11.7 archive SHA-256 mismatch: $digest"
+          }
+          Expand-Archive -Path $archive -DestinationPath .asf-bin -Force
+          $assembly = Get-ChildItem -Path .asf-bin -Filter ArchiSteamFarm.dll -Recurse | Select-Object -First 1
+          if ($null -eq $assembly) {
+            throw "ArchiSteamFarm.dll was not found in the verified release archive"
+          }
+          "ASF_BIN_DIR=$($assembly.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build GameDelivery ASF plugin on Windows
+        shell: pwsh
+        run: dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR="$env:ASF_BIN_DIR"
+
+      - name: Smoke test Windows journal ACL while the file is exclusively open
+        shell: pwsh
+        run: |
+          $plugin = Join-Path $PWD integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll
+          dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj --configuration Release -p:ASF_BIN_DIR="$env:ASF_BIN_DIR" -p:PLUGIN_DLL="$plugin"
+
+  generic-runtime-smoke:
+    runs-on: windows-latest
+    needs: build-plugin
+    steps:
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+
+      - name: Download installable GameDelivery ASF plugin artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GameDelivery-ASFPlugin
+          path: ${{ runner.temp }}/GameDelivery-ASFPlugin
+
+      - name: Setup .NET 10 for ASF Generic
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download and verify official ASF 6.3.11.7 Generic
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP ASF-generic.zip
+          $base = "https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7"
+          Invoke-WebRequest -Uri "$base/ASF-generic.zip" -OutFile $archive
+          $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb") {
+            throw "Official ASF 6.3.11.7 Generic archive SHA-256 mismatch: $digest"
+          }
+          $destination = Join-Path $env:RUNNER_TEMP ASF-generic-runtime
+          Expand-Archive -Path $archive -DestinationPath $destination -Force
+          $assembly = Get-ChildItem -Path $destination -Filter ArchiSteamFarm.dll -Recurse | Select-Object -First 1
+          if ($null -eq $assembly) {
+            throw "ArchiSteamFarm.dll was not found in the verified Generic archive"
+          }
+          $pluginSource = Join-Path $env:RUNNER_TEMP "GameDelivery-ASFPlugin/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll"
+          if (!(Test-Path -LiteralPath $pluginSource)) {
+            throw "GameDelivery ASF plugin DLL was not found in the downloaded artifact"
+          }
+          $pluginDirectory = Join-Path $assembly.DirectoryName "plugins/GameDelivery.ASFPlugin"
+          New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
+          Copy-Item -LiteralPath $pluginSource -Destination (Join-Path $pluginDirectory "GameDelivery.ASFPlugin.dll") -Force
+          $configDirectory = Join-Path $assembly.DirectoryName "config"
+          New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $configDirectory "ASF.json") -Value '{"IPC":false}' -Encoding utf8
+          "ASF_GENERIC_DIR=$($assembly.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify Generic plugin load, command registration, and send-state-machine JIT
+        shell: pwsh
+        run: |
+          $env:GAMEDELIVERY_VALIDATE_SEND_JIT = "1"
+          $stdout = Join-Path $env:RUNNER_TEMP ASF-Generic.stdout.log
+          $stderr = Join-Path $env:RUNNER_TEMP ASF-Generic.stderr.log
+          $process = Start-Process -FilePath "dotnet" -ArgumentList "ArchiSteamFarm.dll" -WorkingDirectory $env:ASF_GENERIC_DIR -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $deadline = (Get-Date).AddSeconds(60)
+          $combined = ""
+          $jitSuccess = $false
+          $commandRegistered = $false
+
+          try {
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 1
+              $outText = if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout -Raw } else { "" }
+              $errText = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { "" }
+              $combined = $outText + [Environment]::NewLine + $errText
+
+              if ($combined.Contains("InitPlugins() Failed due to error:")) {
+                throw "ASF Generic failed to initialize plugins." + [Environment]::NewLine + $combined
+              }
+
+              if ($combined.Contains("GameDeliveryPlugin send state-machine JIT probe:")) {
+                if ($combined.Contains('"status":"success"')) {
+                  $jitSuccess = $true
+                } else {
+                  throw "ASF Generic loaded GameDelivery but send-state-machine JIT failed." + [Environment]::NewLine + $combined
+                }
+              }
+
+              if ($combined -match 'GameDeliveryPlugin ASF registration: .*commandHandlers=[1-9][0-9]*; thisIsIBotCommand2=True; thisIsRegistered=True\.') {
+                $commandRegistered = $true
+              }
+
+              if ($jitSuccess -and $commandRegistered) {
+                Write-Host "ASF Generic: GameDelivery loaded; IBotCommand2 handler registered; ProcessSendCommand state machine JIT-compiled."
+                Write-Host "No Bot, Steam credentials, IPC command, or trade offer was used."
+                return
+              }
+
+              if ($process.HasExited) {
+                throw "ASF Generic exited before plugin load and command-registration checks completed. ExitCode=$($process.ExitCode)" + [Environment]::NewLine + $combined
+              }
+            }
+
+            throw "Timed out waiting for ASF Generic plugin load, IBotCommand2 registration, and send-state-machine JIT." + [Environment]::NewLine + $combined
+          }
+          finally {
+            if (!$process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+            }
+          }
+
+  win-x64-trimmed-runtime-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    needs: build-plugin
+    steps:
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+
+      - name: Download installable GameDelivery ASF plugin artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GameDelivery-ASFPlugin
+          path: ${{ runner.temp }}/GameDelivery-ASFPlugin
+
+      - name: Setup .NET for the Generic control host
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download and verify official ASF Generic control host
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP ASF-generic.zip
+          $base = "https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7"
+          Invoke-WebRequest -Uri "$base/ASF-generic.zip" -OutFile $archive
+          $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb") {
+            throw "Official ASF 6.3.11.7 Generic archive SHA-256 mismatch: $digest"
+          }
+          $destination = Join-Path $env:RUNNER_TEMP ASF-generic-control
+          Expand-Archive -Path $archive -DestinationPath $destination -Force
+          $assembly = Get-ChildItem -Path $destination -Filter ArchiSteamFarm.dll -Recurse | Select-Object -First 1
+          if ($null -eq $assembly) {
+            throw "ArchiSteamFarm.dll was not found in the verified Generic archive"
+          }
+          $pluginSource = Join-Path $env:RUNNER_TEMP "GameDelivery-ASFPlugin/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll"
+          if (!(Test-Path -LiteralPath $pluginSource)) {
+            throw "GameDelivery ASF plugin DLL was not found in the downloaded artifact"
+          }
+          $pluginDirectory = Join-Path $assembly.DirectoryName "plugins/GameDelivery.ASFPlugin"
+          New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
+          Copy-Item -LiteralPath $pluginSource -Destination (Join-Path $pluginDirectory "GameDelivery.ASFPlugin.dll") -Force
+          $configDirectory = Join-Path $assembly.DirectoryName "config"
+          New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $configDirectory "ASF.json") -Value '{"IPC":false}' -Encoding utf8
+          "ASF_GENERIC_DIR=$($assembly.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download and verify official ASF 6.3.11.7 win-x64 trimmed release
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP ASF-win-x64.zip
+          $base = "https://github.com/JustArchiNET/ArchiSteamFarm/releases/download/6.3.11.7"
+          Invoke-WebRequest -Uri "$base/ASF-win-x64.zip" -OutFile $archive
+          $digest = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne "f90a63359f9c2d3984828a22bb5fc0b9ba14776c4a16a2601513ba18c5369e7c") {
+            throw "Official ASF 6.3.11.7 win-x64 archive SHA-256 mismatch: $digest"
+          }
+          $destination = Join-Path $env:RUNNER_TEMP ASF-win-x64
+          Expand-Archive -Path $archive -DestinationPath $destination -Force
+          $executable = Get-ChildItem -Path $destination -Filter ArchiSteamFarm.exe -Recurse | Select-Object -First 1
+          if ($null -eq $executable) {
+            throw "ArchiSteamFarm.exe was not found in the verified win-x64 archive"
+          }
+          $configDirectory = Join-Path $executable.DirectoryName "config"
+          New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $configDirectory "ASF.json") -Value '{"IPC":false}' -Encoding utf8
+          "ASF_WIN_X64_DIR=$($executable.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify trimmed ASF host starts with official bundled plugins only
+        shell: pwsh
+        run: |
+          $stdout = Join-Path $env:RUNNER_TEMP ASF-win-x64-baseline.stdout.log
+          $stderr = Join-Path $env:RUNNER_TEMP ASF-win-x64-baseline.stderr.log
+          $pluginsDirectory = Join-Path $env:ASF_WIN_X64_DIR "plugins"
+          $gameDeliveryPluginDirectory = Join-Path $pluginsDirectory "GameDelivery.ASFPlugin"
+          if (Test-Path -LiteralPath $gameDeliveryPluginDirectory) {
+            throw "The ASF baseline unexpectedly contains the GameDelivery plugin before the baseline run"
+          }
+          $bundledPluginDirectories = @()
+          if (Test-Path -LiteralPath $pluginsDirectory) {
+            $bundledPluginDirectories = @(Get-ChildItem -LiteralPath $pluginsDirectory -Directory)
+          }
+          Write-Host "Official ASF-bundled plugin directories: $($bundledPluginDirectories.Name -join ', ')"
+
+          $process = Start-Process -FilePath (Join-Path $env:ASF_WIN_X64_DIR "ArchiSteamFarm.exe") -WorkingDirectory $env:ASF_WIN_X64_DIR -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            Start-Sleep -Seconds 20
+            $outText = if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout -Raw } else { "" }
+            $errText = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { "" }
+            $combined = $outText + [Environment]::NewLine + $errText
+
+            if ($combined.Contains("InitPlugins() Failed due to error:")) {
+              throw "Trimmed ASF failed while initializing its official bundled plugins, before GameDelivery was installed." + [Environment]::NewLine + $combined
+            }
+            if ($process.HasExited) {
+              throw "Trimmed ASF baseline exited before the observation window ended. ExitCode=$($process.ExitCode)" + [Environment]::NewLine + $combined
+            }
+            Write-Host "Official trimmed ASF stayed running for 20 seconds with only its bundled plugins."
+          }
+          finally {
+            if (!$process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+            }
+          }
+
+      - name: Install GameDelivery plugin into trimmed win-x64 host
+        shell: pwsh
+        run: |
+          $pluginSource = Join-Path $env:RUNNER_TEMP "GameDelivery-ASFPlugin/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll"
+          if (!(Test-Path -LiteralPath $pluginSource)) {
+            throw "GameDelivery ASF plugin DLL was not found in the downloaded artifact"
+          }
+          $pluginDirectory = Join-Path $env:ASF_WIN_X64_DIR "plugins/GameDelivery.ASFPlugin"
+          New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
+          Copy-Item -LiteralPath $pluginSource -Destination (Join-Path $pluginDirectory "GameDelivery.ASFPlugin.dll") -Force
+
+      - name: Compare plugin initialization and send-state-machine JIT in Generic and trimmed win-x64
+        shell: pwsh
+        run: |
+          $env:GAMEDELIVERY_VALIDATE_SEND_JIT = "1"
+
+          function Invoke-ASFJitProbe {
+            param(
+              [string] $FilePath,
+              [string] $Arguments,
+              [string] $WorkingDirectory,
+              [string] $Variant
+            )
+
+            $stdout = Join-Path $env:RUNNER_TEMP "$Variant.stdout.log"
+            $stderr = Join-Path $env:RUNNER_TEMP "$Variant.stderr.log"
+            $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $deadline = (Get-Date).AddSeconds(45)
+            $combined = ""
+
+            try {
+              while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Seconds 1
+                $outText = if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout -Raw } else { "" }
+                $errText = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { "" }
+                $combined = $outText + [Environment]::NewLine + $errText
+
+                if ($combined.Contains("GameDeliveryPlugin send state-machine JIT probe:")) {
+                  if ($combined.Contains('"status":"success"')) {
+                    Write-Host "${Variant}: plugin loaded and ProcessSendCommand state machine JIT-compiled successfully."
+                    return
+                  }
+                  throw "${Variant}: plugin loaded but the send state-machine JIT probe failed." + [Environment]::NewLine + $combined
+                }
+
+                if ($combined.Contains("InitPlugins() Failed due to error:")) {
+                  throw "${Variant}: ASF failed during MEF plugin initialization before GameDeliveryPlugin.OnASFInit." + [Environment]::NewLine + $combined
+                }
+
+                if ($process.HasExited) {
+                  throw "${Variant}: ASF exited before the GameDelivery send state-machine JIT probe ran. ExitCode=$($process.ExitCode)" + [Environment]::NewLine + $combined
+                }
+              }
+
+              throw "${Variant}: timed out waiting for the GameDelivery send state-machine JIT probe." + [Environment]::NewLine + $combined
+            }
+            finally {
+              if (!$process.HasExited) {
+                Stop-Process -Id $process.Id -Force
+              }
+            }
+          }
+
+          Invoke-ASFJitProbe -FilePath "dotnet" -Arguments "ArchiSteamFarm.dll" -WorkingDirectory $env:ASF_GENERIC_DIR -Variant "ASF-Generic"
+          Invoke-ASFJitProbe -FilePath (Join-Path $env:ASF_WIN_X64_DIR "ArchiSteamFarm.exe") -Arguments "" -WorkingDirectory $env:ASF_WIN_X64_DIR -Variant "ASF-win-x64-trimmed"
+
+          Write-Host "Both official ASF variants loaded GameDelivery and JIT-compiled the send state machine. No Bot, Steam credentials, or trade offer was used."

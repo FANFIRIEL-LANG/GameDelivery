@@ -28,12 +28,62 @@ class InventorySnapshotTests(unittest.TestCase):
             self.assertFalse(loaded[1].is_tradable)
             self.assertEqual(store.status()["updated_at"], status["updated_at"])
 
+    def test_snapshot_preserves_image_and_future_game_quality_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = InventorySnapshotStore(Path(directory) / "app.db")
+            store.replace([CardCopy(
+                "asset-cs", "Counter-Strike 2", "AK-47",
+                icon_url="https://community.cloudflare.steamstatic.com/economy/image/icon",
+                icon_url_large="https://community.cloudflare.steamstatic.com/economy/image/large",
+                market_hash_name="AK-47 | Redline (Field-Tested)",
+                item_quality="FT",
+            )], bot_name="bot-a")
+            loaded = store.load("bot-a")[0]
+            self.assertEqual(loaded.icon_url, "https://community.cloudflare.steamstatic.com/economy/image/icon")
+            self.assertEqual(loaded.icon_url_large, "https://community.cloudflare.steamstatic.com/economy/image/large")
+            self.assertEqual(loaded.market_hash_name, "AK-47 | Redline (Field-Tested)")
+            self.assertEqual(loaded.item_quality, "FT")
+
     def test_reopen_reads_saved_snapshot_without_fetching(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "app.db"
             InventorySnapshotStore(path).replace([CardCopy("asset-1", "Game", "Card A")])
             reopened = InventorySnapshotStore(path)
             self.assertEqual(reopened.load()[0].asset_id, "asset-1")
+
+
+    def test_empty_saved_snapshot_is_stale_even_when_metadata_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = InventorySnapshotStore(Path(directory) / "app.db")
+            store.replace([])
+            status = store.status()
+            self.assertEqual(status["item_count"], 0)
+            self.assertTrue(status["stale"])
+
+    def test_snapshot_older_than_24_hours_is_stale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "app.db"
+            store = InventorySnapshotStore(path)
+            store.replace([CardCopy("asset-1", "Game", "Card A")])
+            with store._connect() as db:
+                db.execute(
+                    "UPDATE steam_inventory_snapshot_meta SET updated_at = ? WHERE bot_name = ?",
+                    ("2020-01-01T00:00:00+00:00", "default"),
+                )
+            self.assertTrue(store.status()["stale"])
+
+    def test_snapshot_with_invalid_timestamp_is_stale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "app.db"
+            store = InventorySnapshotStore(path)
+            store.replace([CardCopy("asset-1", "Game", "Card A")])
+            with store._connect() as db:
+                db.execute(
+                    "UPDATE steam_inventory_snapshot_meta SET updated_at = ? WHERE bot_name = ?",
+                    ("not-a-timestamp", "default"),
+                )
+            self.assertTrue(store.status()["stale"])
+
 
 
 if __name__ == "__main__":

@@ -50,6 +50,9 @@ jobs:
       - name: Compile Python files
         run: python -m compileall -q app core integrations games notifications tests
 
+      - name: Test Windows trade-secret ACL hardening
+        run: python -m unittest discover -s tests -p test_asf_client.py
+
       - name: Build Windows GUI executable
         run: >
           pyinstaller --noconfirm --clean --windowed --onedir --name GameDelivery
@@ -64,27 +67,32 @@ jobs:
           $env:QT_QPA_PLATFORM = 'offscreen'
           .\dist\GameDelivery\GameDelivery.exe --self-test
 
-      - name: Add package instructions
+      - name: Add build information and package instructions
         shell: pwsh
         run: |
+          @"
+          GameDelivery Windows x64
+          Build commit: $env:GITHUB_SHA
+          Python runtime: 3.12
+          Package type: onedir
+          Live ASF/Steam delivery has not been verified by CI.
+          "@ | Set-Content -Encoding utf8 dist\GameDelivery\BUILD_INFO.txt
+
           @'
           GameDelivery — Windows x64
           Start the application with GameDelivery.exe.
           The local database is stored in %USERPROFILE%\.gamedelivery\gamedelivery.sqlite3.
           The application is packaged with its Python and Qt runtime dependencies.
-          ASF must be installed and running separately for ASF-based inventory functions.
-          The ASF preview plugin is a separate component and must match the installed ASF version.
-          Real Steam trade sending is disabled.
+          Install ASF once, then select its executable and config directory in the GameDelivery ASF-bots tab. GameDelivery can launch, stop and restart ASF and provides its console in-app.
+          The ASF plugin is a separate component and must match the installed ASF version.
+          To send a Steam offer, install the matching plugin, select a reserved order, review the exact assets, and confirm in GameDelivery.
+          A successful CI build does not replace a controlled live test. The recipient must accept the offer; unknown outcomes must be checked in Steam before manual resolution.
           '@ | Set-Content -Encoding utf8 dist\GameDelivery\PACKAGE_README.txt
-
-      - name: Create distributable ZIP
-        shell: pwsh
-        run: Compress-Archive -Path dist\GameDelivery -DestinationPath dist\GameDelivery-Windows-x64.zip -Force
 
       - name: Upload Windows executable package
         uses: actions/upload-artifact@v4
         with:
           name: GameDelivery-Windows-x64
-          path: dist/GameDelivery-Windows-x64.zip
+          path: dist/GameDelivery/
           if-no-files-found: error
           retention-days: 30
