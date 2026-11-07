@@ -1919,3 +1919,48 @@ Telegram — дополнительный канал уведомлений; е�
 - Официальная Steamworks Web API документация описывает `IPlayerService/GetBadges`: метод получает badges конкретного пользователя и требует Steamworks Web API user authentication key. Он может быть кандидатом для чтения уже изготовленных badge levels, но описание не обещает состав карточного набора или количество карточек в инвентаре.
 - Прямое использование `IPlayerService/GetBadges` из GameDelivery конфликтует с действующим архитектурным правилом проекта: Steam account/inventory/trade operations должны идти через ASF. Поэтому этот endpoint не внедрять без отдельного решения пользователя. Источник: https://partner.steamgames.com/doc/webapi/IPlayerService
 - Предпочтительный порядок исследования: сначала проверить, можно ли получить нужные badge data через существующую Steam Community/ASF session и согласованный ASF integration boundary; если это невозможно, описать варианты и ограничения отдельно, не менять архитектурное правило молча.
+
+
+## 2026-11-07 — C.2: подтверждён ASF-native путь к Steam Community и инвентарю получателя
+
+**Статус:** статический контракт подтверждён по исходникам официального ASF 6.3.11.7, на который закреплена сборка GameDelivery ASF plugin. Это существенно сужает техническую неопределённость C.2, но live-запросы Steam через пользовательскую ASF-сессию ещё не выполнены. Код GameDelivery, пользовательская БД, миграции и UI не менялись.
+
+**Проверенная версия ASF:** workflow `.github/workflows/asf-plugin.yml` скачивает и проверяет официальный ASF 6.3.11.7; в официальном теге `6.3.11.7` `Directory.Build.props` содержит `<Version>6.3.11.7</Version>`. Проверялись именно исходники этого тега, а не только текущая ветка ASF.
+
+**Подтверждённые публичные API ASF 6.3.11.7:**
+
+1. `Bot.ArchiWebHandler` — публичное свойство класса `Bot`.
+2. `ArchiWebHandler.UrlGetToJsonObjectWithSession<T>(Uri ...)` и `UrlGetToHtmlDocumentWithSession(Uri ...)` — публичные методы. Они используют web session ASF; обработчик поддерживает проверку/обновление сессии и внутреннее ограничение частоты запросов.
+3. `ArchiWebHandler.GetInventoryAsync(ulong steamID = 0, uint appID = 753, ulong contextID = 6, ...)` — публичный асинхронный поток активов. При `steamID=0` используется собственный аккаунт бота; ненулевой SteamID принимается, если это individual account. Метод запрашивает Steam Community inventory по `/inventory/{steamID}/{appID}/{contextID}`, обрабатывает страницы `more_items/last_assetid`, дедуплицирует asset ID, связывает descriptions по `classid+instanceid`, применяет ASF inventory limiter и выбрасывает ошибку при неуспешном ответе. Следовательно, ASF-native механизм для чтения публичного инвентаря получателя существует; текущий GameDelivery его пока не вызывает.
+4. ASF `Asset`/ `InventoryDescription` предоставляют `AssetID`, `Amount`, `RealAppID`, `Type`, `Tradable`, `MarketHashName`, `ClassID` и `InstanceID`. Это позволяет считать карточки покупателя по устойчивому market hash и отдельно проверять обычный/фольгированный тип. Для подсчёта уже имеющихся у покупателя полных наборов нельзя отбрасывать карточки только потому, что они непередаваемые: передаваемость нужна для нашего донорского запаса, а не для факта владения покупателя.
+5. Внутренний ASF `GetGameCardsPage(appID)` использует `/my/gamecards/{appid}?l=english`, а `GetCardCountForGame` считает элементы `badge_card_set_cards`. Сам `GetGameCardsPage` помечен internal, но публичный `UrlGetToHtmlDocumentWithSession` позволяет плагину запросить страницу через ASF-сессию. Внутренняя реализация ASF подтверждает существование страницы и способ подсчёта количества, но не является готовым публичным API полного каталога карточек.
+
+**Кандидат для состава набора и уровня значка:**
+
+- Reverse-engineered описание Steam Community endpoint `GET /profiles/{steamid}/ajaxgetbadgeinfo/{appid}` указывает на JSON `eresult`, `badgedata.level`, `badgedata.maxlevel`, `badgedata.border` и `badgedata.rgCards[]`; карточка содержит `markethash` и `owned`. В примере для собственного профиля используется `/my/ajaxgetbadgeinfo/{appid}`. Документация помечена authenticated и последний раз обновлялась 24.02.2022; это не официальный и не гарантированный Steam production contract. Источник: https://github-wiki-see.page/m/Revadike/InternalSteamWebAPI/wiki/Get-Badge-Info
+- Предварительный вариант: вызывать endpoint через `Bot.ArchiWebHandler.UrlGetToJsonObjectWithSession<JsonElement>`, для собственных ботов — `/my/ajaxgetbadgeinfo/{appid}`, для покупателя — `/profiles/{steamid}/ajaxgetbadgeinfo/{appid}`. В production допускать ответ только после live-проверки и строгой валидации `eresult`, appid, border=0, level 0–5, maxlevel=5 и полного уникального списка `rgCards`.
+- Поле `owned` пока не использовать как источник истины. Число полных наборов покупателя считать по фактическому инвентарю, полученному через ASF `GetInventoryAsync`, сопоставляя каждую карточку с составом набора.
+- Официальная Steam FAQ подтверждает, что Badges in Progress показывает имеющиеся и недостающие карточки, а набор для обычного игрового значка можно изготовить не более пяти раз: https://steamcommunity.com/tradingcards/faq/Steam
+
+**Важное уточнение к предыдущему аудиту:** утверждение об отсутствии buyer-inventory provider относилось к существующему GameDelivery-коду/ASF IPC wrapper. Оно не означает, что сам ASF не умеет читать инвентарь другого пользователя: публичный `ArchiWebHandler.GetInventoryAsync(steamID, 753, 6)` существует в точной версии 6.3.11.7. Готовой интеграции этого метода в GameDelivery всё ещё нет.
+
+**Следствия для будущего контракта C.2 (без реализации):**
+
+- Steam-запросы остаются внутри ASF plugin; приложение не получает Steam cookies/access tokens и не вызывает Steam Web API напрямую.
+- Авторитетный состав обычного набора должен приходить из `rgCards[].markethash`, а не выводиться из наличия карточек в наших inventory snapshots.
+- Для buyer inventory считать только обычные TradingCard для нужного `RealAppID`, группировать по `MarketHashName` и учитывать `Amount`; foil исключать. Для донорского запаса дополнительно требовать `Tradable=true` и сохранять точные `(bot_name, asset_id)`.
+- `CardCopy.market_hash_name` уже есть и заполняется текущим ASF parser, но `selection.py`, `owned_selection.py` и `shared_sets.py` сейчас группируют наборы по `card_name`. После утверждения C.2 подбор нужно перевести на авторитетный список market hash; пока не менять код.
+- `markethash` из reverse-engineered badge response и ASF `MarketHashName` имеют согласованное назначение, но точное равенство строк на реальных данных нескольких игр ещё не подтверждено. До теста не использовать fuzzy fallback.
+- Неуспешный/неполный badge response или недоступный buyer inventory означает unknown/unavailable и блокирует подбор. Уровень 0 допустим только при валидном badge response с явным `level=0`; отсутствие данных нельзя трактовать как нулевой уровень или пустой инвентарь.
+- Точная классификация приватности профиля, game details/badges и inventory ещё требует live-проверки. Команда `!настроил приватность` должна только повторно выполнить проверки; она не обходит unknown/reconciliation gate и не запускает повторную отправку.
+
+**Оставшиеся gates C.2:**
+
+1. Live-проверка `/my/ajaxgetbadgeinfo/{appid}` через сессию ASF-бота на нескольких играх, включая полный состав и обычный border=0.
+2. Live-проверка `/profiles/{steamid}/ajaxgetbadgeinfo/{appid}` на публичном профиле покупателя и подтверждение, что ответ действительно относится к указанному SteamID.
+3. Live-проверка `GetInventoryAsync(recipientSteamId64, 753, 6)`: пагинация, `MarketHashName`, `RealAppID`, `Type`, `Amount`, поведение при закрытом inventory.
+4. Сравнение `rgCards[].markethash` и `InventoryDescription.MarketHashName` на нескольких играх; отдельная проверка расхождений и отсутствующих карточек.
+5. Проверка приватности профиля/game details/inventory и классификации недоступных ответов без ложного level=0.
+6. Утверждение детерминированного tie-break для равноценных multi-game allocations и подготовка контрактных тестов.
+
+**Запреты сохраняются:** до закрытия и отдельного утверждения C.2 не менять пользовательскую БД, не запускать миграции, не переписывать большой UI и не включать live trade send. PR #4 остаётся Draft; base и `main` не менялись.
