@@ -225,6 +225,41 @@
 
 **Критерии приёмки C.2:** все бизнес-правила выше отражены в доменной спецификации; формула и приоритет однозначны; определены сущности и границы статусов; технические источники данных подтверждены тестовыми примерами; все открытые вопросы либо решены, либо явно вынесены в отдельные implementation gates. До завершения C.2 не менять пользовательскую БД, не запускать миграции и не переписывать большой UI.
 
+
+
+#### C.2.6. Подтверждённый ASF-native технический путь (статический аудит ASF 6.3.11.7)
+
+Точная версия подтверждена: workflow GameDelivery скачивает официальный ASF 6.3.11.7; исходники тега ASF `6.3.11.7` проверены отдельно.
+
+- `Bot.ArchiWebHandler` — публичное свойство `Bot`.
+- Публичные методы `UrlGetToJsonObjectWithSession<T>` и `UrlGetToHtmlDocumentWithSession` позволяют плагину выполнять запросы к Steam Community через управляемую ASF-сессию с session refresh и rate limiting.
+- Публичный `GetInventoryAsync(ulong steamID, 753, 6, ...)` принимает SteamID другого individual account, получает `/inventory/{steamID}/753/6`, обрабатывает pagination, дедуплицирует asset IDs и привязывает descriptions. `Asset/InventoryDescription` предоставляют `AssetID`, `Amount`, `RealAppID`, `Type`, `Tradable` и `MarketHashName`.
+- Значит, ASF-native способ читать публичный инвентарь покупателя существует. Его ещё нет в GameDelivery-коде; требуется отдельный provider в ASF plugin.
+- Внутренний ASF `GetGameCardsPage(appID)` использует `/my/gamecards/{appid}?l=english` и `GetCardCountForGame` считает карточные элементы страницы. Метод `GetGameCardsPage` internal; плагин может использовать публичный session-aware HTTP helper, но полного публичного card catalog API ASF не предоставляет.
+- Reverse-engineered endpoint `/profiles/{steamid}/ajaxgetbadgeinfo/{appid}` (для собственного профиля пример `/my/ajaxgetbadgeinfo/{appid}`) описывает `level`, `maxlevel`, `border`, `rgCards[].markethash` и `owned`. Документация от 24.02.2022, неофициальная; endpoint остаётся кандидатом до live-проверки через ASF session. `owned` не считать источником истины.
+- Для покупателя: читать badge JSON и inventory через одну ASF bot session; buyer inventory count считать по обычным TradingCard, нужному `RealAppID`, `MarketHashName` и `Amount`, без фильтра tradable. Для донорского запаса требовать ordinary card + `Tradable=true`, сохранять точные `(bot_name, asset_id)`.
+- Текущий parser уже сохраняет `CardCopy.market_hash_name`, но `selection.py`, `owned_selection.py` и `shared_sets.py` пока группируют по display `card_name`. После утверждения C.2 требуется использовать authoritative set definition из `rgCards[].markethash` и exact market hash mapping; fuzzy fallback запрещён.
+- Валидный `level=0` разрешён только из корректного ответа. Отсутствие badge JSON, приватный/недоступный inventory, неполный список или невалидный appid/border/level должны блокировать подбор, а не превращаться в нулевой уровень или пустой инвентарь.
+
+Источники:
+- ASF 6.3.11.7: `ArchiSteamFarm/Steam/Bot.cs`, `ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs`, `ArchiSteamFarm/Steam/Data/Asset.cs`, `ArchiSteamFarm/Steam/Data/InventoryDescription.cs`.
+- Reverse-engineered endpoint (неофициальный, обновлялся 2022-02-24): https://github-wiki-see.page/m/Revadike/InternalSteamWebAPI/wiki/Get-Badge-Info
+- Steam FAQ: https://steamcommunity.com/tradingcards/faq/Steam
+
+**Live gates:** собственный bot badge endpoint на нескольких играх; recipient badge endpoint на публичном профиле; recipient inventory pagination и privacy behavior; exact `markethash` ↔ `MarketHashName` equality; отсутствие ложного level=0 при скрытых данных.
+
+#### C.2.7. Предложение по детерминированному tie-break (ожидает решения пользователя)
+
+Бизнес-приоритет максимального количества значков, доведённых до уровня 5, уже согласован. Для равноценных feasible allocation предлагается:
+
+1. Сначала максимизировать число полностью завершённых значков.
+2. Среди вариантов с одинаковым числом завершённых значков выбирать вариант с наименьшей суммой `R_g` для завершённых игр (это оставляет больше точного остатка заказа для других подходящих игр); учитывать только варианты, для которых всё `Q` можно распределить без превышения `min(A_g, R_g)`.
+3. Оставшиеся наборы распределять по играм с наименьшим `R_g` (значок ближе к завершению), затем по возрастанию Steam AppID.
+4. При полном равенстве использовать лексикографический порядок Steam AppID.
+
+Это предложение, не принятое бизнес-решение. Реализацию и тесты tie-break не начинать до подтверждения.
+
+
 ### C.3 — Единый ledger и безопасные миграции SQLite
 
 **Цель:** реализовать единый учёт прав на выдачу и ресурсов, не теряя старые данные.
