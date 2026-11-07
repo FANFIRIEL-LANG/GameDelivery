@@ -1913,3 +1913,9 @@ Telegram — дополнительный канал уведомлений; е�
 5. Расширить доменные тесты: inventory complete sets, badge level 0–5, многоботовые наборы, multi-game optimization, exact order quantity, no-send on shortage, privacy retry и multiple trade legs.
 
 **Вывод:** проект уже содержит полезные части (badge capacity, complete-set selection, cross-bot aggregation и reservations), но текущая реализация не соответствует согласованному workflow целиком. Главные пробелы — authoritative card-set catalog, buyer inventory/badge provider, учёт полных наборов покупателя и multi-game optimizer. C.2 остаётся в работе; до закрытия не менять пользовательскую БД, миграции и большой UI.
+
+### Дополнение C.2 — официальный Steam GetBadges и архитектурная граница
+
+- Официальная Steamworks Web API документация описывает `IPlayerService/GetBadges`: метод получает badges конкретного пользователя и требует Steamworks Web API user authentication key. Он может быть кандидатом для чтения уже изготовленных badge levels, но описание не обещает состав карточного набора или количество карточек в инвентаре.
+- Прямое использование `IPlayerService/GetBadges` из GameDelivery конфликтует с действующим архитектурным правилом проекта: Steam account/inventory/trade operations должны идти через ASF. Поэтому этот endpoint не внедрять без отдельного решения пользователя. Источник: https://partner.steamgames.com/doc/webapi/IPlayerService
+- Предпочтительный порядок исследования: сначала проверить, можно ли получить нужные badge data через существующую Steam Community/ASF session и согласованный ASF integration boundary; если это невозможно, описать варианты и ограничения отдельно, не менять архитектурное правило молча.
