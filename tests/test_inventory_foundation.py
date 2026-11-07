@@ -89,12 +89,12 @@ class AssetReservationTests(unittest.TestCase):
     def test_reservation_conflict_is_atomic_and_scoped_by_bot(self):
         with tempfile.TemporaryDirectory() as directory:
             store = AssetReservationStore(Path(directory) / "reservations.db")
-            self.assertTrue(store.reserve("order-1", [("Bot A", "same")])["reserved"])
-            conflict = store.reserve("order-2", [("Bot A", "same"), ("Bot B", "new")])
+            self.assertTrue(store.reserve("order-1", [("Bot A", "111")])["reserved"])
+            conflict = store.reserve("order-2", [("Bot A", "111"), ("Bot B", "222")])
             self.assertFalse(conflict["reserved"])
             self.assertEqual(conflict["conflicts"][0]["reserved_by"], "order-1")
             self.assertEqual(store.list_for_order("order-2"), [])
-            self.assertTrue(store.reserve("order-3", [("Bot B", "same")])["reserved"])
+            self.assertTrue(store.reserve("order-3", [("Bot B", "111")])["reserved"])
             self.assertEqual(store.release("order-1"), 1)
 
 

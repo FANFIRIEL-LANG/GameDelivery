@@ -2,9 +2,15 @@ name: Tests
 on:
   push:
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - name: Install Qt runtime libraries
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0
@@ -16,7 +22,13 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Compile Python files
         run: python -m compileall -q app core integrations games notifications tests
-      - name: Run unit tests
+      - name: Test Steam trade credential storage and migration
+        run: timeout 90s python -m unittest discover -s tests -p test_trade_credentials.py -v
+      - name: Test complete Steam trade UI flow
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s tests -v
+        run: timeout 120s python -m unittest discover -s tests -p test_trade_delivery_ui.py -v
+      - name: Run full unit test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: timeout 180s python -m unittest discover -s tests -v

@@ -127,6 +127,42 @@ class PlayerokSessionTests(unittest.TestCase):
         self.assertEqual(keyring.token, "saved-session-token")
         self.assertIn("Не удалось удалить токен", result["message"])
 
+    def test_disconnect_redacts_remote_logout_exception_details(self):
+        secret_marker = "synthetic-session-secret-sentinel"
+        keyring = MemoryKeyring("saved-session-token")
+
+        def failing_request(url, *, method="GET", payload=None, token=None, bearer=False):
+            raise RuntimeError("transport exception contains " + secret_marker)
+
+        adapter = PlayerokAdapter(
+            keyring_backend=keyring,
+            request_func=failing_request,
+        )
+        result = adapter.disconnect()
+
+        self.assertFalse(result["connected"])
+        self.assertNotIn(secret_marker, result["message"])
+        self.assertTrue(result["local_session_cleared"])
+
+    def test_disconnect_redacts_keyring_exception_details(self):
+        secret_marker = "synthetic-keyring-secret-sentinel"
+
+        class LeakyKeyring(MemoryKeyring):
+            def delete_password(self, service, account):
+                raise RuntimeError("keyring exception contains " + secret_marker)
+
+        keyring = LeakyKeyring("saved-session-token")
+
+        adapter = PlayerokAdapter(
+            keyring_backend=keyring,
+            request_func=lambda *args, **kwargs: ({}, None),
+        )
+        result = adapter.disconnect()
+
+        self.assertFalse(result["connected"])
+        self.assertFalse(result["local_session_cleared"])
+        self.assertNotIn(secret_marker, result["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

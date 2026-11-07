@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 SUPPORTED_PROXY_SCHEMES = frozenset({"http", "https", "socks4", "socks4a", "socks5"})
@@ -67,8 +67,13 @@ def parse_proxy_uri(uri: str, username: str | None = None, password: str | None 
     parsed = urlsplit(uri.strip())
     if parsed.scheme.lower() not in SUPPORTED_PROXY_SCHEMES:
         raise ValueError("Укажи поддерживаемый тип прокси: HTTP(S) или SOCKS4/4a/5")
+    # Accept standard proxy URIs with userinfo, but keep credentials separate from the URI.
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError("Логин и пароль вводятся в отдельных полях, не в адресе прокси")
+        if username is not None or password is not None:
+            raise ValueError("Логин и пароль указаны дважды: в адресе и отдельных полях")
+        if parsed.username is None or parsed.password is None:
+            raise ValueError("В адресе прокси должны быть указаны и логин, и пароль")
+        username, password = unquote(parsed.username), unquote(parsed.password)
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         raise ValueError("Адрес прокси не должен содержать путь, параметры или фрагмент")
     try:
@@ -78,3 +83,92 @@ def parse_proxy_uri(uri: str, username: str | None = None, password: str | None 
     if not parsed.hostname or port is None:
         raise ValueError("Адрес прокси должен содержать хост и порт")
     return SteamProxy(parsed.scheme, parsed.hostname, port, username, password)
+
+
+
+def _parse_unqualified_proxy_record(
+    line: str,
+) -> tuple[str, str | None, str | None] | None:
+    """Parse host:port[:username:password] rows, defaulting unschemed proxies to HTTP.
+
+    IPv6 literals must be bracketed to distinguish their colons from delimiters.
+    SOCKS/HTTPS rows should include an explicit scheme.
+    """
+    if line.startswith("["):
+        closing = line.find("]")
+        if closing <= 1 or not line[closing + 1:].startswith(":"):
+            return None
+        host = line[1:closing]
+        parts = line[closing + 2:].split(":")
+        if len(parts) == 1:
+            port, username, password = parts[0], None, None
+        elif len(parts) == 3:
+            port, username, password = parts
+            if not username or not password:
+                return None
+        else:
+            return None
+        if not host or not port.isdigit():
+            return None
+        return f"http://[{host}]:{port}", username, password
+
+    parts = line.split(":")
+    if len(parts) == 2:
+        host, port = parts
+        username = password = None
+    elif len(parts) == 4:
+        host, port, username, password = parts
+        if not username or not password:
+            return None
+    else:
+        return None
+    if not host or ":" in host or not port.isdigit():
+        return None
+    return f"http://{host}:{port}", username, password
+
+
+def parse_proxy_list_text(text: str) -> list[SteamProxy]:
+    """Parse proxy TXT rows using common separators."""
+    if not isinstance(text, str):
+        raise ValueError("Список прокси должен быть текстом")
+    proxies: list[SteamProxy] = []
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        separator = next((sep for sep in (";", "|", "\t", ",") if sep in line), None)
+        if separator:
+            parts = [part.strip() for part in line.split(separator)]
+            if len(parts) == 1:
+                uri, username, password = parts[0], None, None
+            elif len(parts) == 3 and parts[1] and parts[2]:
+                uri, username, password = parts
+            else:
+                raise ValueError(f"Строка {line_no}: ожидается URI или URI + логин + пароль через ;, |, запятую или TAB")
+        else:
+            uri, username, password = line, None, None
+            if "://" not in line:
+                record = _parse_unqualified_proxy_record(line)
+                if record is None:
+                    raise ValueError(
+                        f"Строка {line_no}: ожидается URI либо host:port[:логин:пароль]; "
+                        "без схемы используется HTTP, IPv6 нужно заключать в квадратные скобки"
+                    )
+                uri, username, password = record
+            else:
+                tail = line.rsplit(":", 2)
+                if len(tail) == 3 and tail[1] and tail[2]:
+                    try:
+                        parse_proxy_uri(tail[0])
+                    except ValueError:
+                        pass
+                    else:
+                        uri, username, password = tail[0], tail[1], tail[2]
+        try:
+            proxy = parse_proxy_uri(uri, username, password)
+        except ValueError as exc:
+            raise ValueError(f"Строка {line_no}: {exc}") from None
+        proxies.append(proxy)
+    if not proxies:
+        raise ValueError("В TXT не найдено ни одного прокси")
+    return proxies
