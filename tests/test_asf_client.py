@@ -33,6 +33,59 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF")
         self.assertEqual(request.get_header("Authentication"), "local-secret")
 
+    @patch("integrations.asf.client.urlopen")
+    def test_alternate_loopback_port_requires_explicit_opt_in(self, urlopen):
+        with self.assertRaises(ValueError):
+            ASFClient(base_url="http://127.0.0.1:1243").get_status()
+        urlopen.assert_not_called()
+
+    @patch("integrations.asf.client.urlopen")
+    def test_opted_in_alternate_loopback_port_is_used(self, urlopen):
+        urlopen.return_value = FakeResponse({"Success": True})
+        client = ASFClient(
+            base_url="http://127.0.0.1:1243",
+            allow_alternate_loopback_port=True,
+        )
+
+        self.assertEqual(client.get_status(), {"Success": True})
+        self.assertEqual(
+            urlopen.call_args.args[0].full_url,
+            "http://127.0.0.1:1243/Api/ASF",
+        )
+
+    def test_opt_in_does_not_allow_external_hosts_or_invalid_schemes(self):
+        for base_url in (
+            "http://example.com:1243",
+            "http://192.168.1.10:1243",
+            "https://127.0.0.1:1243",
+            "ftp://localhost:1243",
+            "file://localhost:1243",
+        ):
+            with self.subTest(base_url=base_url):
+                with self.assertRaises(ValueError):
+                    ASFClient(
+                        base_url=base_url,
+                        allow_alternate_loopback_port=True,
+                    ).get_status()
+
+    @patch("integrations.asf.client.urlopen")
+    def test_opted_in_alternate_port_accepts_only_named_loopback_hosts(self, urlopen):
+        urlopen.return_value = FakeResponse({"Success": True})
+        for base_url in (
+            "http://localhost:1243",
+            "http://127.0.0.1:1243",
+            "http://[::1]:1243",
+        ):
+            with self.subTest(base_url=base_url):
+                self.assertEqual(
+                    ASFClient(
+                        base_url=base_url,
+                        allow_alternate_loopback_port=True,
+                    ).get_status(),
+                    {"Success": True},
+                )
+        self.assertEqual(urlopen.call_count, 3)
+
     @patch.object(ASFClient, "send_command")
     def test_stop_bot_sends_explicit_stop_command(self, send_command):
         send_command.return_value = {"Success": True, "Result": True}

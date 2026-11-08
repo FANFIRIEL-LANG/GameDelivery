@@ -568,3 +568,11 @@ Live verification is pending a dedicated isolated ASF Generic 6.3.11.7 bot with 
 - No ASF instance was started and no Steam data was queried in this analysis checkpoint. Live verification still requires a dedicated test account/bot and actual CS2 assetID. Keep C.6.2 behind this C.6.1 source check.
 
 References: [official ASF IPC configuration](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/IPC), [official ASF `--path` command line documentation](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Command-line-arguments).
+
+#### C.6.1 — изолированный read-only probe (только mock-проверки, 2026-11-08)
+
+- Параметр ASFClient.allow_alternate_loopback_port требует явного opt-in и по умолчанию выключен. Существующие вызовы продолжают использовать порт 1242. Альтернативный порт разрешён только по HTTP и только для localhost, 127.0.0.1 или ::1; удалённые hostname/IP отклоняются и при opt-in.
+- Интеграционный модуль integrations.asf.cs2_inventory_probe запускается отдельно и требует явные --ipc-url, --bot-name и --asset-id. Он принимает только loopback endpoint на порту 1243 и отправляет один GET /Api/Bot/{BotName}/Inventory/730/2?language=english. IPCPassword запрашивается скрытым локальным getpass и не попадает в аргументы или вывод.
+- Probe выбирает в памяти только точное совпадение assetid и печатает allowlist полей. Отсутствующие значения выводятся как "unknown"; amount берётся из ответа только при наличии, tradable_after не вычисляется. Модуль не импортирует и не вызывает хранилище инвентаря, UI, refresh, preflight или торговый путь.
+- Focused-тесты ASF-клиента, probe и текущего inventory parser: 59 прошли. Python compileall прошёл. Полный локальный набор на Windows/Python 3.14 выдал 310 результатов, но существующие тесты очистки временных SQLite-файлов завершались ошибкой WinError 32; локальный runner не выдал итоговую сводку. Проверить полный набор GitHub Actions на Ubuntu/Python 3.12 для отправленного SHA.
+- ASF не запускался, живой Steam-инвентарь не запрашивался; БД, миграции, UI, плагин и delivery behavior не менялись. Остановиться до готовности тестовой сессии и подтверждения пользователем BotName, точного test assetID, URL/PID и разрешения на один read-only запрос. Пока не начинать C.6.2.

@@ -2083,3 +2083,15 @@ After C.6.1 provides a verified sample, proceed to the already planned isolated 
 **Изоляция проверяется:** запустить только бинарник официального Generic archive с `--path` на свежий test home; зафиксировать версию `6.3.11.7` в startup log; проверить, что listener PID принадлежит этому запущенному экземпляру и слушает только `127.0.0.1:1243`; direct probe использует literal test URL и AppID/context `730/2`; выводит только один совпавший asset; не вызываются методы изменения inventory/Trade Offers. Рабочий ASF, его port/config/process/DLL здесь не исследовались и не менялись.
 
 Полная live-проверка пока невозможна без отдельной non-production Steam учётной записи, ASF BotName и настоящего CS2 assetID. Automatic setup не выполнялся: секреты и создание аккаунта должны оставаться на стороне пользователя. No code, DB, migration, UI, plugin or ASF runtime changes were made.
+
+## 2026-11-08 — C.6.1: изолированный read-only probe (mock-only)
+
+В ASFClient добавлен параметр allow_alternate_loopback_port с выключенным по умолчанию opt-in. Без изменения вызовов обычный клиент использует http://127.0.0.1:1242; альтернативный порт разрешается только при явном opt-in и только для localhost, 127.0.0.1 или ::1. Схема остаётся HTTP; внешние hostname/IP, credentials и дополнительные части base URL отклоняются.
+
+Добавлен самостоятельный integrations.asf.cs2_inventory_probe: он принимает явный ASF IPC URL, BotName и точный положительный assetID, но допускает для probe только loopback на порту 1243. Он вызывает только ASFClient.get_bot_inventory(..., app_id=730, context_id=2), выбирает точное совпадение в памяти и выводит allowlist полей. Если ASF не вернул поле, результат — "unknown"; amount берётся только из ответа, tradable_after не вычисляется. CLI просит IPCPassword скрытым локальным вводом, не принимает его аргументом и не печатает.
+
+Mock-проверки подтверждают endpoint GET 730/2, точное совпадение assetID при похожих ID, отказ для отсутствующего предмета и не-тестовых адресов/порта, unknown для отсутствующих полей, возврат amount только если он пришёл, отсутствие вызовов SQLite и торговых методов. Live ASF не запускался и не опрашивался; production delivery, DB, миграции, UI и плагины не менялись. C.6.2 не начинать до подтверждения результатов C.6.1.
+
+Проверки: focused test_asf_client, test_cs2_inventory_probe, test_asf_inventory — 59 тестов прошли; compileall прошёл. Полный набор на Windows/Python 3.14 с Qt offscreen отметил 310 результатов, включая ошибки существующих DB-тестов при удалении открытых временных SQLite-файлов (WinError 32); тот же сбой воспроизведён отдельным тестом GameInventoryStore. Локальный runner не выдал итоговую сводку и был остановлен. GitHub Actions на точном commit SHA остаётся обязательной проверкой.
+
+Следующее действие — получить от пользователя подтверждение готовности отдельного ASF Generic 6.3.11.7 процесса на loopback 1243, его тестовые BotName/assetID и разрешение на один live GET 730/2. Не просить и не записывать IPC credentials, maFile, Steam Guard или другие секреты.

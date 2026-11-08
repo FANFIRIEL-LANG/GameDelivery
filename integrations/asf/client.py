@@ -126,6 +126,7 @@ class ASFClient:
     base_url: str = "http://127.0.0.1:1242"
     ipc_password: str | None = None
     timeout: float = 5.0
+    allow_alternate_loopback_port: bool = False
 
     def request(
         self, path: str, *, method: str = "GET", body: dict[str, Any] | None = None
@@ -136,11 +137,15 @@ class ASFClient:
             raise ValueError("Некорректный путь ASF API")
         try:
             parsed_base = urlsplit(self.base_url)
+            port = parsed_base.port
             local_host = parsed_base.hostname in {"127.0.0.1", "localhost", "::1"}
-            valid_port = parsed_base.port == 1242
         except ValueError:
-            local_host = False
-            valid_port = False
+            raise ValueError(
+                "ASF IPC должен оставаться на localhost:1242; альтернативный loopback-порт требует явного разрешения"
+            ) from None
+        valid_port = port == 1242 or (
+            self.allow_alternate_loopback_port and port is not None and port > 0
+        )
         if (
             parsed_base.scheme != "http"
             or not local_host
@@ -151,7 +156,9 @@ class ASFClient:
             or parsed_base.query
             or parsed_base.fragment
         ):
-            raise ValueError("ASF IPC должен оставаться доступным только через localhost:1242")
+            raise ValueError(
+                "ASF IPC должен оставаться на localhost:1242; альтернативный loopback-порт требует явного разрешения"
+            )
 
         url = self.base_url.rstrip("/") + path
         headers = {"Accept": "application/json"}
