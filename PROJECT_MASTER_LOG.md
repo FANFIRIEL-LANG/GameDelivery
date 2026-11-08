@@ -2060,7 +2060,7 @@ This checkpoint changed documentation only. It did not modify code, DB, migratio
 
 **Следующий этап:** начать отдельную CS2-only реализацию in-memory view model, которая из выбранных `InventoryItem` выдаёт общую агрегированную модель для карточек и таблицы, сохраняя физические экземпляры и статусы. Покрыть тестами aggregation/dedup, unique bot count, разделение tradable/unavailable и сохранение per-item identity/lock data; затем подключать оба UI-режима. Read-only ASF API verification — отдельная задача, не смешивать её с UI.
 
-## 2026-11-08 — C.6.1 initial source check; live ASF data pending
+## 2026-11-08 — C.6.1 initial source check; live ASF data pending (historical checkpoint, superseded below)
 
 The current GameDelivery Python route is read-only and parameterized: `ASFClient.get_bot_inventory(bot_name, app_id=730, context_id=2)` requests `/Api/Bot/{BotName}/Inventory/730/2`; `refresh_game_inventory(..., "cs2", ...)` resolves CS2 to `730/2`. `GameInventoryPanel` uses this inventory foundation. The C# `gamedelivery-diagnose` legacy path and C.2.8 badge diagnostics read Steam Community `753/6`, so they do not verify CS2 game inventory.
 
@@ -2084,7 +2084,7 @@ After C.6.1 provides a verified sample, proceed to the already planned isolated 
 
 Полная live-проверка пока невозможна без отдельной non-production Steam учётной записи, ASF BotName и настоящего CS2 assetID. Automatic setup не выполнялся: секреты и создание аккаунта должны оставаться на стороне пользователя. No code, DB, migration, UI, plugin or ASF runtime changes were made.
 
-## 2026-11-08 — C.6.1: изолированный read-only probe (mock-only)
+## 2026-11-08 — C.6.1: изолированный read-only probe (mock-only checkpoint, live result recorded below)
 
 В ASFClient добавлен параметр allow_alternate_loopback_port с выключенным по умолчанию opt-in. Без изменения вызовов обычный клиент использует http://127.0.0.1:1242; альтернативный порт разрешается только при явном opt-in и только для localhost, 127.0.0.1 или ::1. Схема остаётся HTTP; внешние hostname/IP, credentials и дополнительные части base URL отклоняются.
 
@@ -2095,3 +2095,35 @@ Mock-проверки подтверждают endpoint GET 730/2, точное 
 Проверки: focused test_asf_client, test_cs2_inventory_probe, test_asf_inventory — 59 тестов прошли; compileall прошёл. Полный набор на Windows/Python 3.14 с Qt offscreen отметил 310 результатов, включая ошибки существующих DB-тестов при удалении открытых временных SQLite-файлов (WinError 32); тот же сбой воспроизведён отдельным тестом GameInventoryStore. Локальный runner не выдал итоговую сводку и был остановлен. GitHub Actions на точном commit SHA остаётся обязательной проверкой.
 
 Следующее действие — получить от пользователя подтверждение готовности отдельного ASF Generic 6.3.11.7 процесса на loopback 1243, его тестовые BotName/assetID и разрешение на один live GET 730/2. Не просить и не записывать IPC credentials, maFile, Steam Guard или другие секреты.
+
+## 2026-11-08 — C.6.1 live результат и аудит блокировок/цен CS2
+
+**Статус C.6.1:** live GET подтверждён по предоставленному пользователем отчёту от 2026-11-08. Указана отдельная ASF Generic 6.3.11.7 копия `D:\ASF-CS2-TEST\ASF`, отдельный home `D:\ASF-CS2-TEST\Home`, IPC `http://127.0.0.1:1243`, тестовый BotName `Ewaylariell`; по отчёту рабочий ASF не затрагивался. Сообщён read-only endpoint `/Api/Bot/Ewaylariell/Inventory/730/2?language=english` и пять предметов:
+
+- MAC-10 | Snow Splash — assetID `54333035531`
+- Zeus x27 | Swamp DDPAT — assetID `54449693461`
+- M249 | Sage Camo — assetID `54128707772`
+- Sawed-Off | Crimson Batik — assetID `54233098205`
+- SCAR-20 | Zinc — assetID `54244419373`
+
+Для MAC-10 пользователь сообщил результат probe: asset `54333035531`, class `7993072355`, instance `302028390`, amount `1`, name/market hash `MAC-10 | Snow Splash`, type `Industrial Grade SMG`, `tradable=true`, `marketable=true`, `tradable_after=unknown`. Это подтверждает успешный единичный live GET и точное извлечение assetID только в пределах предоставленного отчёта. Это не полный raw payload и не подтверждение метаданных для других причин блокировки. Параметры запроса были `AppID=730/context=2`; отдельное поле `contextid` не присутствует в показанном выводе probe.
+
+**ASF/Steam source contract:** исходник ASF 6.3.11.7 показывает `BotInventoryResponse` как `Assets` + `Descriptions`; `BotController` передаёт `appID/contextID` в `Actions.GetInventory`. Пакет ASF этой версии закрепляет SteamKit2 3.5.0. В сгенерированных типах SteamKit `CEcon_Asset` есть `appid`, `contextid`, `assetid`, `classid`, `instanceid`, `amount`. `CEconItem_Description` содержит `name`, `type`, `market_hash_name`, `tradable`, `marketable`, числовые `market_tradable_restriction`/`market_marketable_restriction`, `item_expiration` и массив descriptions, но нет типизированного `tradable_after`. Наличие поля в типе не доказывает, что конкретный live item его возвращает. Текущие `InventoryItem` и snapshot store сохраняют owner/asset/class/instance, описание, tags и `tradable`/`marketable`, но теряют `amount`, `contextid` и прочие typed restriction metadata.
+
+**Разные ограничения:**
+
+- Steam Trade Protection для CS2 относится к предметам, полученным через подтверждённый обмен; период — 7 дней после подтверждения. Steam помечает предмет в Inventory/trading interface; в этот срок предмет нельзя передавать, изменять или перемещать в Storage Unit, а защищённый обмен можно отменить. Этот срок нельзя переносить на покупки.
+- Market Purchase Cooldown относится к предметам, купленным внутри игры или на Community Market. Steam предлагает ориентироваться на дату, указанную у конкретного предмета в Inventory. Длительность не фиксируется здесь как 7 дней и не вычисляется от первого обнаружения.
+- ASF typed контракт не даёт `tradable_after`; числовые restriction поля не равны абсолютному timestamp. До подтверждения конкретной семантики и формата оставить срок/причину `unknown`; `tradable=false` само по себе не означает permanent restriction.
+
+**730/2 и 730/16:** live результат покрывает только `730/2`. Проверенные первичные Steam/ASF источники не определяют mapping CS2 context `16`. Есть неофициальный сторонний lead, связывающий `730/16` с Trade Protected CS2 items; это не подтверждённый факт и не доказывает, что `730/16` содержит любые/все locked items. ASF позволяет передать произвольный AppID/context в GET, но это не доказывает полноту данных. Проверять контексты отдельно только на известном non-production примере; автоматическое объединение не разрешать.
+
+**Steam Market в RUB:** Steamworks документирует `ECurrency=5` как RUB для своих `IInventoryService`/`IEconMarketServiceWeb` интерфейсов. Это не делает публичный `/market/priceoverview/` официальным или гарантированным API. Community references используют кандидат `appid=730`, `country=RU` (ISO alpha-2), `currency=5`, точный ASF `market_hash_name`; сообщают `lowest_price`, `median_price` и иногда `volume` как локализованные значения. Valve не публикует контракт этого endpoint, классификацию ошибок или подтверждённый лимит запросов. Один сторонний справочник называет около 20 запросов/минуту и 1 000/день; это не лимит Valve и не должно становиться жёсткой настройкой. Если доступ будет разрешён, получать одну цену на уникальный hash, кэшировать по `(appid,country,currency,market_hash_name)`, хранить timestamp, разделять fresh/stale/unavailable, считать volume опциональным, не конвертировать отсутствие/`success=false`/HTTP ошибку в 0, не затирать последний успешный ответ ошибкой, уважать `Retry-After` при наличии и применять bounded backoff для 429/временных ошибок. Цена не определяет tradability.
+
+**Условия автоматического опроса — отдельный gate:** действующее Steam Subscriber Agreement §4.C широко запрещает скриптам/ботам автоматизированно взаимодействовать со Steam. Поскольку `priceoverview` не документирован Valve как официальный API, общедоступность URL не считается разрешением на polling. До реализации автоматического collector требуется подтвердить допустимый канал/условия. В этом этапе priceoverview не запрашивался.
+
+**Предварительный контракт экземпляра:** сохранять независимые `tradable`, `marketable`, `restriction_type`, `restriction_source`, `restriction_status`, nullable точный `tradable_after`, `last_inventory_refresh` и `amount`; identity остаётся `(game_id, bot_name, asset_id)`. Типы ограничения — `none`, `market_purchase_cooldown`, `trade_protection`, `permanently_non_tradable`, `unknown`; причина и deadline остаются `unknown`, если источник не доказан. Unknown нельзя резервировать. Истечение любого timer требует свежего ASF snapshot с `tradable=true`. UI цен и блокировок использует общую view model; цена содержит lowest/median RUB, время обновления и при наличии volume, deadline/countdown только из доказанного timestamp.
+
+**Точная следующая задача C.6.2 (не начата):** подготовить небольшой CS2-only in-memory контракт/модель статусов и mock tests, не трогая SQLite/migrations/UI/trade path; сохранить `amount` из ASF и независимые флаги, не придумывать restriction cause/date. `730/16` не объединять с `730/2` до проверки известного protected asset. Любой автоматический Market collector отложить до установления разрешённого способа доступа. Новые live проверки сейчас не запрашивались.
+
+Источники: [ASF 6.3.11.7 BotInventoryResponse](https://github.com/JustArchiNET/ArchiSteamFarm/blob/6.3.11.7/ArchiSteamFarm/IPC/Responses/BotInventoryResponse.cs), [ASF BotController](https://github.com/JustArchiNET/ArchiSteamFarm/blob/6.3.11.7/ArchiSteamFarm/IPC/Controllers/Api/BotController.cs), [ASF Actions](https://github.com/JustArchiNET/ArchiSteamFarm/blob/6.3.11.7/ArchiSteamFarm/Steam/Interaction/Actions.cs), [SteamKit2 3.5.0 types](https://github.com/SteamRE/SteamKit/blob/3.5.0/SteamKit2/SteamKit2/Base/Generated/SteamMsgEcon.cs), [Steam Trade Protection](https://help.steampowered.com/en/faqs/view/365F-4BEE-2AE2-7BDD), [Trading and Market Restrictions](https://help.steampowered.com/en/faqs/view/451E-96B3-D194-50FC), [Steamworks ECurrency values](https://partner.steamgames.com/doc/store/pricing/currencies?l=english&language=english), [Steam Subscriber Agreement §4.C](https://store.steampowered.com/subscriber_agreement/), [наблюдение стороннего провайдера о context 16](https://dashboard.steamlabs.dev/docs/api/en/endpoints/inventory), [неофициальные сведения об ошибках/лимитах priceoverview](https://steampriceapi.com/api/pricing/), [неофициальное описание priceoverview](https://cs2.sh/resources/how-to-scrape-steam-market-priceoverview).

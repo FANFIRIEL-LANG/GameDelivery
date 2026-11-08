@@ -1,5 +1,7 @@
 # C.2.7 Multi-Game Preflight Adapter Handoff
 
+> **Актуальный checkpoint:** C.6.1 live GET подтверждён по отчёту пользователя; старые статусы «ожидает live» ниже — исторические. Последний раздел этого файла содержит текущий C.6.2 handoff.
+
 ## Result
 
 Added `SteamCardOrderPreflight.prepare_multi_game()` as an opt-in method. The existing single-game `prepare()` method is unchanged, and the application has no call site for the new method. It plans the full exact quantity first, then makes one atomic local reservation call. It never sends a Steam offer or contacts Steam.
@@ -73,15 +75,15 @@ The active priority is CS2 inventory and eventual item delivery through ASF. Exi
 
 This checkpoint changed documentation only. No tests were necessary; the last code test results remain 36 focused tests passed. The latest successful Actions run before this documentation commit was [42481365611](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42481365611), on SHA `35da3fd9d2aca96db9b11cf152b1f2b0a32763c2`.
 
-## Current handoff — Steam / CS2 inventory display
+## Historical handoff — Steam / CS2 inventory display (superseded by the final C.6.1 update)
 
 Use CS2 (`AppID=730`, `context=2`) as the only current game-inventory target. The current game panel is a per-instance card grid with search/filters; it lacks cross-bot item aggregation and table mode. `InventoryItem` and `GameInventoryStore` preserve physical inventory records and owner/asset IDs, but the game inventory UI has no per-item lock deadline or integrated reserved-state presentation. The CS2 module remains a placeholder. Do not implement Dota 2, TF2, Rust, or the future universal adapter now; preserve the option to add per-game adapters later.
 
 Final display requirements are recorded in the C.6 addendum in the Stage C plan and Master Log: card and table views share one in-memory projection; counts aggregate selected bots while exact `(game_id, bot_name, asset_id)` ownership remains available; table columns are image/name/unique bots/total/tradable/unavailable; tradability, lock, unknown and reserved states stay distinct; deadlines are per instance and verified by a refreshed ASF snapshot; no DB aggregation or reservation by aggregate row. No implementation was started. The supplied attachment folder had no image file, so only its textual table structure could be recorded.
 
-**Exact next task:** implement and test a small CS2-only in-memory inventory view model over existing `InventoryItem` instances, with one shared source for card and table projections. Cover aggregation across selected bots, unique-bot counts, asset deduplication scoped by owner, separation of tradeability states, and preservation of per-asset lock/owner identity. Then wire the two display modes in a separate UI task. Keep the ASF Generic 6.3.11.7 read-only capability check separate; do not change DB/migrations or trade behavior in this next data-model slice.
+**Previous next task (superseded by the final C.6.1 update):** implement and test a small CS2-only in-memory inventory view model over existing `InventoryItem` instances, with one shared source for card and table projections. Cover aggregation across selected bots, unique-bot counts, asset deduplication scoped by owner, separation of tradeability states, and preservation of per-asset lock/owner identity. Then wire the two display modes in a separate UI task. Keep the ASF Generic 6.3.11.7 read-only capability check separate; do not change DB/migrations or trade behavior in this next data-model slice.
 
-## Active checkpoint: C.6.1 read-only CS2 inventory verification
+## Historical checkpoint before live result: C.6.1 read-only CS2 inventory verification
 
 C.6.1 is not live-verified yet. Existing read-only path is `ASFClient.get_bot_inventory(bot_name, app_id=730, context_id=2)` via ASF IPC, called for `cs2` by `refresh_game_inventory`. The C# `gamedelivery-diagnose` path is card-focused on `753/6`, not CS2. `InventoryItem` retains asset/class/instance identity, owner, name/type, tags and tradeability flags, but has no `amount` or `tradable_after` field.
 
@@ -99,7 +101,7 @@ Once prepared, query only AppID `730`, context `2`; confirm exact asset/class ID
 
 **User preparation still required:** dedicated non-production Steam account loaded as the sole bot in that test home, one CS2 inventory item, and its exact test `BotName`/`assetID`. Keep IPC secret, bot JSON, login data, Steam Guard, cookies and maFile local. No account or inventory operation was performed; no ASF process was launched. C.6.2 remains blocked until the live source fields are verified.
 
-## C.6.1 — probe готов к изолированной live-проверке; пока не подключаться
+## Historical checkpoint: probe готов к изолированной live-проверке; пока не подключаться
 
 Mock-only реализация находится в integrations/asf/client.py и integrations/asf/cs2_inventory_probe.py. Обычные вызовы ASFClient остаются на 1242. Для альтернативного loopback-порта нужен allow_alternate_loopback_port=True; удалённые host/IP и не-HTTP схемы по-прежнему отклоняются. Probe строже: принимает только явно переданный loopback URL на 1243, BotName и точный числовой assetID, затем выполняет один GET для AppID 730/context 2. Он выводит только выбранные поля, отсутствующие значения показывает как "unknown", берёт amount из ответа при наличии и не выдумывает tradable_after.
 
@@ -110,3 +112,21 @@ Probe не использует SQLite/store/UI/preflight/торговые мо�
 До live-доступа дождаться пользователя. Нужно подготовить и запустить только официальный ASF Generic 6.3.11.7 с новым home через --path, одним non-production ботом и одним CS2-предметом; привязать IPC к 127.0.0.1:1243; сверить версию, путь test-home и PID listener; сообщить BotName и точный assetID; явно разрешить один read-only GET. Не запрашивать IPCPassword и иные секреты, не запускать команду до подтверждений.
 
 Команда после разрешения: python -m integrations.asf.cs2_inventory_probe --ipc-url http://127.0.0.1:1243 --bot-name "<BotName>" --asset-id "<assetID>". CLI локально запросит IPCPassword без отображения ввода. Probe не читает и не записывает SQLite и не связан с production delivery. Не начинать C.6.2 до подтверждения результата live C.6.1.
+
+## Актуальный handoff: C.6.1 live подтверждён; подготовка C.6.2
+
+**Источник live результата:** отчёт пользователя от 2026-11-08, не независимый запуск этого агента. По отчёту использовался ASF Generic 6.3.11.7 из `D:\ASF-CS2-TEST\ASF`, отдельный ASF home `D:\ASF-CS2-TEST\Home`, IPC `http://127.0.0.1:1243`, non-production BotName `Ewaylariell`. Пользователь сообщает, что рабочий ASF не затрагивался. Выполнен один read-only GET `/Api/Bot/Ewaylariell/Inventory/730/2?language=english`; указаны 5 CS2 items и asset IDs в Master Log. Probe для MAC-10 | Snow Splash (`54333035531`) вернул class `7993072355`, instance `302028390`, amount `1`, name/type/market hash, `tradable=true`, `marketable=true`, `tradable_after=unknown`. Полного raw response нет; не заявлять о получении всех возможных metadata. В выводе probe нет отдельного поля asset-level `contextid`, только путь 730/2.
+
+**Контракт ASF 6.3.11.7:** источник ASF разделяет инвентарь на `Assets` и `Descriptions`, передавая AppID/ContextID заданного GET дальше в `Actions.GetInventory`. Закреплённый SteamKit2 3.5.0 тип `CEcon_Asset` имеет `appid`, `contextid`, `assetid`, `classid`, `instanceid`, `amount`. `CEconItem_Description` содержит имя/тип/market hash, `tradable`, `marketable`, целочисленные `market_tradable_restriction` и `market_marketable_restriction`, `item_expiration` и descriptions, но не typed `tradable_after`. Текущий `InventoryItem`/store не сохраняет amount, context или restriction metadata. Пока не менять БД.
+
+**Ограничения остаются раздельными:** Steam Trade Protection относится к CS2 items, полученным через обмен, и длится 7 дней после подтверждения; Market Purchase Cooldown показывает дату доступности у конкретного предмета, без общего фиксированного срока. Не выводить permanent restriction из `tradable=false`; не вычислять deadline из даты первого обнаружения. Неподтверждённая причина/date остаётся `unknown` и недоступной для резерва.
+
+**730/16:** проверенные первичные Steam/ASF источники не определяют context mapping. Есть неофициальный сторонний lead о `730/16` для Trade Protected предметов; это не проверенное правило и не доказывает покрытие всех блокировок. Живой запрос проверял только 730/2. Не сливать контексты автоматически. Если следующая реализация реально требует этот случай, потребуется известный protected non-production asset, чтобы отдельно проверить 730/2 и 730/16.
+
+**Цены:** Steamworks документирует RUB как currency `5` для своих API, но не для недокументированного Steam Community Market `/market/priceoverview/`. `country=RU` (ISO alpha-2 для выбранного рынка) + `currency=5` и точный `market_hash_name` остаются кандидатной комбинацией до разрешённой безопасной проверки endpoint. Сторонние описания указывают `lowest_price`, `median_price`, `volume` (необязательное), а также HTTP/JSON ошибки; официальный контракт отсутствует. Они также приводят разные/неофициальные оценки частоты; один справочник пишет примерно 20 запросов в минуту и 1 000 в день, это не лимит Valve и не значение для жёсткой настройки. Будущий клиент должен отличать transport/HTTP/JSON/`success=false`, не считать их ценой `0`, уважать `Retry-After` если он есть, делать ограниченный backoff на 429/временные ошибки и не затирать последний успешный ответ ошибкой. Steam Subscriber Agreement §4.C широко ограничивает автоматизированные скрипты/боты при взаимодействии со Steam, поэтому не реализовывать/не запускать collector до подтверждения разрешённого способа доступа. В этом checkpoint priceoverview не вызывался.
+
+**Точная следующая задача:** подготовить отдельный C.6.2 план/малый in-memory CS2 status contract с mock tests: сохранить amount и независимые tradable/marketable flags; добавить причины `none`, `market_purchase_cooldown`, `trade_protection`, `permanently_non_tradable`, `unknown`; `tradable_after` только из проверенного точного источника; per-asset identity и `last_inventory_refresh`; unknown остаётся нерезервируемым. Пока не менять SQLite/migrations, UI, ASF plugin/runtime, production preflight или торговый путь. Отдельно не автоматизировать Market pricing, пока не закрыта проверка условий Steam.
+
+**Действия пользователя сейчас:** не требуются. Новый live тест не запрашивать сейчас; если понадобится, сначала объяснить конкретное неизвестное и почему его нельзя закрыть ASF/Steam source audit.
+
+Источники: [ASF 6.3.11.7 BotInventoryResponse](https://github.com/JustArchiNET/ArchiSteamFarm/blob/6.3.11.7/ArchiSteamFarm/IPC/Responses/BotInventoryResponse.cs), [SteamKit2 3.5.0 types](https://github.com/SteamRE/SteamKit/blob/3.5.0/SteamKit2/SteamKit2/Base/Generated/SteamMsgEcon.cs), [Steam Trade Protection](https://help.steampowered.com/en/faqs/view/365F-4BEE-2AE2-7BDD), [Steam Trading and Market Restrictions](https://help.steampowered.com/en/faqs/view/451E-96B3-D194-50FC), [Steamworks ECurrency](https://partner.steamgames.com/doc/store/pricing/currencies?l=english&language=english), [Steam Subscriber Agreement §4.C](https://store.steampowered.com/subscriber_agreement/), [стороннее описание context 16](https://dashboard.steamlabs.dev/docs/api/en/endpoints/inventory), [неофициальное описание priceoverview](https://cs2.sh/resources/how-to-scrape-steam-market-priceoverview).
