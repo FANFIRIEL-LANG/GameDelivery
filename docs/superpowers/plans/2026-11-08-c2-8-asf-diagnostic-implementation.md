@@ -51,12 +51,12 @@
 - Produces strict parsing for badge JSON and Steam profile XML identity, an inventory summary over all asynchronously yielded ASF assets, and exact hash-match results.
 - No helper in this task performs network, filesystem, database, or trade operations.
 
-- [ ] Add smoke cases for successful and malformed badge payloads, `eresult`, app ID, identity, level, border, empty and duplicate card hashes.
-- [ ] Add smoke cases for multiple async inventory pages, normal/foil/unknown types, non-tradable items, amounts, missing/extra hashes, and exact matching.
-- [ ] Run the smoke executable against the current plugin and verify the new cases fail because the helper is absent.
-- [ ] Implement the smallest pure helper that satisfies the tests; keep raw Steam payloads out of results and logs.
-- [ ] Rebuild the plugin against the verified Generic assemblies and run the smoke executable; require all new cases to pass.
-- [ ] Commit and push the completed data-rule slice to `origin/work/local-sync`.
+- [x] Add smoke cases for successful and malformed badge payloads, `eresult`, app ID, identity, level, border, empty and duplicate card hashes.
+- [x] Add smoke cases for multiple async inventory pages, normal/foil/unknown types, non-tradable items, amounts, missing/extra hashes, and exact matching.
+- [x] Run the smoke executable against the current plugin and verify the new cases fail because the helper is absent.
+- [x] Implement the smallest pure helper that satisfies the tests; keep raw Steam payloads out of results and logs.
+- [x] Rebuild the plugin against the verified Generic assemblies and run the smoke executable; require all new cases to pass.
+- [x] Commit and push the completed data-rule slice to `origin/work/local-sync`.
 
 ### Task 2: ASF-session command orchestration and handoff
 
@@ -78,3 +78,8 @@
 - [ ] Run the complete Python unittest suite, compile/build the plugin against ASF Generic 6.3.11.7, and run the ASF smoke executable.
 - [ ] Update the Stage C handoff with only verified status; commit and push the completed command slice.
 - [ ] Confirm local and remote SHA equality and a clean working tree. Do not claim GitHub Actions success unless a run exists for that exact SHA.
+
+## Checkpoints
+
+- **Task 1 complete:** `475352bdf0af7c50b8d5331abf22d4d8f5f25e23` (`feat(asf): add read-only badge diagnostic rules`) pushed to `origin/work/local-sync`. The ASF Generic 6.3.11.7 Release build completed with 0 warnings and 0 errors; the smoke executable passed. The expected pre-implementation smoke run failed because `ReadOnlyDiagnostic` was absent.
+- **Next:** implement command parsing and ASF-session reads in `GameDeliveryPlugin.cs`, preserve one-argument legacy behavior, add contract tests for endpoints and no-send boundaries, then run the complete Python suite, Generic build, and smoke executable.
