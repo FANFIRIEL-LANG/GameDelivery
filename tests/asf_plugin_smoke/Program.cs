@@ -546,6 +546,29 @@ static async Task VerifyReadOnlyDiagnosticRules()
     Type entryType = typeof(GameDeliveryPlugin).Assembly.GetType(
         "GameDelivery.ASFPlugin.ReadOnlyDiagnostic+InventoryEntry",
         throwOnError: true)!;
+    MethodInfo failingInventoryFactory = typeof(SmokeInventoryPageFactory).GetMethod(
+        nameof(SmokeInventoryPageFactory.FailAfterOne),
+        BindingFlags.Public | BindingFlags.Static)!
+        .MakeGenericMethod(entryType);
+    object failingInventory = failingInventoryFactory.Invoke(null,
+    [
+        CreateInventoryEntry(entryType, 440U, "Card before failure", "TradingCard", 1U, true)
+    ])!;
+    object failedAggregation = InvokeReadOnlyDiagnostic("AggregateInventoryAsync", failingInventory);
+    bool inventoryFailurePropagated = false;
+    try
+    {
+        await ((Task)failedAggregation).ConfigureAwait(false);
+    }
+    catch (InvalidOperationException exception)
+        when (exception.Message == SmokeInventoryPageFactory.ExpectedFailureMessage)
+    {
+        inventoryFailurePropagated = true;
+    }
+
+    Assert(inventoryFailurePropagated,
+        "an ASF inventory enumeration error was swallowed instead of failing the diagnostic");
+
     object inventory = await AggregateInventoryPages(entryType,
     [
         [
@@ -646,6 +669,8 @@ sealed class SmokeJsonProbe
 
 static class SmokeInventoryPageFactory
 {
+    public const string ExpectedFailureMessage = "simulated ASF inventory failure";
+
     public static async IAsyncEnumerable<T> Yield<T>(T[][] pages)
     {
         foreach (T[] page in pages)
@@ -656,5 +681,13 @@ static class SmokeInventoryPageFactory
                 yield return item;
             }
         }
+    }
+
+    public static async IAsyncEnumerable<T> FailAfterOne<T>(T item)
+    {
+        await Task.Yield();
+        yield return item;
+        await Task.Yield();
+        throw new InvalidOperationException(ExpectedFailureMessage);
     }
 }

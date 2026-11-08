@@ -178,6 +178,27 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertNotIn("HandleTwoFactorAuthenticationConfirmations(", diagnostic)
         self.assertNotIn("TradeDelivery.", diagnostic)
 
+    def test_badge_diagnostic_session_errors_fail_closed_without_echoing_exception_details(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        callback_start = plugin.index("public async Task<string?> OnBotCommand")
+        callback_end = plugin.index("private static MissingMemberException? FindMissingMemberException", callback_start)
+        callback = plugin[callback_start:callback_end]
+        error_start = callback.index("if (string.Equals(recognizedCommand, DiagnosticCommandName")
+        error_end = callback.index("string safeMessage = SafeDiagnosticText(exception.Message)", error_start)
+        diagnostic_error = callback[error_start:error_end]
+        failure_start = plugin.index("private static string DiagnosticFailure")
+        failure_end = plugin.index("private static string Failure", failure_start)
+        failure = plugin[failure_start:failure_end]
+
+        self.assertIn("exception.GetType().Name", diagnostic_error)
+        self.assertIn('DiagnosticFailure("ASF read-only diagnostic failed ("', diagnostic_error)
+        self.assertNotIn("exception.Message", diagnostic_error)
+        self.assertNotIn("exception.ToString()", diagnostic_error)
+        self.assertNotIn("exception.StackTrace", diagnostic_error)
+        self.assertIn('mode = "diagnostic-read-only"', failure)
+        self.assertIn("sendEnabled = false", failure)
+        self.assertIn("tradeOfferCreated = false", failure)
+
     def test_diagnostic_argument_errors_preserve_read_only_envelope_and_legacy_form(self):
         plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         callback_start = plugin.index("public async Task<string?> OnBotCommand")
