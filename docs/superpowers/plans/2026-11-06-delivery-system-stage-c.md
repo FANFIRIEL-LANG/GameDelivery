@@ -552,3 +552,9 @@ Required display contract:
 - No fabricated countdown for unknown deadlines. Use normal visual state for tradable, muted state for locked, and distinct states for non-tradable/unknown/reserved.
 
 UI work is a separate workstream from the read-only ASF Generic 6.3.11.7 capability check; do not couple the UI task to a live request. No UI, DB, migration, plugin or trade code changed in this checkpoint. The provided attachment directory contained no image file, only the request text.
+
+#### C.6.1 — Read-only CS2 inventory source check (status: awaiting test data, 2026-11-08)
+
+Existing route: `ASFClient.get_bot_inventory(bot_name, app_id=730, context_id=2)` calls the ASF IPC inventory endpoint, and `refresh_game_inventory` selects `730/2` for `cs2`. The legacy C# `gamedelivery-diagnose` and C.2.8 recipient diagnostics target `753/6`; they are not evidence for CS2 inventory. Current `InventoryItem` preserves owner and asset/class identity, item metadata and nullable tradeability, but does not model `amount` or `tradable_after`.
+
+Live verification is pending a dedicated isolated ASF Generic 6.3.11.7 bot with a CS2 item. Required non-secret inputs: test `BotName` and that item's exact `assetID`; ASF IPC config remains local and must point only to the isolated test instance. Query `730/2` read-only, inspect the exact item fields and errors, and do not create offers. No live query or production/UI/DB/plugin change was made in this checkpoint. Proceed to C.6.2 view-model design only after the source fields are confirmed; preserve unknown values as unknown.

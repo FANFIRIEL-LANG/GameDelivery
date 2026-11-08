@@ -2059,3 +2059,13 @@ This checkpoint changed documentation only. It did not modify code, DB, migratio
 **Граница работ:** этот UI-контракт отделён от read-only проверки ASF Generic 6.3.11.7. В checkpoint не менялись UI, БД, миграции, ASF plugin/runtime, код или торговая логика.
 
 **Следующий этап:** начать отдельную CS2-only реализацию in-memory view model, которая из выбранных `InventoryItem` выдаёт общую агрегированную модель для карточек и таблицы, сохраняя физические экземпляры и статусы. Покрыть тестами aggregation/dedup, unique bot count, разделение tradable/unavailable и сохранение per-item identity/lock data; затем подключать оба UI-режима. Read-only ASF API verification — отдельная задача, не смешивать её с UI.
+
+## 2026-11-08 — C.6.1 initial source check; live ASF data pending
+
+The current GameDelivery Python route is read-only and parameterized: `ASFClient.get_bot_inventory(bot_name, app_id=730, context_id=2)` requests `/Api/Bot/{BotName}/Inventory/730/2`; `refresh_game_inventory(..., "cs2", ...)` resolves CS2 to `730/2`. `GameInventoryPanel` uses this inventory foundation. The C# `gamedelivery-diagnose` legacy path and C.2.8 badge diagnostics read Steam Community `753/6`, so they do not verify CS2 game inventory.
+
+`InventoryItem` stores `game_id`, owner `bot_name`, `asset_id`, `class_id`, `instance_id`, name/type, market hash, tradeable/marketable flags, and CS2 tags. It currently has no `amount` or `tradable_after` property; do not infer those from unverified responses. No live ASF query was run: a dedicated Generic 6.3.11.7 test session and concrete test item were not supplied. No production session, secrets, inventory, or offers were touched.
+
+**Required preparation for C.6.1:** an isolated ASF Generic 6.3.11.7 session with one dedicated non-production bot that owns at least one CS2 item, plus its `BotName` and exact `assetID`. The local GameDelivery ASF IPC client must point only to that isolated test instance. Keep IPC credentials/config local; do not send them. Public SteamID64 is not needed for the bot's own inventory. Then query only `730/2`, verify the exact asset/class IDs, name/type, quantity, tradeability and available typed metadata, and record any ASF errors. Do not create offers.
+
+After C.6.1 provides a verified sample, proceed to the already planned isolated CS2 view model. Do not wire it into production UI before tests and boundary checks.
