@@ -69,6 +69,14 @@ class BadgeAllocationTests(unittest.TestCase):
                 requested_sets=2,
             )
 
+    def test_skips_games_with_no_remaining_or_available_sets(self):
+        result = plan_badge_allocation(
+            [GameCapacity(10, 0, 4), GameCapacity(20, 3, 0), GameCapacity(30, 2, 2)],
+            requested_sets=2,
+        )
+
+        self.assertEqual(result, (GameAllocation(30, 2, completes_badge=True),))
+
     def test_rejects_invalid_quantities_and_duplicate_app_ids(self):
         for requested_sets in (0, -1, True, 1.5):
             with self.subTest(requested_sets=requested_sets):
