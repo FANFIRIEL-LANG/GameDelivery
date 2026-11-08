@@ -536,3 +536,19 @@
 #### C.2.7 follow-up — exhaustive regression coverage (2026-11-08)
 
 Тесты `tests/test_badge_allocation.py` теперь сравнивают pure planner с независимым brute-force эталоном на 10 368 сочетаниях малого пространства входов и проверяют отказ для некорректных AppID/ёмкостей. Девять allocator tests и связанные focused проверки preflight/shared sets (всего 36) прошли. Изменения только тестовые; production flow и утверждённые правила C.2.7 не менялись. GitHub Actions `Tests` успешно завершился на code SHA `8d1bb7ee91951ddd9076a72ec8d80798ff646147` (run `42475812299`) и `2820c617bd5e1cc081b59705c30c415cd61a48de` (run `42476082350`).
+
+## C.6 execution addendum — final CS2 inventory display requirements (2026-11-08)
+
+Current scope is CS2 (`730/2`) only. Other game integrations and the universal adapter mechanism are future work; retain only the architectural option for per-game adapters and item-type descriptions.
+
+The current generic game inventory panel renders one card per `InventoryItem` and supports search/filters; it does not aggregate identical items across selected bots or provide a table mode. The underlying records preserve `game_id`, `bot_name`, `asset_id`, item metadata and nullable tradeability flags. The CS2 module is still a placeholder; the Steam-card inventory projection is not a shared CS2 item model.
+
+Required display contract:
+- Both full modes consume one projection of physical inventory instances for selected CS2 bots.
+- Card mode groups matching items across bots, displays total quantity, and exposes per-bot counts in a tooltip; preserve access to each exact `(game_id, bot_name, asset_id)` instance.
+- Table mode displays image, item name, unique bot count, total quantity, tradable quantity and unavailable quantity. Sorting and filtering affect only the view.
+- Never double-count an instance; never merge physical records in the DB. Keep the owner key and reserve exact asset IDs, not aggregate rows.
+- Tradable, temporarily locked, permanently non-tradable, unknown and reserved states remain distinguishable. A lock deadline is per instance and only shown when ASF supplies a trustworthy time; expiry triggers a fresh ASF snapshot and does not itself make the item tradable.
+- No fabricated countdown for unknown deadlines. Use normal visual state for tradable, muted state for locked, and distinct states for non-tradable/unknown/reserved.
+
+UI work is a separate workstream from the read-only ASF Generic 6.3.11.7 capability check; do not couple the UI task to a live request. No UI, DB, migration, plugin or trade code changed in this checkpoint. The provided attachment directory contained no image file, only the request text.

@@ -2043,3 +2043,19 @@ The active development priority is Steam inventory and Counter-Strike 2 (AppID `
 **Exact next stage:** read-only source-level verification against the pinned ASF Generic 6.3.11.7 API for handling one CS2 item by exact `(AppID=730, context=2, assetID)`, including item eligibility/tradability and the result contract. Do not send an offer or change the trading path. Use the verified capability to scope a small CS2-specific handler using the existing inventory foundation. No other-game inventory support, DB/migration work, large UI work, or universal adapter is in scope.
 
 This checkpoint changed documentation only. It did not modify code, DB, migrations, UI, ASF plugin, installation, or trade logic.
+
+## 2026-11-08 — C.6: окончательные требования отображения Steam/CS2 inventory
+
+**Приоритет:** Steam и CS2 (`AppID=730`, `context=2`). Инвентари Dota 2/TF2/Rust и универсальное подключение других игр отложены. Архитектурная расширяемость через будущие per-game adapters/item descriptions сохраняется, но сейчас их не реализовывать.
+
+**Фактическое состояние:** `app/game_inventory_panel.py` показывает карточку для отдельного `InventoryItem` и имеет поиск/фильтры; группировки одинаковых предметов по выбранным ботам и табличного режима нет. `InventoryItem` сохраняет `game_id`, `bot_name`, `asset_id`, описание, теги и флаги tradable/marketable (`True`/`False`/unknown); `GameInventoryStore` хранит физические записи. Общий Steam-card view в `games/steam_cards/inventory_views.py` не является общим CS2 item view. `games/cs2/__init__.py` остаётся placeholder. В данных игрового inventory пока нет подтверждённого `tradable_after` и интегрированного reservation display state.
+
+**Утверждённый UI-контракт:** один источник физических экземпляров для двух полных представлений: (1) карточный режим группирует одинаковые предметы по выбранным ботам, показывает общее количество, а tooltip — список ботов и их количества; конкретный экземпляр доступен по `(game_id, bot_name, asset_id)`. Обмениваемые и недоступные экземпляры не объединять в одну визуальную группу; locked, permanently non-tradable, unknown и reserved состояния не скрывать друг за другом. (2) табличный режим по тем же выбранным ботам показывает изображение, название, число уникальных ботов, общее количество, доступное и недоступное для обмена количество; сортировка и фильтры влияют только на view.
+
+Оба представления считают агрегаты из экземпляров, не из числа строк/ботов без дедупликации. Один физический ключ — `(game_id, bot_name, asset_id)`; не терять владельца, не объединять строки в БД, а резервировать только конкретные asset IDs. Для временного lock сохранять срок отдельно для каждого экземпляра только из достоверных данных ASF; общий таймер для разных сроков запрещён. Истечение таймера требует нового ASF snapshot и само не делает предмет tradable. При неизвестном сроке не показывать выдуманный countdown. Tradable отображается обычно, locked приглушённо, permanently non-tradable/unknown/reserved — отдельными состояниями.
+
+**Референс:** в доступной папке вложения присутствует только текстовый файл, изображение отдельно не приложено; текстовую структуру таблицы зафиксировали, визуальный файл сохранить не удалось.
+
+**Граница работ:** этот UI-контракт отделён от read-only проверки ASF Generic 6.3.11.7. В checkpoint не менялись UI, БД, миграции, ASF plugin/runtime, код или торговая логика.
+
+**Следующий этап:** начать отдельную CS2-only реализацию in-memory view model, которая из выбранных `InventoryItem` выдаёт общую агрегированную модель для карточек и таблицы, сохраняя физические экземпляры и статусы. Покрыть тестами aggregation/dedup, unique bot count, разделение tradable/unavailable и сохранение per-item identity/lock data; затем подключать оба UI-режима. Read-only ASF API verification — отдельная задача, не смешивать её с UI.
