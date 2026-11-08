@@ -85,6 +85,34 @@ class SharedSteamCardSetTests(unittest.TestCase):
             [("Game A", 1), ("Game B", 1)],
         )
 
+    def test_expected_market_hashes_define_complete_set_types(self):
+        inventories = {"Bot A": [
+            CardCopy("a1", "Game", "Display A", market_hash_name="hash-a"),
+            CardCopy("b1", "Game", "Display B", market_hash_name="hash-b"),
+            CardCopy("x1", "Game", "Extra Card", market_hash_name="not-in-set"),
+        ]}
+
+        result = find_shared_game_sets(
+            inventories,
+            expected_card_hashes_by_game_name={"Game": ("hash-a", "hash-b")},
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].available_sets, 1)
+        self.assertEqual(result[0].cards_per_set, 2)
+
+    def test_missing_expected_market_hash_prevents_false_complete_set(self):
+        inventories = {"Bot A": [
+            CardCopy("a1", "Game", "Display A", market_hash_name="hash-a"),
+        ]}
+
+        result = find_shared_game_sets(
+            inventories,
+            expected_card_hashes_by_game_name={"Game": ("hash-a", "hash-b")},
+        )
+
+        self.assertEqual(result, [])
+
     def test_selection_returns_exact_number_and_preserves_owners(self):
         inventories = {
             "Bot A": [

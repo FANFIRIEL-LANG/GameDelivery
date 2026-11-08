@@ -102,3 +102,19 @@ class AssetReservationStore:
                 WHERE order_id = ? ORDER BY bot_name, asset_id
             """, (order_id.strip(),)).fetchall()
         return [{"bot_name": row["bot_name"], "asset_id": row["asset_id"]} for row in rows]
+
+    def list_reserved_assets(
+        self, *, excluding_order_id: str | None = None
+    ) -> tuple[tuple[str, str], ...]:
+        """Read reserved (bot, asset) keys, optionally excluding one order."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT bot_name, asset_id, order_id FROM steam_asset_reservations "
+                "ORDER BY bot_name, asset_id"
+            ).fetchall()
+        excluded_order = excluding_order_id.strip() if excluding_order_id else None
+        return tuple(
+            (str(row["bot_name"]), str(row["asset_id"]))
+            for row in rows
+            if excluded_order is None or str(row["order_id"]) != excluded_order
+        )

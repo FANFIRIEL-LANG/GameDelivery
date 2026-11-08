@@ -22,6 +22,8 @@ class SharedGameSets:
 
 def find_shared_game_sets(
     inventories: Mapping[str, Iterable[CardCopy]],
+    *,
+    expected_card_hashes_by_game_name: Mapping[str, Iterable[str]] | None = None,
 ) -> list[SharedGameSets]:
     """Count complete sets across bots without losing physical asset ownership.
 
@@ -29,6 +31,23 @@ def find_shared_game_sets(
     name for a game. Copies may belong to different bots. Asset IDs are scoped
     to their bot because the same opaque ID on two accounts is not the same item.
     """
+    expected_by_game: dict[str, tuple[str, ...]] = {}
+    for raw_game, raw_hashes in (expected_card_hashes_by_game_name or {}).items():
+        game_key = str(raw_game).strip().casefold()
+        if not game_key or isinstance(raw_hashes, str):
+            raise ValueError("Для игры нужен список точных MarketHashName")
+        hashes = tuple(raw_hashes)
+        if (
+            not hashes
+            or any(not isinstance(value, str) or not value.strip() for value in hashes)
+            or game_key in expected_by_game
+        ):
+            raise ValueError("Состав набора должен содержать уникальные MarketHashName")
+        hashes = tuple(value.strip() for value in hashes)
+        if len(set(hashes)) != len(hashes):
+            raise ValueError("Состав набора должен содержать уникальные MarketHashName")
+        expected_by_game[game_key] = hashes
+
     by_game: dict[str, dict[str, list[AssetKey]]] = defaultdict(lambda: defaultdict(list))
     seen_assets: set[AssetKey] = set()
 
@@ -48,16 +67,24 @@ def find_shared_game_sets(
             seen_assets.add(asset_key)
             if not card.is_trading_card:
                 continue
+            expected_hashes = expected_by_game.get(game_name.casefold())
+            card_type = str(card.market_hash_name or "").strip() if expected_hashes is not None else card_name
+            if expected_hashes is not None and card_type not in expected_hashes:
+                continue
             # Keep normal card types represented even when their only copies
             # are foil, non-tradable, or have unknown tradability. Otherwise a
             # partial inventory could be misreported as a complete set.
             if card.is_foil or card.is_tradable is not True:
-                by_game[game_name].setdefault(card_name, [])
+                by_game[game_name].setdefault(card_type, [])
                 continue
-            by_game[game_name][card_name].append(asset_key)
+            by_game[game_name][card_type].append(asset_key)
 
     results: list[SharedGameSets] = []
     for game_name, cards_by_name in sorted(by_game.items(), key=lambda item: item[0].casefold()):
+        expected_hashes = expected_by_game.get(game_name.casefold())
+        if expected_hashes is not None:
+            for market_hash_name in expected_hashes:
+                cards_by_name.setdefault(market_hash_name, [])
         ordered_names = sorted(cards_by_name, key=str.casefold)
         if not ordered_names:
             continue
