@@ -32,9 +32,11 @@
 - Create: `games/steam_cards/badge_allocation.py`
 - Test: `tests/test_badge_allocation.py`
 
-- [ ] Write tests for completion priority, minimum completed `R_g`, AppID tie-break, residual allocation order, exact-quantity failure, and invalid input.
-- [ ] Run the focused test file and verify it fails because the planner module/API is missing.
-- [ ] Implement only the pure input/result dataclasses and deterministic planner required by those tests.
-- [ ] Run the focused tests and the full existing Python test suite; record environment failures without changing unrelated tests.
-- [ ] Confirm no operational module imports the planner.
-- [ ] Update `PROJECT_MASTER_LOG.md` and the C.2 handoff, commit, push, verify local/remote SHA, and record CI for that SHA.
+- [x] Write tests for completion priority, minimum completed `R_g`, AppID tie-break, residual allocation order, exact-quantity failure, invalid input, and zero-capacity games.
+- [x] Run the focused test file and verify it fails because the planner module/API is missing.
+- [x] Implement only the pure input/result dataclasses and deterministic planner required by those tests.
+- [x] Run the focused tests and the full existing Python test suite; record environment failures without changing unrelated tests.
+- [x] Confirm no operational module imports the planner.
+- [x] Update `PROJECT_MASTER_LOG.md` and the C.2 handoff, commit, push, verify local/remote SHA, and record CI for the code/test SHA.
+
+**Completed 2026-11-08:** planner commit `27c36b311fb577887cc93d218a35154068dbb49a`; zero-capacity coverage commit `66f0d6df930078bfc92c27506463575a8a074fe2`. Seven focused tests passed locally. Full-suite and Actions results are recorded in `PROJECT_MASTER_LOG.md` and the C.2 handoff.

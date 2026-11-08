@@ -1983,3 +1983,17 @@ Telegram — дополнительный канал уведомлений; е�
 **Состояние Actions на исходном SHA `7bb1b6e8212342de2ca9bc361fe3130a31be2470`:** Tests — success (run `42369073288`); ASF plugin — success (run `42369073270`); Windows executable — success (run `42369073259`). Эти результаты относятся к указанному SHA до документального commit об утверждении tie-break.
 
 **GitHub safety:** рабочая ветка `feature/asf-bulk-account-import`; PR #4 open/Draft, base `feature/steam-card-set-selection`; `main` не изменялся. Документальные обновления не меняют код, БД, миграции или UI.
+
+## 2026-11-08 — C.2.7: изолированный planner распределения по играм
+
+После завершения локальной реализации C.2.8 и подтверждения загрузки плагина изолированным ASF Generic 6.3.11.7 выбрана независимая задача, не требующая Steam-профиля: реализовать уже утверждённое правило C.2.7 отдельным pure planner. Live Steam-проверка C.2.8 остаётся самостоятельным незавершённым критерием.
+
+**Реализация:** commit `27c36b311fb577887cc93d218a35154068dbb49a` (`feat(steam-cards): add pure badge allocation planner`) в `work/local-sync`. Добавлены `games/steam_cards/badge_allocation.py`, шесть тестов `tests/test_badge_allocation.py` и краткий план `docs/superpowers/plans/2026-11-08-c2-7-pure-allocation-planner.md`. Планировщик покрывает точное количество, максимум завершённых значков, минимальную сумму `R_g`, AppID tie-break, порядок остатка и fail-closed при невыполнимом количестве. Проверка ссылок подтвердила, что production-модули его пока не импортируют. Не изменялись preflight, резервации, UI, БД, ASF plugin, торговые операции, рабочая DLL или бизнес-правила.
+
+**Проверки:** `py -3.10 -m unittest tests.test_badge_allocation -v` — 6 tests OK. Полное локальное обнаружение — 230 tests, 13 errors: девять модулей не импортировались из-за отсутствующего PySide6, четыре теста столкнулись с Windows SQLite temporary-file cleanup locks. GitHub Actions `Tests`, run [42471398450](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42471398450), job `test` — success на точном SHA `27c36b311fb577887cc93d218a35154068dbb49a`. ASF plugin workflow этим Python-изменением не затрагивался.
+
+**Границы C.2:** C.2.1/C.2.7 согласованы; pure часть C.2.2 теперь реализована, но не подключена. C.2.3/C.2.4 и подключение планировщика к рабочему пути требуют изменения доменной/операционной логики, запрещённого текущим запросом без отдельного разрешения. По C.2.8 live-проверки badge endpoint, recipient identity, inventory privacy/pagination и точного hash mapping не выполнены; пользовательский Steam-профиль не создавался и не использовался. Следующая live-проверка требует отдельного тестового аккаунта и только BotName, AppID, SteamID64; секреты не запрашивать. Не использовать production аккаунты и `D:\steam log pass mafile`.
+
+**Синхронизация Master Log:** локальный `PROJECT_MASTER_LOG.md` обновлён. Исходная внешняя копия журнала в подключённом document session недоступна (нет активной сессии/связанной Page), поэтому её byte-identical sync остаётся незавершённым; локальная копия предоставляется как актуальный handoff, внешняя синхронизация не заявляется.
+
+**Дополнение по границе:** в commit `66f0d6df930078bfc92c27506463575a8a074fe2` добавлен тест нулевых `R_g`/`A_g`; целевой набор теперь 7 tests OK. GitHub Actions `Tests`, run [42471637822](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42471637822), job `test` — success на точном SHA этого commit. Локальный/удалённый SHA после документационного commit будет перепроверен.
