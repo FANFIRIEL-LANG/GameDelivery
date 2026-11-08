@@ -1997,3 +1997,21 @@ Telegram — дополнительный канал уведомлений; е�
 **Синхронизация Master Log:** локальный `PROJECT_MASTER_LOG.md` обновлён. Исходная внешняя копия журнала в подключённом document session недоступна (нет активной сессии/связанной Page), поэтому её byte-identical sync остаётся незавершённым; локальная копия предоставляется как актуальный handoff, внешняя синхронизация не заявляется.
 
 **Дополнение по границе:** в commit `66f0d6df930078bfc92c27506463575a8a074fe2` добавлен тест нулевых `R_g`/`A_g`; целевой набор теперь 7 tests OK. GitHub Actions `Tests`, run [42471637822](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42471637822), job `test` — success на точном SHA этого commit. После документационного commit `e5e88ff4c1ffce6d141ba78df135783739d931b8` локальный и удалённый `work/local-sync` совпали; его Actions run [42471766978](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42471766978) завершился success на том же SHA.
+
+## 2026-11-08 — C.2.7: opt-in multi-game preflight adapter
+
+По запросу пользователя исследована безопасная интеграция C.2.7 planner с текущим `SteamCardOrderPreflight`. Graphify был вызван, но workspace list пуст и репозиторий выбрать невозможно; зависимости изучены по актуальным локальным исходникам и тестам.
+
+**Фактические источники данных:**
+- `Q`: существующий explicit `requested_sets` параметр preflight. `OrderService.quantity` — generic quantity, семантически не закреплён как набор Steam card sets, поэтому его не преобразовывать автоматически.
+- AppID: `games.catalog.GAME_CATALOG` по exact/casefolded game title; каталог частичный. В `CardCopy`, `RecipientBadge`, `SharedGameSets` и generic order row AppID отсутствует. Неподдержанный title блокируется.
+- `R_g`: `evaluate_recipient_badge_capacity()` выдаёт `5 - badge level`; затем адаптер вычитает обязательный verified `buyer_complete_sets_by_app_id`. В действующих Python order inputs нет источника recipient complete sets, поэтому adapter требует этот mapping и bool flag, не предполагая zero.
+- `A_g`: seller `CardCopy` из свежего snapshot; `find_shared_game_sets()` использует только полный caller-verified exact `MarketHashName` list, фильтрует tradable normal cards и исключает assets, занятые другими order reservations. Новая read-only выборка резервов добавлена без изменения schema. Финальное резервирование выполняется ровно один раз после полной feasibility проверки; store атомарно отклоняет конфликт.
+
+**Реализация:** code commit `18821187f526d5dadc69ffc99eddf578b506f696` в `work/local-sync` добавил отдельный `prepare_multi_game()` и результат `MultiGameOrderPreflight`. Старый `prepare()` не менялся; поиск call sites нашёл только метод и его integration tests. Не менялись SQLite schema/migrations, большой UI, app flow, C# ASF plugin, Trade Offer путь или правила C.2.7.
+
+**Проверки:** focused integration + preflight + shared-set + allocator tests — 34 OK. Полный Python suite: 242 tests, 13 environment errors (9 modules без PySide6 в Python 3.10, 4 Windows SQLite temp cleanup locks). GitHub Actions `Tests`, run [42474476929](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42474476929), job `test` — success на точном SHA code commit `18821187f526d5dadc69ffc99eddf578b506f696`.
+
+**Ограничение handoff:** метод остался opt-in и ещё не готов для application caller. Для каждого кандидата нужны доверенные источники свежего bot snapshot, complete exact market hashes, buyer full-set counts и verified badge level; общий AppID catalog также нуждается в покрытии выбранных карточных игр. C.2.8 live Steam identity/privacy/response проверки не выполнялись.
+
+**Синхронизация Master Log:** обновлён локальный `PROJECT_MASTER_LOG.md`; внешняя копия остаётся не синхронизированной по ранее записанной причине — подключённого document session/Page нет.

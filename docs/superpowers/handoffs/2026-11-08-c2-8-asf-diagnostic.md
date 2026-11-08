@@ -4,6 +4,8 @@
 
 After the C.2.8 implementation, added an independent C.2.7 pure allocation planner at commit `27c36b311fb577887cc93d218a35154068dbb49a`. The initial six focused Python tests and GitHub Actions run `42471398450` passed. Follow-up commit `66f0d6df930078bfc92c27506463575a8a074fe2` added a zero-remaining/zero-availability test; all seven focused tests pass locally and Actions run `42471637822` passed on that exact SHA. The planner is intentionally isolated and has no production call sites; no order, reservation, UI, or trade behavior changed. Full local discovery ran 230 tests with 13 environment errors (missing Python 3.10 PySide6 and Windows temporary SQLite cleanup locks).
 
+The subsequent opt-in preflight adapter is documented in `docs/superpowers/handoffs/2026-11-08-c2-7-preflight-adapter.md`.
+
 Implemented the read-only ASF command path and its pure parsing, identity, inventory aggregation, and exact-match rules. Code checkpoint: `36b1b3ef213d6b6f3d2a333b6b2feef340f361bd` (`feat(asf): add read-only recipient badge diagnostics`), pushed to `origin/work/local-sync`.
 
 The one-argument `gamedelivery-diagnose <BotName>` path remains available. The extended form accepts one or more AppIDs and optional `--recipient <SteamID64>`. Recipient badge and inventory reads are gated on exact identity verification through profile XML; the final badge response URI is also checked for the requested ID and AppID. All diagnostic outputs state `mode=diagnostic-read-only`, `sendEnabled=false`, and `tradeOfferCreated=false`. No change was made to `TradeDelivery.cs`.

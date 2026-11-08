@@ -30,3 +30,7 @@ The existing `prepare()` method remains unchanged. An infeasible exact quantity 
 - Do not treat generic `OrderService.quantity` as Steam card sets; use the existing explicit `requested_sets` preflight parameter.
 - Do not send offers, contact Steam, or use real account data.
 - Keep the new adapter opt-in; if unknown AppIDs or recipient complete-set counts prevent a safe plan, return a blocked outcome rather than inferring data.
+
+## Completion status (2026-11-08)
+
+Implemented in code commit `18821187f526d5dadc69ffc99eddf578b506f696`. Focused integration and regression tests: 34 OK. Full Python discovery: 242 tests, 13 environment errors (missing Python 3.10 PySide6 imports and Windows temporary SQLite cleanup locks). GitHub Actions run `42474476929`, job `test`, passed on the exact code SHA. The method has no application call site, `prepare()` remains unchanged, and no schema, UI, Trade Offer, or Steam session was touched.

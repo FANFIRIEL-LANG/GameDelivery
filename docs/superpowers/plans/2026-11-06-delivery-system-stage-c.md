@@ -266,6 +266,8 @@
 
 **Дополнение:** commit `66f0d6df930078bfc92c27506463575a8a074fe2` добавил явный тест, что `R_g=0` и `A_g=0` не дают наборы; все семь целевых тестов прошли локально. GitHub Actions `Tests`, run `42471637822`, job `test` — success на точном SHA этого commit.
 
+**Opt-in preflight adapter (2026-11-08):** отдельный `SteamCardOrderPreflight.prepare_multi_game()` подключает существующие `CardCopy`/`SharedGameSets` к C.2.7 allocator и атомарному локальному reservation store. Старый `prepare()` не менялся; приложение этот метод пока не вызывает. Метод требует свежие seller snapshots, проверенный badge progress, verified buyer complete-set counts и полный verified список точных `MarketHashName` по поддержанному AppID. AppID берутся из ограниченного `GAME_CATALOG`; неизвестные игры блокируются. Из-за отсутствующих подключённых источников этих verified inputs адаптер ещё не готов к production call site.
+
 
 ### C.3 — Единый ledger и безопасные миграции SQLite
 
@@ -508,7 +510,7 @@
 6. Обновить мастер-журнал и этот план только по фактически подтверждённым результатам.
 7. Остановиться на границе блока и ждать разрешения пользователя на следующий блок.
 
-**Текущая позиция (обновлено 2026-11-08):** C.1 завершён. C.2 остаётся в работе. Правила C.2.1/C.2.7 согласованы; pure planner для формулы C.2.2 реализован и покрыт тестами, но не подключён к рабочему preflight или delivery path. C.2.8 read-only diagnostic реализован, локально проверен и загружен изолированным ASF Generic 6.3.11.7; live Steam endpoint/privacy/response проверки остаются незавершёнными. C.2.3/C.2.4 и интеграция planner меняют доменную/операционную логику и не входят в текущую разрешённую область. До завершения C.2 и отдельного утверждения не менять пользовательскую БД, миграции и большой UI. PR #4 остаётся Draft; base `feature/steam-card-set-selection` и `main` не менять.
+**Текущая позиция (обновлено 2026-11-08):** C.1 завершён. C.2 остаётся в работе. Правила C.2.1/C.2.7 согласованы; pure planner и opt-in multi-game preflight adapter реализованы и покрыты интеграционными тестами, но adapter не вызывается приложением. Старый single-game `prepare()` сохранён без изменений. До production wiring требуется обеспечить актуальные verified upstream inputs: полный каталог AppID для выбранных игр, точные card-set MarketHashName, badge progress, buyer complete-set counts и свежесть bot snapshots. C.2.8 read-only diagnostic реализован, локально проверен и загружен изолированным ASF Generic 6.3.11.7; live Steam endpoint/privacy/response проверки остаются незавершёнными. C.2.3/C.2.4 остаются вне scope текущего запроса. До завершения C.2 не менять пользовательскую БД, миграции и большой UI. PR #4 остаётся Draft; base `feature/steam-card-set-selection` и `main` не менять.
 
 
 #### C.2.8. Read-only ASF live diagnostic — реализация, live-проверка ожидает данные
