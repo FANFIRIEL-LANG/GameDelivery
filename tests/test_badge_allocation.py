@@ -111,6 +111,22 @@ class BadgeAllocationTests(unittest.TestCase):
                 requested_sets=1,
             )
 
+    def test_rejects_invalid_game_capacity_values(self):
+        invalid_inputs = (
+            ([GameCapacity(True, 1, 1)], "AppID"),
+            ([GameCapacity(0, 1, 1)], "AppID"),
+            ([GameCapacity(440, True, 1)], "remaining_sets"),
+            ([GameCapacity(440, -1, 1)], "remaining_sets"),
+            ([GameCapacity(440, 1.5, 1)], "remaining_sets"),
+            ([GameCapacity(440, 1, True)], "available_sets"),
+            ([GameCapacity(440, 1, -1)], "available_sets"),
+            ([GameCapacity(440, 1, 1.5)], "available_sets"),
+        )
+        for games, message in invalid_inputs:
+            with self.subTest(games=games):
+                with self.assertRaisesRegex(ValueError, message):
+                    plan_badge_allocation(games, requested_sets=1)
+
 
 def _exhaustive_reference(games, requested_sets):
     """Return the best exact allocation by directly enumerating all choices."""
