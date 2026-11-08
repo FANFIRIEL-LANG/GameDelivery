@@ -558,3 +558,13 @@ UI work is a separate workstream from the read-only ASF Generic 6.3.11.7 capabil
 Existing route: `ASFClient.get_bot_inventory(bot_name, app_id=730, context_id=2)` calls the ASF IPC inventory endpoint, and `refresh_game_inventory` selects `730/2` for `cs2`. The legacy C# `gamedelivery-diagnose` and C.2.8 recipient diagnostics target `753/6`; they are not evidence for CS2 inventory. Current `InventoryItem` preserves owner and asset/class identity, item metadata and nullable tradeability, but does not model `amount` or `tradable_after`.
 
 Live verification is pending a dedicated isolated ASF Generic 6.3.11.7 bot with a CS2 item. Required non-secret inputs: test `BotName` and that item's exact `assetID`; ASF IPC config remains local and must point only to the isolated test instance. Query `730/2` read-only, inspect the exact item fields and errors, and do not create offers. No live query or production/UI/DB/plugin change was made in this checkpoint. Proceed to C.6.2 view-model design only after the source fields are confirmed; preserve unknown values as unknown.
+
+#### C.6.1 environment isolation feasibility — 2026-11-08
+
+- ASF Generic 6.3.11.7 can run with a separate ASF home via `--path`; use the complete official Generic archive (the repository workflow pins its SHA-256) and .NET 10 runtime. Do not reuse production config/bot files, plugin DLLs or logs.
+- Put only test `ASF.json`, `IPC.config`, and the dedicated test bot config in the isolated home. Bind IPC to a unique IPv4 loopback endpoint such as `127.0.0.1:1243`; use a new IPC password stored only locally. Verify startup version, home path, listener address/port and owning PID before any request.
+- GameDelivery's Python `ASFClient` currently hard-restricts ports to `1242`; `GameInventoryPanel` writes refreshed snapshots to the normal `~/.gamedelivery/gamedelivery.sqlite3`. Therefore do not use the panel or current UI route for this test. The C# diagnostic targets `753/6`, not CS2.
+- Minimal next code slice: test `ASFClient` support for an explicitly selected loopback alternative port (default remains `1242`) and add a read-only in-memory CS2 probe that performs only GET `.../Inventory/730/2`, selects one exact assetID, prints sanitized item fields, and never opens `GameInventoryStore` or the delivery path.
+- No ASF instance was started and no Steam data was queried in this analysis checkpoint. Live verification still requires a dedicated test account/bot and actual CS2 assetID. Keep C.6.2 behind this C.6.1 source check.
+
+References: [official ASF IPC configuration](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/IPC), [official ASF `--path` command line documentation](https://github.com/JustArchiNET/ArchiSteamFarm/wiki/Command-line-arguments).
