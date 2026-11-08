@@ -60,3 +60,11 @@ Final focused results: allocator 9 passed; multi-game preflight 9; existing sing
 ## Exact next independent task
 
 Obtain a confirmed complete `rgCards[].markethash` list for the first selected AppID, then add it to a source-backed, read-only catalog with provenance and tests for missing or duplicate hashes. Steam Community Market search lists current listings but does not establish a complete badge set. Keep `prepare_multi_game()` opt-in until all verified upstream inputs are available. The separate C.2.8 live gate still requires a dedicated test profile; do not use production accounts.
+
+## AppID 570 metadata gate
+
+Selected catalog target: Dota 2 (`AppID=570`). No complete badge metadata fixture or connected non-production ASF session is available in this workspace. Community Market search listings do not establish the full `rgCards[].markethash` set, so no values were guessed and no catalog entry was created. No profile, production account, secrets, inventory, or trade operations were used.
+
+**Exact next task:** run the existing read-only C.2.8 badge diagnostic for AppID `570` with a dedicated non-production ASF test bot/profile; capture the complete `rgCards[].markethash` array; verify the exact, unique mapping to `MarketHashName`; then add a source-backed catalog entry and tests. Keep `prepare_multi_game()` opt-in and leave Trade Offer flow untouched.
+
+No code tests were run for this blocked metadata acquisition because it produced no code/catalog changes. The latest successful Actions before this documentation update was run [42476489176](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42476489176) on SHA `b7adaed91445728ac2374b58758b9a1185505242`.
