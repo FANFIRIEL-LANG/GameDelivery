@@ -2141,3 +2141,33 @@ Transition rules: only confirmed clear source gives none/available; confirmed so
 Mock acceptance: identity/owner retention; same asset on different bots; full-key duplicate/conflict; deterministic order; item variants separated; all independent flag combinations; all restriction groups distinct; false without provenance → unknown; absent timestamp/amount preserved unknown; amount stack sums without losing asset IDs; unique-bot and available/unavailable/unknown totals; expired lock without snapshot remains unavailable; card/table projections agree; selected bot filter affects view only; 730/2 never mixed with 730/16; builder has no SQLite/store/UI/ASF/preflight/trade call.
 
 Next small implementation stage (not started): after this contract is reviewed, implement only pure CS2 model/builder + mock tests. If currently normalized input cannot provide required fields, stop and design an in-memory source adapter separately; no SQLite, migration, production inventory/preflight, UI, ASF plugin, trade path, other games, market collector or 730/16 integration.
+
+## 2026-11-08 — C.6.2.2 in-memory ASF adapter и CS2 projection
+
+Добавлен изолированный `games/cs2/inventory_view.py`: получает уже запрошенный ASF JSON; сеть/refresh не вызывает. Adapter принимает только request scope 730/2, связывает Assets/Descriptions по classid+instanceid, конфликтующее описание и отсутствующее описание отклоняет. Сохраняет owner и physical `(game_id,bot_name,asset_id)`, app/context (из asset или явно заданного request scope), class/instance/amount, name/type/market hash, независимые флаги и числовые restriction fields лишь при наличии. Тип ограничения/status остаются unknown, `tradable_after=None`; никаких правил причины не добавлено.
+
+Immutable `CS2InventoryInstance/Group/Projection` группируют по variant+флагам+restriction metadata/status, дедуплицируют по полному physical key и отклоняют duplicates/conflicts. Счётчики разделяют known amount sum, unknown-amount instances и nullable total; amount 0 сохраняется как 0, null/missing/malformed не превращается в 1. Новый модуль не подключён к production refresh, parser/store, SQLite, UI, preflight или trade.
+
+Добавлены mock tests `tests/test_cs2_inventory_view.py`: 9 focused проходят. Комбинированный запуск с `tests.test_game_inventory_modules` дал 22 OK и 3 ошибки уже известных Windows WinError 32 при очистке temp SQLite файлов; изолированный новый suite повторно прошёл 9/9. GitHub Actions проверен только на документационном commit `313d5ff87cc635dbc4411a2680df65402cca0a06` — success; для текущих незакоммиченных изменений CI нет. Кодовый diff не коммитить/не отправлять без отдельного согласования пользователя.
+
+## 2026-11-08 — C.6.2.3 audit результата
+
+Повторный аудит оставил production path без изменений и исправил только `games/cs2/inventory_view.py`/его tests: строгий разбор int (float/bool/negative не принимаются как amount), точная проверка ASF request scope и malformed app/context, пропуск asset другого context до Description join, типизированные текстовые поля/ID, immutable nested collections и hashable projection, tag/icon metadata в проекции и grouping key. Пустой projection теперь имеет `total_amount=None`; нулевой amount остаётся известным нулём. Идентичные повторные descriptions схлопываются; конфликтующие отклоняются; повтор physical asset отклоняется.
+
+`tests.test_cs2_inventory_view`: 24/24 passed. Предыдущий combined run включал 3 известных WinError 32 на очистке temp SQLite; текущий focused suite исключил Store tests. Проверки compileall и diff check запускаются отдельно для текущего diff. Нет commit/push/Actions для текущих изменений; последнее успешное Actions относится к предыдущему SHA 313d5ff.
+
+## 2026-11-08 — C.6.2.4 regression gate
+
+Scope: новые CS2 adapter/projection, ASF parser fixture module, CS2 game parser/filter/model tests и существующий steam-card inventory projection. Полный unittest discovery не запускался.
+
+Результаты последовательных команд:
+- `python -m unittest tests.test_cs2_inventory_view -v`: 24 tests passed, exit 0.
+- `python -m unittest tests.test_asf_inventory -v`: 10 passed, exit 0.
+- `python -m unittest tests.test_game_inventory_modules -v`: 16 tests; 13 passed, 3 errors, exit 1. Все три ошибки — `WinError 32` при TemporaryDirectory cleanup: `test_load_all_keeps_each_items_account_owner`, `test_refresh_uses_game_route_and_persists_separate_snapshot`, `test_snapshots_are_isolated_by_game_and_bot`.
+- `python -m unittest tests.test_game_inventory_modules.GameInventoryParserTests tests.test_game_inventory_modules.GameInventoryFilteringTests tests.test_game_inventory_modules.GameInventoryCardMetadataTests tests.test_inventory_views -v`: 24 passed, exit 0.
+- `python -X dev -W default -m unittest tests.test_game_inventory_modules.GameInventoryStoreTests.test_refresh_uses_game_route_and_persists_separate_snapshot -v`: 1 error at temp cleanup and ResourceWarning for unclosed sqlite connections.
+- Repeating that test with `TEMP=TMP=D:\Temp\GameDeliveryRegression` still failed with the same WinError; sequential standalone run fails too, so test parallelism and original temp root are not the cause.
+
+Cause evidence: `GameInventoryStore` uses `with self._connect() as db`; sqlite Connection context manager commits/rolls back but does not close the connection. Development-mode ResourceWarnings confirm unclosed connections at process shutdown. This is pre-existing Store resource cleanup behavior outside the permitted scope; production DB/store and tests were not changed. No broader suite was run because the directly related Store module has three errors. Therefore the regression gate is partial, not fully green; C.6.2 is not declared ready for commit pending an approved environment/path that closes the Store handles or a separately authorized fix.
+
+`compileall` for the two changed Python files and `git diff --check` are recorded after this entry. No commit, push or Actions run was performed. Current HEAD remains `313d5ff87cc635dbc4411a2680df65402cca0a06`.
