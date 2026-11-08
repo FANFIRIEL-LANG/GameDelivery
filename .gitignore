@@ -15,6 +15,11 @@ logs/
 *.log
 dist/
 build/
+# Build output for the ASF plugin and smoke executable.
+integrations/asf_plugin/bin/
+integrations/asf_plugin/obj/
+tests/asf_plugin_smoke/bin/
+tests/asf_plugin_smoke/obj/
 # Local ASF installations and credentials must never be committed.
 ASF/
 ArchiSteamFarm/

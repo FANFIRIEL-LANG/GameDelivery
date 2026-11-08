@@ -13,7 +13,7 @@ A CI build does not prove that sending works against the ASF instance installed 
 
 ## Read-only badge diagnostics
 
-Supply one or more canonical decimal AppIDs (up to 20). The plugin reads `/my/ajaxgetbadgeinfo/{appid}` through the selected bot's ASF session. With `--recipient`, it first requests the public profile XML and compares its `steamID64` to the supplied ID; if the profile cannot be verified, it stops before requesting recipient badge or inventory data. The XML endpoint is deprecated by Steam, so an unavailable or private profile is reported as unknown rather than badge level zero.
+Supply one or more canonical decimal AppIDs (up to 20). The plugin reads `/my/ajaxgetbadgeinfo/{appid}` through the selected bot's ASF session. With `--recipient`, it first requests the profile XML and compares its `steamID64` to the supplied ID; if identity cannot be verified, it stops before requesting recipient badge or inventory data. The XML endpoint is deprecated by Steam, so unavailable or private data remains an error/unknown state and is never converted to badge level zero.
 
 For a verified recipient, the plugin reads `/profiles/{steamid64}/ajaxgetbadgeinfo/{appid}` and fully enumerates ASF's Steam Community inventory (`753/6`). It groups normal trading cards by `RealAppID` and exact `MarketHashName`, includes non-tradable cards and `Amount`, and reports foil, other, and unknown item types separately. Matching is exact and case-sensitive. Every result is diagnostic-only and states `sendEnabled: false` and `tradeOfferCreated: false`.
 

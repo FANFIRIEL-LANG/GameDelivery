@@ -73,13 +73,14 @@
 - Verify a recipient's public SteamID64 via the read-only profile XML endpoint before using the numeric profile badge URL. If profile identity cannot be confirmed, skip recipient badge/inventory matching and return unknown.
 - Consume `GetInventoryAsync(recipientSteamId64, 753, 6)` fully, including every yielded page, and return aggregates only.
 
-- [ ] Add failing contract/smoke tests for command validation, ASF request choice, error results, and the no-send diagnostic boundary.
-- [ ] Wire validated inputs to ASF profile, badge, and inventory session calls; do not touch `TradeDelivery.cs` or application persistence.
-- [ ] Run the complete Python unittest suite, compile/build the plugin against ASF Generic 6.3.11.7, and run the ASF smoke executable.
-- [ ] Update the Stage C handoff with only verified status; commit and push the completed command slice.
-- [ ] Confirm local and remote SHA equality and a clean working tree. Do not claim GitHub Actions success unless a run exists for that exact SHA.
+- [x] Add failing contract/smoke tests for command validation, ASF request choice, error results, and the no-send diagnostic boundary.
+- [x] Wire validated inputs to ASF profile, badge, and inventory session calls; do not touch `TradeDelivery.cs` or application persistence.
+- [x] Run the complete Python unittest suite, compile/build the plugin against ASF Generic 6.3.11.7, and run the ASF smoke executable.
+- [x] Update the Stage C handoff with only verified status; commit and push the completed command slice.
+- [x] Confirm local and remote SHA equality and a clean working tree. Do not claim GitHub Actions success unless a run exists for that exact SHA.
 
 ## Checkpoints
 
 - **Task 1 complete:** `475352bdf0af7c50b8d5331abf22d4d8f5f25e23` (`feat(asf): add read-only badge diagnostic rules`) pushed to `origin/work/local-sync`. The ASF Generic 6.3.11.7 Release build completed with 0 warnings and 0 errors; the smoke executable passed. The expected pre-implementation smoke run failed because `ReadOnlyDiagnostic` was absent.
-- **Next:** implement command parsing and ASF-session reads in `GameDeliveryPlugin.cs`, preserve one-argument legacy behavior, add contract tests for endpoints and no-send boundaries, then run the complete Python suite, Generic build, and smoke executable.
+- **Task 2 implementation pushed:** `36b1b3ef213d6b6f3d2a333b6b2feef340f361bd` (`feat(asf): add read-only recipient badge diagnostics`). Release build against Generic 6.3.11.7: 0 warnings, 0 errors. ASF smoke passed. Contract suite on Python 3.10: 38 passed. Full suite on Python 3.10: 223 tests ran, 13 errors (9 import errors because PySide6 is absent from that interpreter, 4 Windows SQLite temporary-file cleanup locks). Python 3.14 full discovery emitted repeated SQLite `ResourceWarning`s and was stopped after hanging; that run has no final count. The final reviewer found one zero-amount classification issue, which was corrected and verified by smoke. No live Steam requests or Actions run were made.
+- **Remaining:** validate endpoint availability and response behavior on a connected ASF Generic 6.3.11.7 instance with a selected public test profile. Use `gamedelivery-diagnose <BotName> <AppID> --recipient <SteamID64>`, keep the session read-only, and review only redacted diagnostic JSON. Until then, no Steam endpoint is confirmed as a production contract. The detailed continuation record is `docs/superpowers/handoffs/2026-11-08-c2-8-asf-diagnostic.md`.
