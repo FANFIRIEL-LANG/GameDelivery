@@ -24,13 +24,15 @@ The one-argument `gamedelivery-diagnose <BotName>` path remains available. The e
 - ASF Generic 6.3.11.7 Release build against `D:\ASF-generic` on .NET SDK 10.0.403: passed, 0 warnings and 0 errors. The running ASF process was using .NET runtime 10.0.14.
 - ASF smoke executable against `D:\ASF-generic`: passed.
 - `py -3.10 -m unittest discover -s tests -p test_asf_plugin_contract.py`: passed, 39 tests, including the new diagnostic-exception fail-closed contract.
+- This turn's 39-test run passed after adding a contract assertion that the `gamedelivery-diagnose` dispatch returns before the send-command branch and does not invoke `ProcessSendCommand` or `TradeDelivery`.
 - `tests/asf_plugin_smoke/bin/Release/net10.0/ASFPlugin.Smoke.exe`: passed in this turn. A fresh `dotnet run` was unavailable because the current system `dotnet` installation has .NET runtimes but no SDK; no fresh .NET build was claimed.
 - The smoke suite verifies that an async ASF inventory enumeration error propagates instead of being converted into an empty inventory; smoke passed.
 - `git diff --check`: passed.
 - ASF `GetInventoryAsync` pagination, limiter, and response-error behavior were checked against the [pinned 6.3.11.7 source](https://github.com/JustArchiNET/ArchiSteamFarm/blob/6.3.11.7/ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs#L2566-L2802).
 - Final read-only review found and fixed zero-amount inventory items being counted as unknown types; the smoke test now verifies a separate invalid amount counter.
 - Full Python suite on Python 3.10: 223 tests ran, 13 errors. Nine test modules could not import because PySide6 is not installed for Python 3.10; four tests hit Windows temporary SQLite file cleanup locks. The Python 3.14 full discovery emitted repeated SQLite `ResourceWarning`s and hung after test progress, so it was stopped without a final count.
-- No Steam session requests were made. GitHub Actions `Tests` run [42467395466](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42467395466) completed successfully for checkpoint `e3a5c1354cb497443fcd9a62e5c46780bc81e984` (the full Ubuntu/Python 3.12 unit-test job passed). The latest push run [42468736256](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42468736256) also completed successfully on checkpoint `68b69bc4ab7e760bf0a673e88382283d5928ec13` (`test` job: success).
+- Code review traced `OnBotCommand`: the diagnostic branch returns through `RunDiagnosticCommand` or `RunBadgeDiagnosticCommand` before the `isSend` branch. Those methods only read ASF inventory/badge data; they do not invoke `SendTradeOffer`, `TradeDelivery`, or confirmation handlers. The legacy diagnostic reflects the send method signature only for compatibility reporting.
+- No Steam session requests were made. GitHub Actions `Tests` run [42467395466](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42467395466) completed successfully for checkpoint `e3a5c1354cb497443fcd9a62e5c46780bc81e984` (the full Ubuntu/Python 3.12 unit-test job passed). Later push runs [42468736256](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42468736256) and [42468869761](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42468869761) also completed successfully (`test` job: success).
 - GitHub API reports zero ASF plugin workflow runs for `work/local-sync`. `.github/workflows/asf-plugin.yml` has `workflow_dispatch`, but the connected GitHub tools expose only GET/read operations and no dispatch operation. No browser session was created and no workflow trigger was changed.
 
 ## Installed ASF read-only inventory
@@ -45,16 +47,17 @@ The one-argument `gamedelivery-diagnose <BotName>` path remains available. The e
 
 - Steam profile XML is deprecated. If it is missing, malformed, unavailable, or its `steamID64` is absent or mismatched, recipient badge and inventory requests are skipped. Private badge/inventory responses remain errors; they are never converted into badge level zero.
 - The local build and smoke tests verify the code path and host API. The isolated ASF smoke confirms plugin discovery/registration, not live Steam response availability or privacy behavior. The prepared ASF test profile has no bot, so live diagnostic checks still require a connected BotName plus an approved public SteamID64 and AppID.
+- No Steam test account has been created. The plugin README now has a safe setup guide; the user must create a separate account, make the needed profile/inventory fields public, and configure it locally in the isolated ASF copy. Do not use production accounts or `D:\steam log pass mafile`.
 - Full Python regression results remain constrained by this Windows environment's missing Python 3.10 PySide6 dependency and SQLite temp-file locks.
 - The successful GitHub `Tests` workflow does not run the ASF Generic plugin build or .NET smoke executable.
 
 ## Remaining C.2.8 work
 
-Separately, live-check Steam endpoints only after the user provides a connected BotName, AppID, and approved public test SteamID64. Confirm HTTP/result behavior, profile identity, badge fields, full inventory counts, and exact match/missing/extra/duplicate output. Do not treat endpoint behavior as a production contract until that check succeeds. Do not create or send trade offers.
+Separately, live-check Steam endpoints only after the user creates and connects a separate test account in the isolated ASF copy and provides its BotName, AppID, and public SteamID64. Confirm HTTP/result behavior, profile identity, badge fields, full inventory counts, and exact match/missing/extra/duplicate output. Do not treat endpoint behavior as a production contract until that check succeeds. Do not create or send trade offers.
 
 ## Exact next action
 
-For a later live profile check, first get the connected ASF BotName, AppID, and approved public SteamID64 from the user; the current isolated test profile intentionally contains no bot credentials:
+First the user should follow `integrations/asf_plugin/README.md` to create a separate Steam account and connect it locally to the isolated ASF copy. Then request only the connected BotName, AppID, and public SteamID64; never request credentials or bot config:
 
 ```text
 gamedelivery-diagnose <BotName> <AppID> --recipient <SteamID64>

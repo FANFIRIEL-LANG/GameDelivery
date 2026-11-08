@@ -146,6 +146,14 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("RunDiagnosticCommand(diagnosticBot)", source)
         self.assertIn("gamedelivery-diagnose <BotName>", source)
         self.assertIn("GetInventory(", source)
+        callback_start = source.index("public async Task<string?> OnBotCommand")
+        callback_end = source.index("private static MissingMemberException? FindMissingMemberException", callback_start)
+        callback = source[callback_start:callback_end]
+        diagnostic_dispatch = callback[callback.index("if (isDiagnostic)"):callback.index("if (isSend)")]
+        self.assertIn("return await RunDiagnosticCommand", diagnostic_dispatch)
+        self.assertIn("return await RunBadgeDiagnosticCommand", diagnostic_dispatch)
+        self.assertNotIn("ProcessSendCommand", diagnostic_dispatch)
+        self.assertNotIn("TradeDelivery.", diagnostic_dispatch)
         diagnostic_region = source[source.index("RunDiagnosticCommand"):source.index("private static string Failure")]
         self.assertIn("inventoryCount", diagnostic_region)
         self.assertNotIn(".SendTradeOffer(", diagnostic_region)
