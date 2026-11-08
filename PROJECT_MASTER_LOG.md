@@ -2033,3 +2033,13 @@ Telegram — дополнительный канал уведомлений; е�
 The next catalog target is Dota 2, Steam AppID `570` from `GAME_CATALOG`. The workspace contains no captured `rgCards[].markethash` response and no connected non-production ASF test session. Public Community Market search listings are not a complete badge-set definition, so no hashes were inferred or added. No Steam profile, production account, secret, inventory, trade offer, or application path was accessed or changed. No code or catalog test was added; the existing focused test results remain 36 passed, and the latest successful Actions run before this documentation update was run `42476489176` on SHA `b7adaed91445728ac2374b58758b9a1185505242`.
 
 **Exact next task:** using a dedicated non-production ASF test bot/profile, run the existing read-only C.2.8 badge diagnostic for AppID `570`, capture the complete `rgCards[].markethash` list, verify uniqueness and exact mapping to `MarketHashName`, then add the source-backed catalog entry and tests. Keep the multi-game adapter opt-in; do not use production accounts or create Trade Offers.
+
+## 2026-11-08 — Current execution priority: Steam / CS2
+
+The active development priority is Steam inventory and Counter-Strike 2 (AppID `730`, context `2`): inventory items, their handling, selection/reservation foundations, and eventual ASF delivery. Other game inventory adapters are deferred; preserve the possibility of future per-game adapters and item-type descriptions without implementing other games or a universal adapter now. The AppID `570` metadata gate above is historical and deferred, not the current next task.
+
+**Code state:** the shared game inventory parser/store and catalog already support reading CS2 inventory; `games/cs2/__init__.py` is still a placeholder, and no dedicated CS2 delivery handler exists. The Stage C plan says to reuse `games/catalog.py`, `games/inventory.py`, and `GameInventoryStore`, and to confirm an ASF/Steam exact-item delivery path before creating a CS2 handler.
+
+**Exact next stage:** read-only source-level verification against the pinned ASF Generic 6.3.11.7 API for handling one CS2 item by exact `(AppID=730, context=2, assetID)`, including item eligibility/tradability and the result contract. Do not send an offer or change the trading path. Use the verified capability to scope a small CS2-specific handler using the existing inventory foundation. No other-game inventory support, DB/migration work, large UI work, or universal adapter is in scope.
+
+This checkpoint changed documentation only. It did not modify code, DB, migrations, UI, ASF plugin, installation, or trade logic.
