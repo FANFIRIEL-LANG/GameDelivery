@@ -318,6 +318,44 @@ static object InvokeReadOnlyDiagnostic(string methodName, params object?[] argum
     }
 }
 
+static string InvokeDiagnosticFailure(string message)
+{
+    MethodInfo method = typeof(GameDeliveryPlugin).GetMethod(
+        "DiagnosticFailure",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin diagnostic failure serializer was not found");
+
+    try
+    {
+        return (string)(method.Invoke(null, [message])
+            ?? throw new InvalidOperationException("Diagnostic failure serializer returned null"));
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            "Built plugin diagnostic failure serializer failed.",
+            exception.InnerException ?? exception);
+    }
+}
+
+static bool TryParseDiagnosticArguments(
+    string[] commandArgs,
+    out uint[] appIds,
+    out ulong? recipientSteamId64,
+    out string error)
+{
+    MethodInfo method = typeof(GameDeliveryPlugin).GetMethod(
+        "TryParseDiagnosticArguments",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin diagnostic argument parser was not found");
+    object?[] parameters = [commandArgs, null, null, null];
+    bool success = (bool)(method.Invoke(null, parameters) ?? false);
+    appIds = parameters[1] as uint[] ?? [];
+    recipientSteamId64 = parameters[2] is ulong id ? id : null;
+    error = Convert.ToString(parameters[3]) ?? "";
+    return success;
+}
+
 static bool GetBool(object value, string property) => GetProperty(value, property) is true;
 static int GetInt(object value, string property) => Convert.ToInt32(GetProperty(value, property));
 
@@ -366,6 +404,47 @@ static async Task<object> AggregateInventoryPages(Type entryType, object[][] pag
 
 static async Task VerifyReadOnlyDiagnosticRules()
 {
+    using (JsonDocument failure = JsonDocument.Parse(InvokeDiagnosticFailure("validation error")))
+    {
+        JsonElement failureRoot = failure.RootElement;
+        Assert(failureRoot.GetProperty("success").GetBoolean() == false,
+            "diagnostic failure did not return success=false");
+        Assert(failureRoot.GetProperty("mode").GetString() == "diagnostic-read-only",
+            "diagnostic failure omitted its read-only mode");
+        Assert(failureRoot.GetProperty("sendEnabled").GetBoolean() == false,
+            "diagnostic failure enabled sending");
+        Assert(failureRoot.GetProperty("tradeOfferCreated").GetBoolean() == false,
+            "diagnostic failure did not state that no trade offer was created");
+    }
+
+    Assert(TryParseDiagnosticArguments(
+            ["gamedelivery-diagnose", "Bot", "440", "570", "--recipient", "76561197960265729"],
+            out uint[] parsedAppIds,
+            out ulong? parsedRecipient,
+            out _)
+        && parsedAppIds.SequenceEqual([440U, 570U])
+        && parsedRecipient == 76561197960265729UL,
+        "valid AppID and individual recipient diagnostic arguments were rejected");
+    Assert(TryParseDiagnosticArguments(
+            ["gamedelivery-diagnose", "Bot", "440"],
+            out parsedAppIds,
+            out parsedRecipient,
+            out _)
+        && parsedAppIds.SequenceEqual([440U])
+        && parsedRecipient is null,
+        "self badge diagnostic arguments were rejected");
+    foreach (string[] invalidArguments in new[]
+    {
+        new[] { "gamedelivery-diagnose", "Bot", "0440" },
+        new[] { "gamedelivery-diagnose", "Bot", "440", "440" },
+        new[] { "gamedelivery-diagnose", "Bot", "440", "--recipient" },
+        new[] { "gamedelivery-diagnose", "Bot", "440", "--recipient", "1" }
+    })
+    {
+        Assert(!TryParseDiagnosticArguments(invalidArguments, out _, out _, out _),
+            "non-canonical, repeated, or invalid diagnostic arguments were accepted");
+    }
+
     object validBadge = InvokeReadOnlyDiagnostic(
         "ParseBadge",
         "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":5,\"border\":0,\"rgCards\":[{\"markethash\":\"Card A\"},{\"markethash\":\"Card B\"}]}}",
@@ -384,7 +463,7 @@ static async Task VerifyReadOnlyDiagnosticRules()
         "{\"eresult\":1,\"badgedata\":{\"appid\":441,\"level\":3,\"maxlevel\":5,\"border\":0,\"rgCards\":[]}}",
         "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":6,\"maxlevel\":5,\"border\":0,\"rgCards\":[]}}",
         "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":4,\"border\":0,\"rgCards\":[]}}",
-        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":5,\"border\":1,\"rgCards\":[]}}",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":5,\"border\":2,\"rgCards\":[]}}",
         "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":5,\"border\":0,\"rgCards\":[{}]}}"
     })
     {
@@ -410,11 +489,45 @@ static async Task VerifyReadOnlyDiagnosticRules()
         && GetStrings(duplicateBadge, "DuplicateHashes").SequenceEqual(["Card A"]),
         "duplicate badge hash was not diagnosed");
 
+    object foilBadge = InvokeReadOnlyDiagnostic(
+        "ParseBadge",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":1,\"maxlevel\":5,\"border\":1,\"rgCards\":[{\"markethash\":\"Foil\"}]}}",
+        440U);
+    Assert(GetBool(foilBadge, "Success") && GetInt(foilBadge, "Border") == 1,
+        "valid foil badge metadata was not identified");
+
     object identityMatch = InvokeReadOnlyDiagnostic(
         "VerifyProfileIdentity",
         "<profile><steamID64>76561197960265729</steamID64></profile>",
         76561197960265729UL);
     Assert(GetBool(identityMatch, "Verified"), "matching Steam profile identity was rejected");
+    object htmlNormalizedIdentityMatch = InvokeReadOnlyDiagnostic(
+        "VerifyProfileIdentity",
+        "<html><body><profile><steamid64>76561197960265729</steamid64></profile></body></html>",
+        76561197960265729UL);
+    Assert(GetBool(htmlNormalizedIdentityMatch, "Verified"),
+        "HTML parser lower-cased the Steam identity element and the profile was rejected");
+    Assert((bool)InvokeReadOnlyDiagnostic(
+            "IsRecipientBadgeResponse",
+            new Uri("https://steamcommunity.com/profiles/76561197960265729/ajaxgetbadgeinfo/440"),
+            76561197960265729UL,
+            440U),
+        "numeric recipient badge response URI was rejected");
+    foreach (string wrongRecipientBadgeUrl in new[]
+    {
+        "https://steamcommunity.com/profiles/76561197960265730/ajaxgetbadgeinfo/440",
+        "https://steamcommunity.com/profiles/76561197960265729/ajaxgetbadgeinfo/441",
+        "https://example.com/profiles/76561197960265729/ajaxgetbadgeinfo/440",
+        "http://steamcommunity.com/profiles/76561197960265729/ajaxgetbadgeinfo/440"
+    })
+    {
+        Assert(!(bool)InvokeReadOnlyDiagnostic(
+                "IsRecipientBadgeResponse",
+                new Uri(wrongRecipientBadgeUrl),
+                76561197960265729UL,
+                440U),
+            "redirected recipient badge response was attributed to the requested SteamID64");
+    }
     foreach (string invalidProfile in new[]
     {
         "<profile><steamID64>76561197960265730</steamID64></profile>",
@@ -446,7 +559,8 @@ static async Task VerifyReadOnlyDiagnosticRules()
             CreateInventoryEntry(entryType, 440U, "Unknown", "Unknown", 1U, true),
             CreateInventoryEntry(entryType, 440U, "Emoticon", "Emoticon", 1U, true),
             CreateInventoryEntry(entryType, 440U, null, "TradingCard", 1U, false),
-            CreateInventoryEntry(entryType, 440U, "case-sensitive", "TradingCard", 1U, true)
+            CreateInventoryEntry(entryType, 440U, "case-sensitive", "TradingCard", 1U, true),
+            CreateInventoryEntry(entryType, 440U, "Invalid amount", "TradingCard", 0U, true)
         ]
     ]);
 
@@ -466,6 +580,16 @@ static async Task VerifyReadOnlyDiagnosticRules()
     Assert(GetInt(inventory, "UnknownTypeAmount") == 1, "unknown inventory types were not counted separately");
     Assert(GetInt(inventory, "OtherTypeAmount") == 1, "non-card inventory types were not counted separately");
     Assert(GetInt(inventory, "MissingHashAmount") == 1, "normal card without a hash was not diagnosed");
+    Assert(GetInt(inventory, "InvalidAmountCount") == 1,
+        "a zero-amount card was misreported as an unknown inventory type");
+    JsonSerializerOptions pluginOptions = (JsonSerializerOptions)(typeof(GameDeliveryPlugin)
+        .GetField("JsonOptions", BindingFlags.NonPublic | BindingFlags.Static)!
+        .GetValue(null)!);
+    using (JsonDocument inventoryJson = JsonDocument.Parse(JsonSerializer.Serialize(inventory, pluginOptions)))
+    {
+        Assert(inventoryJson.RootElement.GetProperty("cards").GetArrayLength() > 0,
+            "inventory summary could not be serialized into the diagnostic response");
+    }
 
     object comparison = InvokeReadOnlyDiagnostic("CompareBadgeToInventory", duplicateBadge, inventory, 440U);
     Assert(GetStrings(comparison, "MatchedHashes").SequenceEqual(["Card A"]),
@@ -474,10 +598,17 @@ static async Task VerifyReadOnlyDiagnosticRules()
         "an owned badge hash was reported missing");
     Assert(GetStrings(comparison, "ExtraHashes").Contains("Inventory Extra", StringComparer.Ordinal),
         "inventory-only hash was not reported as extra");
+    Assert(!GetStrings(comparison, "ExtraHashes").Contains("Foil", StringComparer.Ordinal)
+        && !GetStrings(comparison, "ExtraHashes").Contains("Other App", StringComparer.Ordinal),
+        "foil or another app's cards entered the normal card comparison");
     Assert(GetStrings(comparison, "DuplicateBadgeHashes").SequenceEqual(["Card A"]),
         "badge duplicates were not included in comparison results");
     Assert(GetStrings(comparison, "DuplicateInventoryHashes").SequenceEqual(["Card A"]),
         "multiple copies of an inventory hash were not reported");
+    object foilComparison = InvokeReadOnlyDiagnostic("CompareBadgeToInventory", foilBadge, inventory, 440U);
+    Assert(!GetBool(foilComparison, "Success")
+        && (string?)GetProperty(foilComparison, "Error") == "foil-badge-excluded-from-normal-card-matching",
+        "foil badge metadata was matched against normal recipient cards");
 
     object missingHashComparison = InvokeReadOnlyDiagnostic(
         "CompareBadgeToInventory",

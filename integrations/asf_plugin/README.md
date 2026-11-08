@@ -2,13 +2,20 @@
 
 The plugin exposes three commands through ASF's custom command handler:
 
-- `gamedelivery-diagnose <BotName>` reports plugin registration, runtime ASF/SteamKit assemblies, method signatures, connection state, and a read-only inventory check. It never creates or sends a trade offer.
+- `gamedelivery-diagnose <BotName>` keeps the legacy check for plugin registration, runtime ASF/SteamKit assemblies, method signatures, connection state, and the bot's read-only inventory.
+- `gamedelivery-diagnose <BotName> <AppID...> [--recipient <SteamID64>]` reads badge metadata for the selected ASF session and, when a recipient is supplied, verifies the recipient's public profile identity before reading their badge and inventory.
 - `gamedelivery-preview` re-checks a proposed order against the current ASF inventory and **never sends**.
 - `gamedelivery-send` is used only after GameDelivery's order screen repeats the live preview, shows the exact selected assets, and receives explicit operator confirmation.
 
 The command handler is compatible with ASF 6.3.11.7: the command prefix is optional in the ASF console and IPC, and used when sending commands through Steam chat. At startup version 1.0.2 logs whether ASF's active plugin collection includes this exact `IBotCommand2` handler. Recognized callbacks log only command name and argument count, never the encoded payload or trade token.
 
 A CI build does not prove that sending works against the ASF instance installed on a customer's PC. Validate this integration with a controlled test account and a low-risk test order before handling real sales.
+
+## Read-only badge diagnostics
+
+Supply one or more canonical decimal AppIDs (up to 20). The plugin reads `/my/ajaxgetbadgeinfo/{appid}` through the selected bot's ASF session. With `--recipient`, it first requests the public profile XML and compares its `steamID64` to the supplied ID; if the profile cannot be verified, it stops before requesting recipient badge or inventory data. The XML endpoint is deprecated by Steam, so an unavailable or private profile is reported as unknown rather than badge level zero.
+
+For a verified recipient, the plugin reads `/profiles/{steamid64}/ajaxgetbadgeinfo/{appid}` and fully enumerates ASF's Steam Community inventory (`753/6`). It groups normal trading cards by `RealAppID` and exact `MarketHashName`, includes non-tradable cards and `Amount`, and reports foil, other, and unknown item types separately. Matching is exact and case-sensitive. Every result is diagnostic-only and states `sendEnabled: false` and `tradeOfferCreated: false`.
 
 ## Install the CI package
 
@@ -51,7 +58,7 @@ The plugin's idempotency record is stored under `%LOCALAPPDATA%\GameDelivery\ASF
 If the installed ASF version does not match the CI package's ASF API, build against that installation's binaries instead:
 
 ```powershell
-dotnet build integrations\asf_plugin\GameDelivery.ASFPlugin.csproj -p:ASF_BIN_DIR=C:\ASF\win-x64 -c Release
+dotnet build integrations\asf_plugin\GameDelivery.ASFPlugin.csproj -p:ASF_BIN_DIR=C:\ASF\generic -c Release
 ```
 
-Replace `C:\ASF\win-x64` with the directory containing the installed ASF assemblies. Copy only `GameDelivery.ASFPlugin.dll` into `plugins/GameDelivery.ASFPlugin`, then restart ASF.
+Replace `C:\ASF\generic` with the directory containing the intended ASF Generic assemblies. Copy only `GameDelivery.ASFPlugin.dll` into `plugins/GameDelivery.ASFPlugin`, then restart ASF.

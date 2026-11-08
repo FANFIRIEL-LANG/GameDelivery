@@ -29,6 +29,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
     private const string SendCommandName = "gamedelivery-send";
     private const string DiagnosticCommandName = "gamedelivery-diagnose";
     private const int MaxItemsPerPreview = 255;
+    private const int MaxDiagnosticAppIds = 20;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -211,24 +212,44 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
 
             if (access != EAccess.Owner)
             {
-                return Failure("Команда доступна только ASF Owner.");
+                return isDiagnostic
+                    ? DiagnosticFailure("Команда доступна только ASF Owner.")
+                    : Failure("Команда доступна только ASF Owner.");
             }
 
             if (isDiagnostic)
             {
-                if (commandArgs.Length != 2 || string.IsNullOrWhiteSpace(commandArgs[1]))
+                if (commandArgs.Length < 2 || string.IsNullOrWhiteSpace(commandArgs[1]))
                 {
-                    return Failure("Укажи имя бота: gamedelivery-diagnose <BotName>.");
+                    return DiagnosticFailure(
+                        "Укажи имя бота: gamedelivery-diagnose <BotName> [AppID ...] [--recipient <SteamID64>].");
                 }
 
                 Bot? diagnosticBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
                     string.Equals(candidate.BotName, commandArgs[1], StringComparison.OrdinalIgnoreCase));
                 if (diagnosticBot is null)
                 {
-                    return Failure("Бот " + SafeMessage(commandArgs[1]) + " не найден в текущем экземпляре ASF.");
+                    return DiagnosticFailure("Выбранный бот не найден в текущем экземпляре ASF.");
                 }
 
-                return await RunDiagnosticCommand(diagnosticBot).ConfigureAwait(false);
+                if (commandArgs.Length == 2)
+                {
+                    return await RunDiagnosticCommand(diagnosticBot).ConfigureAwait(false);
+                }
+
+                if (!TryParseDiagnosticArguments(
+                    commandArgs,
+                    out uint[] diagnosticAppIds,
+                    out ulong? recipientSteamId64,
+                    out string diagnosticArgumentError))
+                {
+                    return DiagnosticFailure(diagnosticArgumentError);
+                }
+
+                return await RunBadgeDiagnosticCommand(
+                    diagnosticBot,
+                    diagnosticAppIds,
+                    recipientSteamId64).ConfigureAwait(false);
             }
 
             if (commandArgs.Length != 2 || commandArgs[1].Length > 16000)
@@ -358,6 +379,13 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         }
         catch (Exception exception)
         {
+            if (string.Equals(recognizedCommand, DiagnosticCommandName, StringComparison.OrdinalIgnoreCase))
+            {
+                ASF.ArchiLogger.LogGenericError(
+                    "GameDeliveryPlugin diagnostic read failed: " + exception.GetType().Name + ".");
+                return DiagnosticFailure("ASF read-only diagnostic failed (" + exception.GetType().Name + ").");
+            }
+
             string safeMessage = SafeDiagnosticText(exception.Message);
             string safeDetails = SafeDiagnosticText(exception.ToString());
             MissingMemberException? missingMember = FindMissingMemberException(exception);
@@ -475,7 +503,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 sendTradeOfferMethods,
                 runtimeTrimming,
                 inventoryCount = inventory?.Count,
-                inventoryMessage = inventory is null ? SafeMessage(inventoryMessage) : null,
+                inventoryMessage = inventory is null ? "ASF не вернул инвентарь." : null,
                 message = inventory is null
                     ? "Диагностика завершилась: ASF не вернул инвентарь. Отправка не выполнялась."
                     : "Диагностика успешна: инвентарь получен. Торговое предложение не создавалось."
@@ -504,7 +532,6 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 sendTradeOfferMethods,
                 runtimeTrimming,
                 exceptionType = exception.GetType().FullName,
-                exceptionMessage = SafeMessage(exception.Message),
                 missingMemberName = FindMissingMemberException(exception) is MissingMemberException missingMember
                     ? GetMissingMemberField(missingMember, "MemberName") as string
                     : null,
@@ -515,10 +542,282 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                     && GetMissingMemberField(missingSignatureException, "Signature") is byte[] signatureBytes
                     ? Convert.ToHexString(signatureBytes)
                     : null,
-                stackTrace = exception.StackTrace is string stackTrace ? SafeDiagnosticText(stackTrace) : null,
                 message = "Ошибка диагностического чтения инвентаря. Отправка не выполнялась."
             }, JsonOptions);
         }
+    }
+
+    private static async Task<string> RunBadgeDiagnosticCommand(
+        Bot bot,
+        uint[] appIds,
+        ulong? requestedRecipientSteamId64)
+    {
+        ReadOnlyDiagnostic.ProfileIdentityResult? recipientIdentity = null;
+        if (requestedRecipientSteamId64 is ulong requestedSteamId64)
+        {
+            var profileResponse = await bot.ArchiWebHandler.UrlGetToHtmlDocumentWithSession(
+                new Uri("https://steamcommunity.com/profiles/"
+                    + requestedSteamId64.ToString(CultureInfo.InvariantCulture)
+                    + "/?xml=1")).ConfigureAwait(false);
+
+            string profileXml = profileResponse?.Content?.DocumentElement?.OuterHtml ?? "";
+            System.Net.HttpStatusCode? profileStatusCode = profileResponse?.StatusCode;
+            recipientIdentity = profileStatusCode == System.Net.HttpStatusCode.OK
+                ? ReadOnlyDiagnostic.VerifyProfileIdentity(profileXml, requestedSteamId64)
+                : ReadOnlyDiagnostic.ProfileIdentityResult.Failure("profile-http-error");
+
+            if (recipientIdentity is not { Verified: true })
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    mode = "diagnostic-read-only",
+                    sendEnabled = false,
+                    tradeOfferCreated = false,
+                    recipientSteamId64 = requestedSteamId64,
+                    recipientIdentity = new
+                    {
+                        verified = false,
+                        error = recipientIdentity?.Error ?? "profile-identity-unavailable",
+                        httpStatusCode = profileStatusCode is System.Net.HttpStatusCode statusCode
+                            ? (int)statusCode
+                            : (int?)null
+                    },
+                    badgeChecks = Array.Empty<object>(),
+                    inventory = (object?)null,
+                    comparisons = Array.Empty<object>(),
+                    message = "Профиль получателя не подтверждён; badge и инвентарь не запрашивались."
+                }, JsonOptions);
+            }
+        }
+
+        List<object> badgeChecks = [];
+        List<(uint AppId, ReadOnlyDiagnostic.BadgeResult Badge)> recipientBadges = [];
+        bool allBadgesValid = true;
+
+        foreach (uint appId in appIds)
+        {
+            var myResponse = await bot.ArchiWebHandler.UrlGetToJsonObjectWithSession<JsonElement>(
+                new Uri("https://steamcommunity.com/my/ajaxgetbadgeinfo/"
+                    + appId.ToString(CultureInfo.InvariantCulture))).ConfigureAwait(false);
+            System.Net.HttpStatusCode myStatusCode = myResponse?.StatusCode
+                ?? System.Net.HttpStatusCode.ServiceUnavailable;
+            JsonElement myContent = myResponse?.Content ?? default;
+            ReadOnlyDiagnostic.BadgeResult myBadge = myStatusCode == System.Net.HttpStatusCode.OK
+                && myContent.ValueKind == JsonValueKind.Object
+                    ? ReadOnlyDiagnostic.ParseBadge(myContent.GetRawText(), appId)
+                    : ReadOnlyDiagnostic.BadgeResult.Failure("badge-response-unavailable");
+            AddBadgeCheck("my", appId, myStatusCode, myBadge);
+            allBadgesValid &= myBadge.Success;
+
+            if (requestedRecipientSteamId64 is ulong recipientId)
+            {
+                Uri recipientBadgeUri = new("https://steamcommunity.com/profiles/"
+                    + recipientId.ToString(CultureInfo.InvariantCulture)
+                    + "/ajaxgetbadgeinfo/"
+                    + appId.ToString(CultureInfo.InvariantCulture));
+                var recipientResponse = await bot.ArchiWebHandler.UrlGetToJsonObjectWithSession<JsonElement>(
+                    recipientBadgeUri).ConfigureAwait(false);
+                System.Net.HttpStatusCode recipientStatusCode = recipientResponse?.StatusCode
+                    ?? System.Net.HttpStatusCode.ServiceUnavailable;
+                JsonElement recipientContent = recipientResponse?.Content ?? default;
+                bool recipientResponseIdentityVerified = recipientResponse?.FinalUri is Uri finalUri
+                    && ReadOnlyDiagnostic.IsRecipientBadgeResponse(finalUri, recipientId, appId);
+                ReadOnlyDiagnostic.BadgeResult recipientBadge = recipientStatusCode == System.Net.HttpStatusCode.OK
+                    && recipientResponseIdentityVerified
+                    && recipientContent.ValueKind == JsonValueKind.Object
+                        ? ReadOnlyDiagnostic.ParseBadge(recipientContent.GetRawText(), appId)
+                        : ReadOnlyDiagnostic.BadgeResult.Failure(recipientResponseIdentityVerified
+                            ? "badge-response-unavailable"
+                            : "recipient-badge-identity-mismatch");
+                AddBadgeCheck(
+                    "recipient",
+                    appId,
+                    recipientStatusCode,
+                    recipientBadge,
+                    recipientResponseIdentityVerified);
+                recipientBadges.Add((appId, recipientBadge));
+                allBadgesValid &= recipientBadge.Success;
+            }
+        }
+
+        if (requestedRecipientSteamId64 is not ulong recipientSteamId64)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = allBadgesValid,
+                mode = "diagnostic-read-only",
+                sendEnabled = false,
+                tradeOfferCreated = false,
+                botName = bot.BotName,
+                recipientIdentity = (object?)null,
+                badgeChecks,
+                inventory = (object?)null,
+                comparisons = Array.Empty<object>(),
+                message = "Badge-диагностика ASF завершена; отправка не выполнялась."
+            }, JsonOptions);
+        }
+
+        ReadOnlyDiagnostic.InventorySummary inventory = await ReadOnlyDiagnostic.AggregateInventoryAsync(
+            ReadRecipientInventory()).ConfigureAwait(false);
+        List<object> comparisons = [];
+        bool allComparisonsValid = true;
+        foreach ((uint appId, ReadOnlyDiagnostic.BadgeResult badge) in recipientBadges)
+        {
+            ReadOnlyDiagnostic.MatchResult match = ReadOnlyDiagnostic.CompareBadgeToInventory(
+                badge,
+                inventory,
+                appId);
+            comparisons.Add(new
+            {
+                appId,
+                match.Success,
+                match.Error,
+                match.MatchedHashes,
+                match.MissingHashes,
+                match.ExtraHashes,
+                match.DuplicateBadgeHashes,
+                match.DuplicateInventoryHashes
+            });
+            allComparisonsValid &= match.Success;
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = allBadgesValid && allComparisonsValid,
+            mode = "diagnostic-read-only",
+            sendEnabled = false,
+            tradeOfferCreated = false,
+            botName = bot.BotName,
+            recipientSteamId64,
+            recipientIdentity = new { verified = true },
+            badgeChecks,
+            inventory,
+            comparisons,
+            message = "Badge и инвентарь получателя проверены через ASF; отправка не выполнялась."
+        }, JsonOptions);
+
+        void AddBadgeCheck(
+            string subject,
+            uint appId,
+            System.Net.HttpStatusCode statusCode,
+            ReadOnlyDiagnostic.BadgeResult badge,
+            bool? responseIdentityVerified = null)
+        {
+            badgeChecks.Add(new
+            {
+                subject,
+                appId,
+                success = badge.Success,
+                badge.Error,
+                httpStatusCode = (int)statusCode,
+                responseIdentityVerified,
+                badge.EResult,
+                badge.AppID,
+                badge.Level,
+                badge.MaxLevel,
+                badge.Border,
+                badge.CardCount,
+                badge.UniqueHashCount,
+                badge.DuplicateHashes
+            });
+        }
+
+        async IAsyncEnumerable<ReadOnlyDiagnostic.InventoryEntry> ReadRecipientInventory()
+        {
+            await foreach (Asset asset in bot.ArchiWebHandler.GetInventoryAsync(
+                recipientSteamId64,
+                Asset.SteamAppID,
+                Asset.SteamCommunityContextID).ConfigureAwait(false))
+            {
+                yield return new ReadOnlyDiagnostic.InventoryEntry(
+                    asset.RealAppID,
+                    asset.Description?.MarketHashName,
+                    asset.Type.ToString(),
+                    asset.Amount,
+                    asset.Tradable);
+            }
+        }
+    }
+
+    private static bool TryParseDiagnosticArguments(
+        string[] commandArgs,
+        out uint[] appIds,
+        out ulong? recipientSteamId64,
+        out string error)
+    {
+        List<uint> parsedAppIds = [];
+        HashSet<uint> uniqueAppIds = [];
+        recipientSteamId64 = null;
+
+        for (int index = 2; index < commandArgs.Length; index++)
+        {
+            string argument = commandArgs[index];
+            if (string.Equals(argument, "--recipient", StringComparison.OrdinalIgnoreCase))
+            {
+                if (recipientSteamId64.HasValue
+                    || ++index >= commandArgs.Length
+                    || !ulong.TryParse(
+                        commandArgs[index],
+                        NumberStyles.None,
+                        CultureInfo.InvariantCulture,
+                        out ulong parsedSteamId64)
+                    || parsedSteamId64 == 0
+                    || !string.Equals(
+                        commandArgs[index],
+                        parsedSteamId64.ToString(CultureInfo.InvariantCulture),
+                        StringComparison.Ordinal)
+                    || !new SteamID(parsedSteamId64).IsIndividualAccount)
+                {
+                    error = "Получатель должен быть индивидуальным SteamID64 в десятичном формате.";
+                    appIds = [];
+                    return false;
+                }
+
+                recipientSteamId64 = parsedSteamId64;
+                continue;
+            }
+
+            if (!uint.TryParse(
+                    argument,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out uint appId)
+                || appId == 0
+                || !string.Equals(argument, appId.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+            {
+                error = "AppID должен быть положительным каноническим десятичным числом.";
+                appIds = [];
+                return false;
+            }
+
+            if (!uniqueAppIds.Add(appId))
+            {
+                error = "Список AppID содержит повтор.";
+                appIds = [];
+                return false;
+            }
+
+            if (parsedAppIds.Count == MaxDiagnosticAppIds)
+            {
+                error = "За один запуск можно проверить не более 20 AppID.";
+                appIds = [];
+                return false;
+            }
+
+            parsedAppIds.Add(appId);
+        }
+
+        if (parsedAppIds.Count == 0)
+        {
+            error = "Для badge-проверки укажи хотя бы один AppID; без параметров доступна legacy-диагностика.";
+            appIds = [];
+            return false;
+        }
+
+        appIds = parsedAppIds.ToArray();
+        error = "";
+        return true;
     }
 
     private static object GetRuntimeTrimmingDiagnostics()
@@ -675,6 +974,15 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
 
         return new string(message.Where(character => !char.IsControl(character)).Take(240).ToArray());
     }
+
+    private static string DiagnosticFailure(string message) => JsonSerializer.Serialize(new
+    {
+        success = false,
+        mode = "diagnostic-read-only",
+        sendEnabled = false,
+        tradeOfferCreated = false,
+        error = message
+    }, JsonOptions);
 
     private static string Failure(string message) => JsonSerializer.Serialize(new
     {

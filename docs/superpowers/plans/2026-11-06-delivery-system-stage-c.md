@@ -504,10 +504,10 @@
 6. Обновить мастер-журнал и этот план только по фактически подтверждённым результатам.
 7. Остановиться на границе блока и ждать разрешения пользователя на следующий блок.
 
-**Текущая позиция (обновлено 2026-11-08):** C.1 завершён. C.2 находится в технической проработке; бизнес-правила Steam Trading Cards согласованы, ASF-native статический контракт подтверждён по ASF 6.3.11.7, tie-break утверждён пользователем (C.2.7). Следующий разрешённый шаг — read-only ASF diagnostic для live-проверки badge metadata и buyer inventory через ASF session. Диагностика не должна вызывать `SendTradeOffer`, mobile confirmations или любые другие изменяющие состояние торговые операции. До завершения C.2 и отдельного утверждения не менять пользовательскую БД, миграции и большой UI. PR #4 остаётся Draft; base `feature/steam-card-set-selection` и `main` не менять.
+**Текущая позиция (обновлено 2026-11-08):** C.1 завершён. C.2 остаётся в работе; бизнес-правила Steam Trading Cards согласованы, ASF-native статический контракт подтверждён по ASF 6.3.11.7, tie-break утверждён пользователем (C.2.7). C.2.8 read-only diagnostic реализован и локально проверен; проверка endpoint-ов на подключённой ASF session и подтверждение точных Steam response контрактов ещё не выполнены. До завершения C.2 и отдельного утверждения не менять пользовательскую БД, миграции и большой UI. PR #4 остаётся Draft; base `feature/steam-card-set-selection` и `main` не менять.
 
 
-#### C.2.8. Read-only ASF live diagnostic — следующий технический шаг
+#### C.2.8. Read-only ASF live diagnostic — реализация, live-проверка ожидает данные
 
 **Цель:** подтвердить или опровергнуть кандидатные Steam Community контракты на реальной ASF 6.3.11.7 session без отправки trade offers.
 
@@ -517,10 +517,12 @@
 
 **Проверки:**
 1. Через `Bot.ArchiWebHandler.UrlGetToJsonObjectWithSession<JsonElement>` запросить `/my/ajaxgetbadgeinfo/{appid}` и сохранить только безопасные диагностические поля: HTTP/result outcome, наличие `badgedata`, level/maxlevel/border, количество `rgCards`, число уникальных `markethash`, ошибки разбора. Проверить несколько игр и ordinary border=0; не считать невалидный/неполный ответ уровнем 0.
-2. При переданном recipient SteamID64 запросить `/profiles/{steamid64}/ajaxgetbadgeinfo/{appid}` через ту же ASF session. Зафиксировать, возвращает ли Steam данные именно указанного профиля, доступность для публичного профиля и поведение при privacy/redirect/ошибке. Не выводить содержимое профиля или личные данные.
+2. При переданном recipient SteamID64 сначала проверить `steamID64` в ответе публичного profile XML, затем запросить `/profiles/{steamid64}/ajaxgetbadgeinfo/{appid}` через ту же ASF session. Проверить `FinalUri` badge-ответа на точное совпадение SteamID64 и AppID; при несоответствии не использовать ответ. Не выводить содержимое профиля или личные данные.
 3. Через `Bot.ArchiWebHandler.GetInventoryAsync(recipientSteamId64, 753, 6)` прочитать весь inventory stream с пагинацией. Подсчитать только агрегаты по обычным TradingCard и `RealAppID`/`MarketHashName`/`Amount`; отдельно посчитать foil и unknown types для диагностики. Buyer inventory не фильтровать по `Tradable`.
 4. Сопоставить точные строки `rgCards[].markethash` и `InventoryDescription.MarketHashName`; вывести количество exact matches, missing/extra hashes и дубли. Никаких fuzzy fallback и автоматического принятия несовпадений.
 5. Для собственного inventory не подменять `GetInventoryAsync` на локальный кэш, если цель — проверить фактический ASF session path; соблюдать ASF limiter и не запускать параллельные запросы без необходимости.
 6. Команда строго read-only: в реализации diagnostic call graph не должно быть `SendTradeOffer`, accept/cancel confirmation, изменения инвентаря или файлов заказа. В ответе явно `mode=diagnostic-read-only`, `sendEnabled=false`, `tradeOfferCreated=false`.
 
 **Критерии приёмки:** ASF plugin собирается; contract/smoke tests подтверждают read-only guard и безопасную санитизацию; Actions зелёные на точном SHA. После сборки пользователь запускает команду на одном подключённом боте и публичном recipient профиле, передаёт только обезличенный JSON-результат. До фактического live результата ни один endpoint не считается подтверждённым production contract.
+
+**Фактический статус:** реализация и локальные тесты не подтверждают доступность Steam endpoint-ов на реальной ASF session. Live-запросы не выполнялись: для этой итерации не задан публичный тестовый recipient, и локальная проверка не открывала Steam session. Триггеры ASF plugin workflow не запускаются обычным push в `work/local-sync`; Actions не объявлять зелёными без точного run SHA.

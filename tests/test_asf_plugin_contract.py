@@ -150,6 +150,69 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("inventoryCount", diagnostic_region)
         self.assertNotIn(".SendTradeOffer(", diagnostic_region)
 
+    def test_badge_diagnostic_uses_asf_session_and_complete_read_only_inventory(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        start = plugin.index("private static async Task<string> RunBadgeDiagnosticCommand")
+        end = plugin.index("private static string Failure", start)
+        diagnostic = plugin[start:end]
+
+        self.assertIn("UrlGetToJsonObjectWithSession<JsonElement>", diagnostic)
+        self.assertIn("UrlGetToHtmlDocumentWithSession", diagnostic)
+        self.assertIn("https://steamcommunity.com/my/ajaxgetbadgeinfo/", diagnostic)
+        self.assertIn("https://steamcommunity.com/profiles/", diagnostic)
+        self.assertIn("/ajaxgetbadgeinfo/", diagnostic)
+        self.assertIn("VerifyProfileIdentity", diagnostic)
+        self.assertIn("IsRecipientBadgeResponse(finalUri, recipientId, appId)", diagnostic)
+        self.assertIn("GetInventoryAsync(", diagnostic)
+        self.assertIn("recipientSteamId64", diagnostic)
+        self.assertIn("Asset.SteamAppID", diagnostic)
+        self.assertIn("Asset.SteamCommunityContextID", diagnostic)
+        self.assertIn("await foreach", diagnostic)
+        self.assertIn("ReadOnlyDiagnostic.AggregateInventoryAsync", diagnostic)
+        self.assertLess(diagnostic.index("VerifyProfileIdentity"), diagnostic.index('"/ajaxgetbadgeinfo/"'))
+        self.assertLess(diagnostic.index('"/ajaxgetbadgeinfo/"'), diagnostic.index("GetInventoryAsync("))
+        self.assertIn('mode = "diagnostic-read-only"', diagnostic)
+        self.assertIn("sendEnabled = false", diagnostic)
+        self.assertIn("tradeOfferCreated = false", diagnostic)
+        self.assertNotIn(".SendTradeOffer(", diagnostic)
+        self.assertNotIn("HandleTwoFactorAuthenticationConfirmations(", diagnostic)
+        self.assertNotIn("TradeDelivery.", diagnostic)
+
+    def test_diagnostic_argument_errors_preserve_read_only_envelope_and_legacy_form(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        callback_start = plugin.index("public async Task<string?> OnBotCommand")
+        callback_end = plugin.index("private static MissingMemberException? FindMissingMemberException", callback_start)
+        callback = plugin[callback_start:callback_end]
+        failure_start = plugin.index("private static string DiagnosticFailure")
+        failure_end = plugin.index("private static string Failure", failure_start)
+        failure = plugin[failure_start:failure_end]
+
+        self.assertIn("commandArgs.Length == 2", callback)
+        self.assertIn("RunDiagnosticCommand(diagnosticBot)", callback)
+        self.assertIn("TryParseDiagnosticArguments", callback)
+        self.assertGreaterEqual(callback.count("DiagnosticFailure("), 4)
+        self.assertIn("DiagnosticFailure(", callback[callback.index("catch (Exception exception)"):])
+        diagnostic_branch = callback[callback.index("if (isDiagnostic)"):callback.index("if (commandArgs.Length != 2 || commandArgs[1].Length > 16000)")]
+        self.assertNotIn("TradeDelivery.", diagnostic_branch)
+        self.assertNotIn("SendTradeOffer(", diagnostic_branch)
+        self.assertIn('mode = "diagnostic-read-only"', failure)
+        self.assertIn("sendEnabled = false", failure)
+        self.assertIn("tradeOfferCreated = false", failure)
+
+    def test_diagnostic_validates_canonical_appids_and_individual_recipient(self):
+        plugin = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        start = plugin.index("private static bool TryParseDiagnosticArguments")
+        end = plugin.index("private static object GetRuntimeTrimmingDiagnostics", start)
+        parser = plugin[start:end]
+
+        self.assertIn("uint.TryParse", parser)
+        self.assertIn("ulong.TryParse", parser)
+        self.assertIn("NumberStyles.None", parser)
+        self.assertIn("ToString(CultureInfo.InvariantCulture)", parser)
+        self.assertIn("IsIndividualAccount", parser)
+        self.assertIn("MaxDiagnosticAppIds", parser)
+        self.assertNotIn("double.Parse", parser)
+
     def test_trade_send_uses_the_public_asf_api_directly(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         self.assertIn("targetBot.ArchiWebHandler.SendTradeOffer(", source)

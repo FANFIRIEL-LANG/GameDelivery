@@ -46,7 +46,7 @@ internal static class ReadOnlyDiagnostic
                 return BadgeResult.Failure("invalid-maxlevel", resultCode);
             }
 
-            if (!TryGetInt32(badge, "border", out int border) || border != 0)
+            if (!TryGetInt32(badge, "border", out int border) || border is not (0 or 1))
             {
                 return BadgeResult.Failure("invalid-border", resultCode);
             }
@@ -111,7 +111,7 @@ internal static class ReadOnlyDiagnostic
             XDocument document = XDocument.Parse(xml, LoadOptions.None);
             XElement[] identityElements = document
                 .Descendants()
-                .Where(element => string.Equals(element.Name.LocalName, "steamID64", StringComparison.Ordinal))
+                .Where(element => string.Equals(element.Name.LocalName, "steamID64", StringComparison.OrdinalIgnoreCase))
                 .ToArray();
 
             if (identityElements.Length != 1
@@ -135,6 +135,22 @@ internal static class ReadOnlyDiagnostic
         }
     }
 
+    internal static bool IsRecipientBadgeResponse(
+        Uri finalUri,
+        ulong requestedSteamId64,
+        uint requestedAppId) =>
+        finalUri.IsAbsoluteUri
+        && string.Equals(finalUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(finalUri.Host, "steamcommunity.com", StringComparison.OrdinalIgnoreCase)
+        && finalUri.IsDefaultPort
+        && string.Equals(
+            finalUri.AbsolutePath,
+            "/profiles/"
+                + requestedSteamId64.ToString(CultureInfo.InvariantCulture)
+                + "/ajaxgetbadgeinfo/"
+                + requestedAppId.ToString(CultureInfo.InvariantCulture),
+            StringComparison.Ordinal);
+
     internal static async Task<InventorySummary> AggregateInventoryAsync(
         IAsyncEnumerable<InventoryEntry> inventory)
     {
@@ -146,12 +162,20 @@ internal static class ReadOnlyDiagnostic
         ulong unknownTypeAmount = 0;
         ulong missingHashAmount = 0;
         ulong unknownAppAmount = 0;
+        ulong invalidAmountCount = 0;
+        ulong invalidEntryCount = 0;
 
         await foreach (InventoryEntry? item in inventory.ConfigureAwait(false))
         {
-            if (item is null || item.Amount == 0)
+            if (item is null)
             {
-                unknownTypeAmount++;
+                invalidEntryCount++;
+                continue;
+            }
+
+            if (item.Amount == 0)
+            {
+                invalidAmountCount++;
                 continue;
             }
 
@@ -217,7 +241,9 @@ internal static class ReadOnlyDiagnostic
             otherTypeAmount,
             unknownTypeAmount,
             missingHashAmount,
-            unknownAppAmount);
+            unknownAppAmount,
+            invalidAmountCount,
+            invalidEntryCount);
     }
 
     internal static MatchResult CompareBadgeToInventory(
@@ -228,6 +254,11 @@ internal static class ReadOnlyDiagnostic
         if (!badge.Success || badge.AppID != requestedAppId)
         {
             return MatchResult.Failure("badge-data-unavailable");
+        }
+
+        if (badge.Border != 0)
+        {
+            return MatchResult.Failure("foil-badge-excluded-from-normal-card-matching");
         }
 
         if (inventory is null)
@@ -352,7 +383,9 @@ internal static class ReadOnlyDiagnostic
         ulong OtherTypeAmount,
         ulong UnknownTypeAmount,
         ulong MissingHashAmount,
-        ulong UnknownAppAmount);
+        ulong UnknownAppAmount,
+        ulong InvalidAmountCount,
+        ulong InvalidEntryCount);
 
     internal sealed class MatchResult
     {

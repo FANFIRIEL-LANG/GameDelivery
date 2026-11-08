@@ -16,6 +16,10 @@
   </PropertyGroup>
   <!-- JSON uses the System.Text.Json implementation included in the .NET 10 shared framework. -->
   <ItemGroup>
+    <Reference Include="AngleSharp">
+      <HintPath>$(ASF_BIN_DIR)/AngleSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="ArchiSteamFarm">
       <HintPath>$(ASF_BIN_DIR)/ArchiSteamFarm.dll</HintPath>
       <Private>false</Private>
