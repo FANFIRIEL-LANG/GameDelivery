@@ -28,13 +28,14 @@ The one-argument `gamedelivery-diagnose <BotName>` path remains available. The e
 - ASF `GetInventoryAsync` pagination, limiter, and response-error behavior were checked against the [pinned 6.3.11.7 source](https://github.com/JustArchiNET/ArchiSteamFarm/blob/6.3.11.7/ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs#L2566-L2802).
 - Final read-only review found and fixed zero-amount inventory items being counted as unknown types; the smoke test now verifies a separate invalid amount counter.
 - Full Python suite on Python 3.10: 223 tests ran, 13 errors. Nine test modules could not import because PySide6 is not installed for Python 3.10; four tests hit Windows temporary SQLite file cleanup locks. The Python 3.14 full discovery emitted repeated SQLite `ResourceWarning`s and hung after test progress, so it was stopped without a final count.
-- No Steam session requests were made. No GitHub Actions run exists for this code SHA; the ASF plugin workflow does not auto-trigger on push to `work/local-sync`.
+- No Steam session requests were made. GitHub Actions `Tests` run [42436411735](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42436411735) completed successfully for code checkpoint `8446cff954c67a411e816e71d3169827690df87b` (then-current branch HEAD; event: `push`; job `test`, including the full unit suite). No ASF plugin build workflow run exists for that SHA; `.github/workflows/asf-plugin.yml` does not auto-trigger on push to `work/local-sync`.
 
 ## Known limitations
 
 - Steam profile XML is deprecated. If it is missing, malformed, unavailable, or its `steamID64` is absent or mismatched, recipient badge and inventory requests are skipped. Private badge/inventory responses remain errors; they are never converted into badge level zero.
 - The local build and smoke tests verify the code path and host API, not live Steam response availability or privacy behavior.
 - Full Python regression results remain constrained by this Windows environment's missing Python 3.10 PySide6 dependency and SQLite temp-file locks.
+- The successful GitHub `Tests` workflow uses Python 3.12 on Ubuntu and passed its full unit-test job for the code checkpoint above; it does not run the ASF Generic plugin build or .NET smoke executable.
 
 ## Remaining C.2.8 work
 
