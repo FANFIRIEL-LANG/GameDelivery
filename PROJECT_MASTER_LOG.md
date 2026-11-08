@@ -2015,3 +2015,15 @@ Telegram — дополнительный канал уведомлений; е�
 **Ограничение handoff:** метод остался opt-in и ещё не готов для application caller. Для каждого кандидата нужны доверенные источники свежего bot snapshot, complete exact market hashes, buyer full-set counts и verified badge level; общий AppID catalog также нуждается в покрытии выбранных карточных игр. C.2.8 live Steam identity/privacy/response проверки не выполнялись.
 
 **Синхронизация Master Log:** обновлён локальный `PROJECT_MASTER_LOG.md`; внешняя копия остаётся не синхронизированной по ранее записанной причине — подключённого document session/Page нет.
+
+## 2026-11-08 — C.2.7: независимая exhaustive regression validation
+
+**Область:** только тесты pure planner `games/steam_cards/badge_allocation.py`; production-код, preflight, reservations, БД, UI, Steam и Trade Offer путь не менялись.
+
+**Результат:** добавлен brute-force эталон, сравнивающий планировщик на 10 368 сочетаниях трёх игровых ёмкостей и точного Q; отдельно закреплена валидация некорректных AppID, `remaining_sets` и `available_sets`. Тестовый модуль содержит 9 тестов.
+
+**Проверки:** allocator — 9 OK; multi-game adapter — 9 OK; existing single-game preflight — 7 OK; shared card sets — 11 OK (всего 36). Полный Python discovery после этих test-only изменений не запускался. Последний полный запуск остаётся 242 tests с 13 известными ограничениями среды: 9 модулей не импортируются из-за отсутствующего PySide6 в Python 3.10, 4 теста упираются в Windows SQLite temp-file cleanup locks.
+
+**GitHub Actions:** commit `8d1bb7ee91951ddd9076a72ec8d80798ff646147` — `Tests` run [42475812299](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42475812299), success; commit `2820c617bd5e1cc081b59705c30c415cd61a48de` — `Tests` run [42476082350](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42476082350), success.
+
+**Следующая задача:** получить подтверждённый полный источник `rgCards[].markethash` для первого AppID, затем зафиксировать его в read-only каталоге и покрыть пропуски/дубликаты тестами. Публичный Steam Community Market search показывает текущие listings, но не подтверждает полный состав badge set; его нельзя использовать как достаточное определение. До наличия полного verified источника `prepare_multi_game()` остаётся opt-in. Live C.2.8 gate отдельно требует тестовый профиль.

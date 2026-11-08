@@ -47,3 +47,16 @@ This adapter is not ready to be called from the application. Before wiring a cal
 - `tests/test_multi_game_order_preflight.py`
 - `tests/test_shared_steam_card_sets.py`
 - `docs/superpowers/plans/2026-11-08-c2-7-preflight-adapter.md`
+
+## Follow-up: C.2.7 planner regression validation
+
+Two test-only commits extend coverage without changing the planner or application flow:
+
+- `8d1bb7ee91951ddd9076a72ec8d80798ff646147` adds exhaustive differential checks over 10,368 small capacity/Q combinations. `Tests` run [42475812299](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42475812299) passed.
+- `2820c617bd5e1cc081b59705c30c415cd61a48de` covers invalid AppID and capacity inputs. `Tests` run [42476082350](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42476082350) passed.
+
+Final focused results: allocator 9 passed; multi-game preflight 9; existing single-game preflight 7; shared card sets 11. No production code, DB, UI, ASF, Steam or trade behavior changed. Full discovery was not rerun; its last known result remains 242 tests with 13 environment errors noted in `PROJECT_MASTER_LOG.md`. A targeted boundary review confirmed `find_shared_game_sets()` rejects empty, invalid, and duplicate expected hash lists before counting sets.
+
+## Exact next independent task
+
+Obtain a confirmed complete `rgCards[].markethash` list for the first selected AppID, then add it to a source-backed, read-only catalog with provenance and tests for missing or duplicate hashes. Steam Community Market search lists current listings but does not establish a complete badge set. Keep `prepare_multi_game()` opt-in until all verified upstream inputs are available. The separate C.2.8 live gate still requires a dedicated test profile; do not use production accounts.

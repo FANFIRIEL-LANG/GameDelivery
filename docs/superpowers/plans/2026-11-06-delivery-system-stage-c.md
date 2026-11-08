@@ -532,3 +532,7 @@
 **Критерии приёмки:** ASF plugin собирается; contract/smoke tests подтверждают read-only guard и безопасную санитизацию; Actions зелёные на точном SHA. После сборки пользователь запускает команду на одном подключённом боте и публичном recipient профиле, передаёт только обезличенный JSON-результат. До фактического live результата ни один endpoint не считается подтверждённым production contract.
 
 **Фактический статус:** реализация и локальные тесты не подтверждают доступность Steam endpoint-ов на реальной ASF session. Live-запросы не выполнялись: для этой итерации не задан публичный тестовый recipient, и локальная проверка не открывала Steam session. Триггеры ASF plugin workflow не запускаются обычным push в `work/local-sync`; Actions не объявлять зелёными без точного run SHA.
+
+#### C.2.7 follow-up — exhaustive regression coverage (2026-11-08)
+
+Тесты `tests/test_badge_allocation.py` теперь сравнивают pure planner с независимым brute-force эталоном на 10 368 сочетаниях малого пространства входов и проверяют отказ для некорректных AppID/ёмкостей. Девять allocator tests и связанные focused проверки preflight/shared sets (всего 36) прошли. Изменения только тестовые; production flow и утверждённые правила C.2.7 не менялись. GitHub Actions `Tests` успешно завершился на code SHA `8d1bb7ee91951ddd9076a72ec8d80798ff646147` (run `42475812299`) и `2820c617bd5e1cc081b59705c30c415cd61a48de` (run `42476082350`).

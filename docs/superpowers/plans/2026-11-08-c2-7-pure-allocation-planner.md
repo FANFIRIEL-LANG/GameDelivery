@@ -40,3 +40,12 @@
 - [x] Update `PROJECT_MASTER_LOG.md` and the C.2 handoff, commit, push, verify local/remote SHA, and record CI for the code/test SHA.
 
 **Completed 2026-11-08:** planner commit `27c36b311fb577887cc93d218a35154068dbb49a`; zero-capacity coverage commit `66f0d6df930078bfc92c27506463575a8a074fe2`. Seven focused tests passed locally. Full-suite and Actions results are recorded in `PROJECT_MASTER_LOG.md` and the C.2 handoff.
+
+## Follow-up regression coverage — 2026-11-08
+
+- [x] Compare the planner against an exhaustive allocation oracle across 10,368 small input/Q combinations.
+- [x] Cover boolean, negative, and non-integer AppID/capacity inputs.
+- [x] Run allocator (9), multi-game preflight (9), single-game preflight (7), and shared-set (11) focused tests.
+- [x] Push test-only commits and verify GitHub Actions on both exact SHAs.
+
+The differential checks passed locally. Actions passed on `8d1bb7ee91951ddd9076a72ec8d80798ff646147` (run `42475812299`) and `2820c617bd5e1cc081b59705c30c415cd61a48de` (run `42476082350`). No production behavior changed.
