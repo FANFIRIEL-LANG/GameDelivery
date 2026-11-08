@@ -291,10 +291,239 @@ Assert(
     !InvokeSelfTradeGuard(76561197960265729UL, 76561197960265730UL),
     "SteamID64 guard rejected a different recipient");
 
+static object? GetProperty(object value, string name) =>
+    value.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+        ?.GetValue(value);
+
+static object InvokeReadOnlyDiagnostic(string methodName, params object?[] arguments)
+{
+    Type helperType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.ReadOnlyDiagnostic",
+        throwOnError: true)!;
+    MethodInfo method = helperType.GetMethod(
+        methodName,
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException($"Read-only diagnostic method {methodName} was not found");
+
+    try
+    {
+        return method.Invoke(null, arguments)
+            ?? throw new InvalidOperationException($"Read-only diagnostic method {methodName} returned null");
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            $"Read-only diagnostic method {methodName} failed.",
+            exception.InnerException ?? exception);
+    }
+}
+
+static bool GetBool(object value, string property) => GetProperty(value, property) is true;
+static int GetInt(object value, string property) => Convert.ToInt32(GetProperty(value, property));
+
+static string[] GetStrings(object value, string property) =>
+    ((System.Collections.IEnumerable?)GetProperty(value, property))
+        ?.Cast<object>()
+        .Select(item => Convert.ToString(item) ?? "")
+        .ToArray()
+        ?? [];
+
+static object CreateInventoryEntry(
+    Type entryType,
+    uint realAppId,
+    string? marketHashName,
+    string type,
+    uint amount,
+    bool tradable)
+{
+    return Activator.CreateInstance(entryType, realAppId, marketHashName, type, amount, tradable)
+        ?? throw new InvalidOperationException("Read-only diagnostic inventory entry could not be created");
+}
+
+static async Task<object> AggregateInventoryPages(Type entryType, object[][] pageEntries)
+{
+    Array pages = Array.CreateInstance(entryType.MakeArrayType(), pageEntries.Length);
+    for (int pageIndex = 0; pageIndex < pageEntries.Length; pageIndex++)
+    {
+        Array page = Array.CreateInstance(entryType, pageEntries[pageIndex].Length);
+        for (int itemIndex = 0; itemIndex < pageEntries[pageIndex].Length; itemIndex++)
+        {
+            page.SetValue(pageEntries[pageIndex][itemIndex], itemIndex);
+        }
+
+        pages.SetValue(page, pageIndex);
+    }
+
+    MethodInfo yieldMethod = typeof(SmokeInventoryPageFactory).GetMethod(
+        nameof(SmokeInventoryPageFactory.Yield),
+        BindingFlags.Public | BindingFlags.Static)!
+        .MakeGenericMethod(entryType);
+    object items = yieldMethod.Invoke(null, [pages])!;
+    object task = InvokeReadOnlyDiagnostic("AggregateInventoryAsync", items);
+    await ((Task)task).ConfigureAwait(false);
+    return GetProperty(task, "Result")!;
+}
+
+static async Task VerifyReadOnlyDiagnosticRules()
+{
+    object validBadge = InvokeReadOnlyDiagnostic(
+        "ParseBadge",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":5,\"border\":0,\"rgCards\":[{\"markethash\":\"Card A\"},{\"markethash\":\"Card B\"}]}}",
+        440U);
+    Assert(GetBool(validBadge, "Success"), "valid badge payload was rejected");
+    Assert(GetInt(validBadge, "Level") == 3, "badge level was not parsed");
+    Assert(GetInt(validBadge, "CardCount") == 2, "badge card count was not parsed");
+    Assert(GetInt(validBadge, "UniqueHashCount") == 2, "unique badge hash count was incorrect");
+
+    foreach (string invalidBadge in new[]
+    {
+        "{",
+        "{\"eresult\":15,\"badgedata\":{}}",
+        "{\"eresult\":987654,\"badgedata\":{}}",
+        "{\"eresult\":1}",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":441,\"level\":3,\"maxlevel\":5,\"border\":0,\"rgCards\":[]}}",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":6,\"maxlevel\":5,\"border\":0,\"rgCards\":[]}}",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":4,\"border\":0,\"rgCards\":[]}}",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":5,\"border\":1,\"rgCards\":[]}}",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":3,\"maxlevel\":5,\"border\":0,\"rgCards\":[{}]}}"
+    })
+    {
+        object rejected = InvokeReadOnlyDiagnostic("ParseBadge", invalidBadge, 440U);
+        Assert(!GetBool(rejected, "Success"), "malformed or unsupported badge payload was accepted");
+        Assert(GetProperty(rejected, "Level") is null, "invalid badge payload was coerced into a level");
+    }
+
+    object emptyBadge = InvokeReadOnlyDiagnostic(
+        "ParseBadge",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":5,\"maxlevel\":5,\"border\":0,\"rgCards\":[]}}",
+        440U);
+    Assert(GetBool(emptyBadge, "Success") && GetInt(emptyBadge, "CardCount") == 0,
+        "empty badge card set was not reported as a valid empty set");
+
+    object duplicateBadge = InvokeReadOnlyDiagnostic(
+        "ParseBadge",
+        "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":2,\"maxlevel\":5,\"border\":0,\"rgCards\":[{\"markethash\":\"Card A\"},{\"markethash\":\"Card A\"}]}}",
+        440U);
+    Assert(GetBool(duplicateBadge, "Success") && GetInt(duplicateBadge, "CardCount") == 2,
+        "duplicate badge hashes were silently discarded");
+    Assert(GetInt(duplicateBadge, "UniqueHashCount") == 1
+        && GetStrings(duplicateBadge, "DuplicateHashes").SequenceEqual(["Card A"]),
+        "duplicate badge hash was not diagnosed");
+
+    object identityMatch = InvokeReadOnlyDiagnostic(
+        "VerifyProfileIdentity",
+        "<profile><steamID64>76561197960265729</steamID64></profile>",
+        76561197960265729UL);
+    Assert(GetBool(identityMatch, "Verified"), "matching Steam profile identity was rejected");
+    foreach (string invalidProfile in new[]
+    {
+        "<profile><steamID64>76561197960265730</steamID64></profile>",
+        "<profile><steamID64>bad-id</steamID64></profile>",
+        "<profile></profile>",
+        "<profile>"
+    })
+    {
+        object identityFailure = InvokeReadOnlyDiagnostic(
+            "VerifyProfileIdentity",
+            invalidProfile,
+            76561197960265729UL);
+        Assert(!GetBool(identityFailure, "Verified"), "missing, malformed, or mismatched profile identity was accepted");
+    }
+
+    Type entryType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.ReadOnlyDiagnostic+InventoryEntry",
+        throwOnError: true)!;
+    object inventory = await AggregateInventoryPages(entryType,
+    [
+        [
+            CreateInventoryEntry(entryType, 440U, "Card A", "TradingCard", 2U, false),
+            CreateInventoryEntry(entryType, 440U, "Card B", "TradingCard", 1U, true),
+            CreateInventoryEntry(entryType, 440U, "Inventory Extra", "TradingCard", 1U, true),
+            CreateInventoryEntry(entryType, 441U, "Other App", "TradingCard", 1U, true),
+            CreateInventoryEntry(entryType, 440U, "Foil", "FoilTradingCard", 1U, true)
+        ],
+        [
+            CreateInventoryEntry(entryType, 440U, "Unknown", "Unknown", 1U, true),
+            CreateInventoryEntry(entryType, 440U, "Emoticon", "Emoticon", 1U, true),
+            CreateInventoryEntry(entryType, 440U, null, "TradingCard", 1U, false),
+            CreateInventoryEntry(entryType, 440U, "case-sensitive", "TradingCard", 1U, true)
+        ]
+    ]);
+
+    object? cardGroups = GetProperty(inventory, "Cards");
+    Assert(cardGroups is System.Collections.IEnumerable,
+        "inventory card groups were unavailable on " + inventory.GetType().FullName
+        + "; properties=" + string.Join(",", inventory.GetType().GetProperties(
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).Select(property => property.Name)));
+    object[] groups = ((System.Collections.IEnumerable)cardGroups!)
+        .Cast<object>()
+        .ToArray();
+    object? cardA = groups.Single(group => (uint)GetProperty(group, "RealAppID")! == 440U
+        && string.Equals((string?)GetProperty(group, "MarketHashName"), "Card A", StringComparison.Ordinal));
+    Assert(cardA is not null && GetInt(cardA, "Amount") == 2, "inventory amount was not aggregated across async pages");
+    Assert(GetInt(cardA!, "NonTradableAmount") == 2, "non-tradable buyer cards were excluded");
+    Assert(GetInt(inventory, "FoilAmount") == 1, "foil cards were counted as normal cards");
+    Assert(GetInt(inventory, "UnknownTypeAmount") == 1, "unknown inventory types were not counted separately");
+    Assert(GetInt(inventory, "OtherTypeAmount") == 1, "non-card inventory types were not counted separately");
+    Assert(GetInt(inventory, "MissingHashAmount") == 1, "normal card without a hash was not diagnosed");
+
+    object comparison = InvokeReadOnlyDiagnostic("CompareBadgeToInventory", duplicateBadge, inventory, 440U);
+    Assert(GetStrings(comparison, "MatchedHashes").SequenceEqual(["Card A"]),
+        "exact badge/inventory hash match was not found");
+    Assert(GetStrings(comparison, "MissingHashes").Length == 0,
+        "an owned badge hash was reported missing");
+    Assert(GetStrings(comparison, "ExtraHashes").Contains("Inventory Extra", StringComparer.Ordinal),
+        "inventory-only hash was not reported as extra");
+    Assert(GetStrings(comparison, "DuplicateBadgeHashes").SequenceEqual(["Card A"]),
+        "badge duplicates were not included in comparison results");
+    Assert(GetStrings(comparison, "DuplicateInventoryHashes").SequenceEqual(["Card A"]),
+        "multiple copies of an inventory hash were not reported");
+
+    object missingHashComparison = InvokeReadOnlyDiagnostic(
+        "CompareBadgeToInventory",
+        InvokeReadOnlyDiagnostic(
+            "ParseBadge",
+            "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":1,\"maxlevel\":5,\"border\":0,\"rgCards\":[{\"markethash\":\"Missing Card\"}]}}",
+            440U),
+        inventory,
+        440U);
+    Assert(GetStrings(missingHashComparison, "MissingHashes").SequenceEqual(["Missing Card"]),
+        "badge card absent from the recipient inventory was not reported");
+
+    object exactCaseComparison = InvokeReadOnlyDiagnostic(
+        "CompareBadgeToInventory",
+        InvokeReadOnlyDiagnostic(
+            "ParseBadge",
+            "{\"eresult\":1,\"badgedata\":{\"appid\":440,\"level\":1,\"maxlevel\":5,\"border\":0,\"rgCards\":[{\"markethash\":\"Case-Sensitive\"}]}}",
+            440U),
+        inventory,
+        440U);
+    Assert(GetStrings(exactCaseComparison, "MissingHashes").SequenceEqual(["Case-Sensitive"])
+        && GetStrings(exactCaseComparison, "ExtraHashes").Contains("case-sensitive", StringComparer.Ordinal),
+        "hash matching was not exact and case-sensitive");
+}
+
+await VerifyReadOnlyDiagnosticRules();
+
 Console.WriteLine("ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.");
 
 sealed class SmokeJsonProbe
 {
     public string OrderId { get; set; } = "";
     public string[] AssetIds { get; set; } = [];
+}
+
+static class SmokeInventoryPageFactory
+{
+    public static async IAsyncEnumerable<T> Yield<T>(T[][] pages)
+    {
+        foreach (T[] page in pages)
+        {
+            await Task.Yield();
+            foreach (T item in page)
+            {
+                yield return item;
+            }
+        }
+    }
 }
