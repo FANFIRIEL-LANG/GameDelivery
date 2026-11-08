@@ -1,4 +1,5 @@
 import unittest
+from itertools import product
 
 from games.steam_cards.badge_allocation import (
     GameCapacity,
@@ -8,6 +9,27 @@ from games.steam_cards.badge_allocation import (
 
 
 class BadgeAllocationTests(unittest.TestCase):
+    def test_matches_exhaustive_reference_for_small_capacity_space(self):
+        app_ids = (730, 570, 440)
+        capacity_options = tuple(product(range(3), range(4)))
+
+        for capacities in product(capacity_options, repeat=len(app_ids)):
+            games = tuple(
+                GameCapacity(app_id, remaining, available)
+                for app_id, (remaining, available) in zip(app_ids, capacities)
+            )
+            for requested_sets in range(1, 7):
+                expected = _exhaustive_reference(games, requested_sets)
+                with self.subTest(capacities=capacities, requested_sets=requested_sets):
+                    if expected is None:
+                        with self.assertRaisesRegex(ValueError, "exact quantity"):
+                            plan_badge_allocation(games, requested_sets=requested_sets)
+                    else:
+                        self.assertEqual(
+                            plan_badge_allocation(games, requested_sets=requested_sets),
+                            expected,
+                        )
+
     def test_maximizes_completed_badges_for_exact_order(self):
         result = plan_badge_allocation(
             [GameCapacity(440, 5, 5), GameCapacity(570, 5, 5), GameCapacity(730, 2, 2)],
@@ -88,6 +110,51 @@ class BadgeAllocationTests(unittest.TestCase):
                 [GameCapacity(440, 1, 1), GameCapacity(440, 2, 2)],
                 requested_sets=1,
             )
+
+
+def _exhaustive_reference(games, requested_sets):
+    """Return the best exact allocation by directly enumerating all choices."""
+    best = None
+    best_key = None
+    max_sets = tuple(min(game.remaining_sets, game.available_sets) for game in games)
+
+    for amounts in product(*(range(limit + 1) for limit in max_sets)):
+        if sum(amounts) != requested_sets:
+            continue
+
+        by_app_id = dict(zip((game.app_id for game in games), amounts))
+        completed = tuple(
+            sorted(
+                game.app_id
+                for game in games
+                if game.remaining_sets > 0
+                and by_app_id[game.app_id] == game.remaining_sets
+            )
+        )
+        completed_set = set(completed)
+        incomplete = sorted(
+            (game for game in games if game.app_id not in completed_set),
+            key=lambda game: (game.remaining_sets, game.app_id),
+        )
+        key = (
+            -len(completed),
+            sum(game.remaining_sets for game in games if game.app_id in completed_set),
+            completed,
+            tuple(-by_app_id[game.app_id] for game in incomplete),
+        )
+        if best_key is None or key < best_key:
+            best_key = key
+            best = by_app_id
+
+    if best is None:
+        return None
+
+    completed_set = set(best_key[2])
+    return tuple(
+        GameAllocation(game.app_id, best[game.app_id], game.app_id in completed_set)
+        for game in sorted(games, key=lambda game: game.app_id)
+        if best[game.app_id] > 0
+    )
 
 
 if __name__ == "__main__":
