@@ -32,3 +32,19 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: timeout 180s python -m unittest discover -s tests -v
+      - name: Isolate test modules after full-suite failure
+        if: failure()
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          failures=0
+          for test_file in tests/test_*.py; do
+            test_name=$(basename "$test_file")
+            echo "::group::Isolated $test_name"
+            if ! timeout 45s python -m unittest discover -s tests -p "$test_name" -v; then
+              echo "::error::Isolated test module failed: $test_name"
+              failures=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failures"
