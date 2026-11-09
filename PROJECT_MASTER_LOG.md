@@ -4,17 +4,130 @@
 >
 > **Правило ведения:** перед любой работой прочитать этот файл и связанный план, проверить GitHub-ветку и код. После каждого обсуждения, повлиявшего на проект, и после каждого изменения вносить запись сюда в рамках текущей сессии. Не считать записью факт, который не проверен. Не менять статус задачи без доказательства.
 
-**Последнее обновление:** 2026-11-07  
+**Последнее обновление:** 2026-11-09
 **Репозиторий:** https://github.com/FANFIRIEL-LANG/GameDelivery  
-**Рабочая ветка:** `feature/asf-bulk-account-import`  
-**Подтверждённый HEAD на момент создания журнала:** `006dfce3e97da7611722234b8dfbcbd4c9698f1d`  
+**Рабочая ветка:** `work/local-sync`
+**Последний подтверждённый HEAD рабочей ветки на 2026-11-09:** `9cc4af13dc14db0fae8266a96b4c7d56ad7e8e49`
 **Существующий подробный план:** [docs/superpowers/plans/2026-10-27-gamedelivery-completion.md](docs/superpowers/plans/2026-10-27-gamedelivery-completion.md)
+
+---
+
+## 0. ОБЯЗАТЕЛЬНО ДЛЯ CODEX — АКТУАЛЬНЫЙ HANDOFF НА 2026-11-09
+
+> **Это актуальные обязательные инструкции. Они имеют приоритет над историческими формулировками ниже, если те расходятся с текущей рабочей веткой или явно подтверждёнными более поздними решениями пользователя. Codex обязан прочитать этот блок до любых действий.**
+
+### 0.1 Текущая контрольная точка и запреты
+
+- Репозиторий: `FANFIRIEL-LANG/GameDelivery`.
+- Рабочая ветка: `work/local-sync`.
+- Последний подтверждённый HEAD: `9cc4af13dc14db0fae8266a96b4c7d56ad7e8e49`.
+- `main` не изменять. PR #4 не менять, не переключать его base/head и не сливать.
+- Пользовательскую локальную папку `D:\GameDelivery` не открывать и не изменять без отдельного разрешения. Для проверки уже используется отдельная тестовая копия из ZIP.
+- Не выполнять reset/clean/stash, не force-push, не переключать ветки. Сохранять существующие изменения и одобренную функциональность.
+- Не запускать production ASF, не использовать production Steam-инвентарь, не создавать, не подтверждать и не отменять Trade Offers. Следующие проверки OpenSkin — только read-only.
+- Не запрашивать и не записывать в журнал proxy passwords, Steam credentials, IPCPassword, cookies, session tokens, maFiles и неотредактированные логи.
+
+### 0.2 Обязательное сохранение уже выполненных изменений — НЕ ПЕРЕПИСЫВАТЬ И НЕ РЕГРЕССИРОВАТЬ
+
+Codex должен считать следующие изменения существующей обязательной частью проекта, а не новыми задачами для повторной реализации:
+
+**C.6.3.6.1 — CS2 pricing foundation, OpenSkin/Frankfurter, inventory UI and selectors (ранее выполнено):**
+- Добавлены OpenSkin v1 client, Frankfurter USD/RUB client, CS2 valuation/calculation, price cache и CS2-only UI отображения цен.
+- Используется OpenSkin `steam.ask`; не применять median, bid или цены другого провайдера вместо него.
+- Кэш хранит точные значения/источники/времена, сохраняет последнюю корректную цену при сетевой ошибке; ошибки не превращать в ноль.
+- Счёт ведётся по физическим Asset rows, а не по ASF `amount`; unknown/non-tradable rows не теряются.
+- Pattern-sensitive предметы без точного typed pattern/seed не получают generic price.
+- Сетевые запросы выполняются в worker; UI сохраняет shared/separate отображение, выбор ботов, totals и refresh semantics.
+- OpenSkin proxy изолирован своим `QNetworkAccessManager`; глобальный Qt proxy не меняется. Frankfurter остаётся отдельным прямым клиентом. Steam, ASF IPC и изображения не должны автоматически направляться через OpenSkin proxy.
+
+**C.6.3.6.2 — proxy/API diagnostics (ранее выполнено):**
+- Разделены read-only `GET https://api.openskin.dev/` с `Range: bytes=0-0` и отдельный read-only pricing POST в `/v1/prices/batch`.
+- Ошибки имеют категории (DNS, TCP, proxy auth/407, HTTP CONNECT/SOCKS handshake, TLS, timeout, HTTP status, invalid response); HTTP-ответ на probe не равен доказательству работоспособности pricing endpoint.
+- Диагностический log вращаемый и redacts credentials; TLS verification нельзя ослаблять.
+
+**C.6.3.6.3 — Qt reply race guard (ранее выполнено, но НЕ устранило live-проблему пользователя):**
+- В `integrations/openskin/client.py::_qt_proxy_request()` добавлена проверка `reply.isFinished()` до запуска таймера/event loop; таймер останавливается через `finally`.
+- Regression test на уже завершённый Qt reply добавлен в `tests/test_openskin_proxy.py`.
+- Целевой тест ранее прошёл 19/19. Однако после установки текущей версии пользователь по-прежнему увидел тот же proxy/HTTPS timeout до отправки запроса. Следовательно, race guard недостаточен для текущего live-сбоя; не объявлять проблему решённой и не повторять без причины тот же тест/исправление.
+
+**C.6.3.6.4 — CS2 price threshold and CI (выполнено и обязательно сохранить):**
+- Порог `PRICE_THRESHOLD_USD = Decimal("0.05")` включительный: `steam.ask <= $0.05` остаётся видимым в USD, но не конвертируется в RUB и не входит в RUB totals. Только `> $0.05` eligible для USD/RUB conversion.
+- Правило применяется согласованно в `games/cs2/pricing.py`, `games/cs2/price_store.py`, `app/game_inventory_panel.py`; общий константный порог используется вместо повторяющегося literal.
+- Добавлен regression test для ровно `$0.05`; cache reopen test сделан детерминированным через фиксированный `now` и согласованный source timestamp.
+- Commit `9331f343608ccce0a9658e6539de9767d75ba742`: price threshold + deterministic cache tests.
+- Commit `0a3aa2e33f48c6adc8c0a5e78a09f1b0642cdf90`: при падении full suite workflow изолированно запускает `tests/test_*.py` для диагностики модулей/Qt shutdown; step выполняется только при `failure()`.
+- Commit `9cc4af13dc14db0fae8266a96b4c7d56ad7e8e49`: документация и handoff синхронизированы с текущим ценовым правилом и CI результатами.
+- CI: на более раннем run для `9331f34` тесты отчитали 481 OK, затем процесс завершился Segmentation Fault/exit 139 после тестов; root cause не установлен. После `0a3aa2e` workflow `42692454779` прошёл дважды (attempt 1 и 2), каждый раз 481/481, exit 0. На `9cc4af1` workflow `42692951363` — SUCCESS: полный suite 481/481, `test_trade_credentials.py` 8/8 и `test_trade_delivery_ui.py` 9/9. Не заявлять, что root cause первоначального Qt shutdown crash установлен или исправлен; зафиксировано только два успешных повторных прогона и успех latest docs HEAD.
+- Эти результаты — CI/mock tests; они не доказывают live OpenSkin proxy/API, Frankfurter live rates или local Windows runtime.
+
+### 0.3 Сегодняшняя локальная проверка пользователя — фактический результат
+
+- Пользователь скачал ZIP ветки `work/local-sync` и распаковал в отдельную тестовую папку: `C:\Users\а\Downloads\GameDelivery-work-local-sync\GameDelivery-work-local-sync`.
+- Пользователь использует Python 3.14; виртуальное окружение `.venv` создано успешно.
+- `pip` обновлён до 26.3.
+- `pip install -r requirements.txt` завершился успешно: PySide6 6.12.0, keyring 25.7.0 и их зависимости установлены.
+- Приложение запускается командой `\.venv\Scripts\python.exe -m app` (фактическая команда пользователя запускала `python -m app` через `.venv`); окно приложения открылось.
+- На live-проверке пользователь увидел два одинаковых сообщения: **«Время ожидания proxy/HTTPS-туннеля истекло до отправки запроса.»** Пользователь сообщил, что «как не работало, так и не работает».
+- Это означает: установка/запуск окружения успешны, но live proxy/HTTPS route не подтверждён; OpenSkin API pricing request не подтверждён. Конкретная причина тайм-аута пока НЕ УСТАНОВЛЕНА. Не выдавать race-condition объяснение из C.6.3.6.3 как доказанную причину текущего live-сбоя.
+- Пользователь не присылал proxy credentials; их не запрашивать. Не просить заново устанавливать Python/зависимости или повторно запускать старые команды, если не выдана исправленная сборка с конкретной целью.
+
+### 0.4 ОБЯЗАТЕЛЬНОЕ требование пользователя: один ввод прокси в одну строку
+
+- Пользователь ранее прямо просил, чтобы proxy для OpenSkin вводился **одним текстовым значением в одну строку в любом удобном распространённом формате**, а не через отдельные поля `type`, `IP/host`, `port`, `login`, `password`.
+- Текущий `app/openskin_proxy_settings.py` нарушает это требование: widget показывает отдельные `QComboBox`/`QLineEdit`/`QSpinBox` для типа, host, port, username и password.
+- В `integrations/asf/proxy_config.py` уже есть `parse_proxy_uri()` и `parse_proxy_list_text()` для ASF proxy pool, в том числе URI с userinfo и несхематические `host:port[:username:password]`. Но наличие этого parser в ASF pool **не означает**, что OpenSkin UI поддерживает одно поле: текущий `OpenSkinProxySettingsWidget` его не использует.
+- Ранее возникшая формулировка, что ASF и OpenSkin proxy forms «уже используют одинаковые отдельные поля» и что URI parser не нужен, **ОТМЕНЕНА КАК НЕВЕРНАЯ относительно требования пользователя**. Не использовать эту формулировку как текущее решение. Запрос пользователя на одну строку старше текущего UI и остаётся обязательным.
+- Заменить пять отдельных полей OpenSkin одним маскированным/безопасным полем ввода proxy URI/endpoint. После успешного parse показывать только безопасный summary (scheme, host, port, auth yes/no), не показывая пароль.
+- Parser должен принимать распространённые форматы, как минимум:
+  - `http://login:password@host:port`;
+  - `socks5://login:password@host:port`;
+  - `login:password@host:port` (без схемы — HTTP default, если однозначно);
+  - `host:port:login:password`;
+  - `host:port`;
+  - bracketed IPv6 variants, если они однозначно разбираются.
+- Дополнительно проверить распространённые delimiter variants (например `host:port@login:password`) и percent-encoded userinfo. Не угадывать неоднозначный/неподдерживаемый формат: показать короткую ошибку формата без включения введённого секрета в текст ошибки.
+- Схема соединения и формат строки — разные понятия. В текущем Qt transport подтверждены только HTTP CONNECT и SOCKS5. Не объявлять `https://`-proxy (TLS к самому proxy endpoint) поддерживаемым, если transport фактически этого не умеет; либо явно объяснять ограничение, либо отдельно реализовать и протестировать такой transport. Не превращать молча HTTPS-proxy в plain HTTP proxy.
+- При сохранении: пароль/учётные данные — только OS keyring; QSettings хранит лишь несекретную часть профиля; после сохранения очищать поле ввода; не записывать полную строку/пароль в log, exception, telemetry или status label.
+- Профиль OpenSkin должен оставаться scoped только к OpenSkin `QNetworkAccessManager`; Frankfurter и прочие интеграции должны работать как прежде напрямую.
+- Добавить unit/UI regression tests для всех поддерживаемых синтаксисов, неправильных и неоднозначных строк, IPv6, masking/clearing, keyring-only secret storage, redaction, и проверки, что глобальный Qt proxy/Frankfurter/ASF не затронуты.
+
+### 0.5 ОБЯЗАТЕЛЬНАЯ следующая задача Codex — сначала исправить, потом просить пользователя скачать
+
+**Приоритет 1 — расследовать live timeout:**
+1. Прочитать этот Master Log, `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`, `docs/superpowers/checkpoints/C-6-3-6-handoff.md` и актуальные `integrations/openskin/client.py`, `integrations/openskin/proxy.py`, `app/openskin_proxy_settings.py`, связанные тесты.
+2. Не повторять уже выполненный `reply.isFinished()` fix без новой доказательной причины. Проверить фактическое поведение `QNetworkAccessManager`/`QNetworkProxy` на HTTP CONNECT и SOCKS5 под Windows/PySide6 6.12.0: proxy DNS, TCP connect, authentication callback, CONNECT handshake, TLS handshake, момент `requestSent`, timeout/abort semantics и закрытие менеджера/reply.
+3. Разделить таймауты по реальным стадиям транспорта. Не считать отсутствие `requestSent` достаточным доказательством, что прокси не отправила запрос: проверить семантику Qt signal на используемом transport. Если Qt не позволяет надёжно различить стадию, выводить точную неопределённую категорию вместо ложного диагноза.
+4. Проверить, не закрывается ли QNetworkAccessManager слишком рано из-за его жизненного цикла/thread ownership, и не теряются ли сигналы при выполнении в `QRunnable`. Использовать worker-local `QCoreApplication`-compatible Qt event loop/объекты и безопасный cleanup; не переносить глобальный proxy.
+5. Сохранять TLS certificate verification. Не добавлять `ignoreSslErrors`, не отключать TLS и не включать proxy глобально.
+6. Добавить mock regression tests по стадиям и по lifetime/race, а также фактическую Windows transport test strategy. Не отправлять реальные игровые операции.
+
+**Приоритет 2 — реализовать one-line input:**
+1. Заменить отдельные поля в `OpenSkinProxySettingsWidget` одним полем.
+2. Реализовать отдельный parser/conversion к `OpenSkinProxy`, переиспользовав подходящие части ASF parser без привязки OpenSkin к неподдерживаемым ASF схемам.
+3. Не показывать, не сохранять в открытом виде и не логировать всю строку после ввода. Secrets сохранять только в keyring; в QSettings — только host/scheme/port/username или иной минимально необходимый safe profile. В UI после save очищать поле.
+4. Явно задокументировать supported formats в placeholder/help text и тестах.
+
+**Приоритет 3 — верификация и передача сборки:**
+1. Добавить tests на parser, settings store, Qt transport и UI.
+2. Запустить focused tests, compileall и `git diff --check`; проверить CI на точном HEAD. Не считать старые CI достаточными для нового кода.
+3. Проверить, что C.6.3.6.4 threshold tests всё ещё проходят и `≤ $0.05` исключается из RUB totals.
+4. Только после успешных автоматических проверок обновить этот Master Log, Stage C plan и C.6.3.6 handoff, сохранив полную историю.
+5. Затем дать пользователю точную ссылку на ZIP/archive или Windows artifact из `work/local-sync`, отличить исходники от EXE, и одну пошаговую инструкцию для обновления отдельной тестовой копии. Старую `D:\GameDelivery` не трогать.
+6. Live-проверку просить только на исправленной сборке. Просить только результат и безопасную категорию/HTTP-код; не просить proxy credentials. Если понадобится log, пользователь присылает только redacted lines или summary.
+
+### 0.6 Обязательная запись журнала после каждого шага
+
+Codex обязан обновлять Master Log после каждого существенного изменения кода, теста, CI, пользовательской проверки, решения или смены статуса. Каждая запись должна содержать: дата, задача/этап, установленная причина или явно неустановленная причина, точные изменённые файлы, commit SHA, tests и exit code, CI run и точный HEAD, live result отдельно от mock/CI, оставшиеся риски, точный следующий шаг и что скачивать/проверять пользователю. Если код не менялся — фиксировать решение/проверку как docs-only entry.
+
+- Не стирать и не переписывать исторические записи. Новое решение оформлять append-only записью, а ошибочное прежнее решение явно помечать как superseded/corrected.
+- После изменения обязательно обновлять и рабочую копию источника журнала, и `PROJECT_MASTER_LOG.md` в `work/local-sync`; сверять содержимое/хэш. Если Project source нельзя переписать из текущей сессии, отдавать новый полный файл для замены и честно фиксировать sync blocker. Не говорить «журнал обновлён», пока не подтверждены фактические записи.
+- Не переходить к следующей задаче, пока работа по журналу не завершена или её ограничение явно не записано.
 
 ---
 
 ## 1. Обязательные правила работы
 
-1. Работать только в `feature/asf-bulk-account-import`, если пользователь явно не разрешит иное.
+1. Работать только в текущей рабочей ветке `work/local-sync`, если пользователь явно не разрешит иное. Исторические записи о `feature/asf-bulk-account-import` относятся к прошлым этапам и не меняют текущую целевую ветку.
 2. Никогда не изменять `main`, не переключать целевую ветку PR и не сливать PR без прямого разрешения пользователя.
 3. Не перескакивать между этапами. Выполнять задачи в установленной последовательности и переходить на следующий этап только после подтверждения пользователя.
 4. Перед каждой задачей сверять этот журнал, подробный план, фактическую структуру и код проекта, открытые PR, CI и связанные тесты.
@@ -51,8 +164,8 @@
 
 ### 2.1 Статус ветки и PR
 
-- Рабочая ветка: `feature/asf-bulk-account-import`.
-- Подтверждённый HEAD при создании журнала: `006dfce3e97da7611722234b8dfbcbd4c9698f1d` (историческая контрольная точка).
+- Текущая рабочая ветка: `work/local-sync`; подтверждённый HEAD на 2026-11-09: `9cc4af13dc14db0fae8266a96b4c7d56ad7e8e49`.
+- Более ранний подтверждённый HEAD при создании первоначального журнала: `006dfce3e97da7611722234b8dfbcbd4c9698f1d` (историческая контрольная точка).
 - В этой сессии повторно подтверждён коммит плана этапа C: `1e7187e33c3ff3cab6d65185dc5b3597be0f3418`; коммит содержит только новый документ плана, код приложения не менялся.
 - PR #4: открыт, draft, не слит. Ветка назначения PR — `feature/steam-card-set-selection`, а не `main`. Не менять PR и не сливать без разрешения.
 - `main` — отдельная старая линия разработки; не использовать её как рабочую базу для продолжения текущей задачи.
@@ -884,7 +997,6 @@ Telegram Bot — настраиваемая дополнительная пан�
 - Официальный пример ASF 6.3.11.7 для custom plugins помечает библиотеки host runtime как compile-only; ASF plugin docs рекомендуют не упаковывать DLL, которые уже поставляются ASF.
 - Исходный GameDelivery project копировал Newtonsoft.Json 13.0.3 в output через PackageReference + CopyLocalLockFileAssemblies=true, а workflow дополнительно копировал DLL в папку плагина.
 - Пользовательская ошибка происходит при reflection type scan на старте ASF, поэтому проверка пакета должна охватывать не только compile, но и output/package composition.
-
 **Изменённые файлы:**
 - `integrations/asf_plugin/GameDelivery.ASFPlugin.csproj`: Newtonsoft.Json теперь берётся как прямой reference из `ASF_BIN_DIR/Newtonsoft.Json.dll`, с `Private=false`; `CopyLocalLockFileAssemblies=false`. Это гарантирует compile-time contract с тем же Newtonsoft, который будет в host.
 - `.github/workflows/asf-plugin.yml`: скачивается официальный release asset ASF 6.3.11.7, проверяется release SHA-256; workflow требует Newtonsoft.Json.dll и System.Composition.AttributedModel.dll в официальном ASF package; после build проверяет отсутствие ASF-shared DLL в output; package больше не копирует Newtonsoft.Json и содержит только plugin DLL, README и BUILD_INFO.
@@ -1884,7 +1996,6 @@ Telegram — дополнительный канал уведомлений; е�
 ---
 
 ## 2026-11-07 — C.2: предварительная проверка технической основы Steam badge-aware подборщика
-
 **Статус:** проведена статическая проверка существующих модулей GameDelivery и внешней документации Steam. Это техническая разведка C.2; код и пользовательская БД не менялись.
 
 ### Подтверждено в исходниках GameDelivery
@@ -2338,7 +2449,7 @@ ASF Generic 6.3.11.7 / закреплённый SteamKit2 3.5.0 не задаё�
 
 - `integrations/openskin/client.py` использует только `POST https://api.openskin.dev/v1/prices/batch`, ограничивает batch 500 позициями, сопоставляет ordered `results` и читает только `steam.ask`. JSON числа разбираются как `Decimal`; ошибки не раскрывают response body; поддержан Retry-After.
 - `integrations/frankfurter/client.py` использует только `GET https://api.frankfurter.dev/v2/rate/usd/rub`; курс хранится точно, source date и локальное fetched time раздельны.
-- `games/cs2/pricing.py` считает физические Asset-строки, не ASF `amount`; использует Decimal и ROUND_HALF_UP, учитывает непередаваемые предметы, применяет выбранных ботов. Только ask `> $0.05` конвертируется и входит в RUB итоги. Более дешёвые цены сохраняются и отображаются в USD, но не конвертируются и не складываются.
+- `games/cs2/pricing.py` считает физические Asset-строки, не ASF `amount`; использует Decimal и ROUND_HALF_UP, учитывает непередаваемые предметы, применяет выбранных ботов. Только ask `>= $0.05` конвертируется и входит в RUB итоги. Более дешёвые цены сохраняются и отображаются в USD, но не конвертируются и не складываются.
 - Без подтверждённого seed/pattern generic quote не применяется к Doppler, Case Hardened, Fade, Heat Treated, Crimson Web и Slaughter; такие предметы отмечаются unsupported.
 - `games/cs2/price_store.py` создаёт идемпотентные `cs2_price_cache` и `cs2_fx_rate_cache`, сохраняет точные ask/rate, источник и локальные timestamps, state/retry/HTTP code и конвертацию. Ошибки не стирают последний успешный quote или курс; inventory snapshots/tables не меняются.
 - `app/game_inventory_panel.py` выполняет сеть в Qt worker, проверяет кэш таймером 10 минут, показывает суммы выбранных ботов и сводку в обоих режимах; общий режим показывает unit/group value, CS2 separate — каждый физический Asset. `app/game_inventory_cards.py` выводит цену на CS2 карточке.
@@ -2420,32 +2531,34 @@ Focused results: API/FX/pricing/store 35/35, exit 0; price panel 7/7, exit 0; CS
 - Следующий шаг: в локальной GameDelivery с актуального checkout выполнить «Проверить прокси», затем «Проверить OpenSkin API»; сообщить только категорию и HTTP status. Если proxy route и API проходят, выполнить read-only live acceptance цен CS2 на изолированном ASF; рабочий ASF и Trade Offers не использовать.
 - Этот журнал фиксирует базовый HEAD перед checkpoint; фактический HEAD после сохранения — единственный checkpoint commit, получаемый командой `git rev-parse HEAD`.
 
+## 2026-11-09 — C.6.3.6.4 — CS2 threshold, CI and local live-check result; corrective proxy-input requirement
 
-## 2026-11-09 — C.6.3.6.4 — включительная граница цены и CI regression
+### Ранее выполненные изменения, которые Codex обязан сохранить
 
-### Уточнение ценового правила
+- `games/cs2/pricing.py`, `games/cs2/price_store.py`, `app/game_inventory_panel.py`: включительный порог Steam Ask `<= $0.05`; только цена строго выше $0.05 конвертируется в RUB и участвует в RUB totals. Значения ниже/на пороге сохраняются видимыми в USD.
+- `tests/test_cs2_pricing.py`, `tests/test_cs2_price_store.py`, `tests/test_cs2_price_panel.py`: тесты границы ровно `$0.05` и связанные regressions.
+- `tests/test_cs2_price_store.py`: reopen/cache test использует фиксированный `now` и согласованный source timestamp вместо временной гонки.
+- `.github/workflows/tests.yml`: при падении полного suite workflow запускает тестовые модули отдельно для диагностики Qt/module shutdown; diagnostic job step conditional `if: failure()`.
+- Commits: `9331f343608ccce0a9658e6539de9767d75ba742`, `0a3aa2e33f48c6adc8c0a5e78a09f1b0642cdf90`, `9cc4af13dc14db0fae8266a96b4c7d56ad7e8e49`.
+- Exact latest known CI run `42692951363` on `9cc4af1`: SUCCESS, full suite 481 tests OK, trade credentials 8 tests OK, trade delivery UI 9 tests OK. Prior workflow `42692454779` passed twice at 481/481 after adding diagnostic fallback. Earlier run on `9331f34` reported 481 tests OK then segfaulted with exit 139 after tests; root cause remains unknown and must not be described as fixed.
 
-- OpenSkin Steam Ask ≤ $0.05 сохраняется и показывается в исходной USD, но не конвертируется и не включается в RUB totals.
-- Только значения > $0.05 eligible для Frankfurter USD/RUB конвертации.
-- Правило последовательно применено в games/cs2/pricing.py, games/cs2/price_store.py и app/game_inventory_panel.py: оценка каждого Asset, классификация quote при сохранении, защита save_conversion() и проверка необходимости получать FX rate.
-- Порог хранится в одном PRICE_THRESHOLD_USD; дублирующий литерал в price_store.py устранён.
-- Исправлен нестабильный по времени cache test: reopen assertion теперь передаёт фиксированное now=self.now и использует согласованный source timestamp. Добавлен отдельный regression test, подтверждающий, что ровно $0.05 получает BELOW_THRESHOLD и не может быть сохранено как RUB conversion.
+### Фактический результат пользовательской live-проверки
 
-### Изменения и проверка
+- Пользователь скачал и распаковал ZIP `work/local-sync` в `C:\Users\а\Downloads\GameDelivery-work-local-sync\GameDelivery-work-local-sync`.
+- На ПК уже установлен Python 3.14; `.venv` создан, pip обновлён до 26.3, `pip install -r requirements.txt` успешно установил PySide6 6.12.0 и keyring 25.7.0. Устанавливать Python 3.12 не требуется для этого пользователя; не отправлять его повторно на установку старого runtime только потому, что CI использует 3.12.
+- Программа запускается; окно открывается.
+- При проверке OpenSkin два раза показано: «Время ожидания proxy/HTTPS-туннеля истекло до отправки запроса». Live connectivity не работает. Ни успешный proxy probe, ни успешный pricing API response не подтверждены.
+- Точная причина этого реального сбоя не установлена. Не объявлять `reply.isFinished()` root cause; предыдущий fix не решил проблему пользователя.
 
-- Commit 9331f343608ccce0a9658e6539de9767d75ba742: включительный порог и детерминированные cache tests; изменены games/cs2/pricing.py, games/cs2/price_store.py, app/game_inventory_panel.py, tests/test_cs2_pricing.py, tests/test_cs2_price_store.py, tests/test_cs2_price_panel.py.
-- Commit 0a3aa2e33f48c6adc8c0a5e78a09f1b0642cdf90: CI теперь при падении общего suite запускает каждый tests/test_*.py отдельно (if: failure()), помогая локализовать самостоятельный Qt shutdown crash. При успешном полном suite диагностический шаг пропускается.
-- На кодовом commit 9331f34 один прогон сообщил 481 tests OK, но завершился Segmentation fault / exit 139 при завершении Python/Qt процесса. Сбой был после test assertions.
-- После добавления диагностического fallback полный workflow 42692454779 прошёл дважды: attempt 1 и attempt 2, каждый сообщил 481/481 tests OK и завершился exit 0. Отдельные проверки trade credential migration (8 tests) и trade UI flow (9 tests) также успешны.
-- Причина прежнего непостоянного Qt shutdown crash не установлена; считать её исправленной нельзя. В двух повторных полных прогонах симптом не воспроизвёлся. Диагностика отдельных модулей не запускалась, потому что она условно выполняется только при failure.
+### Исправление прежней неточной записи о proxy fields
 
-### Сверка OpenSkin/ASF proxy inputs
+Предыдущая запись в другом checkpoint, что OpenSkin form «уже использует одинаковые отдельные поля», не соответствует явному требованию пользователя и считается **SUPERSEDED / WRONG**. Пользователь просил единое поле ввода одной строкой в любом удобном распространённом формате. `app/openskin_proxy_settings.py` всё ещё показывает отдельные тип, host, port, username, password. Наличие `parse_proxy_uri()`/`parse_proxy_list_text()` в `integrations/asf/proxy_config.py` для ASF proxy pool не реализует это требование в OpenSkin UI. Не повторять старое решение и не спорить с требованием.
 
-ASF proxy form и OpenSkin proxy form уже используют одинаковые отдельные поля: scheme/type, host, port, username и password. OpenSkin поддерживает только HTTP CONNECT и SOCKS5 из-за ограничений используемого manager-local Qt transport; это намеренное более узкое множество, чем ASF general proxy pool. Дополнительный URI parser или новые поля не добавлялись, чтобы не вводить секреты в незамаскированное поле host. Пароль OpenSkin по-прежнему хранится через системный keyring, а не в QSettings.
+### Статус
 
-### Статус и ограничения
-
-- Все коммиты этой работы направлены только в work/local-sync. main и PR #4 не менялись. Локальная D:\GameDelivery не открывалась и не изменялась.
-- Нет live result для пользовательского proxy, OpenSkin API, Frankfurter и оценки CS2 в тестовом ASF. CI подтверждает только кодовые и mock-based проверки.
-- C.6.3.6 остаётся незавершённым до read-only live acceptance через изолированный ASF 730/2. Рабочий ASF 1242, Steam inventory mutations и Trade Offers запрещены.
-- Следующий шаг: сначала пользовательская кнопка «Проверить прокси», затем «Проверить OpenSkin API»; при успехе — отдельное read-only сравнение Steam Ask, Frankfurter USD/RUB и физических totals на изолированном test ASF. Секреты в чат не передавать.
+- Код в рамках пользовательской локальной проверки не менялся.
+- Ни один proxy credential не получен и не записан.
+- Тестовая папка — отдельная копия; `D:\GameDelivery` не тронута.
+- `main` и PR #4 не менялись.
+- C.6.3.6 остаётся **НЕ ЗАВЕРШЁН**: live proxy/HTTPS route и OpenSkin pricing API не прошли.
+- Следующая разрешённая задача — C.6.3.6.5: расследовать timeout и сделать one-line proxy input с tests в `work/local-sync`; не начинать заново CS2 pricing foundation и не повторять завершённые этапы.
