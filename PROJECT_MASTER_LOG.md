@@ -997,6 +997,7 @@ Telegram Bot — настраиваемая дополнительная пан�
 - Официальный пример ASF 6.3.11.7 для custom plugins помечает библиотеки host runtime как compile-only; ASF plugin docs рекомендуют не упаковывать DLL, которые уже поставляются ASF.
 - Исходный GameDelivery project копировал Newtonsoft.Json 13.0.3 в output через PackageReference + CopyLocalLockFileAssemblies=true, а workflow дополнительно копировал DLL в папку плагина.
 - Пользовательская ошибка происходит при reflection type scan на старте ASF, поэтому проверка пакета должна охватывать не только compile, но и output/package composition.
+
 **Изменённые файлы:**
 - `integrations/asf_plugin/GameDelivery.ASFPlugin.csproj`: Newtonsoft.Json теперь берётся как прямой reference из `ASF_BIN_DIR/Newtonsoft.Json.dll`, с `Private=false`; `CopyLocalLockFileAssemblies=false`. Это гарантирует compile-time contract с тем же Newtonsoft, который будет в host.
 - `.github/workflows/asf-plugin.yml`: скачивается официальный release asset ASF 6.3.11.7, проверяется release SHA-256; workflow требует Newtonsoft.Json.dll и System.Composition.AttributedModel.dll в официальном ASF package; после build проверяет отсутствие ASF-shared DLL в output; package больше не копирует Newtonsoft.Json и содержит только plugin DLL, README и BUILD_INFO.
@@ -1996,6 +1997,7 @@ Telegram — дополнительный канал уведомлений; е�
 ---
 
 ## 2026-11-07 — C.2: предварительная проверка технической основы Steam badge-aware подборщика
+
 **Статус:** проведена статическая проверка существующих модулей GameDelivery и внешней документации Steam. Это техническая разведка C.2; код и пользовательская БД не менялись.
 
 ### Подтверждено в исходниках GameDelivery
