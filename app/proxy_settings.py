@@ -16,6 +16,7 @@ from integrations.asf.client import ASFClient, ASFError
 from integrations.asf.proxy_config import SteamProxy, parse_proxy_list_text
 from integrations.asf.proxy_store import ProxyStore
 from app.bot_selector import populate_bot_combo
+from app.openskin_proxy_settings import OpenSkinProxySettingsWidget
 
 
 def _database_path() -> Path:
@@ -169,6 +170,9 @@ class ProxySettingsWidget(QWidget):
         self.pool_status.setObjectName("muted")
         pool_root.addWidget(self.pool_status)
         self.tabs.addTab(pool_page, "Список прокси")
+
+        self.open_skin_proxy_settings = OpenSkinProxySettingsWidget()
+        self.tabs.addTab(self.open_skin_proxy_settings, "OpenSkin · цены")
 
     def choose_proxy_txt(self):
         path, _ = QFileDialog.getOpenFileName(self, "Выбрать список прокси", "", "Text (*.txt);;All files (*)")

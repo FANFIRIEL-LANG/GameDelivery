@@ -1,3 +1,4 @@
+import os
 import sys
 import sqlite3
 from pathlib import Path
@@ -14,10 +15,12 @@ from games.steam_cards.snapshot import InventorySnapshotStore
 from games.steam_cards.reservations import AssetReservationStore
 from app.inventory_panel import InventoryPanel
 from app.game_inventory_panel import GameInventoryPanel
+from app.bot_selector import BotSelectionModel, configured_bot_names
 from app.proxy_settings import ProxySettingsWidget
 from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
-from integrations.asf.client import ASFClient, ASFError
+from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
+from integrations.openskin.client import configure_openskin_diagnostics
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 
 
@@ -67,6 +70,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(header)
 
         self.tabs = QTabWidget()
+        self.bot_selection_model = BotSelectionModel(self)
+        if not os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip():
+            self.bot_selection_model.set_accounts(configured_bot_names())
         self.tabs.addTab(self._orders_tab(), "Заказы")
         self.marketplace_panel = MarketplacePanel()
         self.marketplace_panel.connection_status_changed.connect(self.platform_status.setText)
@@ -74,7 +80,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
-        self.game_inventory_panel = GameInventoryPanel()
+        self.game_inventory_panel = GameInventoryPanel(
+            bot_selection_model=self.bot_selection_model
+        )
+        self.bot_selection_model.refresh_requested.connect(
+            self.game_inventory_panel.refresh_bot_list
+        )
         self.tabs.addTab(self.game_inventory_panel, "Игровые предметы")
         self.inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
         self.game_inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
@@ -1062,7 +1073,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Не удалось отменить заказ", str(exc))
 
     def _inventory_tab(self):
-        return InventoryPanel()
+        return InventoryPanel(bot_selection_model=self.bot_selection_model)
 
     def _games_tab(self):
         page = QWidget()
@@ -1206,19 +1217,28 @@ class MainWindow(QMainWindow):
         layout.addLayout(toolbar)
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText("Журнал будет заполнен после запуска или подключения к ASF.")
+        self.log_view.setPlaceholderText(
+            "Журнал ASF и безопасная диагностика сетевых запросов появятся после использования."
+        )
         layout.addWidget(self.log_view, 1)
         self._refresh_logs()
         return page
 
     def _refresh_logs(self):
-        log_path = Path.home() / ".gamedelivery" / "asf-supervisor.log"
+        log_paths = (
+            ("ASF / управление", Path.home() / ".gamedelivery" / "asf-supervisor.log"),
+            ("OpenSkin / proxy", Path.home() / ".gamedelivery" / "openskin-proxy.log"),
+        )
         try:
-            if not log_path.is_file():
-                content = "Локальный журнал пока пуст. Запусти ASF через вкладку «ASF-боты»."
-            else:
-                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                content = "\n".join(lines[-3000:]) or "Локальный журнал пока пуст."
+            sections = []
+            for title, log_path in log_paths:
+                if log_path.is_file():
+                    lines = log_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                    if lines:
+                        sections.append(f"=== {title} ===\n" + "\n".join(lines[-1500:]))
+            content = "\n\n".join(sections) or "Локальный журнал пока пуст."
             self.log_view.setPlainText(content)
         except OSError as exc:
             self.log_view.setPlainText(f"Не удалось прочитать локальный журнал: {exc}")
@@ -1248,6 +1268,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    configure_openskin_diagnostics()
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 import re
 from typing import Any
@@ -50,10 +50,13 @@ class CS2InventoryInstance:
     restriction_status: RestrictionStatus = RestrictionStatus.UNKNOWN
     tradable_after: datetime | None = None
     last_inventory_refresh: datetime | None = None
+    quality: str = ""
+    exterior: str = ""
+    rarity: str = ""
 
     def __post_init__(self):
         for field in ("game_id", "bot_name", "asset_id", "class_id", "instance_id",
-                      "name", "item_type", "market_hash_name"):
+                      "name", "item_type", "market_hash_name", "quality", "exterior", "rarity"):
             if not isinstance(getattr(self, field), str):
                 raise TypeError(f"{field} должен быть строкой")
         if not isinstance(self.icon_url, str) or not isinstance(self.icon_url_large, str):
@@ -82,6 +85,9 @@ class CS2InventoryInstance:
             value = getattr(self, field)
             if value is not None and not isinstance(value, datetime):
                 raise TypeError(f"{field} должен быть datetime или None")
+        if self.tradable_after is not None and (
+                self.tradable_after.tzinfo is None or self.tradable_after.utcoffset() is None):
+            object.__setattr__(self, "tradable_after", None)
 
     @property
     def physical_key(self) -> tuple[str, str, str]:
@@ -195,13 +201,14 @@ def _description_text(data: dict[str, Any], name: str) -> str:
     return value.strip()
 
 
-def _tag_names(description: dict[str, Any]) -> tuple[str, ...]:
+def _tag_metadata(description: dict[str, Any]) -> tuple[tuple[str, ...], str, str, str]:
     tags = _value(description, "tags", [])
     if tags is None:
-        return ()
+        return (), "", "", ""
     if not isinstance(tags, list):
         raise ASFError("ASF вернул некорректный список tags")
     names = []
+    by_category = {}
     for tag in tags:
         if not isinstance(tag, dict):
             continue
@@ -211,7 +218,18 @@ def _tag_names(description: dict[str, Any]) -> tuple[str, ...]:
                 raise ASFError("ASF вернул некорректное имя tag")
             if value.strip():
                 names.append(value.strip())
-    return tuple(names)
+        internal = _value(tag, "internal_name")
+        display = value.strip() if isinstance(value, str) and value.strip() else (
+            internal.strip() if isinstance(internal, str) else ""
+        )
+        category = _value(tag, "category")
+        if (display and isinstance(category, str)
+                and category.casefold() in {"quality", "exterior", "rarity"}):
+            by_category.setdefault(category.casefold(), display)
+    return (
+        tuple(names), by_category.get("quality", ""),
+        by_category.get("exterior", ""), by_category.get("rarity", ""),
+    )
 
 
 def _flag(data: dict[str, Any], name: str) -> bool | None:
@@ -288,16 +306,18 @@ def adapt_cs2_inventory_response(
         desc = by_identity.get((cls, inst))
         if desc is None:
             raise ASFError(f"Для asset {aid} не найдено ASF description")
+        tags, quality, exterior, rarity = _tag_metadata(desc)
         output.append(CS2InventoryInstance(
             "cs2", source_app, source_context, bot_name, aid, cls, inst,
             _amount_or_none(_value(asset, "amount")), _description_text(desc, "name"),
             _description_text(desc, "type"), _description_text(desc, "market_hash_name"),
             _flag(desc, "tradable"), _flag(desc, "marketable"),
             _description_text(desc, "icon_url"), _description_text(desc, "icon_url_large"),
-            _tag_names(desc),
+            tags,
             _int_or_none(_value(desc, "market_tradable_restriction")),
             _int_or_none(_value(desc, "market_marketable_restriction")),
             last_inventory_refresh=last_inventory_refresh,
+            quality=quality, exterior=exterior, rarity=rarity,
         ))
     return tuple(output)
 
@@ -322,11 +342,11 @@ def build_cs2_inventory_projection(
     )))
     grouped: dict[tuple[Any, ...], list[CS2InventoryInstance]] = defaultdict(list)
     for i in normalized:
-        key = (i.appid, i.class_id, i.instance_id, i.name, i.item_type,
-               i.market_hash_name, i.icon_url, i.icon_url_large, i.tags,
-               i.is_tradable, i.is_marketable, i.market_tradable_restriction,
-               i.market_marketable_restriction, i.restriction_type,
-               i.restriction_source, i.restriction_status, i.tradable_after)
+        key = (
+            i.game_id, i.appid, i.context_id, i.class_id, i.instance_id,
+            i.name, i.item_type, i.market_hash_name, i.quality, i.exterior,
+            i.rarity, tuple(sorted(i.tags, key=str.casefold)),
+        )
         grouped[key].append(i)
     groups = []
     for key, members in sorted(grouped.items(), key=lambda pair: str(pair[0]).casefold()):

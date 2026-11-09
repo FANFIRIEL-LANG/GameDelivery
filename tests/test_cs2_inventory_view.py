@@ -124,6 +124,10 @@ class CS2ProjectionTests(unittest.TestCase):
     def test_elapsed_timestamp_does_not_mutate_source_flags_or_create_deadline(self):
         data = payload(amount=1, tradable=False)
         data["Result"]["Bot A"]["Descriptions"][0]["tradable_after"] = "2000-01-01T00:00:00Z"
+        data["Result"]["Bot A"]["Descriptions"][0]["item_expiration"] = "2000-01-01T00:00:00Z"
+        data["Result"]["Bot A"]["Descriptions"][0]["descriptions"] = [
+            {"value": "Tradable/Marketable After 10 Nov @ 7:00am"}
+        ]
         item = adapt_cs2_inventory_response(data, "Bot A")[0]
         self.assertFalse(item.is_tradable)
         self.assertIsNone(item.tradable_after)
@@ -146,16 +150,30 @@ class CS2ProjectionTests(unittest.TestCase):
         self.assertEqual(build_cs2_inventory_projection([a, b], []).total_amount, None)
         self.assertEqual(len(build_cs2_inventory_projection([a, b], ["bot a", "BOT A"]).instances), 1)
 
-    def test_all_independent_flag_combinations_remain_separate(self):
+    def test_missing_image_metadata_does_not_split_same_item_group(self):
+        base = adapt_cs2_inventory_response(payload("Bot A"), "Bot A")[0]
+        old_snapshot = replace(base, asset_id="old", icon_url="", icon_url_large="")
+        current_snapshot = replace(base, bot_name="Bot B", asset_id="current",
+                                   icon_url="normalized-icon")
+
+        projection = build_cs2_inventory_projection([old_snapshot, current_snapshot])
+
+        self.assertEqual(len(projection.groups), 1)
+        self.assertEqual({item.asset_id for item in projection.groups[0].instances},
+                         {"old", "current"})
+        self.assertEqual({item.icon_url for item in projection.instances},
+                         {"", "normalized-icon"})
+
+    def test_all_independent_flag_combinations_stay_distinct_inside_one_variant_group(self):
         base = adapt_cs2_inventory_response(payload(), "Bot A")[0]
         combos = ((True, True), (True, False), (False, True), (False, False),
                   (None, True), (True, None), (None, None))
         items = [replace(base, asset_id=f"a{i}", is_tradable=t, is_marketable=m)
                  for i, (t, m) in enumerate(combos)]
         view = build_cs2_inventory_projection(items)
-        self.assertEqual(len(view.groups), 7)
-        self.assertEqual({(g.instances[0].is_tradable, g.instances[0].is_marketable)
-                          for g in view.groups}, set(combos))
+        self.assertEqual(len(view.groups), 1)
+        self.assertEqual({(i.is_tradable, i.is_marketable)
+                          for i in view.groups[0].instances}, set(combos))
 
     def test_restriction_metadata_and_same_class_assets_are_preserved(self):
         base = adapt_cs2_inventory_response(payload(), "Bot A")[0]
@@ -163,25 +181,32 @@ class CS2ProjectionTests(unittest.TestCase):
         b = replace(base, asset_id="a2", market_tradable_restriction=3)
         projection = build_cs2_inventory_projection([a, b])
         self.assertEqual(len(projection.instances), 2)
-        self.assertEqual(len(projection.groups), 2)
+        self.assertEqual(len(projection.groups), 1)
         self.assertEqual({i.physical_key for i in projection.instances}, {
             ("cs2", "Bot A", "a1"), ("cs2", "Bot A", "a2")})
+        self.assertEqual({i.market_tradable_restriction for i in projection.groups[0].instances}, {2, 3})
 
-    def test_restriction_status_type_and_source_split_groups(self):
+    def test_restriction_status_type_and_source_remain_per_instance_in_one_group(self):
         from games.cs2.inventory_view import RestrictionStatus, RestrictionType
         base = adapt_cs2_inventory_response(payload(), "Bot A")[0]
         a = replace(base, asset_id="a1", restriction_type=RestrictionType.NONE,
                     restriction_status=RestrictionStatus.AVAILABLE, restriction_source="snapshot")
         b = replace(base, asset_id="a2", restriction_type=RestrictionType.UNKNOWN,
                     restriction_status=RestrictionStatus.UNKNOWN, restriction_source=None)
-        self.assertEqual(len(build_cs2_inventory_projection([a, b]).groups), 2)
+        group, = build_cs2_inventory_projection([a, b]).groups
+        self.assertEqual({i.physical_key for i in group.instances}, {a.physical_key, b.physical_key})
+        self.assertEqual({i.restriction_type for i in group.instances},
+                         {RestrictionType.NONE, RestrictionType.UNKNOWN})
+        self.assertEqual({i.restriction_status for i in group.instances},
+                         {RestrictionStatus.AVAILABLE, RestrictionStatus.UNKNOWN})
 
-    def test_asf_numeric_restrictions_split_groups_and_cause_stays_unknown(self):
+    def test_asf_numeric_restrictions_stay_per_instance_and_cause_stays_unknown(self):
         base = adapt_cs2_inventory_response(payload(), "Bot A")[0]
         a = replace(base, asset_id="a1", market_tradable_restriction=7)
         b = replace(base, asset_id="a2", market_tradable_restriction=8)
         view = build_cs2_inventory_projection([a, b])
-        self.assertEqual(len(view.groups), 2)
+        self.assertEqual(len(view.groups), 1)
+        self.assertEqual({i.market_tradable_restriction for i in view.groups[0].instances}, {7, 8})
         self.assertTrue(all(i.restriction_type.value == "unknown" for i in view.instances))
 
     def test_frozen_models_deep_freeze_collections_and_are_hashable(self):
@@ -200,11 +225,65 @@ class CS2ProjectionTests(unittest.TestCase):
         with self.assertRaises((AttributeError, TypeError)):
             projection.instances += (item,)
 
-    def test_description_variants_and_flags_are_separate_groups(self):
+    def test_variant_identity_splits_real_variants_but_not_per_instance_status(self):
         a = adapt_cs2_inventory_response(payload(), "Bot A")[0]
         b = replace(a, asset_id="b1", market_hash_name="AK | Blue")
         c = replace(a, asset_id="c1", is_tradable=False)
-        self.assertEqual(len(build_cs2_inventory_projection([a, b, c]).groups), 3)
+        view = build_cs2_inventory_projection([a, b, c])
+        self.assertEqual(len(view.groups), 2)
+        redline = next(g for g in view.groups
+                       if any(i.market_hash_name == a.market_hash_name for i in g.instances))
+        self.assertEqual({i.is_tradable for i in redline.instances}, {True, False})
+
+    def test_per_instance_deadlines_do_not_split_variant_group(self):
+        base = adapt_cs2_inventory_response(payload(), "Bot A")[0]
+        first = replace(base, asset_id="a1", tradable_after=datetime(2026, 11, 10, tzinfo=timezone.utc))
+        second = replace(base, asset_id="a2", bot_name="Bot B",
+                         tradable_after=datetime(2026, 11, 11, tzinfo=timezone.utc))
+
+        group, = build_cs2_inventory_projection([first, second]).groups
+
+        self.assertEqual(len(group.instances), 2)
+        self.assertEqual({i.tradable_after for i in group.instances},
+                         {first.tradable_after, second.tradable_after})
+
+    def test_quality_and_exterior_tags_are_preserved_for_variant_identity(self):
+        data = payload()
+        data["Result"]["Bot A"]["Descriptions"][0]["tags"] = [
+            {"category": "Rarity", "localized_tag_name": "Classified"},
+            {"category": "Quality", "localized_tag_name": "Genuine"},
+            {"category": "Exterior", "localized_tag_name": "Minimal Wear"},
+        ]
+        item = adapt_cs2_inventory_response(data, "Bot A")[0]
+        changed = replace(item, asset_id="a2", exterior="Field-Tested")
+
+        self.assertEqual(item.exterior, "Minimal Wear")
+        self.assertEqual(item.quality, "Genuine")
+        self.assertEqual(item.rarity, "Classified")
+        self.assertEqual(len(build_cs2_inventory_projection([item, changed]).groups), 2)
+
+    def test_class_instance_type_and_stattrak_variants_remain_separate(self):
+        base = adapt_cs2_inventory_response(payload(), "Bot A")[0]
+        variants = [
+            base,
+            replace(base, asset_id="a2", class_id="different-class"),
+            replace(base, asset_id="a3", instance_id="different-instance"),
+            replace(base, asset_id="a4", item_type="Souvenir Rifle"),
+            replace(base, asset_id="a5", market_hash_name="StatTrak AK | Redline",
+                    tags=("StatTrak",)),
+        ]
+
+        projection = build_cs2_inventory_projection(variants)
+
+        self.assertEqual(len(projection.groups), len(variants))
+        self.assertEqual(sum(group.instance_count for group in projection.groups), len(variants))
+
+    def test_naive_release_timestamp_is_downgraded_to_unknown(self):
+        item = adapt_cs2_inventory_response(payload(), "Bot A")[0]
+
+        item = replace(item, tradable_after=datetime(2026, 11, 10))
+
+        self.assertIsNone(item.tradable_after)
 
 
 if __name__ == "__main__":

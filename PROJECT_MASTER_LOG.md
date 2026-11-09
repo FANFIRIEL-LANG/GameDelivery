@@ -1776,7 +1776,7 @@ C.5 и C.6 не следует смешивать. Существующий фу
 #### 10. Единые контрольные ворота каждой итерации
 
 Каждый этап/изменение проходит одинаковый цикл:
-1. Сверить актуальные HEAD, рабочую ветку и PR; работать только в `feature/asf-bulk-account-import`, не трогать `main` и не менять base PR без отдельного решения пользователя.
+1. Сверить актуальные HEAD, рабочую ветку и PR. Указания `feature/asf-bulk-account-import` и `feature/steam-card-set-selection` относятся к историческим этапам PR #4; для текущей разработки C.6 работать в `work/local-sync`, не менять `main` и PR #4. Более позднее явное указание пользователя имеет приоритет.
 2. Зафиксировать спецификацию, затрагиваемые файлы, ограничения и критерии приёмки до изменения кода.
 3. Добавить регрессионный тест, который воспроизводит исходную проблему.
 4. Сделать минимальное исправление, сохраняя уже работающую функциональность.
@@ -2171,3 +2171,251 @@ Scope: новые CS2 adapter/projection, ASF parser fixture module, CS2 game pa
 Cause evidence: `GameInventoryStore` uses `with self._connect() as db`; sqlite Connection context manager commits/rolls back but does not close the connection. Development-mode ResourceWarnings confirm unclosed connections at process shutdown. This is pre-existing Store resource cleanup behavior outside the permitted scope; production DB/store and tests were not changed. No broader suite was run because the directly related Store module has three errors. Therefore the regression gate is partial, not fully green; C.6.2 is not declared ready for commit pending an approved environment/path that closes the Store handles or a separately authorized fix.
 
 `compileall` for the two changed Python files and `git diff --check` are recorded after this entry. No commit, push or Actions run was performed. Current HEAD remains `313d5ff87cc635dbc4411a2680df65402cca0a06`.
+
+## 2026-11-08 — C.6.3.1 подключение CS2 Inventory View
+
+В `GameInventoryPanel.fetch_inventory()` CS2 теперь получает ASF payload ровно один раз с `730/2`. Тот же объект передаётся существующему `parse_game_inventory()` и `adapt_cs2_inventory_response()`; parser-derived `InventoryItem` сохраняется обычным `GameInventoryStore.replace()`. Остальные игровые модули продолжают вызывать прежний `refresh_game_inventory()`.
+
+В существующей панели CS2 отображается группированными карточками из одной `CS2InventoryProjection`: количество stack items, число физических asset instances, число и имена ботов-владельцев, точные asset ID в tooltip, независимые tradable/marketable flags и typed restriction/status. Поиск, контейнерный, передаваемости, редкости и качества фильтры применяются к группам; изменение checkbox бота обновляет проекцию. Группировка сохраняет идентичность instances и разделяет разные флаги/ограничения.
+
+Для legacy сохранённых снимков in-memory модель строится из `InventoryItem`: `amount` и restriction остаются unknown, deadline не создаётся; в рамках CS2 выбирается только контекст 730/2. ASF payload не удерживается на диске. Если адаптер не может прочитать ответ, обычный snapshot всё равно сохраняется, а UI строится из сохранённых полей с неизвестным отсутствующим количеством. Поэтому точные amount/restriction metadata доступны только после успешного обновления текущей сессии и теряются после перезапуска до следующего обновления. Live ASF не подключался; торговых действий нет.
+
+Проверки: `python -m unittest tests.test_cs2_inventory_panel -v` — 5 passed; `python -m unittest tests.test_game_inventory_modules.GameInventoryParserTests tests.test_game_inventory_modules.GameInventoryFilteringTests tests.test_game_inventory_modules.GameInventoryImageFallbackTests tests.test_game_inventory_modules.GameInventoryCardMetadataTests tests.test_inventory_views -v` — 26 passed. Полный набор и известные SQLite Store cleanup tests не запускались. Не менялись parser/InventoryItem, Store/SQLite/migrations, ASF plugin, preflight и delivery/trade. Другие игровые режимы по-прежнему используют прежний refresh/card render path; общий checkbox аккаунта теперь обновляет локальную проекцию. Изменения не закоммичены и не отправлены; CI не запускался.
+
+## 2026-11-08 — C.6.3.2.1 локальный test ASF IPC endpoint
+
+Добавлен process-only opt-in `GAMEDELIVERY_TEST_ASF_IPC_URL` для `GameInventoryPanel`. При его отсутствии сохраняется прежний ASFClient на `1242` и существующее заполнение IPC поля. При заданном endpoint панель не загружает сохранённый IPCPassword, очищает/отключает обычное поле и запрашивает тестовый пароль отдельным `QInputDialog` с `QLineEdit.EchoMode.Password`. Пароль передаётся только конструктору ASFClient, живёт в памяти запроса и не записывается в настройки, SQLite, файлы или журналы.
+
+Test-mode endpoint проверяется до prompt: только HTTP localhost/127.0.0.1/::1, без URL credentials/path/query и с альтернативным портом, отличным от 1242. Отмена/пустой ввод не создаёт ASFClient и не выполняет никаких запросов. `ASFClient` уже требует `allow_alternate_loopback_port=True` и сам повторно проверяет loopback; добавлена только константа имени env-переменной.
+
+При test-mode тот же env opt-in отключает чтение сохранённого IPCPassword в `InventoryPanel` и `ASFManagementWidget`, создаваемых главным окном. Без opt-in их поведение не меняется. Ошибки ASF/адаптера в test-mode показываются без подробностей исключения, чтобы исключить отображение введённого секрета.
+
+Включение PowerShell: `$env:GAMEDELIVERY_TEST_ASF_IPC_URL = 'http://127.0.0.1:1243'; python -m app`; после выхода удалить временную переменную через `Remove-Item Env:GAMEDELIVERY_TEST_ASF_IPC_URL`. Вводить IPCPassword только в появившемся скрытом диалоге; не помещать его в команду или URL.
+
+Целевые тесты: `python -m unittest tests.test_cs2_inventory_panel -v` — 12 passed; пять непосредственно связанных `tests.test_asf_client.ASFClientTests` для стандартного адреса/alt opt-in/loopback — 5 passed. `compileall` и `git diff --check` прошли. Тестовый ASF-процесс ранее был подтверждён по listener PID и аргументу `--path D:\ASF-CS2-TEST\Home`; одиночный read-only `/Api/ASF` без пароля получил отказ авторизации. После изменения пароль через приложение и live-инвентарь ещё не проверялись. К 1242 запросов не выполнялось. Изменения C.6.3.1 сохранены в рабочем дереве вместе с новым механизмом; commit/push отсутствуют по запросу.
+
+## 2026-11-08 — C.6.3.3 единое отображение игровых предметов, изображений и цен
+
+Вкладки «Инвентарь» и «Игровые предметы» получили согласованные режимы «Общий вид» / «Раздельно по ботам» и «Карточки предметов» / «Таблица подробностей». Steam-card selection сохраняет точный выбранный `(bot, asset ID)` при повторной проекции. Game inventory группирует `InventoryItem` по варианту и независимым tradable/marketable статусам; CS2 строит обе формы из существующей `CS2InventoryProjection`, а раздельный режим строит группы по каждому боту. Checkbox ботов фильтрует источник до отрисовки.
+
+Общие показатели считаются по физическим asset records и не смешиваются с stack amount: всего (светлый), непередаваемые (красный), аккаунтов-владельцев (серый), передаваемые (зелёный), неизвестный статус отдельно. `None` не считается передаваемым. В CS2 ASF `amount` показывается отдельно от числа физических asset instances; неизвестные значения остаются неизвестными. Карточки и таблицы показывают одинаковые метрики, владельцев/asset ID и реальную миниатюру рядом с названием. Цена отображается как «источник не настроен»; числовая цена не подменяется нулём.
+
+Обе вкладки используют один `SteamInventoryImageLoader` с общими fallback-hosts и обработкой кэша. Табличные миниатюры связаны с URL в item metadata; асинхронная загрузка обновляет совпадающие строки, а не ищет по тексту названия. CS2 adapter теперь получает normalized `icon_url`/`icon_url_large` из уже разобранного `InventoryItem` по полному физическому ключу. Различие только в наличии artwork не дробит одну и ту же группу; существующее изображение выбирается из любой её записи. Старые snapshots без изображения остаются валидными.
+
+Исследование ASF plugin подтвердило: `gamedelivery-diagnose` выполняет read-only диагностику/badge/inventory для `753/6`; `gamedelivery-preview`/`gamedelivery-send` относятся к trade-пути. Ни одна из этих команд не выдаёт изображения или цены. URL изображений приходят из ASF inventory descriptions и нормализуются Python inventory parser; Steam Cards также несут image metadata. Python/plugin price source, cache или collector не найден; автоматический неофициальный `priceoverview` не вызывался. DLL и приложение собирать/скачивать не требуется для этих исходных данных.
+
+Targeted verification: `python -m unittest tests.test_inventory_display tests.test_inventory_panel_display tests.test_inventory_views tests.test_cs2_inventory_view tests.test_cs2_inventory_panel -v` — 68 passed, exit 0; `python -m unittest tests.test_game_inventory_modules.GameCatalogTests tests.test_game_inventory_modules.GameInventoryCardMetadataTests tests.test_game_inventory_modules.GameInventoryFilteringTests tests.test_game_inventory_modules.GameInventoryImageFallbackTests tests.test_game_inventory_modules.GameInventoryParserTests -v` — 13 passed, exit 0. Полный `tests.test_game_inventory_modules` также был запущен для классификации image-loader regression: три существующие Store tests дали WinError 32 при удалении temp DB; это документированная в C.6.2.4 проблема открытых SQLite connections, Store не менялся. В первом combined запуске был UI-test failure от затенения переменной списка выбранных ботов, исправлено; повторный целевой suite прошёл целиком. Live ASF/CDN, production запуск, полный проектный suite, DLL и торговые операции не запускались.
+
+Финальные статические проверки после обновления docs: `python -m compileall app/asf_management.py app/game_inventory_cards.py app/game_inventory_panel.py app/inventory_display.py app/inventory_panel.py integrations/asf/client.py games/cs2/inventory_view.py games/inventory_display.py games/steam_cards/inventory_views.py tests/test_cs2_inventory_panel.py tests/test_cs2_inventory_view.py tests/test_inventory_display.py tests/test_inventory_panel_display.py tests/test_inventory_views.py` — exit 0; `git diff --check` — exit 0 (Git показал лишь предупреждения о нормализации LF/CRLF).
+
+`PROJECT_MASTER_LOG.md` и Stage C plan обновлены. Не менялись SQLite/schema/migrations, `InventoryItem`, production parser/store/refresh, ASF plugin, preflight или delivery/trade. Изменения остаются локальными без commit/push; CI на незакоммиченных файлах не запускался.
+## 2026-11-09 — C.6.3.4 checkpoint: карточки и изоляция ASF test-mode
+
+В карточках игровых предметов убраны постоянные строки с передаваемостью, ограничениями, ASF amount и техническими метриками; оставлены изображение, название, количество физических экземпляров и недоступная цена. Редкость CS2 окрашивает обводку только при совпадении известного значения в тегах. Подробности, владельцы, asset ID, статусы и ограничения доступны в tooltip. CS2 карточки с непередаваемым и неизвестным статусом приглушены разными фонами, сохраняя цветную обводку.
+
+Карточки вкладки «Инвентарь» теперь компактно показывают изображение, название/качество и количество; таблица подробностей не менялась. Метрики переведены с постоянной карточки в tooltip, а карточный режим различает статусы приглушённым фоном. В существующий item_filter добавлен отдельный пункт для неизвестной передаваемости. Источник Steam Card inventory не предоставляет отдельную редкость в InventoryRow, поэтому её цветная обводка там остаётся неустановленной и не выводится из качества.
+
+Причина возможного конфликта endpoint подтверждена по коду: ASFManagementWidget продолжал использовать сохранённый auto_start и обнаруженный ASF executable/config в test-mode, при этом его ASFClient оставался на 1242; конструктор также мог читать IPCPassword из ASF.json. В test-mode ASF management теперь не ставит startup/refresh timers, не ищет maFiles и не читает ASF.json, а весь виджет блокирует ручное управление. Исправлен риск автозапуска обычного ASF при запуске GameDelivery с TEST ASF endpoint. Причина конкретного HTTP 400 не установлена: ASFClient сообщает только HTTP status, безопасный response body/session output в этой сессии отсутствовали; реальный запрос не выполнялся.
+
+Целевые проверки: `python -m unittest tests.test_cs2_inventory_panel tests.test_inventory_panel_display -v` — 21 passed, exit 0; `python -m unittest tests.test_inventory_views -v` — 15 passed, exit 0. Совместный четырёхмодульный запуск дал все тесты OK, но завершился Windows Qt access-violation при завершении процесса; поэтому результаты учитываются раздельно по успешным процессам. Не запускались полный набор, приложение, ASF или Steam live checks. Commit/push не выполнялись. Steam Card rarity metadata и диагноз HTTP 400 остаются ограничениями.
+### C.6.3.4 — итоговая корректировка на остановке
+
+Последний повтор GUI-набора вывел 21/21 `OK`, но процесс завершился с Qt access-violation `-1073740791`; ранее эти модули завершались с exit 0 до изменения, переместившего owner list CS2 card в tooltip. Поэтому полный процессный результат GUI сейчас не чистый. `tests.test_inventory_views` прошёл 15/15, exit 0. Compileall и diff-check прошли до последней малой tooltip правки. Владельцы и amount убраны из постоянного отображения CS2 card и доступны только в tooltip. Steam Card rarity отсутствует в `InventoryRow`; не выводить её из качества. HTTP 400 остаётся недиагностированным без безопасного ASF response body/live test session. Commit/push не выполнялись.
+### C.6.3.4 — результат закрытия GUI-checkpoint (2026-11-09)
+
+После предыдущего checkpoint отдельные процессы завершились штатно: `python -X faulthandler -m unittest tests.test_cs2_inventory_panel -v` — 18/18, exit 0; `python -X faulthandler -m unittest tests.test_inventory_panel_display -v` — 4/4, exit 0. Перед этим один запуск GUI modules завершился Windows access violation, хотя unittest показывал OK; повторный полный CS2 panel test с faulthandler и отдельный panel-display test завершились чисто. Считать прежний сбой непостоянным наблюдением, окончательное устранение причины не доказано.
+
+По видимому уточнённому контракту качество удалено из обычной GameItemCard и остаётся в tooltip; добавлен тест `test_game_item_card_keeps_technical_quality_in_tooltip_only` (сначала упал на постоянном тексте, затем прошёл после минимального изменения). Финальные `compileall` и `git diff --check` — exit 0. Изменения по-прежнему только локальные, commit/push не делались.
+### C.6.3.4 continuation stopped at quota threshold (2026-11-09)
+
+Продолжение остановлено немедленно при точном остатке Codex 3%. До остановки подтверждены локальная ветка `work/local-sync`, HEAD и `origin/work/local-sync` `29b36dd1d44245f933346947a1ee9cb85ef6588d`, а также наличие предыдущих незакоммиченных изменений. GitHub handoff отсутствует (404); локальная копия checkpoint сохранена. Полный source/DLL/history audit собственных ASF plugins, исследование прежних rarity borders и HTTP 400 в этом продолжении НЕ выполнялись. Никакая DLL не запускалась, заменялась или устанавливалась. Новых изменений кода и тестовых запусков нет. Следующий шаг после восстановления лимита: выполнить оставшийся пункт пользовательского сообщения об исследовании rarity/UI/asset sources и plugins/IPC; исходное сообщение обрывалось на фразе «Не придумывай цветовую…», но пользователь подтвердил, что дополнительных требований не требуется. Commit/push не выполнять.
+
+### C.6.3.4 — продолжение после восстановления лимита (2026-11-09)
+
+Цветная обводка CS2 восстановлена по подтверждённому источнику: commit `64cfc5c` («Add rarity-bordered game inventory cards») и существующая `RARITY_COLORS` / `rarity_color()` в `app/game_inventory_cards.py`. CS2-групповая карточка теперь получает только типизированное `InventoryItem.rarity`, извлечённое parser-ом из ASF tag с `category=rarity`; произвольный tag text больше не трактуется как редкость. Цвета не переизобретались. У Steam Trading Cards `InventoryRow` не содержит rarity; качество/foil не используется как подмена редкости.
+
+Проверен источник данных: ASF inventory `Descriptions` предоставляет `icon_url`/`icon_url_large`, `market_hash_name`, `type`, tags и флаги tradable/marketable; game inventory parser нормализует icon URL к Steam economy CDN. Существующий image loader использует CDN fallbacks `community.cloudflare.steamstatic.com`, `community.akamai.steamstatic.com`, `steamcommunity-a.akamaihd.net`, `community.steamstatic.com`. В GameDelivery не обнаружен настроенный price API/price collector; карточки честно показывают «Цена недоступна». ASF plugin использует badge/inventory данные в диагностике, но не предоставляет collector цен/изображений.
+
+Проверен состав своего ASF plugin: `GameDeliveryPlugin.cs`, `ReadOnlyDiagnostic.cs`, `TradeDelivery.cs`, `CommandArgumentParser.cs`, `.csproj` и README. Разделение read-only badge/inventory диагностики и trade реализации в исходниках сохранено; ничего из них не менялось. История содержит диагностику (`36b1b3e`, `e0faf7c`) и отдельную историю trade. Единственный найденный DLL — локальный игнорируемый build artifact `integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll`, SHA-256 `A3A3068069D1183ABB0F025A5BCF25575946958FACE7FF131B44FE695EC29998`; DLL не загружалась, не запускалась, не копировалась и не заменялась.
+
+В test-mode исправлен подтверждённый источник смешения ASF окружений: `GameInventoryPanel` больше не сканирует установленные ASF config paths для списка production BotName. Вместо этого тестировщик вручную вводит BotName из изолированного ASF; test-mode допускает только CS2-запрос и отправляет только существующий GET 730/2 на явно проверенный loopback endpoint. Steam Cards вкладка скрывает production ASF selectors/credential controls, не инициализирует её inventory stores, не загружает локальные card snapshots/reservations и отказывает в одиночной/массовой загрузке; ASFManagement test-mode уже запрещает обычный auto-start и обращение к 1242. В test-mode UI выводит только фиксированные безопасные `ASFError` и HTTP status; произвольные сообщения исключений/response body остаются скрыты, IPCPassword не отображается.
+
+HTTP 400: официальный route ASF Generic 6.3.11.7 имеет форму `/Api/Bot/{botNames}/Inventory/{appID}/{contextID}`; GameDelivery передаёт URL-escaped BotName и валидные `730/2`. ASF route также возвращает 400, когда BotName не соответствует живому bot. Старый test-mode выбирал имена из локальной ASF config, поэтому неверный production BotName был доказанным путём к 400; этот путь устранён. Сохранённого старого body нет, поэтому конкретный ранее наблюдавшийся HTTP 400 нельзя ретроспективно приписать этой причине. Безопасный UI теперь сохраняет диагностически полезный фиксированный код, например `HTTP 400`, не выводя тело ответа.
+
+Read-only проверка текущего listener на `127.0.0.1:1243`: unauthenticated `GET /Api/ASF` вернул `401`, а TCP listener принадлежит процессу `dotnet`. Это подтверждает доступный в момент проверки защищённый IPC endpoint на тестовом порту; IPCPassword не передавался, CS2-инвентарь не запрашивался, порт `1242` не проверялся. В коде `ASFClient` timeout/refused socket сводится к «ASF IPC недоступен на локальном компьютере», тогда как 401/400 — HTTP ошибки; отсутствие listener либо timeout остаются сетевыми причинами недоступности. Ввода пароля/проверки инвентаря в этой сессии не было.
+
+Дополнительно: test-mode не читает production bot config, не использует `InventoryPanel` для Steam Cards и блокирует не-CS2 запросы. Уже проверенный путь CS2 по-прежнему делает один ASF GET, затем передаёт тот же response parser-у и in-memory adapter-у. SQLite схема, migrations, production parser/InventoryItem/Store, production refresh, UI delivery/preflight/trade и ASF plugin не изменялись в этом continuation.
+
+Проверки после изменений: `python -X faulthandler -m unittest tests.test_cs2_inventory_panel -v` — 22/22, exit 0; `python -X faulthandler -m unittest tests.test_inventory_panel_display -v` — 5/5, exit 0; `python -m compileall -q app/game_inventory_panel.py app/inventory_panel.py app/game_inventory_cards.py tests/test_cs2_inventory_panel.py tests/test_inventory_panel_display.py` — exit 0; `git diff --check` — exit 0 (только предупреждения о нормализации LF/CRLF). Один промежуточный GUI запуск показал 20/20 assertions, затем Qt process abort; после удаления лишнего GUI объекта из нового теста актуальный отдельный запуск завершился с exit 0. Полный suite, приложение, Steam inventory и торговые операции не запускались. HEAD остался `29b36dd1d44245f933346947a1ee9cb85ef6588d`; commit/push не выполнялись.
+
+Остаток live-проверки: пользователь должен запустить тестовый GameDelivery с `GAMEDELIVERY_TEST_ASF_IPC_URL=http://127.0.0.1:1243`, вручную указать точный BotName тестового ASF и ввести IPCPassword только в скрытом диалоге. Пароль/maFile/token в чат не присылать. Если появляется HTTP 400, достаточно сообщить видимый статус и проверить BotName в тестовом ASF; для точной серверной причины потребуется отдельно обезличенное сообщение ASF без credentials.
+## 2026-11-09 — C.6.3.5, исправление группировки и статусов CS2
+
+### Реализовано
+
+- Карточки GameItemCard и CS2InventoryGroupCard показывают известное качество/износ из существующих полей; отсутствующее качество не выводится.
+- CS2-группа показывает физические экземпляры и сумму ASF amount раздельно. Непередаваемые карточки получают более тёмный фон, приглушённое изображение и текстовый статус; unknown остаётся отдельным состоянием. Цветная rarity-обводка сохранена.
+- В карточке и таблице статусы tradable, marketable, restriction type/status и restriction numbers агрегируются по экземплярам, а tooltip содержит отдельные записи с владельцем и asset ID. Фильтр передаваемых/непередаваемых/unknown применяется к физическим экземплярам внутри группы.
+- Ключ CS2 variant identity: (game_id, appid, context_id, class_id, instance_id, name, type, market_hash_name, quality, exterior, rarity, normalized tags). bot_name и asset_id остаются физической идентичностью, не частью варианта. tradable, marketable, restriction metadata, amount и release time хранятся по экземпляру и больше не разбивают вариант на группы.
+- Добавлен информационный countdown только для timezone-aware tradable_after, уже присутствующего в in-memory instance. При истечении карточка показывает необходимость обновить ASF snapshot; флаг tradable не изменяется. Постоянное ограничение не получает таймер. Неопределённый срок отображается как «Срок неизвестен».
+
+### Источники даты и цены
+
+ASF Generic 6.3.11.7 / закреплённый SteamKit2 3.5.0 не задаёт типизированного tradable_after в CEconItem_Description. Имеются числовые market_tradable_restriction, market_marketable_restriction, поле item_expiration и описательные строки. Семантика этих значений не подтверждает точный timezone-aware срок разблокировки: их не преобразуем в дату. Адаптер не читает локализованный текст как таймстамп, поэтому на текущем ASF payload обратный отсчёт недоступен и срок честно unknown. Источники: [SteamKit2 CEconItem_Description](https://github.com/SteamRE/SteamKit/blob/3.5.0/SteamKit2/SteamKit2/Base/Generated/SteamMsgEcon.cs), [ASF 6.3.11.7 inventory response](https://github.com/JustArchiNET/ArchiSteamFarm/blob/6.3.11.7/ArchiSteamFarm/IPC/Responses/BotInventoryResponse.cs).
+
+Публичный Steamworks API не даёт подтверждённого общего Community Market price feed для этих карточек. ISteamEconomy/GetAssetPrices требует Web API user key и относится к товарам Steam Economy app; GetMarketPrices требует publisher key и защищённого server-side вызова. Недокументированный Community Market priceoverview не включён: Steam Subscriber Agreement §4.C ограничивает автоматизированное взаимодействие. Не добавляли неподдержанный collector или кэш недостоверных данных; отсутствие цены остаётся явно обозначено. Источники: [Steamworks ISteamEconomy](https://partner.steamgames.com/doc/webapi/ISteamEconomy?l=english), [Steam Subscriber Agreement §4.C](https://store.steampowered.com/subscriber_agreement/?l=english).
+
+Точное поле, которое разделило две live-группы Kilowatt Case, не установлено: пользователь предпочёл сверить семь анонимизированных assets/descriptions в следующей live-сессии. Новое правило объединит их, если их variant-поля совпадают; asset/owner/status/date и amount сохраняются раздельно. Не приписывать старое разделение одному полю без payload.
+
+### Проверки и границы
+
+- python -m unittest tests.test_cs2_inventory_view -v — 29 passed, exit 0.
+- python -m unittest tests.test_cs2_inventory_panel -v — 28 passed, exit 0.
+- python -m unittest tests.test_inventory_display -v — 8 passed, exit 0.
+- python -X faulthandler -m unittest tests.test_inventory_panel_display -v — 5 passed, exit 0.
+- python -m compileall -q app/game_inventory_cards.py app/game_inventory_panel.py games/cs2/inventory_view.py tests/test_cs2_inventory_view.py tests/test_cs2_inventory_panel.py — exit 0.
+- git diff --check — exit 0; Git сообщил только ожидаемую нормализацию LF/CRLF.
+
+Не запускались полный suite, GameDelivery live UI или ASF после изменения. Не менялись production parser/InventoryItem, SQLite/schema/store/migrations, Steam Cards parser, plugin/DLL, delivery/preflight/trade и другие игровые адаптеры. Нет commit/push. C.6.3.5 остаётся частично подтверждённым до сверки реальных Kilowatt payload и ручной live UI проверки изменений; источник цен требует отдельного разрешённого канала.
+
+## 2026-11-09 — C.6.3.6 OpenSkin v1: исследование и план (ожидает согласования)
+
+### Состояние
+
+- Проверено: ветка `work/local-sync`, HEAD `29b36dd1d44245f933346947a1ee9cb85ef6588d`.
+- Рабочее дерево уже содержало незакоммиченные изменения C.6.3.1–C.6.3.5/test-mode. Они сохранены. В этой исследовательской части изменяются только Master Log, Stage C plan и новый C.6.3.6 handoff; код, тесты и БД не менялись.
+- Прочитаны локальный Master Log, Stage C plan, C-6-3-5 handoff, CS2 projection, inventory parser/store, GameInventoryPanel и карточные компоненты.
+
+### Подтверждённый контракт OpenSkin
+
+9 ноября 2026 проверены официальная [OpenSkin v1 Pricing API документация](https://openskin.dev/) и machine-readable [OpenAPI](https://openskin.dev/openapi.json). Публичный v1 Pricing API в документации остаётся бесплатным, без API key и с разрешённым коммерческим использованием. У OpenSkin Platform API v2 отдельные тарифы и API key; интеграция должна обращаться только к `https://api.openskin.dev/v1/...`, не к `api-v2.openskin.dev`.
+
+- `POST /v1/prices/batch`: массив `items` до 500 позиций. Позиция — точная строка `market_hash_name` или объект `{item, pattern}`.
+- Ответ содержит `results` в порядке запроса, по одной позиции на запрос; `data` — map по имени, где повторяющееся имя затирается. Для одинакового имени с разными pattern использовать только `results` и сверять эхо `item`/`pattern`.
+- Брать только `steam.ask`. OpenAPI задаёт числовое nullable поле; Steam quote сообщает валюту USD и собственный `updated_at`. Отсутствующий/null/некорректный ask или незнакомая валюта означают неизвестную цену, не ноль. JSON decimal tokens должны разбираться напрямую в `Decimal`; денежные значения хранить в SQLite точным десятичным текстом.
+- OpenSkin документирует pattern для Doppler/Case Hardened в v1 pricing requests. В Steam-only endpoint pattern необязателен; batch умеет задавать его отдельно для позиции. Не отправлять guessed pattern и не использовать generic quote для распознанного pattern-sensitive предмета без точной variant identity.
+- Частота Steam order-book refresh по документации — около одного раза в 6 часов; median/volume обновляются ежедневно. Median и volume в оценке не используются. 10-минутный таймер должен проверять локальное состояние кэша и не опрашивать цены до срока обновления. Источник истины для конкретного quote — `steam.updated_at`; top-level batch `updated_at` не подменяет его. Локальное `fetched_at` хранить отдельно.
+- Для HTTP errors/429 учитывать Retry-After, не удалять последнюю успешно полученную цену и явно показывать её как stale/error. Документация говорит, что у бесплатного v1 сейчас нет фиксированного request cap; клиент всё равно сериализует запросы, ограничивает batch 500 и не делает запрос на каждый asset.
+
+Ссылки: [OpenSkin API](https://openskin.dev/), [OpenSkin OpenAPI JSON](https://openskin.dev/openapi.json), [Platform/API reference](https://openskin.dev/docs/platform).
+
+### Карта текущих данных и интеграции
+
+- Каталог подтверждает CS2 `AppID 730`, `Context 2`. `GameInventoryPanel.fetch_inventory()` выполняет один ASF GET `730/2`, тем же payload вызывает обычный parser и CS2 in-memory adapter. `InventoryItem` и `GameInventoryStore` сохраняют по строке на физический `(game_id, bot_name, asset_id)`, `market_hash_name`, name/type, flags, quality/rarity/exterior/tags; `amount`, context и pricing-specific pattern metadata в SQLite не хранятся.
+- `CS2InventoryInstance` содержит AppID/context, физическую идентичность, ASF amount, market hash, flags, tags и ограничения, но не имеет typed `pattern`, `paint_seed` или float/wear value. Локализованные `tags` в текущем адаптере сохраняются как строки без категории. Поэтому отдельная цена для pattern-sensitive предмета возможна только при точном pattern из достоверного поля; если его нет, позиция должна быть `unsupported/unknown`, а generic ask не назначается.
+- Текущие price UI поля — заглушки «Цена недоступна» в CS2/game cards и колонке таблицы. Общие `games/inventory_display.py`, `app/inventory_display.py` и Steam Trading Cards используют эту заглушку; их менять нельзя.
+- Найдено расхождение требования и интерфейса: `grouping_mode=separate` сейчас означает «Раздельно по ботам», но внутри каждого бота одинаковые CS2 variants всё ещё группируются. Для требуемого «каждый Asset отдельно» нужно изменить только CS2 rendering ветку режима separate (и подпись для CS2); остальные игры оставить как есть.
+
+### Предлагаемая архитектура (реализацию не начинать без согласования)
+
+1. Ключ запроса: `appid=730 + точный market_hash_name + точный pattern или отсутствие pattern`; один ключ на всех выбранных ботов. В запрос не включать BotName, asset ID, inventory payload или Steam credentials.
+2. Перед запросом отфильтровать строки выбранных ботов, собрать уникальные поддерживаемые ключи, разбить на пачки до 500 и отправлять по одной одновременно. Проверять порядок и `item`/`pattern` в `results`. Любая неоднозначность или пропущенный результат остаётся неизвестным.
+3. Добавить отдельную `cs2_price_cache` таблицу в тот же пользовательский SQLite-файл (`~/.gamedelivery/gamedelivery.sqlite3`), с composite identity по appid/source/market_hash_name/pattern, `steam_ask TEXT`, currency, `source_updated_at`, `fetched_at`, last successful price fetch, last attempt, status и безопасным HTTP error code. Новая таблица создаётся идемпотентно собственным CS2 price store, по текущему паттерну `CREATE TABLE IF NOT EXISTS`; существующие snapshot/order/card tables не меняются. Проект не содержит общей versioned-migration папки для этой inventory store; центральный `delivery_orders` migration path не используется GameInventoryPanel.
+4. Сохранять состояния fresh/stale/no-price/error/unsupported отдельно от последней валидной цены. На ошибке не затирать прежнюю цену. При null/invalid текущем ask не показывать ноль; прошлое значение можно показывать только как устаревшее.
+5. Расчёт вести через `Decimal` и число физических asset rows, никогда через ASF amount. Включать передаваемые, непередаваемые и unknown assets. Отдельно выводить стоимость каждого бота и сумму выбранных ботов, свежие/устаревшие оценки, число неизвестных цен; неизвестные не складывать как 0.
+6. В общем режиме карточка показывает цену одного экземпляра и стоимость её физических экземпляров. В режиме «каждый Asset» цена показывается на каждой физической карточке/строке. Для существующего общего table price-column добавить CS2 price detail, не меняя карточный UI других игр/Steam Cards. Небольшая сводка в GameInventoryPanel показывает стоимость каждого выбранного бота и итог в обоих режимах.
+7. Запускать OpenSkin независимо от ASF refresh, из Qt async network path, чтобы UI не блокировался. QTimer 10 минут пересчитывает локальную свежесть; batch обновление допускается по documented Steam cadence, ручное обновление уважает cooldown/Retry-After. Кэш переживает перезапуск.
+
+### Предварительный список будущих файлов
+
+Новые: `integrations/openskin/__init__.py`, `integrations/openskin/client.py`, `games/cs2/pricing.py`, `games/cs2/price_store.py`, `tests/test_openskin_client.py`, `tests/test_cs2_pricing.py`, `tests/test_cs2_price_store.py`, `tests/test_cs2_price_panel.py`.
+
+Изменяемые: `app/game_inventory_panel.py`, `app/game_inventory_cards.py`, `PROJECT_MASTER_LOG.md`, `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`, новый `docs/superpowers/checkpoints/C-6-3-6-handoff.md`. Отдельные новые tests: `tests/test_openskin_client.py`, `tests/test_cs2_pricing.py`, `tests/test_cs2_price_store.py`, `tests/test_cs2_price_panel.py`; существующие C.6.3.5 tests по умолчанию только запускаются как регрессия.
+
+Не менять: parser/InventoryItem/legacy GameInventoryStore и его snapshot schema, общий inventory display, Steam Cards, другие игры, ASF plugin/DLL, delivery/preflight/trade. Расширение CS2 in-memory модели допустимо лишь если найдётся фактическое typed ASF pattern metadata; иначе pattern-sensitive price остаётся неизвестной.
+
+### Проверки будущей реализации и нерешённые риски
+
+Планируемые mock tests: OpenSkin contract/HTTPS/no API key/500 limit/ordered results/repeated name with multiple patterns; Decimal exactness/null/invalid currency; timeout/HTTP error/429; cache persistence and stale retention; source vs fetched timestamps; physical count vs ASF amount; dedup across bots and selected bots; non-tradable included; shared vs per-asset mode; per-bot and selected-total recomputation; unknown/unsupported variant; UI async responsiveness; unchanged non-CS2 and Steam Cards behavior. Целевые tests и compile/diff checks запускать только после согласования реализации; live OpenSkin call не требуется для unit tests.
+
+Остаточные риски: OpenSkin pattern-specific request поддержан документацией, но текущая GameDelivery модель не несёт typed pattern/paint seed, поэтому такие цены будут unknown до получения достоверного поля. OpenSkin разрешает коммерческое использование своего API; это само по себе не является отдельным подтверждением upstream Steam data licensing. Фактические OpenSkin price values в этой сессии не запрашивались.
+
+**Статус:** исследование и план закончены; код/SQLite/UI/migrations не изменялись. Требуется согласование пользователя перед началом реализации. Commit/push не выполнялись; предыдущие результаты тестов C.6.3.5 не повторялись.
+
+#### C.6.3.6 — согласованная реализация (mock verification; live pending)
+
+Реализация добавлена поверх сохранённых незакоммиченных этапов C.6.3.1–C.6.3.5; HEAD остаётся `29b36dd1d44245f933346947a1ee9cb85ef6588d`, ветка `work/local-sync`. Commit/push не выполнялись.
+
+- `integrations/openskin/client.py` использует только `POST https://api.openskin.dev/v1/prices/batch`, ограничивает batch 500 позициями, сопоставляет ordered `results` и читает только `steam.ask`. JSON числа разбираются как `Decimal`; ошибки не раскрывают response body; поддержан Retry-After.
+- `integrations/frankfurter/client.py` использует только `GET https://api.frankfurter.dev/v2/rate/usd/rub`; курс хранится точно, source date и локальное fetched time раздельны.
+- `games/cs2/pricing.py` считает физические Asset-строки, не ASF `amount`; использует Decimal и ROUND_HALF_UP, учитывает непередаваемые предметы, применяет выбранных ботов. Только ask `>= $0.05` конвертируется и входит в RUB итоги. Более дешёвые цены сохраняются и отображаются в USD, но не конвертируются и не складываются.
+- Без подтверждённого seed/pattern generic quote не применяется к Doppler, Case Hardened, Fade, Heat Treated, Crimson Web и Slaughter; такие предметы отмечаются unsupported.
+- `games/cs2/price_store.py` создаёт идемпотентные `cs2_price_cache` и `cs2_fx_rate_cache`, сохраняет точные ask/rate, источник и локальные timestamps, state/retry/HTTP code и конвертацию. Ошибки не стирают последний успешный quote или курс; inventory snapshots/tables не меняются.
+- `app/game_inventory_panel.py` выполняет сеть в Qt worker, проверяет кэш таймером 10 минут, показывает суммы выбранных ботов и сводку в обоих режимах; общий режим показывает unit/group value, CS2 separate — каждый физический Asset. `app/game_inventory_cards.py` выводит цену на CS2 карточке.
+
+Новые модули: `integrations/openskin/{__init__.py,client.py}`, `integrations/frankfurter/{__init__.py,client.py}`, `games/cs2/{pricing.py,price_store.py}`. Новые тесты: `tests/test_openskin_client.py`, `tests/test_frankfurter_client.py`, `tests/test_cs2_pricing.py`, `tests/test_cs2_price_store.py`, `tests/test_cs2_price_panel.py`. Изменены реализацией: `app/game_inventory_panel.py`, `app/game_inventory_cards.py`.
+
+Focused results: API/FX/pricing/store 35/35, exit 0; price panel 7/7, exit 0; CS2 view + ASF parser 39/39, exit 0; shared display regression 28/28, exit 0; Steam Card selection 6/6, exit 0. `tests.test_cs2_inventory_panel` сообщает 28/28 OK, но процесс выходит с кодом 1 без traceback; отдельный повтор дал тот же результат. `tests.test_steam_card_snapshot` завершился 7 errors очистки temp SQLite (`WinError 32`, занят `app.db`); существующие store/tests не менялись. `compileall` и `git diff --check` прошли до обновления документации; после документации нужна повторная лёгкая проверка diff.
+
+В рамках C.6.3.6 не менялись production parser, `InventoryItem`, legacy `GameInventoryStore`/snapshots, Steam Cards, другие адаптеры игр, ASF plugin/DLL, delivery/preflight/trade. Live OpenSkin/Frankfurter и live UI на тестовом ASF не запускались. C.6.3.6 остаётся незавершённым до live-проверки изолированной тестовой сессии; рабочий ASF и Trade Offers не использовались.
+## 2026-11-09 — C.6.3.6.1 OpenSkin proxy и общий список ботов
+
+### Причины и изменения
+
+- Реальная OpenSkin-проверка возвращала HTTP 403 в сетевой среде пользователя, где API доступен через VPN. Для этого добавлен отдельный профиль OpenSkin proxy: новый запрос перечитывает настройки, а прокси назначается только собственному `QNetworkAccessManager` OpenSkin. Глобальный Qt proxy не меняется. Поддержаны HTTP CONNECT (туннель HTTPS destination) и SOCKS5; режим TLS к HTTPS proxy endpoint Qt transport в используемом `QNetworkProxy` API не предоставляет, поэтому он не заявлен.
+- Пароль OpenSkin proxy вводится в маскированном поле, хранится в системном keyring; QSettings содержит только несекретные параметры. Тест подключения выполняет один read-only OpenSkin pricing запрос в `QThreadPool`. Диагностика показывает только безопасный HTTP-код/общее сообщение. Новые OpenSkin запросы перечитывают настройки без перезапуска ASF.
+- Frankfurter по-прежнему создаётся отдельным `FrankfurterClient()` без профиля OpenSkin. Steam, ASF IPC и другие интеграции не перенаправляются новым proxy; никакой application-wide proxy не устанавливается.
+- Причина исчезновения списка в изолированном test-mode — защита C.6.3.2.1: там скрывали обычные локальные bot config и checklist, заменяя их ручным полем BotName, чтобы не выбирать production-ботов. Ручное поле удалено; в test-mode список читается read-only методом ASF IPC `GET /Api/Bot/@all` только через явно заданный изолированный loopback endpoint после скрытого локального ввода IPCPassword. В обычном режиме сохранён источник имён из ASF config и локальных snapshot.
+- `BotSelectionModel` общий для вкладок «Инвентарь» и «Игровые предметы». Checkable list, select all/clear, поиск `casefold` и сохранение фильтра не меняют delivery account selection. Тестовый источник не читает local ASF config и не обращается к обычному endpoint.
+
+### Проверки
+
+- `python -m unittest tests.test_bot_selector tests.test_openskin_proxy tests.test_openskin_client tests.test_cs2_inventory_panel tests.test_inventory_panel_display tests.test_cs2_price_panel -v` — 58 tests, exit 0.
+- `python -m unittest tests.test_cs2_pricing tests.test_cs2_price_store tests.test_inventory_views tests.test_inventory_display -v` — 49 tests, exit 0.
+- Покрыты сохранение пароля только в keyring, отсутствие секрета в QSettings/UI/repr/safe summary, HTTP CONNECT/SOCKS5 mapping, read-only проверка proxy, передача настроек только OpenSkin и отдельный клиент Frankfurter, общий выбор ботов, регистронезависимый поиск, multi-select, select all/clear, test ASF bot listing, CS2 pricing totals и Steam Cards view.
+- Реальное OpenSkin соединение через пользовательский VPN/proxy и live ASF не проверялись; требуется локальная проверка самим пользователем. Не проводились тесты искусственного отключения сети/API error. Нет commit/push; branch `work/local-sync`, HEAD `29b36dd1d44245f933346947a1ee9cb85ef6588d`.
+
+Изменения задачи сохранены без commit: `app/bot_selector.py`, `app/game_inventory_panel.py`, `app/inventory_panel.py`, `app/main.py`, `app/proxy_settings.py`, `app/openskin_proxy_settings.py`, `integrations/openskin/proxy.py`, `integrations/openskin/client.py`, `tests/test_bot_selector.py`, `tests/test_openskin_proxy.py`, `tests/test_cs2_inventory_panel.py`, `tests/test_inventory_panel_display.py`, `tests/test_cs2_price_panel.py`; также обновлены этот журнал, Stage C plan и C.6.3.6 handoff. Ранее существовавшие незакоммиченные изменения C.6.3.1–C.6.3.6 сохранены.
+
+#### C.6.3.6.2 — диагностика OpenSkin proxy (2026-11-09)
+
+Проверка кода подтвердила причину ложного общего сообщения «сервис недоступен»: прежняя кнопка выполняла реальный `POST /v1/prices/batch`, то есть смешивала прохождение proxy/TLS с доступностью pricing API; при Qt-ошибке без HTTP status детали `QNetworkReply.error()` и `errorString()` терялись. Открытие `openskin.dev` в браузере не подтверждает доступность `api.openskin.dev` и POST endpoint. Это устанавливает причину неоднозначной диагностики, но без старого response/log или новой локальной проверки не доказывает конкретную причину пользовательского отказа.
+
+Проверки разделены: «Проверить прокси» делает ограниченный `GET https://api.openskin.dev/` (`Range: bytes=0-0`) через тот же Qt transport; любой ответ, кроме HTTP 407, означает, что ответ достиг HTTPS/TLS маршрута, а HTTP-код отображается как статус контрольного адреса. Это не подтверждает работу pricing endpoint. «Проверить OpenSkin API» делает отдельный read-only batch POST и сообщает HTTP/network категорию отдельно. GET выбран вместо HEAD, чтобы не требовать от proxy поддержки метода, отличного от обычной браузерной навигации.
+
+`QNetworkAccessManager.setProxy()` остаётся manager-local и вызывается перед GET/POST; credentials передаются Qt authentication callback, TLS verification не ослаблена, SOCKS5 сохраняет удалённый DNS. Это соответствует [Qt QNetworkAccessManager](https://doc.qt.io/qtforpython-6/PySide6/QtNetwork/QNetworkAccessManager.html) (proxy применяется к будущим запросам этого менеджера, с сигналом авторизации) и [Qt QNetworkProxy](https://doc.qt.io/qtforpython-6/PySide6/QtNetwork/QNetworkProxy.html) (HTTP uses CONNECT; SOCKS5 supports remote hostname lookup). Ошибки классифицируются как DNS, proxy/target TCP, auth 407, HTTP tunnel/SOCKS handshake, TLS, timeout, HTTP 403/429/5xx или некорректный response. Вращаемый лог ограничен 512 KiB × 3 файла и записывает очищенные Qt details; логин/пароль и URL userinfo редактируются, тела API не пишутся. Frankfurter продолжает создаваться отдельным `FrankfurterClient()`; глобальный Qt proxy и другие интеграции не менялись.
+
+Проверки выполнены раздельно: `tests.test_openskin_proxy` — 18/18, exit 0; `tests.test_openskin_client` — 5/5, exit 0 (включая существующий mock HTTP 429); `tests.test_cs2_price_panel` — 9/9, exit 0; `tests.test_frankfurter_client` — 4/4, exit 0. `compileall` целевых Python-файлов и `git diff --check` завершились с кодом 0; Git выдал только предупреждение нормализации LF/CRLF. Проверки только mock/source-level: пользовательский proxy, OpenSkin endpoint и outage не запускались; полный suite не выполнялся.
+
+Ветка `work/local-sync`, HEAD `29b36dd1d44245f933346947a1ee9cb85ef6588d`; commit/push не выполнялись. Незакоммиченные изменения предыдущих этапов сохранены. Изменения C.6.3.6.2 затронули `integrations/openskin/client.py`, `app/openskin_proxy_settings.py`, `app/main.py`, `tests/test_openskin_proxy.py`, `tests/test_cs2_price_panel.py` и этот журнал/Stage C plan/handoff. Сетевая причина конкретной live-ошибки и успешное получение реальных цен остаются неподтверждёнными до локального выполнения обеих кнопок с профилем пользователя.
+
+#### C.6.3.6.3 — ложный timeout при уже завершённом Qt reply (2026-11-09)
+
+В `integrations/openskin/client.py::_qt_proxy_request()` запрос запускался до подписки на `reply.finished`, после чего вложенный `QEventLoop` выполнялся без проверки состояния reply. `QNetworkReply` допускает состояние `isFinished()` до того, как вызывающий код обработал сигнал `finished`; если сигнал уже прошёл до подключения, цикл ожидал до таймера и затем `abort()` превращал результат в `OperationCanceledError`. При этом `requestSent` мог остаться false, что отображалось как timeout proxy/HTTPS до отправки, хотя reply уже завершился. Qt описывает `isFinished()` именно для проверки завершения до получения сигнала: [QNetworkReply](https://doc.qt.io/qtforpython-6/PySide6/QtNetwork/QNetworkReply.html).
+
+Минимальное исправление: после подключения сигналов проверять `reply.isFinished()` и запускать таймер/event loop только для ещё активного reply; таймер останавливается через `finally`. Добавлен regression test с уже завершённым reply: он подтверждает, что код не запускает timer и не ждёт пропущенный сигнал. Точный механизм proxy, auth, TLS, таймаут и расчёты не менялись.
+
+Проверки: `python -m unittest tests.test_openskin_proxy -v` — 19/19, exit 0; `python -m compileall -q integrations/openskin/client.py tests/test_openskin_proxy.py` — exit 0; `git diff --check` — exit 0 (только LF→CRLF warnings). Live proxy/OpenSkin не запускались, поэтому подтверждение исправления на профиле пользователя остаётся обязательным. Ветка `work/local-sync`, HEAD `29b36dd1d44245f933346947a1ee9cb85ef6588d`; commit/push не выполнялись, предыдущие изменения сохранены. Изменены код и `tests/test_openskin_proxy.py`, Master Log, Stage C plan и C.6.3.6 handoff.
+
+## 2026-11-09 — Контрольная точка сохранения C.6.3.6.3
+
+### Текущее состояние
+
+- Рабочая папка: `D:\GameDelivery`; рабочая ветка: `work/local-sync`.
+- Исходный HEAD перед единственным checkpoint commit: `29b36dd1d44245f933346947a1ee9cb85ef6588d`; ветка до сохранения была синхронизирована с `origin/work/local-sync`.
+- Все изменения C.6.3.1–C.6.3.6.3 сохраняются одним checkpoint commit; reset/clean/stash/branch switch не применялись.
+- Проверка 37 изменённых/новых путей показала только `.py`/`.md`; баз данных, личных логов, maFiles и прочих данных нет. Secret-pattern scan отметил только фиктивную пару `private-user:private-pass` внутри redaction regression fixture в `tests/test_openskin_proxy.py`; пользовательских credentials в кандидатах на commit не найдено.
+
+### C.6.3.6.3
+
+- Найден и исправлен дефект ожидания `QNetworkReply`: сигнал `finished` подключался после выдачи запроса, но event loop запускался без проверки, не завершился ли reply до обработки сигнала.
+- Добавлена проверка `reply.isFinished()`. Таймер и event loop запускаются только для активного reply; таймер останавливается в `finally`.
+- Добавлен regression-тест на уже завершённый reply.
+- `python -m unittest tests.test_openskin_proxy -v` — 19/19, exit 0.
+- `python -m compileall -q integrations/openskin/client.py tests/test_openskin_proxy.py` — exit 0.
+- `git diff --check` на tracked diff C.6.3.6.3 — exit 0; только предупреждения нормализации LF/CRLF. При проверке всего staged набора Git дополнительно отметил trailing whitespace в подготовленных markdown handoffs и blank line at EOF в `app/inventory_display.py`; содержимое не менялось в этой save-only задаче, чтобы не переписывать ранее подготовленную работу.
+- Реальное соединение OpenSkin через пользовательский proxy не выполнялось. **C.6.3.6 не завершён** до пользовательского live-теста.
+
+### Состав контрольного сохранения
+
+Изменённые tracked-файлы: `PROJECT_MASTER_LOG.md`, `app/asf_management.py`, `app/bot_selector.py`, `app/game_inventory_cards.py`, `app/game_inventory_panel.py`, `app/inventory_panel.py`, `app/main.py`, `app/proxy_settings.py`, `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`, `games/cs2/inventory_view.py`, `games/steam_cards/inventory_views.py`, `integrations/asf/client.py`, `tests/test_cs2_inventory_view.py`, `tests/test_inventory_views.py`.
+
+Новые файлы: `app/inventory_display.py`, `app/openskin_proxy_settings.py`, `docs/superpowers/checkpoints/C-6-3-4-handoff.md`, `docs/superpowers/checkpoints/C-6-3-5-handoff.md`, `docs/superpowers/checkpoints/C-6-3-6-handoff.md`, `games/cs2/price_store.py`, `games/cs2/pricing.py`, `games/inventory_display.py`, `integrations/frankfurter/__init__.py`, `integrations/frankfurter/client.py`, `integrations/openskin/__init__.py`, `integrations/openskin/client.py`, `integrations/openskin/proxy.py`, `tests/test_bot_selector.py`, `tests/test_cs2_inventory_panel.py`, `tests/test_cs2_price_panel.py`, `tests/test_cs2_price_store.py`, `tests/test_cs2_pricing.py`, `tests/test_frankfurter_client.py`, `tests/test_inventory_display.py`, `tests/test_inventory_panel_display.py`, `tests/test_openskin_client.py`, `tests/test_openskin_proxy.py`.
+
+### Правила продолжения и следующий шаг
+
+- До каждого ответа сначала читать актуальный Master Log; работать только в `work/local-sync`, не менять `main` и PR #4.
+- Сохранять текущую функциональность и уже имеющиеся изменения; обновлять журнал после существенных решений.
+- Если требуется скачивание/локальная проверка, давать пошаговую команду и ожидаемое состояние; не запрашивать секреты и не включать их в отчёты.
+- Следующий шаг: в локальной GameDelivery с актуального checkout выполнить «Проверить прокси», затем «Проверить OpenSkin API»; сообщить только категорию и HTTP status. Если proxy route и API проходят, выполнить read-only live acceptance цен CS2 на изолированном ASF; рабочий ASF и Trade Offers не использовать.
+- Этот журнал фиксирует базовый HEAD перед checkpoint; фактический HEAD после сохранения — единственный checkpoint commit, получаемый командой `git rev-parse HEAD`.

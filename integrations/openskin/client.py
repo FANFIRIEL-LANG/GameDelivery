@@ -1,0 +1,447 @@
+"""Minimal client for the public OpenSkin v1 CS2 price batch endpoint."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
+import base64
+import json
+import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+import re
+import time
+from urllib.parse import quote, quote_plus
+import urllib.error
+import urllib.request
+from typing import Callable, Mapping
+
+from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer, QUrl
+from PySide6.QtNetwork import (
+    QAuthenticator, QNetworkAccessManager, QNetworkProxy, QNetworkReply,
+    QNetworkRequest,
+)
+
+from integrations.openskin.proxy import OpenSkinProxy
+
+
+_ENDPOINT = "https://api.openskin.dev/v1/prices/batch"
+_PROXY_PROBE_URL = "https://api.openskin.dev/"
+_MAX_BATCH = 500
+_logger = logging.getLogger(__name__)
+
+
+def configure_openskin_diagnostics(log_path: Path | str | None = None):
+    """Persist bounded, credential-redacted OpenSkin diagnostics for the app log tab."""
+    if any(getattr(handler, "_gamedelivery_openskin", False)
+           for handler in _logger.handlers):
+        return None
+    path = Path(log_path) if log_path is not None else Path.home() / ".gamedelivery" / "openskin-proxy.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            path, maxBytes=512 * 1024, backupCount=2, encoding="utf-8",
+        )
+    except OSError:
+        return None
+    handler._gamedelivery_openskin = True
+    formatter = logging.Formatter(
+        "%(asctime)sZ %(levelname)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    formatter.converter = time.gmtime
+    handler.setFormatter(formatter)
+    _logger.addHandler(handler)
+    _logger.setLevel(logging.INFO)
+    _logger.propagate = False
+    return handler
+
+
+@dataclass(frozen=True, order=True)
+class PricePosition:
+    appid: int
+    market_hash_name: str
+    pattern: str | None = None
+
+    def __post_init__(self):
+        if type(self.appid) is not int or self.appid != 730:
+            raise ValueError("OpenSkin pricing is limited to CS2 AppID 730")
+        if not isinstance(self.market_hash_name, str) or not self.market_hash_name.strip():
+            raise ValueError("market_hash_name must be a non-empty string")
+        if self.pattern is not None and (
+            not isinstance(self.pattern, str) or not self.pattern.strip()
+        ):
+            raise ValueError("pattern must be a non-empty string or None")
+
+
+@dataclass(frozen=True)
+class OpenSkinPrice:
+    position: PricePosition
+    steam_ask: Decimal | None
+    currency: str | None
+    source_updated_at: str | None
+
+
+class OpenSkinError(RuntimeError):
+    def __init__(self, message: str, *, http_status: int | None = None,
+                 retry_after_seconds: int | None = None, category: str = "unknown",
+                 diagnostic_detail: str = ""):
+        super().__init__(message)
+        self.http_status = http_status
+        self.retry_after_seconds = retry_after_seconds
+        self.category = category
+        self.diagnostic_detail = diagnostic_detail
+
+    @property
+    def user_message(self) -> str:
+        return str(self)
+
+
+def classify_qnetwork_error(error, status_code: int, proxy_scheme: str,
+                            *, timed_out: bool = False,
+                            request_sent: bool | None = None) -> tuple[str, str]:
+    """Map Qt's transport result to a concise, user-facing failure category."""
+    if status_code == 407 or error == QNetworkReply.NetworkError.ProxyAuthenticationRequiredError:
+        return "proxy_auth", "Прокси отклонил авторизацию (HTTP 407). Проверь логин и пароль."
+    if status_code == 403:
+        return "http_403", "HTTPS-маршрут установлен, но OpenSkin вернул HTTP 403."
+    if status_code == 429:
+        return "http_429", "OpenSkin ограничил частоту запросов (HTTP 429)."
+    if 500 <= status_code <= 599:
+        return "http_5xx", f"OpenSkin временно недоступен (HTTP {status_code})."
+    if status_code >= 400:
+        return "http_error", f"Удалённая сторона вернула HTTP {status_code}."
+
+    network_error = QNetworkReply.NetworkError
+    if timed_out:
+        if request_sent is False:
+            if proxy_scheme == "socks5":
+                return "socks5_timeout", "Время ожидания SOCKS5-соединения истекло до отправки запроса."
+            return "proxy_timeout", "Время ожидания proxy/HTTPS-туннеля истекло до отправки запроса."
+        return "response_timeout", "Истекло время ожидания ответа."
+    if error == network_error.ProxyNotFoundError:
+        return "proxy_dns", "Не удалось разрешить DNS-имя proxy-сервера."
+    if error == network_error.HostNotFoundError:
+        return "dns", "Не удалось разрешить DNS-имя удалённого сервера."
+    if error == network_error.ProxyConnectionRefusedError:
+        return "proxy_tcp", "Proxy-сервер отклонил TCP-соединение."
+    if error == network_error.ConnectionRefusedError:
+        return "tcp", "Удалённый сервер отклонил TCP-соединение через proxy."
+    if error == network_error.ProxyTimeoutError:
+        return "proxy_timeout", "Время ожидания ответа proxy-сервера истекло."
+    if error == network_error.ProxyAuthenticationRequiredError:
+        return "proxy_auth", "Proxy-сервер отклонил авторизацию."
+    if error == network_error.SslHandshakeFailedError:
+        return "tls", "Не удалось выполнить TLS handshake или проверить сертификат."
+    if error == network_error.TimeoutError:
+        return "response_timeout", "Истекло время ожидания ответа удалённого сервера."
+    if error in {
+        network_error.ProxyConnectionClosedError,
+        network_error.UnknownProxyError,
+    }:
+        if proxy_scheme == "socks5":
+            return "socks5_handshake", "Не завершился SOCKS5 handshake или подключение через SOCKS5."
+        return "http_tunnel", "Не удалось установить HTTP CONNECT tunnel."
+    if error == network_error.ProtocolFailure:
+        return "invalid_response", "Получен некорректный сетевой ответ."
+    if error in {network_error.InternalServerError, network_error.ServiceUnavailableError,
+                 network_error.UnknownServerError}:
+        return "http_5xx", "OpenSkin API вернул ошибку сервера."
+    return "network_error", "Сетевой запрос не завершился успешно."
+
+
+def redact_network_detail(detail: str, proxy: OpenSkinProxy | None = None) -> str:
+    """Remove raw and URL-encoded proxy credentials before diagnostics are stored."""
+    text = " ".join(str(detail or "").split())
+    if proxy is not None:
+        secrets = [proxy.username, proxy.password]
+        if proxy.username is not None and proxy.password is not None:
+            secrets.append(base64.b64encode(
+                f"{proxy.username}:{proxy.password}".encode("utf-8")
+            ).decode("ascii"))
+        for secret in filter(None, secrets):
+            variants = {secret, quote(secret, safe=""), quote_plus(secret)}
+            for variant in variants:
+                if variant:
+                    text = text.replace(variant, "[redacted]")
+    text = re.sub(r"(?i)(https?://)[^/\s@]+@", r"\1[redacted]@", text)
+    return text[:400]
+
+
+def _log_network_failure(category: str, qt_error: str, detail: str,
+                         proxy: OpenSkinProxy | None) -> str:
+    safe_detail = redact_network_detail(detail, proxy)
+    _logger.warning(
+        "OpenSkin transport diagnostic category=%s qt_error=%s detail=%s",
+        category, qt_error, safe_detail,
+    )
+    return safe_detail
+
+
+def _retry_after(headers: Mapping[str, str] | None) -> int | None:
+    if not headers:
+        return None
+    value = next((v for k, v in headers.items() if k.casefold() == "retry-after"), None)
+    if value is None:
+        return None
+    try:
+        return max(0, int(value.strip()))
+    except (AttributeError, ValueError):
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            return max(0, int((date - datetime.now(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _url_request(url: str, body: bytes, headers: Mapping[str, str], timeout: float):
+    request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read(), dict(response.headers.items())
+    except urllib.error.HTTPError as exc:
+        # Never read or include an API error body.
+        category, message = classify_qnetwork_error(
+            QNetworkReply.NetworkError.NoError, exc.code, "http"
+        )
+        raise OpenSkinError(
+            message, http_status=exc.code, category=category,
+            retry_after_seconds=_retry_after(exc.headers),
+        ) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise OpenSkinError(
+            "Не удалось получить цены OpenSkin.", category="network_error"
+        ) from None
+
+
+def build_qnetwork_proxy(proxy: OpenSkinProxy) -> QNetworkProxy:
+    """Create a request-manager-local HTTP CONNECT or SOCKS5 proxy."""
+    proxy_type = (
+        QNetworkProxy.ProxyType.Socks5Proxy
+        if proxy.scheme == "socks5"
+        else QNetworkProxy.ProxyType.HttpProxy
+    )
+    result = QNetworkProxy(proxy_type, proxy.host, proxy.port)
+    if proxy.username is not None:
+        result.setUser(proxy.username)
+        result.setPassword(proxy.password or "")
+    return result
+
+
+def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
+                      timeout: float, proxy: OpenSkinProxy, *, method: str = "POST"):
+    """Use one manager-local proxy for the whole request, including HTTPS CONNECT."""
+    if QCoreApplication.instance() is None:
+        raise OpenSkinError("Проверка прокси OpenSkin доступна только из приложения.")
+    manager = QNetworkAccessManager()
+    # This is intentionally manager-local and happens before get()/post().
+    manager.setProxy(build_qnetwork_proxy(proxy))
+
+    def apply_auth(_proxy, authenticator: QAuthenticator):
+        if proxy.username is not None:
+            authenticator.setUser(proxy.username)
+            authenticator.setPassword(proxy.password or "")
+
+    manager.proxyAuthenticationRequired.connect(apply_auth)
+    request = QNetworkRequest(QUrl(url))
+    for name, value in headers.items():
+        if name.casefold() == "content-type":
+            request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, value)
+        else:
+            request.setRawHeader(name.encode("ascii"), str(value).encode("latin-1"))
+    if method == "HEAD":
+        reply = manager.head(request)
+    elif method == "GET":
+        reply = manager.get(request)
+    else:
+        reply = manager.post(request, body)
+    ssl_error_details: list[str] = []
+    reply.sslErrors.connect(
+        lambda errors: ssl_error_details.extend(error.errorString() for error in errors)
+    )
+    event_loop = QEventLoop()
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timed_out = []
+    request_sent = []
+
+    def abort_request():
+        timed_out.append(True)
+        reply.abort()
+        event_loop.quit()
+
+    reply.finished.connect(event_loop.quit)
+    reply.requestSent.connect(lambda: request_sent.append(True))
+    timer.timeout.connect(abort_request)
+    # A reply may finish before its finished signal is observed; never wait on a missed signal.
+    if not reply.isFinished():
+        timer.start(max(1, int(timeout * 1000)))
+        try:
+            event_loop.exec()
+        finally:
+            timer.stop()
+    try:
+        raw_status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        status = int(raw_status) if raw_status is not None else 0
+        response_headers = {
+            bytes(name).decode("latin-1"): bytes(reply.rawHeader(name)).decode("latin-1")
+            for name in reply.rawHeaderList()
+        }
+        qt_error = reply.error()
+        response_body = b""
+        if method == "POST" and status == 200 and qt_error == QNetworkReply.NetworkError.NoError:
+            response_body = bytes(reply.readAll())
+        if status == 0:
+            category, message = classify_qnetwork_error(
+                qt_error, status, proxy.scheme, timed_out=bool(timed_out),
+                request_sent=bool(request_sent) if timed_out else None,
+            )
+            detail = " | ".join(ssl_error_details) or reply.errorString()
+            safe_detail = _log_network_failure(
+                category, getattr(qt_error, "name", str(qt_error)), detail, proxy
+            )
+            raise OpenSkinError(
+                message, category=category, diagnostic_detail=safe_detail
+            )
+        return status, response_body, response_headers
+    finally:
+        reply.deleteLater()
+        manager.deleteLater()
+
+
+def _proxy_url_request(url: str, body: bytes, headers: Mapping[str, str],
+                       timeout: float, proxy: OpenSkinProxy):
+    return _qt_proxy_request(url, body, headers, timeout, proxy, method="POST")
+
+
+def probe_proxy_connection(proxy: OpenSkinProxy, *, timeout: float = 15.0,
+                           request_func: Callable | None = None) -> int:
+    """Test proxy auth, HTTPS CONNECT/SOCKS and TLS before testing API behavior.
+
+    Any HTTP response other than 407 means the proxy route completed DNS,
+    proxy negotiation, HTTPS tunnel and TLS. The response body is discarded.
+    """
+    request_func = request_func or _qt_proxy_request
+    status, _body, _headers = request_func(
+        _PROXY_PROBE_URL, b"", {"Accept": "*/*", "Range": "bytes=0-0"},
+        timeout, proxy, method="GET"
+    )
+    if status == 407:
+        category, message = classify_qnetwork_error(
+            QNetworkReply.NetworkError.ProxyAuthenticationRequiredError,
+            status, proxy.scheme,
+        )
+        _logger.warning("OpenSkin proxy probe failed category=%s http_status=%s", category, status)
+        raise OpenSkinError(message, http_status=status, category=category)
+    if status == 0:
+        raise OpenSkinError("Proxy-проверка не получила HTTP-ответа.", category="network_error")
+    _logger.info("OpenSkin proxy probe received an HTTP response: status=%s", status)
+    return status
+
+
+class OpenSkinClient:
+    """Sends sequential batches and reads only steam.ask from ordered results."""
+
+    def __init__(self, *, timeout: float = 20.0,
+                 request_func: Callable | None = None,
+                 proxy_request_func: Callable | None = None,
+                 proxy: OpenSkinProxy | None = None):
+        self.timeout = timeout
+        self._request_func = request_func or _url_request
+        self._proxy_request_func = proxy_request_func or _proxy_url_request
+        self.proxy = proxy
+
+    def fetch_prices(self, positions) -> tuple[OpenSkinPrice, ...]:
+        positions = tuple(positions)
+        if any(not isinstance(position, PricePosition) for position in positions):
+            raise TypeError("positions must contain PricePosition values")
+        result = []
+        for start in range(0, len(positions), _MAX_BATCH):
+            batch = positions[start:start + _MAX_BATCH]
+            result.extend(self._fetch_batch(batch))
+        return tuple(result)
+
+    def _fetch_batch(self, positions: tuple[PricePosition, ...]) -> tuple[OpenSkinPrice, ...]:
+        items = [
+            position.market_hash_name if position.pattern is None else {
+                "item": position.market_hash_name, "pattern": position.pattern,
+            }
+            for position in positions
+        ]
+        body = json.dumps({"items": items}, ensure_ascii=False).encode("utf-8")
+        try:
+            request_func = self._proxy_request_func if self.proxy else self._request_func
+            args = (_ENDPOINT, body, {"Accept": "application/json",
+                                     "Content-Type": "application/json"}, self.timeout)
+            status, raw, headers = (
+                request_func(*args, self.proxy) if self.proxy else request_func(*args)
+            )
+        except OpenSkinError:
+            raise
+        except Exception as exc:
+            _logger.warning("OpenSkin request failed before an HTTP response: exception=%s",
+                             type(exc).__name__)
+            raise OpenSkinError("Не удалось получить цены OpenSkin.",
+                                category="client_error") from None
+        if status != 200:
+            category, message = classify_qnetwork_error(
+                QNetworkReply.NetworkError.NoError, status,
+                self.proxy.scheme if self.proxy else "http",
+            )
+            _logger.warning("OpenSkin API response category=%s http_status=%s", category, status)
+            raise OpenSkinError(
+                message, http_status=status, category=category,
+                retry_after_seconds=_retry_after(headers),
+            )
+        try:
+            payload = json.loads(raw.decode("utf-8"), parse_float=Decimal)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            _logger.warning("OpenSkin API returned invalid JSON")
+            raise OpenSkinError("OpenSkin вернул ответ в неожиданном формате.",
+                                category="invalid_response") from None
+        rows = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or len(rows) != len(positions):
+            _logger.warning("OpenSkin API returned an invalid results collection")
+            raise OpenSkinError("OpenSkin вернул неполный список результатов.",
+                                category="invalid_response")
+
+        prices = []
+        for position, row in zip(positions, rows):
+            if not isinstance(row, dict) or row.get("item") != position.market_hash_name:
+                raise OpenSkinError("OpenSkin вернул результат с несовпадающим предметом.")
+            echoed_pattern = row.get("pattern")
+            if position.pattern is not None and echoed_pattern != position.pattern:
+                raise OpenSkinError("OpenSkin вернул результат с несовпадающим pattern.")
+            if position.pattern is None and echoed_pattern not in (None, ""):
+                raise OpenSkinError("OpenSkin вернул pattern без запроса точного варианта.")
+
+            steam = row.get("steam")
+            if not isinstance(steam, dict):
+                prices.append(OpenSkinPrice(position, None, None, None))
+                continue
+            ask = steam.get("ask")
+            if isinstance(ask, bool) or not isinstance(ask, (Decimal, int)):
+                ask = None
+            else:
+                try:
+                    ask = Decimal(ask) if isinstance(ask, int) else ask
+                    if not ask.is_finite() or ask < 0:
+                        ask = None
+                except (InvalidOperation, ValueError):
+                    ask = None
+            currency = steam.get("currency")
+            currency = currency.upper() if isinstance(currency, str) else None
+            updated = steam.get("updated_at")
+            if isinstance(updated, str):
+                try:
+                    parsed_updated = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                    if parsed_updated.tzinfo is None or parsed_updated.utcoffset() is None:
+                        updated = None
+                except ValueError:
+                    updated = None
+            else:
+                updated = None
+            prices.append(OpenSkinPrice(position, ask, currency, updated))
+        return tuple(prices)

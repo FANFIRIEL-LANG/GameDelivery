@@ -63,7 +63,8 @@ def build_inventory_view(
             selected.append(name)
             seen.add(name)
 
-    grouped: dict[tuple[str, str, bool, bool, bool | None, str | None, str, str, str, str], dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    grouped: dict[tuple[str, str, bool, bool, bool | None, str | None, str, str], dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    artwork_candidates: dict[tuple[str, str, bool, bool, bool | None, str | None, str, str], set[tuple[str, str]]] = defaultdict(set)
     seen_assets: set[tuple[str, str]] = set()
     for bot in selected:
         for card in normalized[known_bots[bot]]:
@@ -77,23 +78,30 @@ def build_inventory_view(
                 continue
             seen_assets.add(asset_key)
             owner_key = None if mode == "shared" else bot
-            grouped[(
+            identity = (
                 game_name, card_name, card.is_trading_card, card.is_foil,
-                card.is_tradable, owner_key, card.icon_url, card.icon_url_large,
-                card.market_hash_name, card.item_quality,
-            )][bot].append(asset_id)
+                card.is_tradable, owner_key, card.market_hash_name, card.item_quality,
+            )
+            grouped[identity][bot].append(asset_id)
+            artwork_candidates[identity].add((card.icon_url, card.icon_url_large))
 
     rows: list[InventoryRow] = []
     for (game_name, card_name, is_card, is_foil, is_tradable, owner_key,
-         icon_url, icon_url_large, market_hash_name, item_quality), per_bot in sorted(
+         market_hash_name, item_quality), per_bot in sorted(
         grouped.items(),
         key=lambda item: (
             item[0][0].casefold(), item[0][1].casefold(),
             item[0][2], item[0][3], item[0][4] is not True,
-            (item[0][5] or "").casefold(), item[0][6], item[0][7],
-            item[0][8].casefold(), item[0][9].casefold(),
+            (item[0][5] or "").casefold(),
+            item[0][6].casefold(), item[0][7].casefold(),
         ),
     ):
+        identity = (game_name, card_name, is_card, is_foil, is_tradable,
+                    owner_key, market_hash_name, item_quality)
+        icon_url, icon_url_large = max(
+            artwork_candidates[identity],
+            key=lambda pair: (bool(pair[1]), bool(pair[0]), pair[1], pair[0]),
+        )
         owners = [(bot, tuple(ids)) for bot, ids in per_bot.items() if ids]
         if owner_key is not None:
             owners = [(owner_key, tuple(per_bot.get(owner_key, [])))]
@@ -129,7 +137,7 @@ def filter_inventory_rows(
     item_filter: str = "all",
 ) -> tuple[InventoryRow, ...]:
     """Filter displayed rows without changing inventory ownership or stored data."""
-    allowed = {"all", "cards", "items", "foil", "tradable", "nontradable"}
+    allowed = {"all", "cards", "items", "foil", "tradable", "nontradable", "unknown"}
     if item_filter not in allowed:
         raise ValueError("Неизвестный фильтр инвентаря")
 
@@ -145,6 +153,8 @@ def filter_inventory_rows(
         if item_filter == "tradable" and row.is_tradable is not True:
             continue
         if item_filter == "nontradable" and row.is_tradable is not False:
+            continue
+        if item_filter == "unknown" and row.is_tradable is not None:
             continue
         if needle:
             searchable = " ".join((

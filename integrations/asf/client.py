@@ -13,6 +13,9 @@ from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import Request, urlopen
 
 
+TEST_ASF_IPC_URL_ENV = "GAMEDELIVERY_TEST_ASF_IPC_URL"
+
+
 class ASFError(RuntimeError):
     """Raised when ASF IPC cannot complete a request."""
 

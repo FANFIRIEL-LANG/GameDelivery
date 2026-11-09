@@ -100,6 +100,19 @@ class InventoryViewTests(unittest.TestCase):
         self.assertEqual(view.rows[0].market_hash_name, "AK-47 | Redline (Field-Tested)")
         self.assertEqual(view.rows[0].item_quality, "FT")
 
+    def test_shared_group_uses_artwork_from_any_physical_card_snapshot(self):
+        icon = "https://community.cloudflare.steamstatic.com/economy/image/card"
+        inventories = {
+            "Bot A": [CardCopy("old", "Game", "Card", icon_url="")],
+            "Bot B": [CardCopy("new", "Game", "Card", icon_url=icon)],
+        }
+
+        view = build_inventory_view(inventories, ["Bot A", "Bot B"], mode="shared")
+
+        self.assertEqual(len(view.rows), 1)
+        self.assertEqual(view.rows[0].quantity, 2)
+        self.assertEqual(view.rows[0].icon_url, icon)
+
     def test_invalid_mode_rejected(self):
         with self.assertRaises(ValueError):
             build_inventory_view(self.inventories, ["Bot A"], mode="merged")
@@ -134,11 +147,12 @@ class InventoryViewTests(unittest.TestCase):
         self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="items")}, {"Item"})
         self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="tradable")}, {"Card", "Foil"})
         self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="nontradable")}, {"Item"})
+        self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="unknown")}, {"Unknown"})
         self.assertEqual({row.card_name for row in filter_inventory_rows(view.rows, item_filter="foil")}, {"Foil"})
 
     def test_unknown_inventory_filter_is_rejected(self):
         with self.assertRaises(ValueError):
-            filter_inventory_rows((), item_filter="unknown")
+            filter_inventory_rows((), item_filter="invalid")
 
     def test_quantity_selection_preserves_owner_and_asset_and_deduplicates(self):
         instances = [("Bot B", "2"), ("Bot A", "1"), ("Bot A", "1"), ("Bot B", "3")]

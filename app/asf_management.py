@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import socket
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from app.asf_inventory_controller import ASFInventoryController
 from app.bot_selector import discover_asf_roots, is_asf_config_dir
-from integrations.asf.client import ASFClient, ASFError
+from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
 
 
 ASF_IPC_KEYRING_SERVICE = "GameDelivery.ASFIPC"
@@ -67,6 +68,8 @@ class ASFManagementWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        test_endpoint = os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip()
+        self._isolated_test_mode = bool(test_endpoint)
         self._settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
         app = QCoreApplication.instance()
         if app is not None:
@@ -234,12 +237,14 @@ class ASFManagementWidget(QWidget):
                     self.config_path.setText(str(candidate_dir))
                     self._settings.setValue("asf/config_path", str(candidate_dir))
                     break
-        if self.auto_start_asf_checkbox.isChecked() and self.asf_executable_path.text().strip():
+        if (not self._isolated_test_mode and self.auto_start_asf_checkbox.isChecked()
+                and self.asf_executable_path.text().strip()):
             QTimer.singleShot(700, self.start_asf)
-        elif self.config_path.text().strip():
+        elif not self._isolated_test_mode and self.config_path.text().strip():
             QTimer.singleShot(250, self.refresh_bots)
         # Locate maFiles folders near discovered ASF roots and common Steam/ASF directories.
-        if not self.mafiles_path.text().strip() or not Path(self.mafiles_path.text().strip()).is_dir():
+        if (not self._isolated_test_mode
+                and (not self.mafiles_path.text().strip() or not Path(self.mafiles_path.text().strip()).is_dir())):
             ma_candidates = []
             for root_dir in discover_asf_roots():
                 ma_candidates.extend((root_dir / "maFiles", root_dir.parent / "maFiles"))
@@ -254,7 +259,8 @@ class ASFManagementWidget(QWidget):
                     self._settings.setValue("asf/mafiles_path", str(candidate))
                     break
         # If the keyring has no saved secret, reuse the local ASF.json setting.
-        if not self.ipc_password.text().strip() and self.config_path.text().strip():
+        if (not self._isolated_test_mode and not self.ipc_password.text().strip()
+                and self.config_path.text().strip()):
             global_config = Path(self.config_path.text().strip()) / "ASF.json"
             try:
                 config_data = json.loads(global_config.read_text(encoding="utf-8-sig"))
@@ -269,6 +275,12 @@ class ASFManagementWidget(QWidget):
             self.status.setText(
                 "ASF автоматически не найден. Установи ASF в стандартную папку; "
                 "если он находится в нестандартной папке, выбери его один раз."
+            )
+        if self._isolated_test_mode:
+            self.setEnabled(False)
+            self.status.setText(
+                "Тестовый ASF endpoint включён: управление и автозапуск ASF отключены. "
+                "Используй только вкладку игровых предметов."
             )
 
     def choose_txt(self):
@@ -766,6 +778,8 @@ class ASFManagementWidget(QWidget):
         return keyring
 
     def _load_saved_ipc_password(self):
+        if os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip():
+            return
         try:
             keyring = self._keyring_backend()
             saved = keyring.get_password(ASF_IPC_KEYRING_SERVICE, ASF_IPC_KEYRING_ACCOUNT)

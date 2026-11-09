@@ -4,8 +4,8 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtWidgets import QComboBox, QCompleter, QLineEdit, QListWidget
+from PySide6.QtCore import QObject, QSettings, Qt, Signal
+from PySide6.QtWidgets import QComboBox, QCompleter, QLineEdit, QListWidget, QListWidgetItem
 
 
 _BOT_KEYS = {
@@ -123,10 +123,108 @@ def populate_bot_combo(combo: QComboBox, extra_names=()) -> None:
 
 def connect_account_search(search: QLineEdit, account_list: QListWidget) -> None:
     """Filter visible account rows without changing their checked/selected state."""
-    def apply_filter(text: str) -> None:
+    def apply_filter(text: str | None = None) -> None:
+        if text is None:
+            text = search.text()
         query = text.strip().casefold()
         for index in range(account_list.count()):
             item = account_list.item(index)
             item.setHidden(bool(query) and query not in item.text().casefold())
 
     search.textChanged.connect(apply_filter)
+    account_list._account_search_filter = apply_filter
+    apply_filter()
+
+
+class BotSelectionModel(QObject):
+    """One live account list and checked selection shared by inventory tabs."""
+
+    accounts_changed = Signal(list)
+    selection_changed = Signal(list)
+    refresh_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._account_names: list[str] = []
+        self._selected_keys: set[str] = set()
+        self._selection_touched = False
+
+    @property
+    def account_names(self) -> list[str]:
+        return list(self._account_names)
+
+    @property
+    def selected_names(self) -> list[str]:
+        return [name for name in self._account_names
+                if name.casefold() in self._selected_keys]
+
+    def set_accounts(self, names) -> None:
+        canonical: dict[str, str] = {}
+        for raw_name in names:
+            name = str(raw_name).strip()
+            if name:
+                canonical.setdefault(name.casefold(), name)
+        new_names = sorted(canonical.values(), key=str.casefold)
+        new_keys = {name.casefold() for name in new_names}
+        selected_before = self._selected_keys.copy()
+        if self._selection_touched:
+            self._selected_keys.intersection_update(new_keys)
+        else:
+            self._selected_keys = new_keys
+        accounts_changed = new_names != self._account_names
+        selection_changed = selected_before != self._selected_keys
+        self._account_names = new_names
+        if accounts_changed:
+            self.accounts_changed.emit(self.account_names)
+        if selection_changed:
+            self.selection_changed.emit(self.selected_names)
+
+    def set_selected(self, names) -> None:
+        if not self._account_names:
+            return
+        canonical = {name.casefold(): name for name in self._account_names}
+        selected = {
+            str(name).strip().casefold()
+            for name in names if str(name).strip().casefold() in canonical
+        }
+        self._selection_touched = True
+        if selected != self._selected_keys:
+            self._selected_keys = selected
+            self.selection_changed.emit(self.selected_names)
+
+    def select_all(self) -> None:
+        self.set_selected(self._account_names)
+
+    def clear_selection(self) -> None:
+        self.set_selected(())
+
+
+def populate_bot_list(account_list: QListWidget, names, selected_names,
+                      labels: dict[str, str] | None = None) -> None:
+    """Render one consistent checkable list while keeping its search filter."""
+    selected = {str(name).strip().casefold() for name in selected_names}
+    labels = labels or {}
+    account_list.blockSignals(True)
+    account_list.clear()
+    account_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+    for name in names:
+        item = QListWidgetItem(labels.get(name, name))
+        item.setData(Qt.ItemDataRole.UserRole, name)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(
+            Qt.CheckState.Checked if name.casefold() in selected
+            else Qt.CheckState.Unchecked
+        )
+        account_list.addItem(item)
+    account_list.blockSignals(False)
+    apply_filter = getattr(account_list, "_account_search_filter", None)
+    if apply_filter is not None:
+        apply_filter()
+
+
+def checked_bot_names(account_list: QListWidget) -> list[str]:
+    return [
+        str(account_list.item(index).data(Qt.ItemDataRole.UserRole))
+        for index in range(account_list.count())
+        if account_list.item(index).checkState() == Qt.CheckState.Checked
+    ]
