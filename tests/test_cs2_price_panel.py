@@ -114,12 +114,12 @@ class CS2PricePanelTests(unittest.TestCase):
         group = build_cs2_inventory_projection([item]).groups[0]
 
         card = CS2InventoryGroupCard(
-            group, price_text="$0.03 · Не учитывается в оценке — цена ниже $0.05"
+            group, price_text="$0.03 · Не учитывается в оценке — цена не выше $0.05"
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
         self.assertIn("$0.03", visible)
-        self.assertIn("ниже $0.05", visible)
+        self.assertIn("не выше $0.05", visible)
         self.assertNotIn("₽", visible)
 
     def test_separate_table_rows_show_individual_asset_price(self):

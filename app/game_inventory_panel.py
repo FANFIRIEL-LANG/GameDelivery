@@ -103,7 +103,7 @@ class _PriceRefreshTask(QRunnable):
             needs_conversion = any(
                 quote is not None and quote.currency == "USD"
                 and quote.steam_ask is not None
-                and quote.steam_ask >= PRICE_THRESHOLD_USD
+                and quote.steam_ask > PRICE_THRESHOLD_USD
                 for quote in cached_quotes
             )
             if needs_conversion and store.fx_rate_due():
@@ -121,7 +121,7 @@ class _PriceRefreshTask(QRunnable):
                 for position in self.positions:
                     quote = store.get(position)
                     if (quote is None or quote.currency != "USD" or quote.steam_ask is None
-                            or quote.steam_ask < PRICE_THRESHOLD_USD):
+                            or quote.steam_ask <= PRICE_THRESHOLD_USD):
                         continue
                     rub = (quote.steam_ask * rate.rate).quantize(
                         Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -661,7 +661,7 @@ class GameInventoryPanel(QWidget):
             f"Оценка выбранных ботов: {total}",
             "По ботам: " + bots,
             (f"С ценой и курсом: {valuation.priced_instances} · "
-             f"ниже $0.05: {valuation.below_threshold_instances} · "
+             f"не выше $0.05: {valuation.below_threshold_instances} · "
              f"цена неизвестна: {valuation.unknown_price_instances} · "
              f"неподдерживаемые варианты: {valuation.unsupported_instances} · "
              f"ошибки API: {valuation.error_price_instances} · "
@@ -707,7 +707,7 @@ class GameInventoryPanel(QWidget):
         eligible_cached = any(
             (quote := self.price_cache_store.get(position)) is not None
             and quote.currency == "USD" and quote.steam_ask is not None
-            and quote.steam_ask >= PRICE_THRESHOLD_USD
+            and quote.steam_ask > PRICE_THRESHOLD_USD
             for position in positions
         )
         rate_due = eligible_cached and self.price_cache_store.fx_rate_due()

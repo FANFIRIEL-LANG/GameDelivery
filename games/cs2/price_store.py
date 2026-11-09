@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import sqlite3
 
-from games.cs2.pricing import CachedPrice, PriceState
+from games.cs2.pricing import PRICE_THRESHOLD_USD, CachedPrice, PriceState
 from integrations.openskin.client import PricePosition
 
 
@@ -146,7 +146,7 @@ class PriceCacheStore:
         timestamp = _utc(now).isoformat()
         ask = str(quote.steam_ask) if quote.steam_ask is not None else None
         below = int(quote.currency == "USD" and quote.steam_ask is not None
-                    and quote.steam_ask < Decimal("0.05"))
+                    and quote.steam_ask <= PRICE_THRESHOLD_USD)
         state = PriceState.BELOW_THRESHOLD if below else quote.state
         with self._connect() as db:
             db.execute("""
@@ -201,7 +201,7 @@ class PriceCacheStore:
             if row is None:
                 raise KeyError("price quote does not exist")
             ask = Decimal(row[0]) if row[0] is not None else None
-            if row[1] != "USD" or ask is None or ask < Decimal("0.05"):
+            if row[1] != "USD" or ask is None or ask <= PRICE_THRESHOLD_USD:
                 raise ValueError("price is not eligible for RUB conversion")
             db.execute("""
                 UPDATE cs2_price_cache SET price_rub=?,usd_rub_rate=?,

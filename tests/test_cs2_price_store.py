@@ -23,11 +23,11 @@ class CS2PriceStoreTests(unittest.TestCase):
 
     def test_init_is_idempotent_and_exact_decimals_survive_reopen(self):
         quote = CachedPrice(self.position, Decimal("0.049"), "USD",
-                            "2026-11-09T06:00:00Z", self.now.isoformat(), PriceState.BELOW_THRESHOLD)
+                            self.now.isoformat(), self.now.isoformat(), PriceState.BELOW_THRESHOLD)
         self.store.save_quote(quote, now=self.now)
         reopened = PriceCacheStore(self.database)
 
-        cached = reopened.get(self.position)
+        cached = reopened.get(self.position, now=self.now)
 
         self.assertEqual(cached.steam_ask, Decimal("0.049"))
         self.assertEqual(cached.state, PriceState.BELOW_THRESHOLD)
@@ -40,7 +40,7 @@ class CS2PriceStoreTests(unittest.TestCase):
         self.assertNotIn("game_inventory_snapshot", tables)
 
     def test_converted_value_and_exchange_provenance_survive_restart(self):
-        quote = CachedPrice(self.position, Decimal("1.00"), "USD", "2026-11-09T06:00:00Z",
+        quote = CachedPrice(self.position, Decimal("1.00"), "USD", self.now.isoformat(),
                             self.now.isoformat(), PriceState.CURRENT)
         self.store.save_quote(quote, now=self.now)
         self.store.save_conversion(
@@ -48,7 +48,7 @@ class CS2PriceStoreTests(unittest.TestCase):
             "2026-11-09T12:00:00+00:00",
         )
 
-        cached = PriceCacheStore(self.database).get(self.position)
+        cached = PriceCacheStore(self.database).get(self.position, now=self.now)
 
         self.assertEqual(cached.price_rub, Decimal("90.12"))
         self.assertEqual(cached.usd_rub_rate, Decimal("90.123"))
@@ -63,6 +63,21 @@ class CS2PriceStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.save_conversion(
                 self.position, Decimal("4.41"), Decimal("90"), "2026-11-08",
+                self.now.isoformat(),
+            )
+
+    def test_exact_threshold_is_excluded_from_ruble_conversion(self):
+        quote = CachedPrice(self.position, Decimal("0.05"), "USD",
+                            self.now.isoformat(), self.now.isoformat(), PriceState.CURRENT)
+        self.store.save_quote(quote, now=self.now)
+
+        cached = self.store.get(self.position, now=self.now)
+
+        self.assertEqual(cached.state, PriceState.BELOW_THRESHOLD)
+        self.assertIsNone(cached.price_rub)
+        with self.assertRaises(ValueError):
+            self.store.save_conversion(
+                self.position, Decimal("4.50"), Decimal("90"), "2026-11-09",
                 self.now.isoformat(),
             )
 

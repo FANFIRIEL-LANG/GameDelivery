@@ -29,7 +29,7 @@ def quote(instance, ask, *, state=PriceState.CURRENT, currency="USD"):
 
 
 class CS2PricingTests(unittest.TestCase):
-    def test_threshold_is_strict_and_cheap_items_are_not_converted(self):
+    def test_threshold_is_inclusive_and_cheap_items_are_not_converted(self):
         prices = ["0.01", "0.03", "0.049", "0.05", "0.10", "1.00"]
         items = [item(asset=str(index), name=f"Item {index}") for index in range(len(prices))]
         quotes = {quote(instance, amount).position: quote(instance, amount)
@@ -37,12 +37,12 @@ class CS2PricingTests(unittest.TestCase):
 
         result = calculate_valuation(items, quotes, Decimal("90"))
 
-        self.assertEqual(result.below_threshold_instances, 3)
-        self.assertEqual(result.priced_instances, 3)
+        self.assertEqual(result.below_threshold_instances, 4)
+        self.assertEqual(result.priced_instances, 2)
         self.assertEqual(result.unknown_price_instances, 0)
-        self.assertEqual(result.selected_total_rub, Decimal("103.50"))
-        self.assertEqual([entry.price_rub for entry in result.assets[:3]], [None, None, None])
-        self.assertEqual(result.assets[3].price_rub, Decimal("4.50"))
+        self.assertEqual(result.selected_total_rub, Decimal("99.00"))
+        self.assertEqual([entry.price_rub for entry in result.assets[:4]], [None, None, None, None])
+        self.assertEqual(result.assets[4].price_rub, Decimal("9.00"))
 
     def test_missing_rate_produces_partial_total_and_separate_pending_count(self):
         first, second = item(asset="a1"), item(bot="Bot B", asset="b1")
@@ -162,7 +162,7 @@ class CS2PricingTests(unittest.TestCase):
 
     def test_unit_price_rounds_half_up_to_cents(self):
         instance = item()
-        source = quote(instance, "0.05")
+        source = quote(instance, "0.055")
 
         result = calculate_valuation([instance], {source.position: source}, Decimal("1.1"))
 
@@ -176,7 +176,7 @@ class CS2PricingTests(unittest.TestCase):
         visible = asset_price_text(result.assets[0])
 
         self.assertIn("$0.049", visible)
-        self.assertIn("< $0.05", visible)
+        self.assertIn("≤ $0.05", visible)
         self.assertIn("устарела", visible)
         self.assertNotIn("₽", visible)
 
@@ -188,7 +188,7 @@ class CS2PricingTests(unittest.TestCase):
         text = group_price_text([instance], result)
 
         self.assertIn("$0.03", text)
-        self.assertIn("ниже $0.05", text)
+        self.assertIn("не выше $0.05", text)
         self.assertNotIn("₽", text)
 
 

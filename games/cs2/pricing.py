@@ -141,7 +141,7 @@ def cached_price_from_openskin(price: OpenSkinPrice, *, fetched_at: datetime | N
     ask = price.steam_ask
     state = (
         PriceState.UNKNOWN if ask is None or price.currency != "USD"
-        else PriceState.BELOW_THRESHOLD if ask < PRICE_THRESHOLD_USD
+        else PriceState.BELOW_THRESHOLD if ask <= PRICE_THRESHOLD_USD
         else PriceState.CURRENT
     )
     fetched = fetched_at or datetime.now(timezone.utc)
@@ -191,7 +191,7 @@ def calculate_valuation(
             asset = AssetValuation(item.physical_key, position, None, None, state,
                                    quote.source_updated_at, quote.fetched_at,
                                    quote.state is PriceState.STALE, quote.last_http_error)
-        elif quote.steam_ask < PRICE_THRESHOLD_USD:
+        elif quote.steam_ask <= PRICE_THRESHOLD_USD:
             asset = AssetValuation(item.physical_key, position, quote.steam_ask, None,
                                    PriceState.BELOW_THRESHOLD, quote.source_updated_at,
                                    quote.fetched_at, quote.state is PriceState.STALE,
@@ -266,7 +266,7 @@ def asset_price_text(asset: AssetValuation) -> str:
         return "Цена неизвестна"
     if asset.state is PriceState.BELOW_THRESHOLD and asset.price_usd is not None:
         stale = " · устарела" if asset.is_stale else ""
-        return f"Цена актива: {format_usd(asset.price_usd)} · не учитывается в оценке (< $0.05){stale}"
+        return f"Цена актива: {format_usd(asset.price_usd)} · не учитывается в оценке (≤ $0.05){stale}"
     if asset.price_rub is not None:
         suffix = " · устарела" if asset.is_stale else ""
         return f"Цена актива: ₽{asset.price_rub:.2f}{suffix}"
@@ -300,7 +300,7 @@ def group_price_text(instances, valuation: InventoryValuation) -> str:
     below = [asset for asset in assets if asset.state is PriceState.BELOW_THRESHOLD]
     if below and len(below) == len(assets):
         return (f"Цена: {format_usd(below[0].price_usd)} · "
-                "Не учитывается в оценке — цена ниже $0.05")
+                "Не учитывается в оценке — цена не выше $0.05")
     usd = next((asset.price_usd for asset in assets if asset.price_usd is not None), None)
     if usd is not None:
         return f"Цена в ₽ недоступна · исходный Steam Ask: {format_usd(usd)}"
