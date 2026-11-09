@@ -133,7 +133,7 @@ Known ordinary MarketHashName без pattern-sensitive modifiers можно за
 
 - OpenSkin: только `POST https://api.openskin.dev/v1/prices/batch`, batch ≤500, ordered `results`, exact item/pattern echo, только `steam.ask`. JSON quote values — Decimal. HTTP error body не сохраняется и не выводится; retry-after учитывается.
 - Frankfurter: только `GET https://api.frankfurter.dev/v2/rate/usd/rub`; USD/RUB Decimal, source date отдельно от local fetched time.
-- Стоимость: только физические Asset-строки, не ASF `amount`; включены непередаваемые предметы; фильтрация по выбранным ботам. `steam.ask < $0.05` не конвертируется и исключается из суммы; USD цена остаётся на карточке. `>= $0.05` конвертируется с ROUND_HALF_UP до копеек. Без курса отображается частичный итог + awaiting-rate count.
+- Стоимость: только физические Asset-строки, не ASF `amount`; включены непередаваемые предметы; фильтрация по выбранным ботам. `steam.ask ≤ $0.05` не конвертируется и исключается из суммы; USD цена остаётся на карточке. Только `> $0.05` конвертируется с ROUND_HALF_UP до копеек. Без курса отображается частичный итог + awaiting-rate count.
 - Без typed seed/pattern generic ask не назначается Doppler, Case Hardened, Fade, Heat Treated, Crimson Web, Slaughter; state `unsupported`.
 - Идемпотентные `cs2_price_cache`, `cs2_fx_rate_cache` хранят Decimal текстом, quote/rate source и fetched timestamps, состояние/error/retry и RUB conversion provenance. Временная ошибка сохраняет последнюю успешную цену/курс. QTimer 10 минут, сетевые вызовы в Qt worker.
 - Shared карточки: unit price + стоимость физической группы. CS2 separate cards/table: одна строка на physical Asset. Summary в обоих режимах: per-bot и selected total; дешёвые, неизвестные, unsupported, error, awaiting-rate и stale количества.
@@ -242,3 +242,39 @@ Known ordinary MarketHashName без pattern-sensitive modifiers можно за
 Изменения C.6.3.6.3: `integrations/openskin/client.py`, `tests/test_openskin_proxy.py`, Master Log, Stage C plan и этот handoff. Ветка `work/local-sync`, HEAD `29b36dd1d44245f933346947a1ee9cb85ef6588d`; commit/push не выполнялись. Предыдущие незакоммиченные изменения сохранены.
 
 **Следующее действие:** пользователь повторяет «Проверить прокси», затем «Проверить OpenSkin API» в локальной GameDelivery с тем же профилем и сообщает только категорию/HTTP status. Не отправлять credentials или raw logs. Если timeout сохраняется, следующая точка сбора — значение `reply.isFinished()`, `reply.error()`/безопасный `errorString` непосредственно до abort и факт `requestSent`; не увеличивать таймаут без измерения.
+
+
+---
+
+## C.6.3.6.4 — включительная граница цены и CI checkpoint (2026-11-09)
+
+### Уточнённое правило цены
+
+- Значения OpenSkin Steam Ask ≤ $0.05 остаются видимыми как исходная USD-цена, не конвертируются в RUB и не входят в денежные итоги.
+- В конвертацию и RUB totals допускаются только цены > $0.05.
+- Условие применяется одинаково к cached_price_from_openskin(), calculate_valuation(), SQLite cache persistence/conversion guard и решению worker о необходимости USD/RUB курса.
+- games/cs2/price_store.py использует общий PRICE_THRESHOLD_USD, чтобы порог не был повторно задан отдельным литералом.
+- Проверка ровно $0.05 выделена в отдельный cache regression test. Fixture reopen test фиксирует now=self.now и source timestamp тем же временем, чтобы тест свежести не зависел от реального времени запуска.
+
+### Изменения и коммиты
+
+- 9331f343608ccce0a9658e6539de9767d75ba742 — fix: enforce inclusive CS2 price threshold and deterministic cache tests; изменены games/cs2/pricing.py, games/cs2/price_store.py, app/game_inventory_panel.py, tests/test_cs2_pricing.py, tests/test_cs2_price_store.py, tests/test_cs2_price_panel.py.
+- 0a3aa2e33f48c6adc8c0a5e78a09f1b0642cdf90 — добавлен CI fallback Isolate test modules after full-suite failure с условием if: failure(). При падении общего suite каждый tests/test_*.py выполняется в отдельном процессе, чтобы найти модуль, способный вызвать самостоятельный Qt shutdown failure. На успешных прогонах шаг пропускается.
+
+### Проверки CI
+
+- На 9331f34 один full-suite run сообщил 481 tests OK, но процесс завершился Segmentation fault / exit 139 после отчёта OK; это непостоянный Qt shutdown симптом, а не failure тестовых assertions.
+- На том же кодовом состоянии после commit 0a3aa2e полный workflow 42692454779, attempt 1, прошёл успешно: 481/481 tests, exit 0.
+- Повторный attempt 2 того же workflow также прошёл: 481/481 tests, exit 0. Предварительные шаги test_trade_credentials.py (8 tests) и test_trade_delivery_ui.py (9 tests) тоже прошли.
+- Диагностический запуск отдельных модулей не выполнялся, поскольку оба полных прогона завершились штатно. Root cause прежнего intermittent Qt shutdown crash не установлен; не считать его исправленным или окончательно устранённым.
+
+### Дополнительная проверка прокси UI
+
+- ASF proxy form и OpenSkin proxy form используют одинаковую структуру ручного ввода: тип, host, port, username, password. OpenSkin намеренно предлагает только HTTP CONNECT и SOCKS5 — именно те типы, которые поддерживает его отдельный Qt transport. Отличие списка поддерживаемых протоколов от ASF general proxy pool намеренное, а не рассинхронизация UI.
+- Новый парсер или новый ввод URI в этом checkpoint не добавлялся: текущий раздельный ввод не раскрывает credentials в незамаскированном поле host и сохраняет пароль в системном keyring.
+
+### Ограничения и следующий шаг
+
+- Коммиты выполнялись только в work/local-sync; main, PR #4 и локальная папка D:\GameDelivery не затрагивались.
+- Live OpenSkin proxy/API и реальная оценка CS2 на изолированном ASF не выполнялись. Mock/CI pass не доказывает, что пользовательский proxy пропускает запрос или что живые цены и курс получены верно.
+- C.6.3.6 остаётся pending live acceptance. Следующий этап: локальные read-only проверки «Проверить прокси», затем «Проверить OpenSkin API», после чего — изолированный 730/2 price acceptance без production ASF 1242 и без отправки Trade Offers.

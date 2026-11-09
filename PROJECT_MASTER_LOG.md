@@ -2338,7 +2338,7 @@ ASF Generic 6.3.11.7 / закреплённый SteamKit2 3.5.0 не задаё�
 
 - `integrations/openskin/client.py` использует только `POST https://api.openskin.dev/v1/prices/batch`, ограничивает batch 500 позициями, сопоставляет ordered `results` и читает только `steam.ask`. JSON числа разбираются как `Decimal`; ошибки не раскрывают response body; поддержан Retry-After.
 - `integrations/frankfurter/client.py` использует только `GET https://api.frankfurter.dev/v2/rate/usd/rub`; курс хранится точно, source date и локальное fetched time раздельны.
-- `games/cs2/pricing.py` считает физические Asset-строки, не ASF `amount`; использует Decimal и ROUND_HALF_UP, учитывает непередаваемые предметы, применяет выбранных ботов. Только ask `>= $0.05` конвертируется и входит в RUB итоги. Более дешёвые цены сохраняются и отображаются в USD, но не конвертируются и не складываются.
+- `games/cs2/pricing.py` считает физические Asset-строки, не ASF `amount`; использует Decimal и ROUND_HALF_UP, учитывает непередаваемые предметы, применяет выбранных ботов. Только ask `> $0.05` конвертируется и входит в RUB итоги. Более дешёвые цены сохраняются и отображаются в USD, но не конвертируются и не складываются.
 - Без подтверждённого seed/pattern generic quote не применяется к Doppler, Case Hardened, Fade, Heat Treated, Crimson Web и Slaughter; такие предметы отмечаются unsupported.
 - `games/cs2/price_store.py` создаёт идемпотентные `cs2_price_cache` и `cs2_fx_rate_cache`, сохраняет точные ask/rate, источник и локальные timestamps, state/retry/HTTP code и конвертацию. Ошибки не стирают последний успешный quote или курс; inventory snapshots/tables не меняются.
 - `app/game_inventory_panel.py` выполняет сеть в Qt worker, проверяет кэш таймером 10 минут, показывает суммы выбранных ботов и сводку в обоих режимах; общий режим показывает unit/group value, CS2 separate — каждый физический Asset. `app/game_inventory_cards.py` выводит цену на CS2 карточке.
@@ -2419,3 +2419,33 @@ Focused results: API/FX/pricing/store 35/35, exit 0; price panel 7/7, exit 0; CS
 - Если требуется скачивание/локальная проверка, давать пошаговую команду и ожидаемое состояние; не запрашивать секреты и не включать их в отчёты.
 - Следующий шаг: в локальной GameDelivery с актуального checkout выполнить «Проверить прокси», затем «Проверить OpenSkin API»; сообщить только категорию и HTTP status. Если proxy route и API проходят, выполнить read-only live acceptance цен CS2 на изолированном ASF; рабочий ASF и Trade Offers не использовать.
 - Этот журнал фиксирует базовый HEAD перед checkpoint; фактический HEAD после сохранения — единственный checkpoint commit, получаемый командой `git rev-parse HEAD`.
+
+
+## 2026-11-09 — C.6.3.6.4 — включительная граница цены и CI regression
+
+### Уточнение ценового правила
+
+- OpenSkin Steam Ask ≤ $0.05 сохраняется и показывается в исходной USD, но не конвертируется и не включается в RUB totals.
+- Только значения > $0.05 eligible для Frankfurter USD/RUB конвертации.
+- Правило последовательно применено в games/cs2/pricing.py, games/cs2/price_store.py и app/game_inventory_panel.py: оценка каждого Asset, классификация quote при сохранении, защита save_conversion() и проверка необходимости получать FX rate.
+- Порог хранится в одном PRICE_THRESHOLD_USD; дублирующий литерал в price_store.py устранён.
+- Исправлен нестабильный по времени cache test: reopen assertion теперь передаёт фиксированное now=self.now и использует согласованный source timestamp. Добавлен отдельный regression test, подтверждающий, что ровно $0.05 получает BELOW_THRESHOLD и не может быть сохранено как RUB conversion.
+
+### Изменения и проверка
+
+- Commit 9331f343608ccce0a9658e6539de9767d75ba742: включительный порог и детерминированные cache tests; изменены games/cs2/pricing.py, games/cs2/price_store.py, app/game_inventory_panel.py, tests/test_cs2_pricing.py, tests/test_cs2_price_store.py, tests/test_cs2_price_panel.py.
+- Commit 0a3aa2e33f48c6adc8c0a5e78a09f1b0642cdf90: CI теперь при падении общего suite запускает каждый tests/test_*.py отдельно (if: failure()), помогая локализовать самостоятельный Qt shutdown crash. При успешном полном suite диагностический шаг пропускается.
+- На кодовом commit 9331f34 один прогон сообщил 481 tests OK, но завершился Segmentation fault / exit 139 при завершении Python/Qt процесса. Сбой был после test assertions.
+- После добавления диагностического fallback полный workflow 42692454779 прошёл дважды: attempt 1 и attempt 2, каждый сообщил 481/481 tests OK и завершился exit 0. Отдельные проверки trade credential migration (8 tests) и trade UI flow (9 tests) также успешны.
+- Причина прежнего непостоянного Qt shutdown crash не установлена; считать её исправленной нельзя. В двух повторных полных прогонах симптом не воспроизвёлся. Диагностика отдельных модулей не запускалась, потому что она условно выполняется только при failure.
+
+### Сверка OpenSkin/ASF proxy inputs
+
+ASF proxy form и OpenSkin proxy form уже используют одинаковые отдельные поля: scheme/type, host, port, username и password. OpenSkin поддерживает только HTTP CONNECT и SOCKS5 из-за ограничений используемого manager-local Qt transport; это намеренное более узкое множество, чем ASF general proxy pool. Дополнительный URI parser или новые поля не добавлялись, чтобы не вводить секреты в незамаскированное поле host. Пароль OpenSkin по-прежнему хранится через системный keyring, а не в QSettings.
+
+### Статус и ограничения
+
+- Все коммиты этой работы направлены только в work/local-sync. main и PR #4 не менялись. Локальная D:\GameDelivery не открывалась и не изменялась.
+- Нет live result для пользовательского proxy, OpenSkin API, Frankfurter и оценки CS2 в тестовом ASF. CI подтверждает только кодовые и mock-based проверки.
+- C.6.3.6 остаётся незавершённым до read-only live acceptance через изолированный ASF 730/2. Рабочий ASF 1242, Steam inventory mutations и Trade Offers запрещены.
+- Следующий шаг: сначала пользовательская кнопка «Проверить прокси», затем «Проверить OpenSkin API»; при успехе — отдельное read-only сравнение Steam Ask, Frankfurter USD/RUB и физических totals на изолированном test ASF. Секреты в чат не передавать.
