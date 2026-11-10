@@ -2922,3 +2922,14 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Final Tests workflow `42801459310` on code/test HEAD `c27afeb56e8a170f155bc7bb99556fbf1b5067d2`: **SUCCESS**, `Ran 504 tests in 3.233s`, `OK`. Python/Qt then aborted only during pure-virtual shutdown; workflow isolated every test module and completed SUCCESS.
 - Windows package workflow `42801459337` on the same exact HEAD: **SUCCESS**. Python compile, Windows trade-secret ACL, PyInstaller build, packaged `GameDelivery.exe --self-test`, and artifact upload all passed.
 - Artifact `GameDelivery-Windows-x64`, ID `13756012732`, size `55,018,359` bytes. Downloaded to `/mnt/data/GameDelivery-Inventory-Selection-Prices-Fix.zip`; SHA-256 `078bd431e7a8a24680cf87f441d546039b17099aae1c2afa485dc95b23904db2`; `zipfile.testzip()` returned `None`. Contains `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`; BUILD_INFO confirms exact build commit `c27afeb...`, Python 3.12, onedir.
+
+
+### Restore the Game Items grouping mode for CS2 (2026-11-10)
+
+- Пользователь справедливо указал, что переключатель режимов в «Игровых предметах» был скрыт без запроса. Причина: `app/game_inventory_panel.py` скрывал `grouping_mode` при выборе CS2 и переименовывал режим в `Раздельно по Asset`. Это изменение не требовалось.
+- Исправлено: переключатель `Общий вид` / `Раздельно по ботам` теперь остаётся видимым для всех игр, включая CS2; подпись восстановлена без подмены на `Раздельно по Asset`.
+- Режимы теперь реально применяются к CS2: `shared` объединяет одинаковые market items между выбранными ботами; `separate` строит независимые CS2 projections по каждому боту, при этом одинаковые экземпляры внутри одного бота по-прежнему группируются и карточки по-прежнему разделяются по передаваемости True/False/unknown. В таблице также сохраняется разделение по ботам.
+- Добавлены/обновлены regression tests: переключатель видим после смены игры на CS2; shared mode объединяет два аккаунта в одну карточку; separate mode показывает по одной карточке на каждого бота; старый тест подтверждает группировку нескольких asset одного бота.
+- Tests workflow `42807505517` на code/test commit `5145fece2f3f4b4e4feabe0aa10bdc020924c34f`: **SUCCESS**, `Ran 505 tests in 3.694s`, `OK`; модульная изоляция после Qt shutdown также завершилась успешно.
+- Windows package workflow `42807505640` на том же commit выполняется; не передавать сборку до успешного packaged EXE smoke test и загрузки артефакта.
+- Инструкция импорта ботов подтверждена по `app/asf_management.py`: TXT + соответствующие `.maFile` + папка `config` ASF; конфиги создаются с `Enabled=false`; затем перезапуск ASF, обновление списка, включение выбранных/всех конфигураций, повторный перезапуск и запуск выбранных/всех ботов. Пароли/maFiles не запрашивать у пользователя в чате.
