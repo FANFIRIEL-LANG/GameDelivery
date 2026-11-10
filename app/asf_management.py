@@ -378,7 +378,7 @@ class ASFManagementWidget(QWidget):
 
     def _ipc_port_is_open(self, base_url: str | None = None) -> bool:
         try:
-                        endpoint = urlsplit(base_url or self._ipc_base_url())
+            endpoint = urlsplit(base_url or self._ipc_base_url())
             if endpoint.hostname not in {"127.0.0.1", "localhost", "::1"} or endpoint.port is None:
                 return False
             with socket.create_connection((endpoint.hostname, endpoint.port), timeout=0.35):
