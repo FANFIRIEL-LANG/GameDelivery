@@ -408,7 +408,35 @@ class ASFManagementWidget(QWidget):
                 self.status.setText("Не найден dotnet.exe. Установи .NET 10 Runtime и проверь PATH.")
                 return
             command = [dotnet, str(executable), "--process-required"]
-        # Keep ASF global rate-limit settings user-controlled; do not override LoginLimiterDelay.
+        # User-approved launch profile: force the global ASF login limiter to zero.
+        # Preserve every unrelated ASF.json setting and create a one-time timestamped backup.
+        if not self._isolated_test_mode:
+            global_config = (config_dir or (executable.parent / "config")) / "ASF.json"
+            try:
+                if not global_config.is_file():
+                    raise FileNotFoundError(f"Не найден глобальный конфиг ASF: {global_config}")
+                payload = json.loads(global_config.read_text(encoding="utf-8-sig"))
+                if not isinstance(payload, dict):
+                    raise ValueError("ASF.json должен содержать JSON-объект.")
+                if payload.get("LoginLimiterDelay") != 0:
+                    backup = global_config.with_name(
+                        f"ASF.json.gamedelivery-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    )
+                    shutil.copy2(global_config, backup)
+                    payload["LoginLimiterDelay"] = 0
+                    temporary = global_config.with_suffix(".json.gamedelivery-tmp")
+                    temporary.write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2) + "\\n",
+                        encoding="utf-8",
+                    )
+                    temporary.replace(global_config)
+                    self.log_line.emit(
+                        "ASF: LoginLimiterDelay принудительно установлен в 0; "
+                        f"резервная копия: {backup.name}"
+                    )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                self.status.setText(f"Не удалось применить LoginLimiterDelay=0: {exc}")
+                return
         if self._asf_process is not None and self._asf_process.poll() is None:
             self._asf_ipc_attempts = 0
             self.status.setText("ASF уже запущен GameDelivery; ожидаю готовности IPC…")
