@@ -357,12 +357,14 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     metadata_signal = getattr(reply, "metaDataChanged", None)
     if metadata_signal is not None:
         metadata_signal.connect(lambda: phase.__setitem__("metadata_received", True))
-    reply.downloadProgress.connect(
-        lambda received, total: (
-            phase.__setitem__("download_received", int(received)),
-            phase.__setitem__("download_total", int(total)),
+    download_progress_signal = getattr(reply, "downloadProgress", None)
+    if download_progress_signal is not None:
+        download_progress_signal.connect(
+            lambda received, total: (
+                phase.__setitem__("download_received", int(received)),
+                phase.__setitem__("download_total", int(total)),
+            )
         )
-    )
     timer.timeout.connect(abort_request)
     # A reply may finish before its finished signal is observed; never wait on a missed signal.
     if not reply.isFinished():
@@ -376,7 +378,10 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         status = int(raw_status) if raw_status is not None else 0
         response_headers = _read_qnetwork_response_headers(reply)
         qt_error = reply.error()
-        bytes_available_before_read = int(reply.bytesAvailable())
+        bytes_available = getattr(reply, "bytesAvailable", None)
+        bytes_available_before_read = (
+            int(bytes_available()) if callable(bytes_available) else -1
+        )
         response_body = b""
         if method == "POST" and status == 200 and qt_error == QNetworkReply.NetworkError.NoError:
             response_body = bytes(reply.readAll())
