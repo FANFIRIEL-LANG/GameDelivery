@@ -306,6 +306,8 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         "tls_completed": False,
         "request_sent": False,
         "metadata_received": False,
+        "download_received": 0,
+        "download_total": -1,
     }
 
     def apply_auth(_proxy, authenticator: QAuthenticator):
@@ -355,6 +357,12 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     metadata_signal = getattr(reply, "metaDataChanged", None)
     if metadata_signal is not None:
         metadata_signal.connect(lambda: phase.__setitem__("metadata_received", True))
+    reply.downloadProgress.connect(
+        lambda received, total: (
+            phase.__setitem__("download_received", int(received)),
+            phase.__setitem__("download_total", int(total)),
+        )
+    )
     timer.timeout.connect(abort_request)
     # A reply may finish before its finished signal is observed; never wait on a missed signal.
     if not reply.isFinished():
@@ -368,9 +376,30 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         status = int(raw_status) if raw_status is not None else 0
         response_headers = _read_qnetwork_response_headers(reply)
         qt_error = reply.error()
+        bytes_available_before_read = int(reply.bytesAvailable())
         response_body = b""
         if method == "POST" and status == 200 and qt_error == QNetworkReply.NetworkError.NoError:
             response_body = bytes(reply.readAll())
+        if method == "POST" and status == 200 and not response_body:
+            def response_header(name):
+                value = next(
+                    (value for key, value in response_headers.items()
+                     if key.casefold() == name.casefold()),
+                    "missing",
+                )
+                return redact_network_detail(value, proxy)
+            _logger.warning(
+                "OpenSkin proxy returned an empty HTTP response "
+                "status=%s qt_error=%s bytes_available=%s download_received=%s "
+                "download_total=%s request_sent=%s metadata_received=%s "
+                "content_length=%s transfer_encoding=%s content_encoding=%s content_type=%s",
+                status, getattr(qt_error, "name", str(qt_error)),
+                bytes_available_before_read, phase["download_received"],
+                phase["download_total"], phase["request_sent"],
+                phase["metadata_received"], response_header("content-length"),
+                response_header("transfer-encoding"), response_header("content-encoding"),
+                response_header("content-type"),
+            )
         if status == 0:
             category, message = classify_qnetwork_error(
                 qt_error, status, proxy.scheme, timed_out=bool(timed_out),
