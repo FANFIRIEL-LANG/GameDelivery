@@ -12,6 +12,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import re
 import time
+import traceback
 from urllib.parse import quote, quote_plus
 import urllib.error
 import urllib.request
@@ -188,6 +189,24 @@ def _log_network_failure(category: str, qt_error: str, detail: str,
         "OpenSkin transport diagnostic category=%s qt_error=%s detail=%s",
         category, qt_error, safe_detail,
     )
+    return safe_detail
+
+def _log_unexpected_exception(context: str, exc: Exception,
+                               proxy: OpenSkinProxy | None) -> str:
+    """Log safe traceback frame locations and redacted exception text only.
+
+    Do not log locals or exception-info objects: either can expose credentials.
+    """
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    frame_summary = " -> ".join(
+        f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+        for frame in frames[-10:]
+    ) or "unavailable"
+    detail = redact_network_detail(str(exc), proxy) or "<empty>"
+    safe_detail = (
+        f"exception={type(exc).__name__}; traceback={frame_summary}; detail={detail}"
+    )
+    _logger.warning("OpenSkin unexpected failure context=%s %s", context, safe_detail)
     return safe_detail
 
 
@@ -372,10 +391,16 @@ def probe_proxy_connection(proxy: OpenSkinProxy, *, timeout: float = 15.0,
     proxy negotiation, HTTPS tunnel and TLS. The response body is discarded.
     """
     request_func = request_func or _qt_proxy_request
-    status, _body, _headers = request_func(
-        _PROXY_PROBE_URL, b"", {"Accept": "*/*", "Range": "bytes=0-0"},
-        timeout, proxy, method="GET"
-    )
+    try:
+        status, _body, _headers = request_func(
+            _PROXY_PROBE_URL, b"", {"Accept": "*/*", "Range": "bytes=0-0"},
+            timeout, proxy, method="GET"
+        )
+    except OpenSkinError:
+        raise
+    except Exception as exc:
+        _log_unexpected_exception("proxy_probe", exc, proxy)
+        raise
     if status == 407:
         category, message = classify_qnetwork_error(
             QNetworkReply.NetworkError.ProxyAuthenticationRequiredError,
@@ -429,10 +454,10 @@ class OpenSkinClient:
         except OpenSkinError:
             raise
         except Exception as exc:
-            _logger.warning("OpenSkin request failed before an HTTP response: exception=%s",
-                             type(exc).__name__)
+            diagnostic = _log_unexpected_exception("price_request", exc, self.proxy)
             raise OpenSkinError("Не удалось получить цены OpenSkin.",
-                                category="client_error") from None
+                                category="client_error",
+                                diagnostic_detail=diagnostic) from None
         if status != 200:
             category, message = classify_qnetwork_error(
                 QNetworkReply.NetworkError.NoError, status,
