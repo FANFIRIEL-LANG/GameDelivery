@@ -158,37 +158,44 @@ class ASFManagementWidget(QWidget):
         root.addLayout(asf_process_row)
         root.addWidget(self.auto_start_asf_checkbox)
 
-        buttons = QHBoxLayout()
+        buttons = QVBoxLayout()
         self.import_button = QPushButton("Проверить TXT и импортировать аккаунты")
         self.refresh_button = QPushButton("Обновить список ботов")
         self.restart_button = QPushButton("Перезапустить ASF…")
-        self.inventory_button = QPushButton("Показать инвентарь выбранного бота")
+        self.inventory_button = QPushButton("Инвентарь выбранного бота")
         self.export_inventory_button = QPushButton("Экспорт инвентаря JSON")
         self.snapshot_button = QPushButton("Обновить снимок в GameDelivery")
-        for button in (
-            self.import_button, self.refresh_button, self.restart_button,
-            self.inventory_button, self.export_inventory_button, self.snapshot_button,
-        ):
-            buttons.addWidget(button)
-        buttons.addStretch()
+        import_actions = QHBoxLayout()
+        for button in (self.import_button, self.refresh_button, self.restart_button):
+            import_actions.addWidget(button)
+        import_actions.addStretch()
+        buttons.addLayout(import_actions)
+        inventory_actions = QHBoxLayout()
+        for button in (self.inventory_button, self.export_inventory_button, self.snapshot_button):
+            inventory_actions.addWidget(button)
+        inventory_actions.addStretch()
+        buttons.addLayout(inventory_actions)
         root.addLayout(buttons)
 
-        launch_buttons = QHBoxLayout()
+        launch_buttons = QVBoxLayout()
         self.start_selected_button = QPushButton("Запустить выбранных")
         self.start_all_button = QPushButton("Запустить всех")
         self.stop_selected_button = QPushButton("Остановить выбранных")
         self.stop_all_bots_button = QPushButton("Остановить всех")
         self.select_all_button = QPushButton("Выбрать всех")
-        launch_buttons.addWidget(self.start_selected_button)
-        launch_buttons.addWidget(self.start_all_button)
-        launch_buttons.addWidget(self.stop_selected_button)
-        launch_buttons.addWidget(self.stop_all_bots_button)
-        launch_buttons.addWidget(self.select_all_button)
         self.enable_selected_button = QPushButton("Включить выбранных")
         self.enable_all_button = QPushButton("Включить всех в config ASF")
-        launch_buttons.addWidget(self.enable_selected_button)
-        launch_buttons.addWidget(self.enable_all_button)
-        launch_buttons.addStretch()
+        launch_primary = QHBoxLayout()
+        for button in (self.start_selected_button, self.start_all_button,
+                       self.stop_selected_button, self.stop_all_bots_button):
+            launch_primary.addWidget(button)
+        launch_primary.addStretch()
+        launch_buttons.addLayout(launch_primary)
+        launch_config = QHBoxLayout()
+        for button in (self.select_all_button, self.enable_selected_button, self.enable_all_button):
+            launch_config.addWidget(button)
+        launch_config.addStretch()
+        launch_buttons.addLayout(launch_config)
         root.addLayout(launch_buttons)
 
         self.account_search = QLineEdit()
