@@ -63,8 +63,9 @@ class CS2PricePanelTests(unittest.TestCase):
         panel.cs2_snapshot_meta = {name: len([x for x in items if x.bot_name == name])
                                    for name in {x.bot_name for x in items}}
         from types import SimpleNamespace
+        bot_names = sorted({x.bot_name for x in items})
         panel.bot_selection_model = SimpleNamespace(
-            account_names=sorted({x.bot_name for x in items})
+            account_names=bot_names, selected_names=bot_names
         )
         panel.cs2_all_valuation = None
         panel.price_quotes = {}
