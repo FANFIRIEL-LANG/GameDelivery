@@ -152,6 +152,8 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertNotIn("Цена: 0", rendered)
         self.assertNotIn("Передаваемый", rendered)
         self.assertIn("#d32ce6", card.styleSheet())
+        self.assertIn("color: #d32ce6", card.findChild(QLabel, "itemTitle").styleSheet())
+        self.assertIn("background: #20382f", card.styleSheet())
         self.assertIn("AK-47 | Redline", card.toolTip())
         self.assertNotIn("Передаваемый", card.toolTip())
         self.assertNotIn("Можно продать", card.toolTip())
@@ -182,7 +184,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertIn("StatTrak", stattrak_visible)
         self.assertIn("Field-Tested", normal_visible)
         self.assertIn("Количество: 1", normal_visible)
-        self.assertEqual(normal_card.height(), 246)
+        self.assertEqual(normal_card.height(), 220)
 
     def test_group_card_uses_only_typed_rarity_source(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
@@ -250,6 +252,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertNotIn("market_tradable_restriction", card.toolTip())
         self.assertNotIn("Передаваемый", card.toolTip())
         self.assertIn("border: 2px solid #596273", card.styleSheet())
+        self.assertIn("background: #302b2c", card.styleSheet())
 
     def test_nontradable_group_card_is_muted_and_keeps_rarity_border(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
@@ -263,9 +266,12 @@ class CS2InventoryPanelTests(unittest.TestCase):
 
         card = CS2InventoryGroupCard(group, rarity="Classified")
 
-        self.assertIsNone(card.image.graphicsEffect())
+        self.assertIsNotNone(card.image.graphicsEffect())
+        self.assertEqual(card.image.graphicsEffect().opacity(), 0.55)
+        self.assertIn("background: #303036", card.styleSheet())
         self.assertNotIn("Непередаваемые:", " ".join(l.text() for l in card.findChildren(QLabel)))
         self.assertIn("border: 2px solid #d32ce6", card.styleSheet())
+        self.assertIn("color: #d32ce6", card.findChild(QLabel, "itemTitle").styleSheet())
 
     def test_permanent_restriction_has_no_countdown(self):
         from datetime import datetime, timezone
