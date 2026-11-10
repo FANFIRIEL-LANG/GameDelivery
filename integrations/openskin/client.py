@@ -204,7 +204,8 @@ def _log_unexpected_exception(context: str, exc: Exception,
     ) or "unavailable"
     detail = redact_network_detail(str(exc), proxy) or "<empty>"
     safe_detail = (
-        f"exception={type(exc).__name__}; traceback={frame_summary}; detail={detail}"
+        f"context={context}; exception={type(exc).__name__}; "
+        f"traceback={frame_summary}; detail={detail}"
     )
     _logger.warning("OpenSkin unexpected failure context=%s %s", context, safe_detail)
     return safe_detail
