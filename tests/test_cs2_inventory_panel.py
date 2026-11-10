@@ -58,6 +58,10 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.price_summary.setMinimumHeight(76)
         panel.price_summary.setStyleSheet("font-size: 15px; font-weight: 650;")
         panel.store = Mock()
+        panel.store.load_snapshot_meta.return_value = {}
+        panel.price_cache_store = Mock()
+        panel.price_cache_store.get.return_value = None
+        panel.price_cache_store.get_fx_rate.return_value = None
         panel.items = []
         panel.cs2_instances_by_bot = {}
         from types import SimpleNamespace
@@ -409,7 +413,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
             for index in range(panel.cards_layout.count())
         )
         self.assertNotIn("Bot A", owner_details)
-        self.assertIn("Bot B", owner_details)
+        self.assertNotIn("Bot B", owner_details)
 
     def test_transfer_filter_selects_instances_inside_a_mixed_variant_group(self):
         panel = self.bare_panel()
