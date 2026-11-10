@@ -94,6 +94,17 @@ class GameInventoryStoreTests(unittest.TestCase):
             self.assertEqual(result["item_count"], 1)
             self.assertEqual(store.load("cs2", "Bot A")[0].asset_id, "1001")
 
+    def test_snapshot_meta_includes_empty_inventory_snapshots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
+            store.replace("cs2", "Bot A", parse_game_inventory(payload(), "cs2", "Bot A"))
+            store.replace("cs2", "Empty Bot", [])
+
+            self.assertEqual(
+                store.load_snapshot_meta("cs2"),
+                {"Bot A": 1, "Empty Bot": 0},
+            )
+
     def test_load_all_keeps_each_items_account_owner(self):
         with tempfile.TemporaryDirectory() as directory:
             store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
