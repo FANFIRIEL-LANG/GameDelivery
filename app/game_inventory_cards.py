@@ -150,7 +150,7 @@ class GameItemCard(QFrame):
 
 
 class CS2InventoryGroupCard(QFrame):
-    """Existing inventory-card styling applied to one immutable CS2 group."""
+    """Compact CS2 inventory card; operational details remain available in its tooltip."""
 
     def __init__(self, group, parent=None, *, rarity: str = "",
                  price_text: str = "Цена недоступна"):
@@ -161,41 +161,31 @@ class CS2InventoryGroupCard(QFrame):
         self._restriction_status = RestrictionStatus
         self._restriction_type = RestrictionType
         first = group.instances[0]
-        color = rarity_color(rarity)
+        color = rarity_color(rarity or first.rarity)
         self.setObjectName("gameItemCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        transfer_counts = self._transfer_counts()
-        if transfer_counts[False] and not transfer_counts[True] and not transfer_counts[None]:
-            status_bg = "#303036"
-        elif transfer_counts[False]:
-            status_bg = "#302b2c"
-        elif transfer_counts[None]:
-            status_bg = "#292936"
-        else:
-            status_bg = "#202631"
         self.setStyleSheet(
-            f"QFrame#gameItemCard {{ background: {status_bg}; border: 2px solid {color}; "
+            f"QFrame#gameItemCard {{ background: #202631; border: 2px solid {color}; "
             "border-radius: 10px; }"
             "QLabel { color: #e8edf5; border: none; background: transparent; }"
         )
-        self.setFixedSize(184, 330)
+        self.setFixedSize(184, 226)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(9, 7, 9, 7)
+        layout.setSpacing(3)
+
         self.image = QLabel("Нет изображения")
         self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setFixedHeight(78)
+        self.image.setFixedHeight(88)
         self.image.setStyleSheet("color: #8792a2;")
-        if transfer_counts[False] and not transfer_counts[True] and not transfer_counts[None]:
-            effect = QGraphicsOpacityEffect(self.image)
-            effect.setOpacity(0.55)
-            self.image.setGraphicsEffect(effect)
         layout.addWidget(self.image)
+
         title = QLabel(first.name or "Название неизвестно")
         title.setWordWrap(True)
         title.setMaximumHeight(34)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
+
         quality = first.exterior or first.quality
         if quality:
             quality_label = QLabel(quality)
@@ -203,34 +193,27 @@ class CS2InventoryGroupCard(QFrame):
             quality_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             quality_label.setStyleSheet("color: #aeb9c8; font-size: 9pt;")
             layout.addWidget(quality_label)
-        self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setStyleSheet("font-weight: 600;")
-        layout.addWidget(self.status_label)
-        self.deadline_label = QLabel()
-        self.deadline_label.setWordWrap(True)
-        self.deadline_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.deadline_label.setStyleSheet("color: #d5b66b; font-size: 8pt;")
-        layout.addWidget(self.deadline_label)
-        count = QLabel(f"Экземпляров: {group.instance_count}")
+
+        if stattrak_label(first) == "Да":
+            stattrak = QLabel("StatTrak")
+            stattrak.setObjectName("stattrak")
+            stattrak.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            stattrak.setStyleSheet("color: #e4ae39; font-weight: 600;")
+            layout.addWidget(stattrak)
+
+        count = QLabel(f"Количество: {group.instance_count}")
+        count.setObjectName("quantity")
         count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(count)
-        amount = (
-            str(group.total_amount) if group.total_amount is not None else
-            f"неизвестно (известно: {group.known_amount_sum})"
-            if group.unknown_amount_instances else "неизвестно"
-        )
-        amount_label = QLabel(f"Количество ASF: {amount}")
-        amount_label.setWordWrap(True)
-        amount_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(amount_label)
+
         price = QLabel(price_text)
+        price.setObjectName("price")
         price.setWordWrap(True)
         price.setAlignment(Qt.AlignmentFlag.AlignCenter)
         price.setMaximumHeight(42)
         price.setStyleSheet("font-size: 8pt;")
         layout.addWidget(price)
+
         self._refresh_status()
         if self._has_countdown():
             self._timer = QTimer(self)
@@ -339,23 +322,13 @@ class CS2InventoryGroupCard(QFrame):
         return "\n".join(lines)
 
     def _refresh_status(self, now=None):
-        counts = self._transfer_counts()
-        parts = []
-        if counts[True]:
-            parts.append(f"Доступно: {counts[True]}")
-        if counts[False]:
-            label = "Непередаваемые" if not counts[True] and not counts[None] else "Ограничено"
-            parts.append(f"{label}: {counts[False]}")
-        if counts[None]:
-            parts.append(f"Статус неизвестен: {counts[None]}")
-        self.status_label.setText("Обмен: " + " · ".join(parts))
-        self.deadline_label.setText(self._deadline_text(now))
+        # Keep detailed delivery/restriction diagnostics available on hover only.
         self.setToolTip(self._tooltip_text(now))
 
     def set_image(self, pixmap: QPixmap):
         self.image.setText("")
         self.image.setPixmap(pixmap.scaled(
-            148, 84, Qt.AspectRatioMode.KeepAspectRatio,
+            164, 84, Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         ))
 
