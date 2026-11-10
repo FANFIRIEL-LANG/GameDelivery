@@ -48,6 +48,18 @@ class ASFManagementWidgetTests(unittest.TestCase):
         message = "Ошибка отправки предмета"
         self.assertEqual(decode_asf_output_line((message + "\r\n").encode("cp866")), message)
 
+    def test_management_client_uses_ipc_port_from_selected_asf_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory) / "config"
+            config_dir.mkdir()
+            (config_dir / "IPC.config").write_text(json.dumps({
+                "Kestrel": {"Endpoints": {"Http": {"Url": "http://127.0.0.1:1243"}}}
+            }), encoding="utf-8")
+            self.widget.config_path.setText(str(config_dir))
+            client = self.widget._client()
+            self.assertEqual(client.base_url, "http://127.0.0.1:1243")
+            self.assertTrue(client.allow_alternate_loopback_port)
+
     def setUp(self):
         self.widget = ASFManagementWidget()
 
