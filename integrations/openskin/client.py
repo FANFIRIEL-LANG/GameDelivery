@@ -271,6 +271,26 @@ def build_qnetwork_proxy(proxy: OpenSkinProxy) -> QNetworkProxy:
     return result
 
 
+def _set_qt_request_headers(request, headers: Mapping[str, str]):
+    """Set request headers and avoid Qt's implicit gzip decompression path.
+
+    Qt automatically advertises gzip when Accept-Encoding is absent and then
+    transparently decompresses the reply. Explicit identity keeps the response
+    bytes intact and avoids the zero-byte gzip response observed with the
+    packaged proxy transport.
+    """
+    has_accept_encoding = False
+    for name, value in headers.items():
+        if name.casefold() == "accept-encoding":
+            has_accept_encoding = True
+        if name.casefold() == "content-type":
+            request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, value)
+        else:
+            request.setRawHeader(name.encode("ascii"), str(value).encode("latin-1"))
+    if not has_accept_encoding:
+        request.setRawHeader(b"Accept-Encoding", b"identity")
+
+
 def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
                       timeout: float, proxy: OpenSkinProxy, *, method: str = "POST"):
     """Use one manager-local proxy for the whole request, including HTTPS CONNECT."""
@@ -310,11 +330,7 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     if manager_ssl_signal is not None:
         manager_ssl_signal.connect(mark_ssl_errors)
     request = QNetworkRequest(QUrl(url))
-    for name, value in headers.items():
-        if name.casefold() == "content-type":
-            request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, value)
-        else:
-            request.setRawHeader(name.encode("ascii"), str(value).encode("latin-1"))
+    _set_qt_request_headers(request, headers)
     if method == "HEAD":
         reply = manager.head(request)
     elif method == "GET":
