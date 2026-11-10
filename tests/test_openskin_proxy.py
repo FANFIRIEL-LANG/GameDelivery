@@ -196,9 +196,9 @@ class OpenSkinProxyTests(unittest.TestCase):
                 self.assertEqual(category, expected)
 
         timeout_cases = (
-            ("http", False, False, False, "connect_or_tls_timeout"),
-            ("socks5", False, False, False, "socks5_or_tls_timeout"),
-            ("http", False, True, False, "pre_response_timeout"),
+            ("http", False, False, False, False, "connect_or_tls_timeout"),
+            ("socks5", False, False, False, False, "socks5_or_tls_timeout"),
+            ("http", False, True, False, False, "pre_response_timeout"),
             ("http", False, False, True, False, "proxy_auth_timeout"),
             ("http", False, False, True, True, "connect_or_tls_timeout"),
             ("http", True, True, False, False, "response_timeout"),
