@@ -31,7 +31,7 @@ from games.cs2.inventory_view import (
 from games.cs2.price_store import PriceCacheStore
 from games.cs2.pricing import (
     PRICE_THRESHOLD_USD, PriceState, cached_price_from_openskin,
-    calculate_valuation, requestable_positions, unsupported_positions,
+    calculate_valuation, group_price_text, requestable_positions, unsupported_positions,
 )
 from games.inventory_display import build_inventory_groups, count_physical_metrics
 from app.inventory_display import (
@@ -153,7 +153,7 @@ def _safe_test_asf_error(exc: Exception) -> str:
 class GameInventoryPanel(QWidget):
     """Read-only visual inventory for game items across ASF bot accounts."""
 
-    trade_url_requested = Signal(str)
+    trade_url_requested = Signal(str, list)
 
     def __init__(self, parent=None, bot_selection_model: BotSelectionModel | None = None):
         super().__init__(parent)
@@ -181,7 +181,8 @@ class GameInventoryPanel(QWidget):
         self._price_refresh_message = ""
         self._bot_list_refresh_running = False
         self._bot_list_refresh_task = None
-        self.cards_by_image: dict[str, list[GameItemCard]] = {}
+        self.cards_by_image: dict[str, list[GameItemCard | CS2InventoryGroupCard]] = {}
+        self._selected_asset_keys: set[tuple[str, str]] = set()
 
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -259,9 +260,10 @@ class GameInventoryPanel(QWidget):
         self.trade_url = QLineEdit()
         self.trade_url.setPlaceholderText("HTTPS Steam Trade URL получателя")
         self.send_to_order_button = QPushButton("Отправить через заказы…")
-        self.send_to_order_button.clicked.connect(
-            lambda: self.trade_url_requested.emit(self.trade_url.text().strip())
-        )
+        self.send_to_order_button.clicked.connect(self._request_order_with_selected_assets)
+        self.selection_summary = QLabel("Выбрано предметов для заказа: 0")
+        self.selection_summary.setObjectName("muted")
+        trade_row.addWidget(self.selection_summary)
         trade_row.addWidget(self.trade_url, 1)
         trade_row.addWidget(self.send_to_order_button)
         layout.addLayout(trade_row)
@@ -378,6 +380,31 @@ class GameInventoryPanel(QWidget):
         if not is_cs2:
             self.item_filter.setCurrentIndex(0)
         self.load_saved()
+
+    def _request_order_with_selected_assets(self):
+        selected = sorted(self._selected_asset_keys)
+        if not selected:
+            self.status.setText("Сначала выбери передаваемые предметы в карточках.")
+            return
+        self.trade_url_requested.emit(self.trade_url.text().strip(), selected)
+
+    def _card_selection_changed(self, card, selected: bool):
+        instances = (
+            card.group.instances if isinstance(card, CS2InventoryGroupCard)
+            else card.instances
+        )
+        keys = {
+            (str(item.bot_name), str(item.asset_id))
+            for item in instances if item.is_tradable is True
+        }
+        if selected and card.selectable:
+            self._selected_asset_keys.update(keys)
+        else:
+            self._selected_asset_keys.difference_update(keys)
+        if hasattr(self, "selection_summary"):
+            self.selection_summary.setText(
+                f"Выбрано предметов для заказа: {len(self._selected_asset_keys)}"
+            )
 
     def _populate_accounts(self):
         if not self.test_mode:
@@ -587,6 +614,11 @@ class GameInventoryPanel(QWidget):
                     for item in all_items
                 ]
                 self.cs2_all_instances = tuple(all_instances)
+                valid_selection = {
+                    (item.bot_name, item.asset_id) for item in self.cs2_all_instances
+                    if item.is_tradable is True and item.bot_name in selected
+                }
+                self._selected_asset_keys.intersection_update(valid_selection)
                 self.cs2_snapshot_meta = self.store.load_snapshot_meta("cs2")
                 selected_instances = [
                     item for item in all_instances if item.bot_name in selected
@@ -606,6 +638,15 @@ class GameInventoryPanel(QWidget):
                     self._price_refresh_message = "Кэш цен недоступен; оценка в ₽ не рассчитана."
             else:
                 self.cs2_valuation = None
+                valid_selection = {
+                    (item.bot_name, item.asset_id) for item in self.items
+                    if item.is_tradable is True
+                }
+                self._selected_asset_keys.intersection_update(valid_selection)
+            if hasattr(self, "selection_summary"):
+                self.selection_summary.setText(
+                    f"Выбрано предметов для заказа: {len(self._selected_asset_keys)}"
+                )
             accounts = len({item.bot_name for item in self.items})
             self.status.setText(
                 f"Локальные снимки: {game_id} · {accounts} аккаунтов · {len(self.items)} предметов. "
@@ -1153,10 +1194,25 @@ class GameInventoryPanel(QWidget):
                     first.physical_key, ""
                 )
                 card = CS2InventoryGroupCard(
-                    item, self.cards_host, rarity=rarity, show_price=False
+                    item, self.cards_host, rarity=rarity,
+                    price_text=group_price_text(item.instances, self.cs2_valuation),
+                    show_price=True,
+                    selected=any(
+                        (member.bot_name, member.asset_id) in self._selected_asset_keys
+                        for member in item.instances
+                    ),
                 )
             else:
-                card = GameItemCard(item, self.cards_host, instances=instances)
+                card = GameItemCard(
+                    item, self.cards_host, instances=instances,
+                    selected=any(
+                        (member.bot_name, member.asset_id) in self._selected_asset_keys
+                        for member in instances
+                    ),
+                )
+            card.selection_changed.connect(
+                lambda selected, current=card: self._card_selection_changed(current, selected)
+            )
             self.cards_layout.addWidget(card, index // columns, index % columns)
             image_url = next((instance.icon_url_large or instance.icon_url
                               for instance in instances
