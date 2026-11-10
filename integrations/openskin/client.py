@@ -207,9 +207,17 @@ def _log_unexpected_exception(context: str, exc: Exception,
         f"context={context}; exception={type(exc).__name__}; "
         f"traceback={frame_summary}; detail={detail}"
     )
-    _logger.warning("OpenSkin unexpected failure context=%s %s", context, safe_detail)
+    _logger.warning("OpenSkin unexpected failure %s", safe_detail)
     return safe_detail
 
+
+def _read_qnetwork_response_headers(reply: QNetworkReply) -> dict[str, str]:
+    """Read response headers using the str overload exposed by PySide6."""
+    headers: dict[str, str] = {}
+    for raw_name in reply.rawHeaderList():
+        name = bytes(raw_name).decode("latin-1")
+        headers[name] = bytes(reply.rawHeader(name)).decode("latin-1")
+    return headers
 
 def _retry_after(headers: Mapping[str, str] | None) -> int | None:
     if not headers:
@@ -342,10 +350,7 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     try:
         raw_status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
         status = int(raw_status) if raw_status is not None else 0
-        response_headers = {
-            bytes(name).decode("latin-1"): bytes(reply.rawHeader(name)).decode("latin-1")
-            for name in reply.rawHeaderList()
-        }
+        response_headers = _read_qnetwork_response_headers(reply)
         qt_error = reply.error()
         response_body = b""
         if method == "POST" and status == 200 and qt_error == QNetworkReply.NetworkError.NoError:
