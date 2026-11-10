@@ -50,6 +50,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.game_combo.currentData.return_value = game
         panel.game_combo.currentText.return_value = game
         panel.test_mode = False
+        panel._selected_asset_keys = set()
         panel._selected_bot_names = Mock(return_value=["Bot A"])
         panel.load_button = QPushButton()
         panel.password = QLineEdit()
