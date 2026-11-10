@@ -8,6 +8,7 @@ import socket
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import QCoreApplication, QSettings, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -377,8 +378,7 @@ class ASFManagementWidget(QWidget):
 
     def _ipc_port_is_open(self, base_url: str | None = None) -> bool:
         try:
-            from urllib.parse import urlsplit
-            endpoint = urlsplit(base_url or self._ipc_base_url())
+                        endpoint = urlsplit(base_url or self._ipc_base_url())
             if endpoint.hostname not in {"127.0.0.1", "localhost", "::1"} or endpoint.port is None:
                 return False
             with socket.create_connection((endpoint.hostname, endpoint.port), timeout=0.35):
@@ -891,7 +891,7 @@ class ASFManagementWidget(QWidget):
 
     def _client(self) -> ASFClient:
         base_url = self._ipc_base_url()
-        port = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(base_url).port
+        port = urlsplit(base_url).port
         return ASFClient(
             base_url=base_url,
             ipc_password=self.ipc_password.text() or None,
