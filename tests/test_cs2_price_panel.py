@@ -45,7 +45,7 @@ class CS2PricePanelTests(unittest.TestCase):
         panel.transfer_filter.addItem("Любая передаваемость", "all")
         panel.grouping_mode = QComboBox()
         panel.grouping_mode.addItem("Общий вид", "shared")
-        panel.grouping_mode.addItem("Раздельно по Asset", "separate")
+        panel.grouping_mode.addItem("Раздельно по ботам", "separate")
         panel.view_mode = QComboBox()
         panel.view_mode.addItem("Карточки", "cards")
         panel.view_mode.addItem("Таблица", "table")
