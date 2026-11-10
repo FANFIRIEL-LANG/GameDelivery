@@ -2789,3 +2789,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Ошибочный fixture исправлен в `tests/test_openskin_proxy.py`: теперь исходник содержит корректный Python bytes literal `b'\\xef\\xbb\\xbf...'`, который создаёт реальные байты UTF-8 BOM.
 - Исправление: commit `37f0eff5a2ee8ddf164652c09d410fa70b730447`.
 - На новом HEAD запущены свежие Tests run `42778806650` и Windows package run `42778806617`; на момент записи оба queued. Результат не объявлять до завершения.
+
+
+### Результат исправленного CI (2026-11-10)
+
+- Tests run `42778841669` на HEAD `01b4cfb1f9017a8eef9334645c2fefc76db11fa1` завершился **SUCCESS**.
+- Подтверждение полного набора из job log: `Ran 488 tests in 3.412s`, `OK`; compile, trade credential migration и trade UI flow также прошли.
+- Исправленный BOM regression test включён в этот полный успешный прогон. Ошибка fixture из предыдущего запуска устранена.
+- Windows package run `42778806617` на code commit `37f0eff5a2ee8ddf164652c09d410fa70b730447`: compile и Windows trade-secret ACL test прошли; PyInstaller build ещё выполнялся на момент обновления. Не считать пакет готовым, пока workflow не завершится успешно и smoke test/upload не пройдут.
+- Новый live-причина OpenSkin invalid JSON всё ещё не установлена: новые диагностические поля появятся только после проверки свежей сборки, если ошибка повторится.
