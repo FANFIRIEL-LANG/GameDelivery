@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QUrl
-from PySide6.QtGui import QColor, QIcon, QPixmap, QPen
+from PySide6.QtGui import QColor, QIcon, QPixmap, QPen, QFont
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QStyledItemDelegate, QLabel, QStyle, QStyleOptionViewItem, QTableWidget,
@@ -57,7 +57,7 @@ class InventoryCardDelegate(QStyledItemDelegate):
     """Paint metric-bearing selectable cards without replacing QListWidget items."""
 
     def sizeHint(self, option, index):
-        return QSize(176, 160)
+        return QSize(196, 190)
 
     def paint(self, painter, option, index):
         background = QStyleOptionViewItem(option)
@@ -80,9 +80,14 @@ class InventoryCardDelegate(QStyledItemDelegate):
         rect = option.rect.adjusted(4, 3, -4, -3)
         icon = index.data(Qt.ItemDataRole.DecorationRole)
         if isinstance(icon, QIcon) and not icon.isNull():
-            icon.paint(painter, rect.x() + (rect.width() - 64) // 2, rect.y(), 64, 58)
-        title_rect = rect.adjusted(3, 60, -3, -rect.height() + 105)
+            icon.paint(painter, rect.x() + (rect.width() - 92) // 2, rect.y(), 92, 80)
+        title_rect = rect.adjusted(3, 82, -3, -rect.height() + 145)
         painter.save()
+        font = QFont(painter.font())
+        font.setPointSize(11)
+        if selected:
+            font.setBold(True)
+        painter.setFont(font)
         painter.setPen(QColor("#f3f6fb") if selected else option.palette.color(option.palette.ColorRole.Text))
         painter.drawText(title_rect, int(Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap),
                          index.data(Qt.ItemDataRole.DisplayRole) or "")
