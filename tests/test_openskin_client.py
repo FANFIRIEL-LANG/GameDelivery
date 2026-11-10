@@ -3,6 +3,7 @@ import unittest
 from decimal import Decimal
 
 from integrations.openskin.client import OpenSkinClient, OpenSkinError, PricePosition
+from integrations.openskin.proxy import OpenSkinProxy
 
 
 class OpenSkinClientTests(unittest.TestCase):
@@ -86,6 +87,33 @@ class OpenSkinClientTests(unittest.TestCase):
         self.assertEqual(caught.exception.http_status, 429)
         self.assertEqual(caught.exception.retry_after_seconds, 120)
         self.assertNotIn(secret, str(caught.exception))
+
+
+    def test_unexpected_proxy_request_logs_safe_traceback_without_credentials(self):
+        proxy = OpenSkinProxy(
+            "http", "proxy.example", 8080, "private-user", "private pass",
+        )
+
+        def broken_request(_url, _body, _headers, _timeout, _proxy):
+            raise TypeError("Qt overload rejected private-user private pass")
+
+        with self.assertLogs("integrations.openskin.client", level="WARNING") as captured:
+            with self.assertRaises(OpenSkinError) as caught:
+                OpenSkinClient(
+                    proxy=proxy, proxy_request_func=broken_request,
+                ).fetch_prices([PricePosition(730, "AK-47 | Redline")])
+
+        output = "\n".join(captured.output)
+        diagnostic = caught.exception.diagnostic_detail
+        for value in ("context=price_request", "exception=TypeError",
+                      "test_openskin_client.py", "broken_request"):
+            self.assertIn(value, output)
+            self.assertIn(value, diagnostic)
+        self.assertEqual(caught.exception.category, "client_error")
+        self.assertNotIn("private-user", output)
+        self.assertNotIn("private pass", output)
+        self.assertNotIn("private-user", diagnostic)
+        self.assertNotIn("private pass", diagnostic)
 
 
 if __name__ == "__main__":
