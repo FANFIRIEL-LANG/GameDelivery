@@ -69,6 +69,7 @@ class ProxySettingsUITests(unittest.TestCase):
     def _set_checked_proxy_rows(self, rows=None):
         from PySide6.QtCore import Qt
 
+        self.widget.refresh_pool()
         allowed = set(range(self.widget.pool_table.rowCount())) if rows is None else set(rows)
         for row in range(self.widget.pool_table.rowCount()):
             item = self.widget.pool_table.item(row, 0)
