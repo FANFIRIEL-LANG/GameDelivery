@@ -2579,3 +2579,52 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - 2026-11-10 ассистент ошибочно использовал отдельную загруженную Project File копию вместо GitHub-версии и сделал два docs-only commits `f777fa927e47809257e9f63431ad31259ab85e54` и `18b7be5a6db8bb156ad1bd5e6cb0a0e8bda9d4e4`. Это было нарушением правила пользователя.
 - Исправление выполняется на GitHub: содержимое восстанавливается из исходной GitHub-версии файла на base commit `9cc4af13dc14db0fae8266a96b4c7d56ad7e8e49`, затем в неё добавляется эта обязательная актуальная запись. История commits не переписывается и force push не используется.
 - Загруженные файлы/Project Files в качестве источника не используются и не перезаписываются.
+
+
+---
+
+## 2026-11-10 — C.6.3.6.5 — единая строка OpenSkin proxy, диагностика transport phases и Codex handoff
+
+> **ОБЯЗАТЕЛЬНО ДЛЯ CODEX.** Продолжать с актуального GitHub HEAD `434f7243c7d389fd44f9af3451fd811141515453` в `work/local-sync`. Не возвращать раздельные поля прокси и не считать C.6.3.6 закрытым до финального Windows smoke и ручной live-приёмки пользователя.
+
+### Требование пользователя и изменение UI
+
+- Прежняя форма OpenSkin с отдельными `scheme/host/port/username/password` не соответствовала явному требованию пользователя. Она заменена одним полем `proxy_input`; весь адрес вставляется одной строкой и маскируется в UI.
+- Подключён существующий общий parser `integrations/asf/proxy_config.py::parse_proxy_list_text` через новый адаптер `parse_openskin_proxy_text()`. ASF parser/ASF proxy pool как функциональность не переписывался.
+- Поддерживаемые OpenSkin input examples: `http://user:password@host:port`, `socks5://user:password@host:port`, `host:port:user:password`, `host:port`, `user:password@host:port` (без схемы трактуется как HTTP). Percent-encoded URI credentials проходят через shared parser. Добавлен bracketed IPv6 SOCKS5 case.
+- Поддержка OpenSkin transport по-прежнему ограничена HTTP CONNECT и SOCKS5; HTTPS-to-proxy TLS не заявляется. Неоднозначные/неподдерживаемые строки дают validation error без повторения секрета.
+- Пароль передаётся в существующий `OpenSkinProxySettingsStore` и хранится через системный keyring/Windows Credential Manager; QSettings сохраняет только несекретные данные профиля. После save поле очищается. В UI, статусах и логах пароль не показывается.
+- Профиль остаётся OpenSkin-only/request-scoped. Не устанавливать global Qt proxy. Frankfurter, Steam, ASF IPC, images и другие клиенты не перенаправлять через OpenSkin proxy.
+- Сохранены отдельные действия «Проверить прокси» (read-only GET probe) и «Проверить OpenSkin API» (read-only pricing POST). Proxy check не должен незаметно переходить на direct route.
+
+### Timeout diagnosis
+
+- Прежняя логика использовала `requestSent == false` как прямое доказательство timeout proxy/HTTPS tunnel. Это некорректное заключение: до отправки HTTP request могут оставаться незавершёнными proxy negotiation и TLS, а один `requestSent` не различает их.
+- Transport теперь фиксирует безопасные phase markers: `proxy_auth_requested`, `proxy_auth_answered`, `tls_completed` (через QNAM `encrypted`), `request_sent` и `metadata_received`. QNAM auth/TLS/error signals подключаются до выдачи request; details очищаются от credentials прежде чем попадать в rotating diagnostic log.
+- Timeout классифицируется с учётом фактических phase markers: unanswered proxy auth, completed TLS but no response, request sent/no response, ambiguous CONNECT-or-TLS и SOCKS5-or-TLS. Когда evidence недостаточно, UI прямо говорит, что точный этап не установлен и timeout не доказывает зависание именно proxy tunnel.
+- TLS verification не ослаблять и не использовать `ignoreSslErrors()`. Не увеличивать timeout вслепую как замену диагностики.
+
+### Реализационные коммиты
+
+- `abe5fd0da54baa3452699002fec8af4e082687e1` — `fix: use one-line OpenSkin proxy input and trace connection phases`; изменены `integrations/openskin/proxy.py`, `app/openskin_proxy_settings.py`, `integrations/openskin/client.py`, `tests/test_openskin_proxy.py`, `.github/workflows/package-windows.yml`. Windows package workflow теперь запускается при push в `work/local-sync`.
+- `7b00dd2812adc48506c7fe62ad899a428da355fe` — `test: align OpenSkin proxy UI regression with one-line input`; исправлен stale test assertion `widget.password` → `widget.proxy_input`, добавлен IPv6 SOCKS5 URI test.
+- `434f7243c7d389fd44f9af3451fd811141515453` — `ci: verify isolated tests after Qt shutdown segfault`; уточнена классификация unanswered vs answered proxy auth; CI теперь отдельно фиксирует exit 139 только в случае, когда полный suite вывел `Ran N tests` и итог `OK`, затем запускает каждый test module отдельно. Job может считаться успешным только если все isolated modules проходят. Это НЕ исправление и НЕ объяснение root cause Qt shutdown crash; symptom явно остаётся диагностированным, а не замаскированным.
+
+### CI результаты по точным SHA
+
+- Для `abe5fd0`: compileall и предварительные trade test groups прошли; полный suite имел один test error от старого обращения `widget.password`; Windows build run `42768890978` прошёл, но не является final artifact после дальнейшего test fix.
+- Для `7b00dd2`: полный suite показал `483 tests` / `OK`, затем Python/Qt process завершился exit 139 при shutdown. Все тестовые модули были запущены отдельно; fallback завершился с ошибкой из-за прежнего assertion в `test_openskin_proxy.py`? **Перепроверить лог run `42769252384` перед финализацией этой строки; не делать вывод до повторного чтения полного лога.** Windows build run `42769252005` прошёл (compile, ACL test, PyInstaller и smoke — проверить точные step results/artifact перед выдачей).
+- Для текущего HEAD `434f724` запущены GitHub Actions:
+  - Tests: run `42769444424`.
+  - Windows package: run `42769444129`.
+  - На момент этой записи оба workflow ещё выполнялись; exact results/artifact ещё не подтверждены. Повторно получить final job/step results и обновить этот журнал. Не выдавать package с предыдущего SHA за final.
+
+### Финальные gates и ограничения
+
+- После workflow success получить artifact `GameDelivery-Windows-x64` именно из успешного Windows run, собранного на final implementation HEAD `434f724` или его документальном descendant, если код не менялся.
+- Перед выдачей проверить artifact ID/name, наличие `GameDelivery.exe`, успешный `--self-test` и точный build commit.
+- Пользователь уже установил Python 3.14, создал отдельное `.venv`, установил requirements и запустил source package. Не просить устанавливать Python 3.12; Windows executable должен включать runtime.
+- Не просить пользователя повторно проверять промежуточные сборки. После полного automated verification выдать один итоговый ZIP и одну инструкцию.
+- Единственный оставшийся user action после выдачи final package: локально в одном поле вставить proxy string (секрет не присылать в чат), сохранить, выполнить proxy probe, API probe; затем Frankfurter FX + read-only CS2 730/2 price acceptance на изолированном ASF.
+- Production ASF 1242, реальный inventory mutation, reservations, создание/подтверждение/отмена Steam Trade Offers запрещены в рамках C.6.3.6.
+- C.6.3.6 остаётся OPEN до successful live proxy probe, OpenSkin pricing API response, Frankfurter FX fetch и read-only CS2 acceptance.

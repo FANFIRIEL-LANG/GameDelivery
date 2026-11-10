@@ -744,3 +744,19 @@ Focused verification: `tests.test_openskin_proxy` — 18/18, exit 0; `tests.test
 `_qt_proxy_request()` подключал `finished` к event loop после выдачи запроса, но без проверки текущего состояния всегда запускал ожидание. По контракту Qt reply может быть уже завершён до получения сигнала `finished`, а `isFinished()` предназначен для проверки этого случая ([QNetworkReply](https://doc.qt.io/qtforpython-6/PySide6/QtNetwork/QNetworkReply.html)). Если сигнал был пропущен, таймер мог сработать после завершения и породить ложную диагностику timeout до `requestSent`.
 
 Теперь event loop и timeout запускаются только если `reply.isFinished()` равен false; таймер останавливается в `finally`. Regression test имитирует уже завершённый reply и гарантирует отсутствие ожидания/таймера. `tests.test_openskin_proxy` — 19 passed, exit 0; compileall двух затронутых Python-файлов — exit 0; `git diff --check` — exit 0 с одними line-ending warnings. Live proxy check не выполнялся, поэтому локальный результат пользователя нужен для подтверждения устранения данного timeout. HEAD неизменён, commit/push не выполнялись.
+
+
+---
+
+## 2026-11-10 — C.6.3.6.5 — OpenSkin single-line proxy input and transport diagnosis (supersedes earlier proxy UI note)
+
+The earlier C.6.3.6.4 note claiming that the OpenSkin form intentionally used separate scheme/host/port/username/password fields is superseded by the user's explicit requirement: the OpenSkin UI must use one masked input line containing the complete proxy string.
+
+Implementation on `work/local-sync`:
+- `parse_openskin_proxy_text()` delegates to the existing ASF shared `parse_proxy_list_text()`; supports HTTP/SOCKS5 URI userinfo, unschemed `user:password@host:port`, `host:port:user:password`, `host:port`, percent-encoded credentials, and bracketed IPv6.
+- `app/openskin_proxy_settings.py` now contains one masked QLineEdit; credentials are still stored only through OS keyring, not QSettings/plaintext logs. Separate proxy transport probe and read-only OpenSkin API probe remain.
+- Proxy remains isolated to OpenSkin's manager-local QNetworkAccessManager. Frankfurter and all other network clients remain unchanged/direct.
+- Timeout classification uses observable proxy-auth, TLS encrypted, requestSent and metadata markers. It does not claim an unobserved CONNECT failure; TLS verification remains enabled.
+- Commits: `abe5fd0da54baa3452699002fec8af4e082687e1`, `7b00dd2812adc48506c7fe62ad899a428da355fe`, `434f7243c7d389fd44f9af3451fd811141515453`.
+
+CI is being rerun on exact HEAD `434f724` after correcting an obsolete test that still referenced the removed `widget.password` input. Do not issue a user download until the exact Windows package workflow and tests finish. C.6.3.6 live acceptance remains pending.

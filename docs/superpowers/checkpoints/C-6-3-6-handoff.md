@@ -278,3 +278,23 @@ Known ordinary MarketHashName без pattern-sensitive modifiers можно за
 - Коммиты выполнялись только в work/local-sync; main, PR #4 и локальная папка D:\GameDelivery не затрагивались.
 - Live OpenSkin proxy/API и реальная оценка CS2 на изолированном ASF не выполнялись. Mock/CI pass не доказывает, что пользовательский proxy пропускает запрос или что живые цены и курс получены верно.
 - C.6.3.6 остаётся pending live acceptance. Следующий этап: локальные read-only проверки «Проверить прокси», затем «Проверить OpenSkin API», после чего — изолированный 730/2 price acceptance без production ASF 1242 и без отправки Trade Offers.
+
+
+---
+
+## 2026-11-10 — C.6.3.6.5 implementation continuation (supersedes separate-field UI note)
+
+The previous “Additional proxy UI check” note in this handoff described the separate-field OpenSkin UI as intentional. That decision was wrong and is superseded by the user's explicit requirement for a single input line.
+
+Current implementation commits on `work/local-sync`:
+- `abe5fd0da54baa3452699002fec8af4e082687e1`: one masked QLineEdit; parser adapter reuses `integrations/asf/proxy_config.py::parse_proxy_list_text`; phase-aware TLS/auth/request timeout diagnostics; Windows package workflow triggers on `work/local-sync`.
+- `7b00dd2812adc48506c7fe62ad899a428da355fe`: corrected obsolete test assertion to `proxy_input`, added bracketed IPv6 proxy URI coverage.
+- `434f7243c7d389fd44f9af3451fd811141515453`: distinguishes proxy auth challenge from credentials already supplied; CI post-assertion Qt exit-139 handling requires full-suite “OK” and successful isolated module runs.
+
+Only currently supported proxy types remain HTTP CONNECT and SOCKS5. The whole proxy string is masked while editing, parsed locally, saved with secret only in OS keyring, and cleared after saving. No proxy credential should be pasted in chat/logs. No global Qt proxy is installed; Frankfurter remains independent.
+
+Latest exact-HEAD GitHub Actions runs pending at time of this update:
+- Tests: `42769444424`
+- Windows package: `42769444129`
+
+Do not treat the prior Windows build artifact from `42769252005` (SHA `7b00dd2`) as final after the auth/CI code change. Wait for the package run on `434f724`, inspect its artifact and self-test. The user's only next check should be on one final package; do not ask for intermediate testing.
