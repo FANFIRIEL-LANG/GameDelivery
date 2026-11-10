@@ -136,6 +136,33 @@ class CS2PriceStoreTests(unittest.TestCase):
         self.assertEqual(self.store.due_positions([self.position], now=self.now + timedelta(hours=6, minutes=16)),
                          (self.position,))
 
+    def test_manual_refresh_bypasses_six_hour_cache_age_but_respects_cooldowns(self):
+        quote = CachedPrice(self.position, Decimal("1.00"), "USD", None,
+                            self.now.isoformat(), PriceState.CURRENT)
+        self.store.save_quote(quote, now=self.now)
+
+        self.assertEqual(
+            self.store.due_positions([self.position], now=self.now + timedelta(minutes=5), force=True),
+            (),
+        )
+        self.assertEqual(
+            self.store.due_positions([self.position], now=self.now + timedelta(minutes=11), force=True),
+            (self.position,),
+        )
+
+        self.store.mark_error(
+            self.position, 429, retry_after_seconds=1800,
+            now=self.now + timedelta(minutes=11),
+        )
+        self.assertEqual(
+            self.store.due_positions([self.position], now=self.now + timedelta(minutes=20), force=True),
+            (),
+        )
+        self.assertEqual(
+            self.store.due_positions([self.position], now=self.now + timedelta(minutes=42), force=True),
+            (self.position,),
+        )
+
     def test_non_retryable_client_error_does_not_repeat_every_ten_minutes(self):
         self.store.mark_error(self.position, 400, now=self.now)
 
