@@ -3073,3 +3073,24 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 5. Перед новым релизом обязательны Tests + Windows package на одном exact HEAD, проверка артефакта и SHA-256. После каждого существенного изменения снова обновлять этот журнал с отдельными инструкциями Codex и перечитывать его с GitHub.
 
 **Статус:** код и CI-проверки готовы для пользовательского smoke test; live-производительность и визуальная приёмка на ПК пользователя остаются открытыми.
+### 2026-11-10 — Исправление рассинхронизации ASF IPC port (1242/1243)
+
+**Причина по подтверждённому коду:** `ASFClient` по умолчанию использовал `http://127.0.0.1:1242`. Вкладка «Игровые предметы» при обычном режиме создавала клиента без base_url, даже если выбранный экземпляр ASF был настроен на `1243`. Вкладка ASF-ботов также жёстко проверяла TCP `127.0.0.1:1242` и создавала клиент на default port. Поэтому запуск/управление ботами и обновление инвентаря могли обращаться к разным IPC endpoints. Это не свидетельствовало о неверном IPCPassword.
+
+**Изменения на `work/local-sync`:**
+- `integrations/asf/client.py`: добавлен `resolve_asf_ipc_base_url(config_dir, executable_path)`. Читает `IPC.config` из выбранной config-папки, её родительской папки или папки ASF executable; извлекает `Kestrel.Endpoints.Http.Url`; принимает только HTTP loopback с явным портом. Если IPC.config отсутствует, сохраняется прежний fallback `127.0.0.1:1242`. Некорректный/не-loopback endpoint вызывает явную ASFError, а не молча переключается на 1242.
+- `app/asf_management.py`: единый `_ipc_base_url()` используется для ASFClient и проверки TCP-порта; проверка больше не фиксирована на 1242. При неверном IPC.config выводится понятная ошибка, приложение не должно падать.
+- `app/game_inventory_panel.py`: обычное обновление инвентаря получает тот же выбранный ASF config/executable path из QSettings и создаёт ASFClient на найденном IPC endpoint; альтернативный loopback port явно разрешён только после валидации.
+- `tests/test_asf_client.py`: тесты IPC.config в config dir, IPC.config рядом с config dir, fallback на 1242 только при отсутствии файла, отказ от внешнего IP.
+- `tests/test_asf_management.py`: тест подтверждает, что ASF management client использует порт 1243 из IPC.config.
+
+**CI:** после исправления промежуточная проверка на HEAD `f0d8e517c2d1d99b0577f61ee0993fd2eef1ac14` выявила только IndentationError в `_ipc_port_is_open`; он исправлен в `8cb2da51598a6c5e5cefecf4b8f912d8b727f089`. Для этого точного HEAD запущены Tests run `42842947997` и Windows package run `42842948100`; на момент записи оба выполняются. Не объявлять исправление готовым к релизу до зелёного результата обоих workflow.
+
+**Обязательные инструкции Codex:**
+1. Работать только в `work/local-sync`; перед правкой прочитать актуальный `PROJECT_MASTER_LOG.md` и сверить HEAD.
+2. Дождаться Tests `42842947997` и Windows package `42842948100` на exact HEAD `8cb2da51598a6c5e5cefecf4b8f912d8b727f089`; если CI красный — исправить только найденную причину и повторить оба workflow на одном HEAD.
+3. Проверить реальную структуру `IPC.config` в поддерживаемой версии ASF: если фактический путь/JSON отличается от `Kestrel.Endpoints.Http.Url`, скорректировать resolver по реальному формату, не добавлять догадки о порте.
+4. Проверить, что management start/status, batch start и Game Inventory refresh используют один и тот же resolved endpoint; тестировать 1242 fallback при отсутствии IPC.config и 1243 при явно заданном IPC.config.
+5. Не менять IPCPassword, Steam Guard, ASF лимитеры, proxy assignments и логику batch-start. `LoginLimiterDelay=0` остаётся ранее согласованным; `WebLimiterDelay` и прочие параметры не трогать.
+6. После зелёного CI выдать пользователю новую сборку и попросить один тест одного бота. Не запускать все 107 до подтверждения, что запрос реально идёт на 1243 и возвращает inventory.
+7. Обновить этот журнал после итогового CI с exact SHA, run IDs, artifact ID/SHA-256 и чёткими следующими шагами.
