@@ -53,6 +53,11 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel._selected_asset_keys = set()
         panel._selected_bot_names = Mock(return_value=["Bot A"])
         panel.load_button = QPushButton()
+        panel.load_all_button = QPushButton()
+        panel._inventory_refresh_running = False
+        panel._inventory_refresh_task = None
+        panel._queue_inventory_task = lambda task: task.run()
+        panel.database_path = ":memory:"
         panel.password = QLineEdit()
         panel.status = QLabel()
         panel.price_summary = QLabel()
