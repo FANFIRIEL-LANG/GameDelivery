@@ -142,20 +142,25 @@ class ProxySettingsWidget(QWidget):
 
         assignment_row = QHBoxLayout()
         self.pool_bot_name = QComboBox()
-        self.assign_pool_button = QPushButton("Назначить выбранный прокси боту")
+        self.pool_bot_name.setMinimumWidth(180)
+        self.assign_pool_button = QPushButton("Назначить прокси боту")
         self.assign_pool_button.clicked.connect(self.assign_selected_pool_proxy)
-        self.auto_distribute_button = QPushButton("Распределить отмеченные прокси")
+        self.auto_distribute_button = QPushButton("Распределить отмеченные")
         self.auto_distribute_button.clicked.connect(self.auto_distribute_pool)
         self.audit_configs_button = QPushButton("Проверить конфиги ASF")
         self.audit_configs_button.clicked.connect(self.audit_proxy_configs)
-        self.delete_pool_button = QPushButton("Удалить отмеченные прокси")
+        self.delete_pool_button = QPushButton("Удалить отмеченные")
         self.delete_pool_button.clicked.connect(self.delete_selected_pool_proxy)
         assignment_row.addWidget(self.pool_bot_name, 1)
         assignment_row.addWidget(self.assign_pool_button)
-        assignment_row.addWidget(self.auto_distribute_button)
-        assignment_row.addWidget(self.audit_configs_button)
-        assignment_row.addWidget(self.delete_pool_button)
         pool_root.addLayout(assignment_row)
+
+        bulk_actions_row = QHBoxLayout()
+        bulk_actions_row.addWidget(self.auto_distribute_button)
+        bulk_actions_row.addWidget(self.audit_configs_button)
+        bulk_actions_row.addWidget(self.delete_pool_button)
+        bulk_actions_row.addStretch()
+        pool_root.addLayout(bulk_actions_row)
 
         self.pool_table = QTableWidget(0, 6)
         self.pool_table.setHorizontalHeaderLabels(["Выбор", "№", "Тип", "Сервер", "Порт", "Авторизация"])
@@ -230,9 +235,10 @@ class ProxySettingsWidget(QWidget):
 
     def load_selected_pool_proxy(self):
         row = self.pool_table.currentRow()
-        if row >= 0 and self.pool_table.item(row, 0) is not None:
+        if row >= 0 and self.pool_table.item(row, 1) is not None:
             self.pool_status.setText(
-                f"Выбран прокси №{self.pool_table.item(row, 0).text()}. Выбери бота из списка для назначения."
+                f"Выбран прокси №{self.pool_table.item(row, 1).text()}. "
+                "Для массовых действий используй чекбоксы в первом столбце."
             )
 
     def _selected_pool_ids(self) -> list[str]:
