@@ -675,12 +675,25 @@ class GameInventoryPanel(QWidget):
         selected_instances = [
             item for item in all_instances if item.bot_name in selected_names
         ]
+        snapshot_meta = getattr(self, "cs2_snapshot_meta", {})
         selected_snapshot_count = sum(
-            1 for name in selected_names if name in self.cs2_snapshot_meta
+            1 for name in selected_names if name in snapshot_meta
         )
         all_snapshot_count = sum(
-            1 for name in all_names if name in self.cs2_snapshot_meta
+            1 for name in all_names if name in snapshot_meta
         )
+        if getattr(self, "cs2_valuation", None) is None:
+            self.cs2_valuation = calculate_valuation(
+                all_instances, getattr(self, "price_quotes", {}),
+                getattr(self, "usd_rub", None), selected_bots=selected_names,
+                rate_is_stale=getattr(self, "fx_rate_is_stale", False),
+            )
+        if getattr(self, "cs2_all_valuation", None) is None:
+            self.cs2_all_valuation = calculate_valuation(
+                all_instances, getattr(self, "price_quotes", {}),
+                getattr(self, "usd_rub", None), selected_bots=all_names,
+                rate_is_stale=getattr(self, "fx_rate_is_stale", False),
+            )
         selected_total = self._valuation_total_text(self.cs2_valuation)
         all_total = self._valuation_total_text(self.cs2_all_valuation)
         selected_line = (
