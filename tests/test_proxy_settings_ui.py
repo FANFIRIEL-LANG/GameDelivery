@@ -340,7 +340,7 @@ class ProxySettingsUITests(unittest.TestCase):
             self.assertFalse(payload["Enabled"])
             self.assertIn(host, payload["WebProxy"])
             self.assertTrue((config_dir / f"{name}.json.gamedelivery.bak").exists())
-        self.assertIn("до запуска", self.widget.pool_status.text().casefold())
+        self.assertIn("боты не запускались", self.widget.pool_status.text().casefold())
 
 
 
