@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+import re
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
@@ -149,8 +150,52 @@ class GameItemCard(QFrame):
         ))
 
 
+def compact_cs2_card_price_text(price_text: str, instance_count: int = 1) -> str:
+    """Keep card pricing concise; detailed staleness/diagnostics stay out of the tile."""
+    value = str(price_text or "").strip()
+    value = re.sub(r"\\s*·\\s*есть устаревшие данные\\s*$", "", value, flags=re.IGNORECASE)
+
+    if value.startswith("Цена единицы: "):
+        remainder = value.removeprefix("Цена единицы: ")
+        unit, separator, tail = remainder.partition(" · ")
+        unit = unit.strip()
+        if not unit:
+            return "Цена неизвестна"
+        if instance_count > 1 and separator:
+            match = re.search(
+                r"(Частичная стоимость группы|Стоимость группы):\\s*(₽[0-9]+(?:\\.[0-9]{2})?)",
+                tail,
+            )
+            if match:
+                total_label, total = match.groups()
+                if total_label.startswith("Частичная"):
+                    return f"Цена: {unit}/шт. · оценено: {total}"
+                return f"Цена: {unit}/шт. · всего: {total}"
+        return f"Цена: {unit}"
+
+    if value.startswith("Цена актива: "):
+        value = value.removeprefix("Цена актива: ").strip()
+        if value.startswith("недоступна"):
+            return "Цена неизвестна"
+        return f"Цена: {value}"
+
+    if value.startswith("Цена в ₽ недоступна · исходный Steam Ask: "):
+        source_price = value.rsplit(": ", 1)[-1]
+        return f"Цена: {source_price} (₽ недоступна)"
+
+    if value.startswith("Цена: "):
+        short_value = value.split(" · ", 1)[0].strip()
+        if "не выше $0.05" in value:
+            return f"{short_value} (не учитывается)"
+        return short_value
+
+    if value.startswith(("Цена неизвестна", "Цена недоступна")):
+        return "Цена неизвестна"
+    return value or "Цена неизвестна"
+
+
 class CS2InventoryGroupCard(QFrame):
-    """Compact CS2 inventory card with a user-facing item-only tooltip."""
+    """Compact CS2 inventory card with status tint and a user-facing item-only tooltip."""
 
     def __init__(self, group, parent=None, *, rarity: str = "",
                  price_text: str = "Цена недоступна"):
@@ -160,26 +205,47 @@ class CS2InventoryGroupCard(QFrame):
         self.group = group
         self.setObjectName("gameItemCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        tradable_states = {item.is_tradable for item in group.instances}
+        if tradable_states == {True}:
+            status_bg = "#20382f"
+        elif tradable_states == {False}:
+            status_bg = "#303036"
+        elif True in tradable_states and False in tradable_states:
+            status_bg = "#302b2c"
+        elif tradable_states == {None}:
+            status_bg = "#292936"
+        elif False in tradable_states:
+            status_bg = "#302b2c"
+        else:
+            status_bg = "#29332f"
+
         self.setStyleSheet(
-            f"QFrame#gameItemCard {{ background: #202631; border: 2px solid {color}; "
+            f"QFrame#gameItemCard {{ background: {status_bg}; border: 2px solid {color}; "
             "border-radius: 10px; }"
             "QLabel { color: #e8edf5; border: none; background: transparent; }"
         )
-        self.setFixedSize(184, 246)
+        self.setFixedSize(184, 220)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(9, 7, 9, 7)
-        layout.setSpacing(3)
+        layout.setContentsMargins(7, 6, 7, 6)
+        layout.setSpacing(2)
 
         self.image = QLabel("Нет изображения")
         self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setFixedHeight(88)
+        self.image.setFixedHeight(70)
         self.image.setStyleSheet("color: #8792a2;")
+        if tradable_states == {False}:
+            effect = QGraphicsOpacityEffect(self.image)
+            effect.setOpacity(0.55)
+            self.image.setGraphicsEffect(effect)
         layout.addWidget(self.image)
 
         title = QLabel(first.name or "Название неизвестно")
+        title.setObjectName("itemTitle")
         title.setWordWrap(True)
-        title.setMaximumHeight(34)
+        title.setMaximumHeight(30)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(f"color: {color}; font-weight: 600;")
         layout.addWidget(title)
 
         quality = first.exterior or first.quality
@@ -202,11 +268,11 @@ class CS2InventoryGroupCard(QFrame):
         count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(count)
 
-        price = QLabel(price_text)
+        price = QLabel(compact_cs2_card_price_text(price_text, group.instance_count))
         price.setObjectName("price")
         price.setWordWrap(True)
         price.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        price.setMaximumHeight(42)
+        price.setMaximumHeight(34)
         price.setStyleSheet("font-size: 8pt;")
         layout.addWidget(price)
         self.setToolTip(self._tooltip_text())
@@ -226,7 +292,7 @@ class CS2InventoryGroupCard(QFrame):
     def set_image(self, pixmap: QPixmap):
         self.image.setText("")
         self.image.setPixmap(pixmap.scaled(
-            164, 84, Qt.AspectRatioMode.KeepAspectRatio,
+            164, 66, Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         ))
 
