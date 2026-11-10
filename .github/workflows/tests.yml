@@ -88,8 +88,7 @@ jobs:
             elif [ "$result" -eq 134 ] \
               && grep -Eq '^Ran [0-9]+ tests in ' "$module_log" \
               && grep -qx 'OK' "$module_log" \
-              && grep -q '^pure virtual method called
- "$module_log"; then
+              && grep -q 'pure virtual method called' "$module_log"; then
               echo "::warning::$test_name assertions passed; Qt aborted only during pure-virtual shutdown."
             else
               echo "::error::Isolated test module failed: $test_name (exit $result)"
