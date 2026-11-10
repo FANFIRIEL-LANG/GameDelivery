@@ -530,7 +530,7 @@ class OpenSkinProxyTests(unittest.TestCase):
         })
 
     def test_client_accepts_utf8_bom_in_valid_price_json(self):
-        raw = b'\\xef\\xbb\\xbf{"results":[{"item":"AK-47 | Redline","steam":{"ask":12.5,"currency":"USD"}}]}'
+        raw = b'\xef\xbb\xbf{"results":[{"item":"AK-47 | Redline","steam":{"ask":12.5,"currency":"USD"}}]}'
         client = OpenSkinClient(request_func=lambda *_args: (200, raw, {
             "Content-Type": "application/json",
         }))
