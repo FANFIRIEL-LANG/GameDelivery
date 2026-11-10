@@ -558,6 +558,11 @@ class GameInventoryPanel(QWidget):
             settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
             config_dir = str(settings.value("asf/config_path", "") or "").strip()
             executable = str(settings.value("asf/executable_path", "") or "").strip()
+            if not config_dir and not executable:
+                return ASFClient(
+                    ipc_password=self.password.text().strip() or None,
+                    timeout=45.0,
+                )
             try:
                 endpoint = resolve_asf_ipc_base_url(config_dir or None, executable or None)
                 port = urlsplit(endpoint).port
