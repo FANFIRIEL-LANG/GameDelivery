@@ -32,6 +32,7 @@ def _utc(value: datetime | None) -> datetime:
 class PriceCacheStore:
     REFRESH_INTERVAL = timedelta(hours=6)
     RETRY_INTERVAL = timedelta(minutes=10)
+    MANUAL_REFRESH_INTERVAL = timedelta(minutes=10)
 
     def __init__(self, database_path: str | Path):
         self.database_path = str(database_path)
@@ -233,7 +234,13 @@ class PriceCacheStore:
             """, (*self._key(position), current.isoformat(), state.value,
                   http_status, retry.isoformat()))
 
-    def due_positions(self, positions, *, now: datetime | None = None) -> tuple[PricePosition, ...]:
+    def due_positions(self, positions, *, now: datetime | None = None,
+                      force: bool = False) -> tuple[PricePosition, ...]:
+        """Return positions eligible for refresh.
+
+        Manual refresh bypasses the six-hour cache age, but never bypasses
+        provider Retry-After or the local ten-minute repeat-request guard.
+        """
         current = _utc(now)
         due = []
         seen = set()
@@ -244,7 +251,7 @@ class PriceCacheStore:
                     continue
                 seen.add(key)
                 row = db.execute("""
-                    SELECT fetched_at,retry_after_at FROM cs2_price_cache
+                    SELECT fetched_at,retry_after_at,last_attempt_at FROM cs2_price_cache
                     WHERE appid=? AND market_hash_name=? AND pattern=?
                 """, key).fetchone()
                 if row is None:
@@ -252,9 +259,15 @@ class PriceCacheStore:
                     continue
                 fetched = datetime.fromisoformat(row[0]) if row[0] else None
                 retry_after = datetime.fromisoformat(row[1]) if row[1] else None
+                last_attempt = datetime.fromisoformat(row[2]) if row[2] else None
                 if retry_after and current < _utc(retry_after):
                     continue
-                if fetched is None or current - _utc(fetched) >= self.REFRESH_INTERVAL:
+                if force:
+                    if (last_attempt is not None
+                            and current - _utc(last_attempt) < self.MANUAL_REFRESH_INTERVAL):
+                        continue
+                    due.append(position)
+                elif fetched is None or current - _utc(fetched) >= self.REFRESH_INTERVAL:
                     due.append(position)
         return tuple(due)
 
