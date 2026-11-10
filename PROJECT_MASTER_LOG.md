@@ -2840,3 +2840,11 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 
 - Первый commit classifier `87d7b0a` содержал перенос строки внутри shell grep pattern из-за экранирования при подготовке YAML. GitHub Actions не создал jobs (`.github/workflows/tests.yml` parse failure); это CI syntax issue, не product/test failure.
 - Исправлено в `80bedaff2baaee547e2fdf2709e73b748c81bf1e`: проверка pure-virtual shutdown теперь использует безопасный `grep -q 'pure virtual method called'` в одну строку. Новый CI run должен подтвердить валидность workflow и isolated exit 139/134 classification.
+
+
+### UI cleanup validation and Windows package (2026-11-10)
+
+- Final Tests workflow `42785778507` on workflow/docs HEAD `20f0ef92154724bb394f0b73aa0af5c2f1090a39`: **SUCCESS**. Full suite `Ran 490 tests in 3.681s`, `OK`; Qt process segfaulted only after assertions during shutdown, then all test modules were run individually and passed under the corrected classifier. No assertion/module failures remain.
+- Windows package workflow `42785442015` on application code commit `b8a4ab6765c3097ca2dfae84146f6fa31571d4bb`: **SUCCESS**; PyInstaller build and packaged EXE smoke test passed.
+- Artifact `GameDelivery-Windows-x64`, ID `13749766417`, size `55,011,411` bytes. Downloaded and verified locally: ZIP test `No errors detected`; SHA-256 `2425f14cf1d72d2237421c7bfa55ceb480d41333f0f4450513fae76fe2f15d74`. Contains `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`; Python runtime 3.12, onedir. Build info records code commit `b8a4ab6765c3097ca2dfae84146f6fa31571d4bb`.
+- New Windows package is ready for user visual acceptance of compact UI. No live ASF/Steam behavior or price refresh logic was changed; this package contains only CS2 inventory display and CI/test workflow adjustments.
