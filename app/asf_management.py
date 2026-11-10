@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
 
 from app.asf_inventory_controller import ASFInventoryController
 from app.bot_selector import discover_asf_roots, is_asf_config_dir
-from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
+from integrations.asf.client import (
+    ASFClient, ASFError, TEST_ASF_IPC_URL_ENV, resolve_asf_ipc_base_url,
+)
 
 
 ASF_IPC_KEYRING_SERVICE = "GameDelivery.ASFIPC"
@@ -363,19 +365,32 @@ class ASFManagementWidget(QWidget):
                 self._settings.setValue("asf/executable_path", str(candidate))
                 return
 
-    @staticmethod
-    def _ipc_port_is_open() -> bool:
+    def _ipc_base_url(self) -> str:
+        endpoint = os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip()
+        if endpoint:
+            return endpoint
+        executable = self.asf_executable_path.text().strip()
+        return resolve_asf_ipc_base_url(
+            self.config_path.text().strip() or None,
+            executable or None,
+        )
+
+    def _ipc_port_is_open(self, base_url: str | None = None) -> bool:
         try:
-            with socket.create_connection(("127.0.0.1", 1242), timeout=0.35):
+            from urllib.parse import urlsplit
+            endpoint = urlsplit(base_url or self._ipc_base_url())
+            if endpoint.hostname not in {"127.0.0.1", "localhost", "::1"} or endpoint.port is None:
+                return False
+            with socket.create_connection((endpoint.hostname, endpoint.port), timeout=0.35):
                 return True
-        except OSError:
+        except (OSError, ValueError):
             return False
 
     def start_asf(self):
         try:
             self._client().get_status()
         except (ASFError, ValueError, OSError):
-            if self._ipc_port_is_open():
+            if self._ipc_port_is_open(self._ipc_base_url()):
                 self._pending_start_bot_names.clear()
                 self.status.setText(
                     "На порту ASF IPC уже есть процесс, но запрос не прошёл. "
@@ -875,7 +890,13 @@ class ASFManagementWidget(QWidget):
             self.remember_ipc_password.blockSignals(False)
 
     def _client(self) -> ASFClient:
-        return ASFClient(ipc_password=self.ipc_password.text() or None)
+        base_url = self._ipc_base_url()
+        port = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(base_url).port
+        return ASFClient(
+            base_url=base_url,
+            ipc_password=self.ipc_password.text() or None,
+            allow_alternate_loopback_port=port != 1242,
+        )
 
     @staticmethod
     def _is_bot_config(payload: dict) -> bool:
