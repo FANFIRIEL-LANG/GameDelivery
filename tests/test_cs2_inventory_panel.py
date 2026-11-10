@@ -130,7 +130,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         card = CS2InventoryGroupCard(group, rarity="Classified")
         labels = [label.text() for label in card.findChildren(QLabel)]
         rendered = " ".join(labels)
-        self.assertIn("Экземпляров: 2", rendered)
+        self.assertIn("Количество: 2", rendered)
         self.assertIn("Цена недоступна", rendered)
         self.assertNotIn("Цена: 0", rendered)
         self.assertNotIn("Передаваемый", rendered)
@@ -198,11 +198,11 @@ class CS2InventoryPanelTests(unittest.TestCase):
         card = CS2InventoryGroupCard(group)
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
 
-        self.assertIn("Доступно: 1", visible)
-        self.assertIn("Ограничено: 1", visible)
-        self.assertIn("Статус неизвестен: 1", visible)
+        self.assertNotIn("Доступно:", visible)
+        self.assertNotIn("Ограничено:", visible)
+        self.assertNotIn("Статус неизвестен:", visible)
         self.assertIn("Minimal Wear", visible)
-        self.assertIn("Количество ASF: 3", visible)
+        self.assertNotIn("Количество ASF", visible)
         self.assertIn("asset 1001", card.toolTip())
         self.assertIn("asset 1002", card.toolTip())
         self.assertIn("asset 1003", card.toolTip())
@@ -222,7 +222,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         card = CS2InventoryGroupCard(group, rarity="Classified")
 
         self.assertEqual(card.image.graphicsEffect().opacity(), 0.55)
-        self.assertIn("Непередаваемые: 1", " ".join(l.text() for l in card.findChildren(QLabel)))
+        self.assertNotIn("Непередаваемые:", " ".join(l.text() for l in card.findChildren(QLabel)))
         self.assertIn("border: 2px solid #d32ce6", card.styleSheet())
 
     def test_permanent_restriction_has_no_countdown(self):
@@ -238,7 +238,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         card = CS2InventoryGroupCard(build_cs2_inventory_projection([item]).groups[0])
 
         self.assertFalse(card._has_countdown())
-        self.assertIn("Постоянно непередаваемые: 1", card.deadline_label.text())
+        self.assertIn("Постоянно непередаваемые: 1", card.toolTip())
 
     def test_unknown_release_deadline_never_treats_expiry_as_tradable(self):
         from datetime import datetime, timezone
@@ -266,7 +266,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         card = CS2InventoryGroupCard(build_cs2_inventory_projection([expired]).groups[0])
         card._refresh_status(now=datetime(2026, 11, 10, tzinfo=timezone.utc))
         self.assertIs(card.group.instances[0].is_tradable, False)
-        self.assertIn("обновите снимок ASF", card.deadline_label.text())
+        self.assertIn("обновите снимок ASF", card.toolTip())
 
     def test_existing_panel_render_uses_group_cards_for_cs2_projection(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
@@ -373,7 +373,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.render()
         self.assertEqual(panel.cards_layout.count(), 1)
         all_card = panel.cards_layout.itemAt(0).widget()
-        self.assertIn("Статус неизвестен: 1", all_card.status_label.text())
+        self.assertNotIn("Статус неизвестен:", " ".join(l.text() for l in all_card.findChildren(QLabel)))
 
         panel.view_mode.setCurrentIndex(1)
         panel.render()
@@ -391,7 +391,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         restricted_card = panel.cards_layout.itemAt(0).widget()
         self.assertEqual(restricted_card.group.instance_count, 1)
         self.assertEqual(restricted_card.group.instances[0].asset_id, "1002")
-        self.assertIn("Непередаваемые: 1", restricted_card.status_label.text())
+        self.assertNotIn("Непередаваемые:", " ".join(l.text() for l in restricted_card.findChildren(QLabel)))
 
         panel.transfer_filter.setCurrentIndex(3)
         panel.render()
