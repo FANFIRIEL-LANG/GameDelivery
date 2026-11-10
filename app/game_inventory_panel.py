@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, QSize, Signal
+from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, QSize, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -38,7 +38,9 @@ from app.inventory_display import (
     InventoryMetricsLabel, metric_table_cells, thumbnail_table_item,
     update_table_thumbnails,
 )
-from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
+from integrations.asf.client import (
+    ASFClient, ASFError, TEST_ASF_IPC_URL_ENV, resolve_asf_ipc_base_url,
+)
 from integrations.frankfurter.client import FrankfurterClient, FrankfurterError
 from integrations.openskin.client import OpenSkinClient, OpenSkinError
 from integrations.openskin.proxy import OpenSkinProxySettingsStore
@@ -553,7 +555,21 @@ class GameInventoryPanel(QWidget):
     def _create_asf_client(self):
         endpoint = os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip()
         if not endpoint:
-            return ASFClient(ipc_password=self.password.text().strip() or None, timeout=45.0)
+            settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+            config_dir = str(settings.value("asf/config_path", "") or "").strip()
+            executable = str(settings.value("asf/executable_path", "") or "").strip()
+            try:
+                endpoint = resolve_asf_ipc_base_url(config_dir or None, executable or None)
+                port = urlsplit(endpoint).port
+            except (ASFError, ValueError) as exc:
+                self.status.setText(f"Не удалось определить адрес ASF IPC: {exc}")
+                return None
+            return ASFClient(
+                base_url=endpoint,
+                ipc_password=self.password.text().strip() or None,
+                timeout=45.0,
+                allow_alternate_loopback_port=port != 1242,
+            )
 
         try:
             parsed = urlsplit(endpoint)
