@@ -2721,3 +2721,48 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - CI ran the packaged executable smoke test successfully. The Linux-side archive inspection did not itself execute the Windows EXE.
 - User download/live check can now be offered once: use this artifact only, perform proxy probe and OpenSkin API probe once, and share safe traceback/category/status without proxy line or password. This still does NOT establish live route success; C.6.3.6 remains OPEN.
 - Не предлагать пользователю старую сборку или повторение предыдущей source-проверки. Выдать одну новую сборку `GameDelivery-Windows-x64` только после успешных packaged EXE smoke и artifact upload; в инструкции — выполнить обновлённую proxy check и OpenSkin API check один раз, затем передать безопасный traceback/category/status без proxy string и без пароля.
+---
+
+## 2026-11-10 — C.6.3.6.7 — исправление PySide6 QNetworkReply.rawHeader(QByteArray) TypeError
+
+### Пользовательское live evidence
+
+Пользователь передал безопасные строки `%USERPROFILE%/.gamedelivery/openskin-proxy.log` от 2026-11-10. Три события (два `price_request`, одно `proxy_probe`) показали один и тот же фактический сбой:
+
+- `exception=TypeError`.
+- Вызов: `PySide6.QtNetwork.QNetworkReply.rawHeader(QByteArray)`.
+- Установленная привязка PySide6 объявляет только overload `rawHeader(headerName: str)`.
+- Traceback: `_fetch_batch → _proxy_url_request → _qt_proxy_request` для запроса цен и `probe_proxy_connection → _qt_proxy_request` для proxy probe; место — чтение HTTP response headers.
+- В `_qt_proxy_request()` HTTP status attribute читается до обхода `rawHeaderList()`. Следовательно, это exception на этапе извлечения заголовков уже полученного QNetworkReply, а не evidence of proxy TCP/CONNECT/TLS failure. Не приписывать этому TypeError отказ самого proxy. После исправления нужно увидеть фактический HTTP status / OpenSkin API result.
+
+### Исправление
+
+- В `integrations/openskin/client.py` добавлен `_read_qnetwork_response_headers(reply)`.
+- Имена из `reply.rawHeaderList()` преобразуются из `QByteArray` в `str` через `bytes(raw_name).decode("latin-1")` до вызова `reply.rawHeader(name)`. Значения по-прежнему читаются из QByteArray и декодируются отдельно в Latin-1; тело ответа и кодировка JSON не меняются.
+- `_qt_proxy_request()` использует helper вместо вызова `rawHeader(QByteArray)`.
+- Исправлено дублирование `context=price_request` / `context=proxy_probe` в строках диагностического журнала. Безопасная трассировка остаётся с credential redaction.
+- Не менялись proxy parser, сохранение keyring/QSettings, proxy isolation, таймаут, TLS verification, маршрутизация Frankfurter или Steam. `ignoreSslErrors()` не добавлялся.
+
+### Регрессионный тест и commits
+
+- Добавлен `test_qnetwork_response_headers_pass_str_names_to_pyside_raw_header`: fake reply возвращает QByteArray в `rawHeaderList()` и намеренно бросает TypeError, если имя заголовка не str; проверяются значения нескольких заголовков.
+- Code commit `2ff8f19a7387d91f216c28eeb6462044d53d9785` — `fix: pass string header names to PySide6 rawHeader`.
+- Test commit `e686e4f04e60679c36ec87ea34f9a7ae3ee5754b` — `test: cover PySide6 rawHeader string overload`.
+- Первичный Tests run `42774529845` на `e686e4f`: compile/profile/trade tests passed; full suite выполнил 486 assertions и вывел `OK`, затем Python/Qt завершился `pure virtual method called` / exit 134. Каждый из 45 test modules прошёл отдельно; новых assertion failures не было. Run был красным, потому что workflow тогда классифицировал exit 139, но не post-assertion Qt abort 134. Не объявлять Qt shutdown root cause найденным или исправленным.
+- CI changes: commit `364da7e663f471e70404eb62f40c0d1e779477a2` содержал некорректно сформированный YAML и workflow run `42774840750` завершился без jobs; файл workflow полностью исправлен/перепроверен в commit `ede167ae69f2432a2f43a84ebe55daf84af23bd4`.
+- В `.github/workflows/tests.yml` exit 134 признаётся Qt pure-virtual shutdown только если одновременно полный log содержит `Ran N tests`, `OK` и точную строку `pure virtual method called`; после этого обязательно запускаются все `tests/test_*.py` отдельно. Любая assertion/test/module failure по-прежнему делает workflow красным.
+- Final workflow run `42774884395`, HEAD `ede167ae69f2432a2f43a84ebe55daf84af23bd4`: SUCCESS; `Ran 486 tests`, `OK`; compile, Steam credential migration, Steam trade UI, full suite и final isolation workflow step — SUCCESS. Qt exit 134 в этом повторном прогоне не воспроизвёлся. Не утверждать, что Qt shutdown issue исправлен.
+
+### Windows package
+
+- Windows package run `42774529859` собрал exact application code SHA `e686e4f04e60679c36ec87ea34f9a7ae3ee5754b`: SUCCESS. Compile, ACL test, PyInstaller, packaged `GameDelivery.exe --self-test`, build-info and upload — SUCCESS.
+- Artifact `GameDelivery-Windows-x64`, ID `13743906257`, size `55,011,927` bytes, digest `sha256:aeebb0e178900ae6c4690c26c097ff64d6e12837917f3980ec5956cbfd2390ed`, expires 2026-12-10.
+- Downloaded ZIP integrity verified; root contains `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`. SHA-256 matches GitHub artifact digest. `BUILD_INFO.txt` confirms build commit `e686e4f04e60679c36ec87ea34f9a7ae3ee5754b`, bundled Python 3.12, onedir package.
+- Runtime code is the exact tested fix commit `e686e4f`. Current branch HEAD `ede167a` adds only test-workflow YAML handling; no application code changed after the Windows package build.
+
+### Статус и следующий шаг
+
+- Подтверждённый дефект `rawHeader(QByteArray)` исправлен и автоматический пакет проверок успешен.
+- Live proxy route / actual HTTP status / OpenSkin pricing API после исправления ещё НЕ проверены. C.6.3.6 остаётся OPEN; не закрывать этап по CI.
+- Следующая и единственная ручная проверка на этом участке: пользователь использует только новый ZIP из artifact `13743906257`, выполняет один `Проверить прокси`, затем один `Проверить OpenSkin API`, присылает безопасные outcome/category/HTTP status и новый `openskin-proxy.log` без proxy line/password. Не повторять старые проверки со старым ZIP.
+- Далее по отдельному плану C.6.3.6: Frankfurter USD/RUB и read-only CS2 730/2 acceptance на изолированном ASF; никаких production ASF 1242, inventory mutations или Steam Trade Offers.
