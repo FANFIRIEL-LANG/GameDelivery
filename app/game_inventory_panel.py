@@ -63,6 +63,69 @@ class _BotListRefreshTask(QRunnable):
             self.signals.finished.emit([], _safe_test_asf_error(exc))
 
 
+class _InventoryRefreshSignals(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(int, list, dict)
+
+
+class _GameInventoryRefreshTask(QRunnable):
+    """Fetch fresh per-bot inventories off the UI thread and replace snapshots atomically."""
+
+    def __init__(self, client, database_path, game_id, bot_names, *, test_mode=False):
+        super().__init__()
+        self.client = client
+        self.database_path = str(database_path)
+        self.game_id = str(game_id)
+        self.bot_names = tuple(bot_names)
+        self.test_mode = bool(test_mode)
+        self.signals = _InventoryRefreshSignals()
+
+    def run(self):
+        store = GameInventoryStore(self.database_path)
+        succeeded, failed, instances_by_bot = 0, [], {}
+        game = next((entry for entry in GAME_CATALOG if entry.game_id == self.game_id), None)
+        if game is None:
+            self.signals.finished.emit(0, ["Неизвестная игра."], {})
+            return
+        for index, bot_name in enumerate(self.bot_names, 1):
+            self.signals.progress.emit(index, len(self.bot_names), bot_name)
+            try:
+                payload = self.client.get_bot_inventory(
+                    bot_name, app_id=game.app_id, context_id=game.context_id,
+                    language="english",
+                )
+                items = parse_game_inventory(payload, self.game_id, bot_name)
+                store.replace(self.game_id, bot_name, items)
+                succeeded += 1
+                if self.game_id == "cs2":
+                    try:
+                        adapted = adapt_cs2_inventory_response(
+                            payload, bot_name, appid=730, context_id=2
+                        )
+                        parsed_by_key = {
+                            (item.game_id, item.bot_name, item.asset_id): item
+                            for item in items
+                        }
+                        instances_by_bot[bot_name] = tuple(
+                            replace(
+                                instance,
+                                icon_url=(parsed_by_key.get(instance.physical_key).icon_url
+                                          if parsed_by_key.get(instance.physical_key) else instance.icon_url),
+                                icon_url_large=(parsed_by_key.get(instance.physical_key).icon_url_large
+                                                if parsed_by_key.get(instance.physical_key) else instance.icon_url_large),
+                            )
+                            for instance in adapted
+                        )
+                    except Exception as exc:
+                        detail = ("CS2-проекция недоступна; подробности скрыты"
+                                  if self.test_mode else f"CS2-проекция недоступна: {exc}")
+                        failed.append(f"{bot_name}: снимок обновлён, {detail}")
+            except Exception as exc:
+                detail = _safe_test_asf_error(exc) if self.test_mode else str(exc)
+                failed.append(f"{bot_name}: {detail}")
+        self.signals.finished.emit(succeeded, failed, instances_by_bot)
+
+
 class _PriceRefreshSignals(QObject):
     finished = Signal(str)
 
@@ -70,17 +133,18 @@ class _PriceRefreshSignals(QObject):
 class _PriceRefreshTask(QRunnable):
     """Serial network refresh on Qt's worker pool; no UI objects are touched."""
 
-    def __init__(self, database_path, positions):
+    def __init__(self, database_path, positions, *, force=False):
         super().__init__()
         self.database_path = str(database_path)
         self.positions = tuple(positions)
+        self.force = bool(force)
         self.signals = _PriceRefreshSignals()
 
     def run(self):
         messages = []
         try:
             store = PriceCacheStore(self.database_path)
-            due = store.due_positions(self.positions)
+            due = store.due_positions(self.positions, force=self.force)
             if due:
                 try:
                     proxy = OpenSkinProxySettingsStore().load_enabled_proxy()
@@ -181,6 +245,8 @@ class GameInventoryPanel(QWidget):
         self._price_refresh_message = ""
         self._bot_list_refresh_running = False
         self._bot_list_refresh_task = None
+        self._inventory_refresh_running = False
+        self._inventory_refresh_task = None
         self.cards_by_image: dict[str, list[GameItemCard | CS2InventoryGroupCard]] = {}
         self._selected_asset_keys: set[tuple[str, str]] = set()
 
@@ -238,12 +304,21 @@ class GameInventoryPanel(QWidget):
         controls.addWidget(self.password, 1)
 
         self.load_button = QPushButton("Обновить выбранные аккаунты")
+        self.load_button.setToolTip("Получить свежий инвентарь из ASF только для отмеченных аккаунтов.")
         self.load_button.clicked.connect(self.fetch_inventory)
         controls.addWidget(self.load_button)
+        self.load_all_button = QPushButton("Обновить все аккаунты")
+        self.load_all_button.setToolTip("Получить свежий инвентарь из ASF для всех добавленных аккаунтов, не меняя текущий выбор.")
+        self.load_all_button.clicked.connect(self.fetch_all_inventory)
+        controls.addWidget(self.load_all_button)
         self.refresh_button = QPushButton("Обновить список")
         self.refresh_button.clicked.connect(self.load_saved)
         controls.addWidget(self.refresh_button)
         self.price_refresh_button = QPushButton("Обновить цены")
+        self.price_refresh_button.setToolTip(
+            "Запросить свежие цены, даже если кэш ещё моложе 6 часов. "
+            "Повторный запрос ограничивается минимальным интервалом и Retry-After OpenSkin."
+        )
         self.price_refresh_button.clicked.connect(
             lambda: self._start_price_refresh(manual=True)
         )
@@ -506,9 +581,17 @@ class GameInventoryPanel(QWidget):
             allow_alternate_loopback_port=True,
         )
 
-    def fetch_inventory(self):
+    def fetch_all_inventory(self):
+        self.fetch_inventory(all_bots=True)
+
+    def fetch_inventory(self, all_bots: bool = False):
         game_id = str(self.game_combo.currentData() or "")
-        bot_names = self._selected_bot_names()
+        bot_names = (
+            sorted(self.bot_selection_model.account_names, key=str.casefold)
+            if all_bots else self._selected_bot_names()
+        )
+        if self._inventory_refresh_running:
+            return
         if getattr(self, "test_mode", bool(os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip())) \
                 and game_id != "cs2":
             self.status.setText("В режиме изолированного ASF разрешена только проверка инвентаря CS2.")
@@ -517,64 +600,48 @@ class GameInventoryPanel(QWidget):
             self.status.setText(
                 "Укажи имя бота изолированного ASF."
                 if getattr(self, "test_mode", False)
-                else "Выбери аккаунты для загрузки из ASF."
+                else ("В списке нет добавленных аккаунтов ASF." if all_bots
+                      else "Выбери аккаунты для загрузки из ASF.")
             )
             return
+        client = self._create_asf_client()
+        if client is None:
+            return
+        self._inventory_refresh_running = True
         self.load_button.setEnabled(False)
-        succeeded, failed = 0, []
-        try:
-            client = self._create_asf_client()
-            if client is None:
-                return
-            for index, bot_name in enumerate(bot_names, 1):
-                self.status.setText(f"Загрузка {game_id}: {index}/{len(bot_names)} · {bot_name}…")
-                try:
-                    if game_id == "cs2":
-                        payload = client.get_bot_inventory(
-                            bot_name, app_id=730, context_id=2, language="english"
-                        )
-                        items = parse_game_inventory(payload, "cs2", bot_name)
-                        self.store.replace("cs2", bot_name, items)
-                        succeeded += 1
-                        try:
-                            adapted = adapt_cs2_inventory_response(
-                                payload, bot_name, appid=730, context_id=2
-                            )
-                            parsed_by_key = {
-                                (item.game_id, item.bot_name, item.asset_id): item
-                                for item in items
-                            }
-                            self.cs2_instances_by_bot[bot_name] = tuple(
-                                replace(
-                                    instance,
-                                    icon_url=(parsed_by_key.get(instance.physical_key).icon_url
-                                              if parsed_by_key.get(instance.physical_key) else instance.icon_url),
-                                    icon_url_large=(parsed_by_key.get(instance.physical_key).icon_url_large
-                                                    if parsed_by_key.get(instance.physical_key) else instance.icon_url_large),
-                                )
-                                for instance in adapted
-                            )
-                        except Exception as exc:
-                            self.cs2_instances_by_bot.pop(bot_name, None)
-                            detail = ("CS2-проекция недоступна; подробности скрыты"
-                                      if os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip()
-                                      else f"CS2-проекция недоступна: {exc}")
-                            failed.append(f"{bot_name}: снимок обновлён, {detail}")
-                        continue
-                    refresh_game_inventory(client, self.store, game_id, bot_name)
-                    succeeded += 1
-                except Exception as exc:
-                    detail = (_safe_test_asf_error(exc)
-                              if os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip()
-                              else str(exc))
-                    failed.append(f"{bot_name}: {detail}")
-            self.load_saved()
-            message = f"Обновлено аккаунтов: {succeeded} из {len(bot_names)}."
-            if failed:
-                message += " Ошибки: " + " | ".join(failed[:4])
-            self.status.setText(message)
-        finally:
-            self.load_button.setEnabled(True)
+        self.load_all_button.setEnabled(False)
+        self.status.setText(
+            f"Начинаю обновление инвентаря {game_id}: 0/{len(bot_names)} аккаунтов…"
+        )
+        task = _GameInventoryRefreshTask(
+            client, self.database_path, game_id, bot_names, test_mode=self.test_mode,
+        )
+        task.signals.progress.connect(self._inventory_refresh_progress)
+        task.signals.finished.connect(self._inventory_refresh_finished)
+        self._inventory_refresh_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _inventory_refresh_progress(self, index: int, total: int, bot_name: str):
+        self.status.setText(
+            f"Обновление инвентаря: {index}/{total} · {bot_name}. "
+            "Старый снимок останется до успешного ответа ASF."
+        )
+
+    def _inventory_refresh_finished(self, succeeded: int, failed: list, instances_by_bot: dict):
+        self._inventory_refresh_running = False
+        self._inventory_refresh_task = None
+        self.load_button.setEnabled(True)
+        self.load_all_button.setEnabled(True)
+        if self.game_combo.currentData() == "cs2":
+            self.cs2_instances_by_bot.update(instances_by_bot)
+        self.load_saved()
+        total = succeeded + len(failed)
+        message = f"Свежий инвентарь получен: {succeeded} из {total} аккаунтов."
+        if failed:
+            message += " Не обновлены: " + " | ".join(failed[:5])
+            if len(failed) > 5:
+                message += f" …и ещё {len(failed) - 5}."
+        self.status.setText(message)
 
     def load_saved(self):
         game_id = str(self.game_combo.currentData() or "")
@@ -805,7 +872,7 @@ class GameInventoryPanel(QWidget):
                 self.price_summary.setText("Кэш цен недоступен; сетевой запрос не выполнен.")
                 return
         positions = tuple(positions) if positions is not None else requestable_positions(self.cs2_all_instances)
-        due = self.price_cache_store.due_positions(positions)
+        due = self.price_cache_store.due_positions(positions, force=manual)
         eligible_cached = any(
             (quote := self.price_cache_store.get(position)) is not None
             and quote.currency == "USD" and quote.steam_ask is not None
@@ -816,7 +883,8 @@ class GameInventoryPanel(QWidget):
         if not due and not rate_due:
             if manual:
                 self._price_refresh_message = (
-                    "Кэш актуален; повторный запрос ограничен частотой обновления Steam Ask."
+                    "Повторный запрос пока отложен: действует минимальный интервал обновления "
+                    "Steam Ask или Retry-After OpenSkin."
                 )
                 self.status.setText(self._price_refresh_message)
             return
@@ -824,7 +892,7 @@ class GameInventoryPanel(QWidget):
         self.price_refresh_button.setEnabled(False)
         if hasattr(self, "price_missing_button"):
             self.price_missing_button.setEnabled(False)
-        worker = _PriceRefreshTask(self.database_path, positions)
+        worker = _PriceRefreshTask(self.database_path, positions, force=manual)
         worker.signals.finished.connect(self._price_refresh_finished)
         self._price_worker = worker
         QThreadPool.globalInstance().start(worker)
