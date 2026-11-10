@@ -215,7 +215,7 @@ class InventoryPanelDisplayTests(unittest.TestCase):
         panel.render_inventory()
 
         by_name = {
-            panel.item_grid.item(index).text().split("\\n", 1)[0]: panel.item_grid.item(index)
+            panel.item_grid.item(index).text().splitlines()[0]: panel.item_grid.item(index)
             for index in range(panel.item_grid.count())
         }
         selectable_flag = Qt.ItemFlag.ItemIsSelectable

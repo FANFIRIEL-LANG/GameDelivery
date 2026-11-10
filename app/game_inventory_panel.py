@@ -967,6 +967,9 @@ class GameInventoryPanel(QWidget):
                 self.items, containers_only=self.item_filter.currentData() == "containers"
             )
         }
+        items_by_key = {
+            (item.game_id, item.bot_name, item.asset_id): item for item in self.items
+        }
         # CS2 always groups identical market items across selected bots.
         # The projection splits a market item only by transferability.
         source_groups = projection.groups
@@ -984,12 +987,24 @@ class GameInventoryPanel(QWidget):
             if not members:
                 continue
             sample = members[0]
+            legacy_items = [
+                items_by_key[item.physical_key] for item in members
+                if item.physical_key in items_by_key
+            ]
             group_rarities = {item.rarity for item in members if item.rarity}
+            if not group_rarities:
+                group_rarities = {item.rarity for item in legacy_items if item.rarity}
             group_rarity = next(iter(group_rarities)) if len(group_rarities) == 1 else ""
             rarity_by_key.update((item.physical_key, group_rarity) for item in members)
-            if rarity and not any(item.rarity == rarity for item in members):
+            if rarity and not (
+                any(item.rarity == rarity for item in members)
+                or any(item.rarity == rarity for item in legacy_items)
+            ):
                 continue
-            if quality and not any((item.exterior or item.quality) == quality for item in members):
+            if quality and not (
+                any((item.exterior or item.quality) == quality for item in members)
+                or any((item.exterior or item.quality) == quality for item in legacy_items)
+            ):
                 continue
             haystack = " ".join((
                 sample.name, sample.item_type, sample.market_hash_name, *sample.tags,

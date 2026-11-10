@@ -363,7 +363,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertEqual(summary.count("\n"), 1)
         self.assertNotIn("Снимки инвентаря:", summary)
         self.assertNotIn("Bot A: ₽", summary)
-        self.assertIn("font-size: 15px", panel.price_summary.styleSheet())
+        self.assertIn("font-size: 16px", panel.price_summary.styleSheet())
 
 
     def test_summary_does_not_show_zero_rubles_when_only_fx_conversion_is_pending(self):

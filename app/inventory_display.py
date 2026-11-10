@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
-from games.inventory_display import InventoryMetrics
+from games.inventory_display import InventoryMetrics, PRICE_UNAVAILABLE
 
 
 METRIC_COLORS = {
