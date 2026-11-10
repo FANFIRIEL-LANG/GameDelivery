@@ -84,6 +84,11 @@ class ASFManagementWidget(QWidget):
         self._asf_ipc_attempts = 0
         self._pending_start_bot_names: list[str] = []
         self._bot_start_requested_at: dict[str, str] = {}
+        self._bot_status_poll_names: set[str] = set()
+        self._bot_status_poll_attempts = 0
+        self._bot_status_poll_timer = QTimer(self)
+        self._bot_status_poll_timer.setInterval(15_000)
+        self._bot_status_poll_timer.timeout.connect(self._poll_started_bot_status)
         root = QVBoxLayout(self)
         intro = QLabel(
             "Массовый импорт аккаунтов: TXT с логином и паролем + папка maFiles + "
@@ -1185,13 +1190,56 @@ class ASFManagementWidget(QWidget):
         bot_names = sorted(self._configured_bot_paths(), key=str.casefold)
         self._set_bots_enabled(bot_names)
 
+    def _begin_bot_status_poll(self, bot_names):
+        names = {str(name).casefold() for name in bot_names if str(name).strip()}
+        if not names:
+            return
+        self._bot_status_poll_names = names
+        self._bot_status_poll_attempts = 0
+        self._bot_status_poll_timer.start()
+
+    def _poll_started_bot_status(self):
+        if not self._bot_status_poll_names:
+            self._bot_status_poll_timer.stop()
+            return
+        self._bot_status_poll_attempts += 1
+        self.refresh_bots()
+        states = {
+            self.table.item(row, 0).text().casefold(): (
+                self.table.item(row, 1).text() if self.table.item(row, 1) else ""
+            )
+            for row in range(self.table.rowCount())
+            if self.table.item(row, 0) is not None
+        }
+        online = sum(states.get(name) == "В сети" for name in self._bot_status_poll_names)
+        total = len(self._bot_status_poll_names)
+        if online == total:
+            self._bot_status_poll_timer.stop()
+            self._bot_status_poll_names.clear()
+            self.status.setText(f"Все запрошенные боты подключились к Steam: {online}/{total}.")
+        elif self._bot_status_poll_attempts >= 40:
+            self._bot_status_poll_timer.stop()
+            self._bot_status_poll_names.clear()
+            self.status.setText(
+                f"За 10 минут подключились {online}/{total} ботов. "
+                "Остальные продолжают запускаться по настройкам ASF; проверь журнал ASF."
+            )
+        else:
+            self.status.setText(
+                f"Подключение ботов к Steam: {online}/{total} в сети. "
+                "GameDelivery обновит состояния автоматически через 15 секунд; "
+                "скорость входа регулирует ASF."
+            )
+
     def _start_bots(self, bot_names: list[str]):
         self.start_selected_button.setEnabled(False)
         self.start_all_button.setEnabled(False)
         client = self._client()
         try:
+            requested_names = []
             try:
                 client.start_bots(bot_names)
+                requested_names = list(bot_names)
                 requested_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
                 for bot_name in bot_names:
                     self._bot_start_requested_at[bot_name] = requested_at
@@ -1224,6 +1272,9 @@ class ASFManagementWidget(QWidget):
                         f"ASF отклонил пакетную команду; индивидуальные команды отправлены "
                         f"для {len(started)} ботов. Подключение проверяется по журналу ASF."
                     )
+                requested_names = list(started)
+            if requested_names:
+                self._begin_bot_status_poll(requested_names)
         finally:
             self.start_selected_button.setEnabled(True)
             self.start_all_button.setEnabled(True)
