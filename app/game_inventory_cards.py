@@ -221,8 +221,6 @@ class CS2InventoryGroupCard(QFrame):
             lines.append(f"Редкость: {first.rarity}")
         if stattrak_label(first) == "Да":
             lines.append("StatTrak")
-        if first.tags:
-            lines.append(f"Характеристики: {', '.join(first.tags)}")
         return "\n".join(lines)
 
     def set_image(self, pixmap: QPixmap):
