@@ -28,7 +28,7 @@ from integrations.openskin.proxy import OpenSkinProxy
 
 
 _ENDPOINT = "https://api.openskin.dev/v1/prices/batch"
-_PROXY_PROBE_URL = "https://api.openskin.dev/"
+_PROXY_PROBE_URL = "https://api.openskin.dev/health"
 _MAX_BATCH = 500
 _logger = logging.getLogger(__name__)
 
@@ -475,9 +475,16 @@ class OpenSkinClient:
                 retry_after_seconds=_retry_after(headers),
             )
         try:
-            payload = json.loads(raw.decode("utf-8"), parse_float=Decimal)
+            payload = json.loads(raw.decode("utf-8-sig"), parse_float=Decimal)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            _logger.warning("OpenSkin API returned invalid JSON")
+            content_type = next((v for k, v in headers.items() if k.casefold() == "content-type"), "unknown")
+            content_encoding = next((v for k, v in headers.items() if k.casefold() == "content-encoding"), "identity")
+            _logger.warning(
+                "OpenSkin API returned invalid JSON content_type=%s content_encoding=%s body_bytes=%s prefix_hex=%s",
+                redact_network_detail(content_type, self.proxy),
+                redact_network_detail(content_encoding, self.proxy),
+                len(raw), raw[:16].hex(),
+            )
             raise OpenSkinError("OpenSkin вернул ответ в неожиданном формате.",
                                 category="invalid_response") from None
         rows = payload.get("results") if isinstance(payload, dict) else None
