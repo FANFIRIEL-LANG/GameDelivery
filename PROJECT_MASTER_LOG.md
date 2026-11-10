@@ -2834,3 +2834,9 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - В первом CI-прогоне были также три устаревших ожидания тестов, привязанные к прежним UI labels. Они исправлены: `tests/test_cs2_inventory_panel.py` проверяет новое короткое status text и сохранённую tooltip-информацию; `tests/test_cs2_price_panel.py` проверяет per-bot summary. Коммиты `7d8b873`, `b8a4ab6`.
 - `.github/workflows/tests.yml` обновлён: изолированный модуль с ненулевым exit 139/134 допускается только если в его логе есть `Ran N tests`, `OK`, а для 134 также точное сообщение `pure virtual method called`. Любой assertion/module error остаётся failure. Изменение CI: `87d7b0a168be52a9cb6a046e47f960c227d9f94a`.
 - Последний code/test commit до CI classifier: `b8a4ab6765c3097ca2dfae84146f6fa31571d4bb`; последний workflow/docs HEAD: `87d7b0a168be52a9cb6a046e47f960c227d9f94a`. Новый Tests run после изменения classifier и Windows package run `42785442015` ещё не завершены на момент записи.
+
+
+### Исправление YAML/shell quoting в CI classifier (2026-11-10)
+
+- Первый commit classifier `87d7b0a` содержал перенос строки внутри shell grep pattern из-за экранирования при подготовке YAML. GitHub Actions не создал jobs (`.github/workflows/tests.yml` parse failure); это CI syntax issue, не product/test failure.
+- Исправлено в `80bedaff2baaee547e2fdf2709e73b748c81bf1e`: проверка pure-virtual shutdown теперь использует безопасный `grep -q 'pure virtual method called'` в одну строку. Новый CI run должен подтвердить валидность workflow и isolated exit 139/134 classification.
