@@ -262,7 +262,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         card = CS2InventoryGroupCard(build_cs2_inventory_projection([item]).groups[0])
 
         self.assertFalse(card._has_countdown())
-        self.assertIn("Постоянно непередаваемые: 1", card.toolTip())
+        self.assertIn("Ограничение: Постоянно непередаваемый", card.toolTip())
 
     def test_unknown_release_deadline_never_treats_expiry_as_tradable(self):
         from datetime import datetime, timezone
@@ -369,7 +369,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertEqual(len(cards), 1)
         self.assertIsInstance(cards[0], CS2InventoryGroupCard)
         self.assertIn("border: 2px solid #d32ce6", cards[0].styleSheet())
-        self.assertIn("физических экземпляров: 2", panel.status.text())
+        self.assertIn("предметов: 2", panel.status.text())
 
         panel.grouping_mode.setCurrentIndex(1)
         panel.render()
