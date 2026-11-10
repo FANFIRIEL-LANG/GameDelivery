@@ -168,6 +168,9 @@ class GameInventoryPanel(QWidget):
         self.store = GameInventoryStore(self.database_path)
         self.items = []
         self.cs2_instances_by_bot: dict[str, tuple[CS2InventoryInstance, ...]] = {}
+        self.cs2_all_instances: tuple[CS2InventoryInstance, ...] = ()
+        self.cs2_snapshot_meta: dict[str, int] = {}
+        self.cs2_all_valuation = None
         self.cs2_projection = None
         self.price_cache_store = None
         self.price_quotes = {}
@@ -303,8 +306,14 @@ class GameInventoryPanel(QWidget):
         self.status.setObjectName("muted")
         layout.addWidget(self.status)
         self.price_summary = QLabel("Цены CS2 появятся после загрузки снимка инвентаря.")
-        self.price_summary.setObjectName("muted")
+        self.price_summary.setObjectName("inventorySummary")
         self.price_summary.setWordWrap(True)
+        self.price_summary.setMinimumHeight(76)
+        self.price_summary.setStyleSheet(
+            "QLabel#inventorySummary { color: #f3f6fb; background: #202a38; "
+            "border: 1px solid #43536a; border-radius: 10px; "
+            "padding: 12px 16px; font-size: 15px; font-weight: 650; }"
+        )
         layout.addWidget(self.price_summary)
 
         self.table = QTableWidget(0, 10)
@@ -553,7 +562,7 @@ class GameInventoryPanel(QWidget):
                     for values in self.cs2_instances_by_bot.values()
                     for instance in values
                 }
-                instances = [
+                all_instances = [
                     instances_by_key.get(
                         (item.game_id, item.bot_name, item.asset_id),
                         CS2InventoryInstance(
@@ -565,9 +574,16 @@ class GameInventoryPanel(QWidget):
                             rarity=item.rarity,
                         ),
                     )
-                    for item in self.items
+                    for item in all_items
                 ]
-                self.cs2_projection = build_cs2_inventory_projection(instances, list(selected))
+                self.cs2_all_instances = tuple(all_instances)
+                self.cs2_snapshot_meta = self.store.load_snapshot_meta("cs2")
+                selected_instances = [
+                    item for item in all_instances if item.bot_name in selected
+                ]
+                self.cs2_projection = build_cs2_inventory_projection(
+                    selected_instances, list(selected)
+                )
                 try:
                     self._load_price_cache()
                 except Exception:
@@ -587,7 +603,7 @@ class GameInventoryPanel(QWidget):
             )
             self._refresh_filter_values()
             self.render()
-            if game_id == "cs2" and self.cs2_projection.instances:
+            if game_id == "cs2" and self.cs2_all_instances:
                 self._start_price_refresh()
         except Exception as exc:
             self.items = []
@@ -595,15 +611,12 @@ class GameInventoryPanel(QWidget):
             self.status.setText(f"Не удалось прочитать снимок: {exc}")
 
     def _load_price_cache(self):
-        instances = self.cs2_projection.instances if self.cs2_projection else ()
+        instances = tuple(getattr(self, "cs2_all_instances", ()))
         self.price_quotes = {}
         self.usd_rub = None
         self.fx_rate_source_date = None
         self.fx_rate_fetched_at = None
         self.fx_rate_is_stale = False
-        if not instances:
-            self.cs2_valuation = calculate_valuation((), {}, None, selected_bots=())
-            return
         if self.price_cache_store is None:
             self.price_cache_store = PriceCacheStore(self.database_path)
         positions = requestable_positions(instances)
@@ -621,43 +634,73 @@ class GameInventoryPanel(QWidget):
             self.fx_rate_source_date = rate.source_date
             self.fx_rate_fetched_at = rate.fetched_at
             self.fx_rate_is_stale = rate.is_stale
+
         try:
-            selected_bots = self._selected_bot_names()
+            all_bot_names = set(self.bot_selection_model.account_names)
         except (AttributeError, TypeError):
-            selected_bots = sorted({item.bot_name for item in instances}, key=str.casefold)
+            all_bot_names = set()
+        all_bot_names.update(item.bot_name for item in instances)
+        selected_bot_names = set(self._selected_bot_names())
+        self.cs2_all_valuation = calculate_valuation(
+            instances, self.price_quotes, self.usd_rub,
+            selected_bots=all_bot_names, rate_is_stale=self.fx_rate_is_stale,
+        )
         self.cs2_valuation = calculate_valuation(
             instances, self.price_quotes, self.usd_rub,
-            selected_bots=selected_bots, rate_is_stale=self.fx_rate_is_stale,
+            selected_bots=selected_bot_names, rate_is_stale=self.fx_rate_is_stale,
         )
         self._update_price_summary()
 
+    @staticmethod
+    def _valuation_total_text(valuation):
+        if valuation is None:
+            return "ожидает расчёта"
+        total = valuation.selected_total_rub
+        if total is None:
+            if valuation.unknown_price_instances or valuation.awaiting_rate_instances:
+                return "цена пока неизвестна"
+            if valuation.below_threshold_instances:
+                return "нет предметов выше $0.05"
+            return "нет данных"
+        suffix = " · частичная оценка" if valuation.is_partial else ""
+        return f"₽{total:.2f}{suffix}"
+
     def _update_price_summary(self, message: str = ""):
-        valuation = self.cs2_valuation
-        if valuation is None or not hasattr(self, "price_summary"):
+        if not hasattr(self, "price_summary"):
             return
-        # The inventory screen needs one concise total per bot, not API/cache diagnostics.
-        lines = []
-        for entry in valuation.bot_totals:
-            if entry.total_rub is not None:
-                value = f"₽{entry.total_rub:.2f}"
-                if entry.unknown_price_instances or entry.awaiting_rate_instances:
-                    value += " · частично"
-            elif entry.unknown_price_instances or entry.awaiting_rate_instances:
-                value = "цена неизвестна"
-            elif entry.below_threshold_instances:
-                value = "нет учитываемых предметов"
-            else:
-                value = "нет предметов"
-            lines.append(f"{entry.bot_name}: {value}")
-        self.price_summary.setText(
-            "Стоимость предметов по ботам:\n" + ("\n".join(lines) if lines else "Нет выбранных ботов")
+        selected_names = set(self._selected_bot_names())
+        all_names = set(getattr(self.bot_selection_model, "account_names", ()))
+        all_instances = tuple(getattr(self, "cs2_all_instances", ()))
+        all_names.update(item.bot_name for item in all_instances)
+        selected_instances = [
+            item for item in all_instances if item.bot_name in selected_names
+        ]
+        selected_snapshot_count = sum(
+            1 for name in selected_names if name in self.cs2_snapshot_meta
         )
+        all_snapshot_count = sum(
+            1 for name in all_names if name in self.cs2_snapshot_meta
+        )
+        selected_total = self._valuation_total_text(self.cs2_valuation)
+        all_total = self._valuation_total_text(self.cs2_all_valuation)
+        selected_line = (
+            f"ВЫБРАНО: {len(selected_names)} из {len(all_names)} ботов · "
+            f"{len(selected_instances)} предметов · {selected_total}"
+        )
+        all_line = (
+            f"ВСЕ БОТЫ: {len(all_names)} ботов · {len(all_instances)} предметов · {all_total}"
+        )
+        coverage = (
+            f"Снимки инвентаря: выбрано {selected_snapshot_count}/{len(selected_names)}, "
+            f"всего {all_snapshot_count}/{len(all_names)} аккаунтов. "
+            "Суммы рассчитаны по сохранённым снимкам; неизвестные цены отмечены как частичная оценка."
+        )
+        self.price_summary.setText(f"{selected_line}\n{all_line}\n{coverage}")
 
     def _start_price_refresh(self, manual: bool = False):
         if (self._price_refresh_running
                 or self.game_combo.currentData() != "cs2"
-                or not self.cs2_projection
-                or not self.cs2_projection.instances):
+                or not getattr(self, "cs2_all_instances", ())):
             return
         if self.price_cache_store is None:
             try:
@@ -665,7 +708,7 @@ class GameInventoryPanel(QWidget):
             except Exception:
                 self.price_summary.setText("Кэш цен недоступен; сетевой запрос не выполнен.")
                 return
-        positions = requestable_positions(self.cs2_projection.instances)
+        positions = requestable_positions(self.cs2_all_instances)
         due = self.price_cache_store.due_positions(positions)
         eligible_cached = any(
             (quote := self.price_cache_store.get(position)) is not None
