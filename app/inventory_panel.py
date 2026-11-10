@@ -640,7 +640,7 @@ class InventoryPanel(QWidget):
             if tile.isHidden():
                 continue
             row_data = tile.data(Qt.ItemDataRole.UserRole + 2)
-            if row_data is None:
+            if row_data is None or row_data.is_tradable is not True:
                 continue
             for bot_name, asset_id in expand_inventory_instances(row_data):
                 key = (str(bot_name), str(asset_id))

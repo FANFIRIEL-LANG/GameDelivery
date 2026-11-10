@@ -350,7 +350,7 @@ def build_cs2_inventory_projection(
         )
         # Group one exact market item together, partitioning only by confirmed
         # transferability. Marketability and descriptive tags remain per asset.
-        key = (i.game_id, i.appid, i.context_id, market_identity, i.is_tradable)
+        key = (i.game_id, i.appid, i.context_id, market_identity)
         grouped[key].append(i)
     groups = []
     for key, members in sorted(grouped.items(), key=lambda pair: str(pair[0]).casefold()):

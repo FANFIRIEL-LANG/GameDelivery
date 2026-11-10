@@ -171,14 +171,14 @@ class CS2ProjectionTests(unittest.TestCase):
         items = [replace(base, asset_id=f"a{i}", is_tradable=t, is_marketable=m)
                  for i, (t, m) in enumerate(combos)]
         view = build_cs2_inventory_projection(items)
-        self.assertEqual(len(view.groups), 3)
+        self.assertEqual(len(view.groups), 1)
         self.assertEqual(
             {(i.is_tradable, i.is_marketable)
              for group in view.groups for i in group.instances},
             set(combos),
         )
-        self.assertTrue(all(len({i.is_tradable for i in group.instances}) == 1
-                            for group in view.groups))
+        self.assertEqual({i.is_tradable for i in view.groups[0].instances},
+                         {True, False, None})
 
     def test_restriction_metadata_and_same_class_assets_are_preserved(self):
         base = adapt_cs2_inventory_response(payload(), "Bot A")[0]
@@ -235,12 +235,10 @@ class CS2ProjectionTests(unittest.TestCase):
         b = replace(a, asset_id="b1", market_hash_name="AK | Blue")
         c = replace(a, asset_id="c1", is_tradable=False)
         view = build_cs2_inventory_projection([a, b, c])
-        self.assertEqual(len(view.groups), 3)
-        redline_groups = [g for g in view.groups
-                          if any(i.market_hash_name == a.market_hash_name for i in g.instances)]
-        self.assertEqual(len(redline_groups), 2)
-        self.assertEqual({next(iter(g.instances)).is_tradable for g in redline_groups},
-                         {True, False})
+        self.assertEqual(len(view.groups), 2)
+        redline = next(g for g in view.groups
+                       if any(i.market_hash_name == a.market_hash_name for i in g.instances))
+        self.assertEqual({i.is_tradable for i in redline.instances}, {True, False})
 
     def test_per_instance_deadlines_do_not_split_variant_group(self):
         base = adapt_cs2_inventory_response(payload(), "Bot A")[0]

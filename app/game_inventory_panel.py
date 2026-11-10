@@ -1012,7 +1012,20 @@ class GameInventoryPanel(QWidget):
             )).casefold()
             if query and query not in haystack:
                 continue
-            filtered.append(build_cs2_inventory_projection(members).groups[0])
+            base_group = build_cs2_inventory_projection(members).groups[0]
+            if self.view_mode.currentData() == "table":
+                filtered.append(base_group)
+            else:
+                # Card view splits one market item only by transferability.
+                for transfer_state in (True, False, None):
+                    state_members = [
+                        member for member in members
+                        if member.is_tradable is transfer_state
+                    ]
+                    if state_members:
+                        filtered.append(
+                            build_cs2_inventory_projection(state_members).groups[0]
+                        )
 
         self._cs2_rarity_by_physical_key = rarity_by_key
 
