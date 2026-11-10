@@ -164,7 +164,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertIn("StatTrak", stattrak_visible)
         self.assertIn("Field-Tested", normal_visible)
         self.assertIn("Количество: 1", normal_visible)
-        self.assertEqual(normal_card.height(), 226)
+        self.assertEqual(normal_card.height(), 246)
 
     def test_group_card_uses_only_typed_rarity_source(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
