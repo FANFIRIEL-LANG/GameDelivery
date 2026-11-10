@@ -50,31 +50,7 @@ jobs:
           if [ "$result" -eq 134 ] \
             && grep -Eq '^Ran [0-9]+ tests in ' "$RUNNER_TEMP/full-suite.log" \
             && grep -qx 'OK' "$RUNNER_TEMP/full-suite.log" \
-            && grep -q '^pure virtual method called          if [ "$result" -ne 0 ]; then
-            touch "$RUNNER_TEMP/full-suite-needs-isolation"
-          fi
-          exit "$result"
-      - name: Isolate test modules after full-suite failure or Qt shutdown crash
-        if: always()
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          if [ ! -f "$RUNNER_TEMP/full-suite-needs-isolation" ]; then
-            echo "Full suite passed without shutdown crash; isolated diagnostic is not required."
-            exit 0
-          fi
-          failures=0
-          for test_file in tests/test_*.py; do
-            test_name=$(basename "$test_file")
-            echo "::group::Isolated $test_name"
-            if ! timeout 45s python -m unittest discover -s tests -p "$test_name" -v; then
-              echo "::error::Isolated test module failed: $test_name"
-              failures=1
-            fi
-            echo "::endgroup::"
-          done
-          exit "$failures"
- "$RUNNER_TEMP/full-suite.log"; then
+            && grep -q '^pure virtual method called$' "$RUNNER_TEMP/full-suite.log"; then
             touch "$RUNNER_TEMP/full-suite-needs-isolation"
             echo "qt_shutdown_abort=134" >> "$GITHUB_OUTPUT"
             echo "::warning::All unit-test assertions passed; Python/Qt aborted during pure-virtual shutdown. Every test module will be verified in isolation."
