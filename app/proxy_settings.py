@@ -144,11 +144,11 @@ class ProxySettingsWidget(QWidget):
         self.pool_bot_name = QComboBox()
         self.assign_pool_button = QPushButton("Назначить выбранный прокси боту")
         self.assign_pool_button.clicked.connect(self.assign_selected_pool_proxy)
-        self.auto_distribute_button = QPushButton("Автораспределить по всем ботам")
+        self.auto_distribute_button = QPushButton("Распределить отмеченные прокси")
         self.auto_distribute_button.clicked.connect(self.auto_distribute_pool)
         self.audit_configs_button = QPushButton("Проверить конфиги ASF")
         self.audit_configs_button.clicked.connect(self.audit_proxy_configs)
-        self.delete_pool_button = QPushButton("Удалить прокси из списка")
+        self.delete_pool_button = QPushButton("Удалить отмеченные прокси")
         self.delete_pool_button.clicked.connect(self.delete_selected_pool_proxy)
         assignment_row.addWidget(self.pool_bot_name, 1)
         assignment_row.addWidget(self.assign_pool_button)
@@ -157,10 +157,10 @@ class ProxySettingsWidget(QWidget):
         assignment_row.addWidget(self.delete_pool_button)
         pool_root.addLayout(assignment_row)
 
-        self.pool_table = QTableWidget(0, 5)
-        self.pool_table.setHorizontalHeaderLabels(["№", "Тип", "Сервер", "Порт", "Авторизация"])
+        self.pool_table = QTableWidget(0, 6)
+        self.pool_table.setHorizontalHeaderLabels(["Выбор", "№", "Тип", "Сервер", "Порт", "Авторизация"])
         self.pool_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.pool_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.pool_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.pool_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.pool_table.horizontalHeader().setStretchLastSection(True)
         self.pool_table.itemSelectionChanged.connect(self.load_selected_pool_proxy)
@@ -215,13 +215,15 @@ class ProxySettingsWidget(QWidget):
         for index, proxy in enumerate(proxies, 1):
             row = self.pool_table.rowCount()
             self.pool_table.insertRow(row)
+            checkbox = QTableWidgetItem()
+            checkbox.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            checkbox.setCheckState(Qt.CheckState.Unchecked)
+            checkbox.setData(Qt.ItemDataRole.UserRole, str(proxy["proxy_id"]))
+            self.pool_table.setItem(row, 0, checkbox)
             values = [str(index), str(proxy["scheme"]), str(proxy["host"]), str(proxy["port"]),
                       "Да" if proxy["username"] else "Нет"]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                if column == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, str(proxy["proxy_id"]))
-                self.pool_table.setItem(row, column, item)
+            for column, value in enumerate(values, 1):
+                self.pool_table.setItem(row, column, QTableWidgetItem(value))
         self.pool_status.setText(f"Прокси в пуле: {len(proxies)}. Пароли не отображаются.")
         names = [str(p["bot_name"]) for p in self.store.list_profiles()]
         populate_bot_combo(self.pool_bot_name, names)
@@ -233,7 +235,20 @@ class ProxySettingsWidget(QWidget):
                 f"Выбран прокси №{self.pool_table.item(row, 0).text()}. Выбери бота из списка для назначения."
             )
 
+    def _selected_pool_ids(self) -> list[str]:
+        selected = []
+        for row in range(self.pool_table.rowCount()):
+            checkbox = self.pool_table.item(row, 0)
+            if checkbox is not None and checkbox.checkState() == Qt.CheckState.Checked:
+                proxy_id = str(checkbox.data(Qt.ItemDataRole.UserRole) or "")
+                if proxy_id:
+                    selected.append(proxy_id)
+        return selected
+
     def _selected_pool_id(self):
+        selected = self._selected_pool_ids()
+        if selected:
+            return selected[0]
         row = self.pool_table.currentRow()
         if row < 0 or self.pool_table.item(row, 0) is None:
             return None
@@ -393,37 +408,26 @@ class ProxySettingsWidget(QWidget):
             QMessageBox.information(self, "Проверка конфигураций ASF", summary)
 
     def auto_distribute_pool(self):
-        pool = self.store.list_pool()
+        selected_ids = set(self._selected_pool_ids())
+        pool = [p for p in self.store.list_pool() if str(p['proxy_id']) in selected_ids]
         if not pool:
-            QMessageBox.information(self, "Автораспределение", "Сначала импортируй список прокси.")
+            QMessageBox.information(self, 'Автораспределение', 'Отметь галочками прокси, которые нужно распределить.')
             return
         try:
             config_dir = self._asf_config_directory()
         except (RuntimeError, OSError) as exc:
-            QMessageBox.warning(self, "Автораспределение", str(exc))
+            QMessageBox.warning(self, 'Автораспределение', str(exc))
             return
-        ignored = {"asf", "global", "example", "examplebot"}
-        bot_files = sorted(
-            (path for path in config_dir.glob("*.json") if path.stem.casefold() not in ignored),
-            key=lambda path: path.stem.casefold(),
-        )
+        ignored = {'asf', 'global', 'example', 'examplebot'}
+        bot_files = sorted((path for path in config_dir.glob('*.json') if path.stem.casefold() not in ignored), key=lambda path: path.stem.casefold())
         if not bot_files:
-            QMessageBox.information(
-                self, "Автораспределение",
-                "В папке config ASF не найдены конфигурации ботов. Ничего не изменено."
-            )
+            QMessageBox.information(self, 'Автораспределение', 'В папке config ASF не найдены конфигурации ботов. Ничего не изменено.')
             return
-        existing = {str(p["bot_name"]).casefold() for p in self.store.list_profiles()}
+        existing = {str(p['bot_name']).casefold() for p in self.store.list_profiles()}
         overwrite_count = sum(path.stem.casefold() in existing for path in bot_files)
-        answer = QMessageBox.question(
-            self, "Автораспределение прокси",
-            f"Распределить {len(pool)} прокси по кругу между {len(bot_files)} конфигурациями ASF, "
-            f"включая выключенные боты? Существующих назначений: {overwrite_count}. "
-            "Прокси будут записаны в JSON-конфигурации до запуска ботов. Для каждого файла "
-            "создаётся резервная копия .gamedelivery.bak. Сами боты запускаться не будут.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+        answer = QMessageBox.question(self, 'Автораспределение прокси',
+            f'Распределить {len(pool)} отмеченных прокси по кругу между {len(bot_files)} конфигурациями ASF? Существующих назначений: {overwrite_count}. Для каждого файла создаётся резервная копия. Боты запускаться не будут.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if answer != QMessageBox.StandardButton.Yes:
             return
         applied, failed = [], []
@@ -431,7 +435,7 @@ class ProxySettingsWidget(QWidget):
             proxy_record = pool[index % len(pool)]
             bot_name = config_path.stem
             try:
-                proxy = self._pool_proxy_object(str(proxy_record["proxy_id"]))
+                proxy = self._pool_proxy_object(str(proxy_record['proxy_id']))
                 self.store.save(bot_name, proxy)
                 self._write_proxy_to_bot_config(config_path, proxy)
                 applied.append(bot_name)
@@ -440,42 +444,33 @@ class ProxySettingsWidget(QWidget):
         self.refresh()
         self.refresh_pool()
         if failed:
-            self.pool_status.setText(
-                f"Прокси применены до запуска к {len(applied)} из {len(bot_files)} ботов. "
-                "Ботов не запускай, пока не исправишь ошибки для: "
-                + ", ".join(failed[:8]) + ("…" if len(failed) > 8 else "")
-            )
-            QMessageBox.warning(
-                self, "Автораспределение выполнено не полностью",
-                self.pool_status.text()
-            )
+            self.pool_status.setText(f'Прокси применены к {len(applied)} из {len(bot_files)} ботов. Ошибок: {len(failed)}. Проверь конфиги перед запуском.')
+            QMessageBox.warning(self, 'Автораспределение выполнено не полностью', self.pool_status.text())
         else:
-            self.pool_status.setText(
-                f"Готово: прокси записаны в конфигурации {len(applied)} ботов до запуска. "
-                "Боты не запускались. Резервные копии созданы."
-            )
+            self.pool_status.setText(f'Готово: {len(pool)} отмеченных прокси распределены между {len(applied)} ботами. Боты не запускались; резервные копии созданы.')
 
     def delete_selected_pool_proxy(self):
-        proxy_id = self._selected_pool_id()
-        if not proxy_id:
-            QMessageBox.information(self, "Список прокси", "Выбери прокси в таблице.")
+        proxy_ids = self._selected_pool_ids()
+        if not proxy_ids:
+            proxy_id = self._selected_pool_id()
+            proxy_ids = [proxy_id] if proxy_id else []
+        if not proxy_ids:
+            QMessageBox.information(self, 'Список прокси', 'Отметь прокси галочками для удаления.')
             return
-        answer = QMessageBox.question(
-            self, "Удаление прокси",
-            "Удалить выбранный прокси из пула? Уже сохранённые назначения ботов останутся.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+        answer = QMessageBox.question(self, 'Удаление прокси',
+            f'Удалить из пула отмеченные прокси: {len(proxy_ids)} шт.? Уже сохранённые назначения ботов останутся.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if answer != QMessageBox.StandardButton.Yes:
             return
-        try:
-            self.store.delete_pool_proxy(proxy_id)
-        except (RuntimeError, OSError, KeyError) as exc:
-            QMessageBox.warning(self, "Удаление прокси", str(exc))
-            return
+        deleted, failed = 0, []
+        for proxy_id in proxy_ids:
+            try:
+                self.store.delete_pool_proxy(proxy_id)
+                deleted += 1
+            except (RuntimeError, OSError, KeyError):
+                failed.append(proxy_id)
         self.refresh_pool()
-        self.pool_status.setText("Прокси удалён из пула. Назначения ботов не изменились.")
-
+        self.pool_status.setText(f'Удалено прокси: {deleted}. Ошибок: {len(failed)}. Назначения ботов не изменялись.')
     def refresh(self):
         self.table.setRowCount(0)
         profiles = self.store.list_profiles()
