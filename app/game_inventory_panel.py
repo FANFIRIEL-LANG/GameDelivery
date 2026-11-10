@@ -926,10 +926,6 @@ class GameInventoryPanel(QWidget):
             self._render_cards([(group, group.instances, "cs2") for group in filtered])
 
         instance_count = sum(group.instance_count for group in filtered)
-        known_amount = sum(group.known_amount_sum for group in filtered)
-        unknown_amount = sum(group.unknown_amount_instances for group in filtered)
-        amount_text = (str(known_amount) if filtered and not unknown_amount else
-                       f"неизвестно (известно: {known_amount}; неизвестно у экземпляров: {unknown_amount})")
         self.status.setText(
             f"Показано групп: {len(filtered)} из {len(source_groups)} · "
             f"предметов: {instance_count}."
