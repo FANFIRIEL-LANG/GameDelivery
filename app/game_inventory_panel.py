@@ -362,7 +362,7 @@ class GameInventoryPanel(QWidget):
         self.price_summary.setVisible(is_cs2)
         self.price_refresh_button.setVisible(is_cs2)
         self.price_missing_button.setVisible(is_cs2)
-        self.grouping_mode.setVisible(not is_cs2)
+        self.grouping_mode.setVisible(True)
         self.load_saved()
 
     def _game_changed(self, *_):
@@ -371,12 +371,10 @@ class GameInventoryPanel(QWidget):
         self.price_summary.setVisible(is_cs2)
         self.price_refresh_button.setVisible(is_cs2)
         self.price_missing_button.setVisible(is_cs2)
-        self.grouping_mode.setVisible(not is_cs2)
-        separate_index = self.grouping_mode.findData("separate")
-        if separate_index >= 0:
-            self.grouping_mode.setItemText(
-                separate_index, "Раздельно по Asset" if is_cs2 else "Раздельно по ботам"
-            )
+        self.grouping_mode.setVisible(True)
+        self.grouping_mode.setItemText(
+            self.grouping_mode.findData("separate"), "Раздельно по ботам"
+        )
         if not is_cs2:
             self.item_filter.setCurrentIndex(0)
         self.load_saved()
@@ -1011,9 +1009,19 @@ class GameInventoryPanel(QWidget):
         items_by_key = {
             (item.game_id, item.bot_name, item.asset_id): item for item in self.items
         }
-        # CS2 always groups identical market items across selected bots.
-        # The projection splits a market item only by transferability.
-        source_groups = projection.groups
+        # Shared mode groups identical market items across selected bots.
+        # Separate mode builds independent projections per bot while retaining
+        # aggregation of identical physical items within each bot.
+        if self.grouping_mode.currentData() == "separate":
+            source_groups = [
+                group
+                for bot_name in selected_bots
+                for group in build_cs2_inventory_projection([
+                    item for item in projection.instances if item.bot_name == bot_name
+                ]).groups
+            ]
+        else:
+            source_groups = projection.groups
 
         filtered = []
         rarity_by_key = {}
