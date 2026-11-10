@@ -134,12 +134,12 @@ class CS2PricePanelTests(unittest.TestCase):
             ),
         ]
         panel = self.panel_with_items(items)
+        panel.show()
+        self.app.processEvents()
         panel.render()
         card = panel.cards_layout.itemAt(0).widget()
         self.assertTrue(card.selectable)
         spy = QSignalSpy(panel.trade_url_requested)
-        panel.show()
-        self.app.processEvents()
 
         QTest.mouseClick(card, Qt.MouseButton.LeftButton)
 
