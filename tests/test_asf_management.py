@@ -448,7 +448,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
             config_dir = home / "config"
             config_dir.mkdir()
             global_config_path = config_dir / "ASF.json"
-            global_config = {"IPC": True, "LoginLimiterDelay": 0, "WebLimiterDelay": 300}
+            global_config = {"IPC": True, "LoginLimiterDelay": 7, "WebLimiterDelay": 300}
             global_config_path.write_text(json.dumps(global_config), encoding="utf-8")
             process = popen.return_value
             process.poll.return_value = None
@@ -461,7 +461,10 @@ class ASFManagementWidgetTests(unittest.TestCase):
             self.assertEqual(args[0], [str(executable), "--process-required"])
             self.assertEqual(kwargs["cwd"], str(home))
             self.assertTrue((home / ".gamedelivery" / "asf-supervisor.log").is_file())
-            self.assertEqual(json.loads(global_config_path.read_text(encoding="utf-8")), global_config)
+            written_config = json.loads(global_config_path.read_text(encoding="utf-8"))
+            self.assertEqual(written_config["LoginLimiterDelay"], 0)
+            self.assertEqual(written_config["WebLimiterDelay"], 300)
+            self.assertTrue(any(config_dir.glob("ASF.json.gamedelivery-backup-*")))
             self.assertIn("GameDelivery запустил ASF", self.widget.status.text())
             self.widget._close_asf_log()
             self.widget._asf_process = None
