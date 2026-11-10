@@ -115,6 +115,31 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertIn("Цена: ₽90.00/шт. · всего: ₽180.00", visible)
         self.assertNotIn("есть устаревшие данные", visible)
 
+    def test_card_price_text_is_compact_and_hides_stale_marker(self):
+        from app.game_inventory_cards import compact_cs2_card_price_text
+
+        self.assertEqual(
+            compact_cs2_card_price_text(
+                "Цена единицы: ₽152.18 · Стоимость группы: ₽152.18 · есть устаревшие данные",
+                1,
+            ),
+            "Цена: ₽152.18",
+        )
+        self.assertEqual(
+            compact_cs2_card_price_text(
+                "Цена единицы: ₽90.00 · Стоимость группы: ₽180.00 · есть устаревшие данные",
+                2,
+            ),
+            "Цена: ₽90.00/шт. · всего: ₽180.00",
+        )
+        self.assertEqual(
+            compact_cs2_card_price_text(
+                "Цена: $0.03 · Не учитывается в оценке — цена не выше $0.05",
+                1,
+            ),
+            "Цена: $0.03 (не учитывается)",
+        )
+
     def test_below_threshold_card_keeps_usd_and_omits_ruble_price(self):
         item = CS2InventoryInstance(
             "cs2", 730, 2, "Bot A", "asset-1", "class", "0", 1,
