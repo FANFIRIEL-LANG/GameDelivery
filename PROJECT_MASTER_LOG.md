@@ -2613,7 +2613,7 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 ### CI результаты по точным SHA
 
 - Для `abe5fd0`: compileall и предварительные trade test groups прошли; полный suite имел один test error от старого обращения `widget.password`; Windows build run `42768890978` прошёл, но не является final artifact после дальнейшего test fix.
-- Для `7b00dd2`: полный suite показал `483 tests` / `OK`, затем Python/Qt process завершился exit 139 при shutdown. Все тестовые модули были запущены отдельно; fallback завершился с ошибкой из-за прежнего assertion в `test_openskin_proxy.py`? **Перепроверить лог run `42769252384` перед финализацией этой строки; не делать вывод до повторного чтения полного лога.** Windows build run `42769252005` прошёл (compile, ACL test, PyInstaller и smoke — проверить точные step results/artifact перед выдачей).
+- Для `7b00dd2`: полный suite показал `483 tests` / `OK`, затем Python/Qt process завершился exit 139 при shutdown. Изолированный fallback завершился SUCCESS: каждый `tests/test_*.py` модуль завершился exit 0. Это подтверждает прохождение тестовых assertions в отдельном процессе, но не устраняет/не объясняет общий Qt shutdown segfault. Windows build run `42769252005` завершился SUCCESS; compile, ACL test, PyInstaller, packaged executable smoke и upload steps были успешны (этот artifact не является final после следующего изменения transport diagnostics).
 - Для текущего HEAD `434f724` запущены GitHub Actions:
   - Tests: run `42769444424`.
   - Windows package: run `42769444129`.
