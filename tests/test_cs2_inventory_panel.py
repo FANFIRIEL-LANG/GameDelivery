@@ -148,7 +148,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         labels = [label.text() for label in card.findChildren(QLabel)]
         rendered = " ".join(labels)
         self.assertIn("Количество: 2", rendered)
-        self.assertIn("Цена недоступна", rendered)
+        self.assertIn("Цена неизвестна", rendered)
         self.assertNotIn("Цена: 0", rendered)
         self.assertNotIn("Передаваемый", rendered)
         self.assertIn("#d32ce6", card.styleSheet())
