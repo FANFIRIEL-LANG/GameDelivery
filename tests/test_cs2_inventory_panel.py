@@ -292,6 +292,34 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertIs(card.group.instances[0].is_tradable, False)
         self.assertIn("обновите снимок ASF", card.toolTip())
 
+    def test_price_summary_shows_only_per_bot_totals(self):
+        from decimal import Decimal
+        from types import SimpleNamespace
+
+        panel = self.bare_panel()
+        panel.price_summary = QLabel()
+        panel.cs2_valuation = SimpleNamespace(bot_totals=(
+            SimpleNamespace(
+                bot_name="Bot A", total_rub=Decimal("152.18"),
+                unknown_price_instances=0, awaiting_rate_instances=0,
+                below_threshold_instances=0,
+            ),
+            SimpleNamespace(
+                bot_name="Bot B", total_rub=None,
+                unknown_price_instances=2, awaiting_rate_instances=0,
+                below_threshold_instances=0,
+            ),
+        ))
+
+        panel._update_price_summary()
+
+        summary = panel.price_summary.text()
+        self.assertIn("Bot A: ₽152.18", summary)
+        self.assertIn("Bot B: цена неизвестна", summary)
+        self.assertNotIn("OpenSkin Steam updated", summary)
+        self.assertNotIn("USD/RUB", summary)
+        self.assertNotIn("ошибки API", summary)
+
     def test_existing_panel_render_uses_group_cards_for_cs2_projection(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
 
