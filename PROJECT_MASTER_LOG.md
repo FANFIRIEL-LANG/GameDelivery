@@ -2715,5 +2715,9 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 
 ### Windows package gate и следующий шаг
 
-- Windows package workflow run `42773375211` строится на exact SHA `5df080c1d86114cf535b7ef1c11b79dcf984d604`. На момент этой записи dependency install, compile и Windows trade-secret ACL steps SUCCESS; PyInstaller/remaining smoke/upload steps ещё выполняются. Artifact пока не подтверждён.
+- Windows package workflow run `42773375211` на exact SHA `5df080c1d86114cf535b7ef1c11b79dcf984d604`: SUCCESS. Dependency install, compile, Windows trade-secret ACL, PyInstaller, packaged `GameDelivery.exe --self-test`, build-info and artifact upload steps — SUCCESS.
+- Final artifact: `GameDelivery-Windows-x64`, ID `13743405024`, size `55,012,719` bytes; GitHub digest `sha256:c74ed46229349bc6ec23245edc5993935f4c2e807ef434c550be8e6610f9c34a`. Expires `2026-12-10`.
+- Downloaded artifact ZIP inspected locally: archive integrity check SUCCESS; root contains `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`. `BUILD_INFO.txt` identifies exact build commit `5df080c1d86114cf535b7ef1c11b79dcf984d604`, bundled Python runtime 3.12 and onedir packaging. The archive SHA-256 matches the GitHub digest.
+- CI ran the packaged executable smoke test successfully. The Linux-side archive inspection did not itself execute the Windows EXE.
+- User download/live check can now be offered once: use this artifact only, perform proxy probe and OpenSkin API probe once, and share safe traceback/category/status without proxy line or password. This still does NOT establish live route success; C.6.3.6 remains OPEN.
 - Не предлагать пользователю старую сборку или повторение предыдущей source-проверки. Выдать одну новую сборку `GameDelivery-Windows-x64` только после успешных packaged EXE smoke и artifact upload; в инструкции — выполнить обновлённую proxy check и OpenSkin API check один раз, затем передать безопасный traceback/category/status без proxy string и без пароля.
