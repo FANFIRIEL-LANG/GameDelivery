@@ -66,6 +66,16 @@ class ProxySettingsUITests(unittest.TestCase):
         self.widget.deleteLater()
         self.app.processEvents()
 
+    def _set_checked_proxy_rows(self, rows=None):
+        from PySide6.QtCore import Qt
+
+        allowed = set(range(self.widget.pool_table.rowCount())) if rows is None else set(rows)
+        for row in range(self.widget.pool_table.rowCount()):
+            item = self.widget.pool_table.item(row, 0)
+            item.setCheckState(
+                Qt.CheckState.Checked if row in allowed else Qt.CheckState.Unchecked
+            )
+
     def test_import_proxy_txt_populates_pool_without_showing_passwords(self):
         txt = Path(self.temp_dir.name) / "proxies.txt"
         txt.write_text(
@@ -247,6 +257,7 @@ class ProxySettingsUITests(unittest.TestCase):
             SteamProxy("socks5", "one.example", 1080, "proxy-user", "proxy-pass"),
             SteamProxy("http", "two.example", 8080),
         ])
+        self._set_checked_proxy_rows()
         settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
         settings.setValue("asf/config_path", str(config_dir))
         settings.sync()
@@ -271,6 +282,22 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertEqual(second["WebProxy"], "http://two.example:8080")
         self.assertIn("до запуска", self.widget.pool_status.text().casefold())
 
+    def test_delete_selected_pool_proxies_deletes_only_checked_rows(self):
+        from PySide6.QtCore import Qt
+
+        ids = self.widget.store.add_pool_proxies([
+            SteamProxy('http', 'one.example', 8080),
+            SteamProxy('http', 'two.example', 8081),
+            SteamProxy('http', 'three.example', 8082),
+        ])
+        self.widget.refresh_pool()
+        self._set_checked_proxy_rows([0, 2])
+        with patch('app.proxy_settings.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes):
+            self.widget.delete_selected_pool_proxy()
+        remaining = self.widget.store.list_pool()
+        self.assertEqual([item['host'] for item in remaining], ['two.example'])
+        self.assertIn('Удалено прокси: 2', self.widget.pool_status.text())
+
     def test_auto_distribute_pool_rotates_through_configured_bots_and_preserves_credentials(self):
         import json
         from PySide6.QtCore import QSettings
@@ -284,6 +311,7 @@ class ProxySettingsUITests(unittest.TestCase):
             SteamProxy("http", "two.example", 8080),
         ]
         self.widget.store.add_pool_proxies(proxies)
+        self._set_checked_proxy_rows([0])
         settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
         settings.setValue("asf/config_path", str(config_dir))
         settings.sync()
@@ -301,12 +329,12 @@ class ProxySettingsUITests(unittest.TestCase):
         profiles = {item["bot_name"]: item for item in self.widget.store.list_profiles()}
         self.assertEqual(
             {name: profiles[name]["host"] for name in ("bot-a", "bot-b", "bot-c")},
-            {"bot-a": "one.example", "bot-b": "two.example", "bot-c": "one.example"},
+            {"bot-a": "one.example", "bot-b": "one.example", "bot-c": "one.example"},
         )
         self.assertEqual(self.widget.store.get_password("bot-a"), "pass-one")
         self.assertIsNone(self.widget.store.get_password("bot-b"))
         self.assertEqual(self.widget.store.get_password("bot-c"), "pass-one")
-        for name, host in (("bot-a", "one.example"), ("bot-b", "two.example"), ("bot-c", "one.example")):
+        for name, host in (("bot-a", "one.example"), ("bot-b", "one.example"), ("bot-c", "one.example")):
             payload = json.loads((config_dir / f"{name}.json").read_text(encoding="utf-8"))
             self.assertFalse(payload["Enabled"])
             self.assertIn(host, payload["WebProxy"])
