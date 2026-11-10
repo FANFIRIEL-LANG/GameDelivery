@@ -707,7 +707,9 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel = self.bare_panel()
         panel.password.setText("in-memory-default")
         with patch.dict(os.environ, {"GAMEDELIVERY_TEST_ASF_IPC_URL": ""}, clear=False), \
+                patch("app.game_inventory_panel.QSettings") as settings_factory, \
                 patch("app.game_inventory_panel.ASFClient") as client_factory:
+            settings_factory.return_value.value.return_value = ""
             panel._create_asf_client()
 
         client_factory.assert_called_once_with(
