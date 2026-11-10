@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from html import escape
 import re
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QVBoxLayout,
@@ -60,18 +60,21 @@ def format_restriction_countdown(release_at: datetime | None, *, now: datetime |
 
 
 class GameItemCard(QFrame):
-    def __init__(self, item, parent=None, *, instances=None):
+    selection_changed = Signal(bool)
+
+    def __init__(self, item, parent=None, *, instances=None, selected: bool = False):
         super().__init__(parent)
         self.item = item
         self.instances = tuple(instances or (item,))
+        self.selectable = all(instance.is_tradable is True for instance in self.instances)
+        self._selected = bool(selected and self.selectable)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if self.selectable else Qt.CursorShape.ForbiddenCursor)
         self.setObjectName("gameItemCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         color = rarity_color(item.rarity)
-        self.setStyleSheet(
-            f"QFrame#gameItemCard {{ background: #202631; border: 2px solid {color}; "
-            "border-radius: 10px; }"
-            "QLabel { color: #e8edf5; border: none; background: transparent; }"
-        )
+        self._rarity_color = color
+        self._base_background = "#202631"
+        self._apply_selection_style()
         self.setFixedSize(184, 252)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 9, 10, 9)
@@ -105,6 +108,34 @@ class GameItemCard(QFrame):
         price.setObjectName("muted")
         layout.addWidget(price)
         self.setToolTip(self._tooltip())
+        for label in self.findChildren(QLabel):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def _apply_selection_style(self):
+        background = "#285b45" if self._selected else self._base_background
+        border = "#4ade80" if self._selected else self._rarity_color
+        width = 3 if self._selected else 2
+        self.setStyleSheet(
+            f"QFrame#gameItemCard {{ background: {background}; border: {width}px solid {border}; "
+            "border-radius: 10px; }"
+            "QLabel { color: #e8edf5; border: none; background: transparent; }"
+        )
+
+    def set_selected(self, selected: bool, *, emit: bool = False):
+        selected = bool(selected and self.selectable)
+        if selected == self._selected:
+            return
+        self._selected = selected
+        self._apply_selection_style()
+        if emit:
+            self.selection_changed.emit(self._selected)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.selectable:
+            self.set_selected(not self._selected, emit=True)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def _tooltip(self) -> str:
         item = self.item
@@ -195,14 +226,25 @@ def compact_cs2_card_price_text(price_text: str, instance_count: int = 1) -> str
 
 
 class CS2InventoryGroupCard(QFrame):
-    """Compact CS2 inventory card with status tint and a user-facing item-only tooltip."""
+    """Compact selectable CS2 inventory card with tradability and rarity cues."""
+
+    selection_changed = Signal(bool)
 
     def __init__(self, group, parent=None, *, rarity: str = "",
-                 price_text: str = "Цена недоступна", show_price: bool = True):
+                 price_text: str = "Цена недоступна", show_price: bool = True,
+                 selected: bool = False):
         super().__init__(parent)
         first = group.instances[0]
         color = rarity_color(rarity or first.rarity)
         self.group = group
+        self.selectable = bool(group.instances) and all(
+            item.is_tradable is True for item in group.instances
+        )
+        self._selected = bool(selected and self.selectable)
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor if self.selectable
+            else Qt.CursorShape.ForbiddenCursor
+        )
         self.setObjectName("gameItemCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
@@ -220,11 +262,9 @@ class CS2InventoryGroupCard(QFrame):
         else:
             status_bg = "#29332f"
 
-        self.setStyleSheet(
-            f"QFrame#gameItemCard {{ background: {status_bg}; border: 2px solid {color}; "
-            "border-radius: 10px; }"
-            "QLabel { color: #e8edf5; border: none; background: transparent; }"
-        )
+        self._rarity_color = color
+        self._status_background = status_bg
+        self._apply_selection_style()
         self.setFixedSize(184, 220 if show_price else 194)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(7, 6, 7, 6)
@@ -277,6 +317,34 @@ class CS2InventoryGroupCard(QFrame):
             price.setStyleSheet("font-size: 8pt;")
             layout.addWidget(price)
         self.setToolTip(self._tooltip_text())
+        for label in self.findChildren(QLabel):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def _apply_selection_style(self):
+        background = "#285b45" if self._selected else self._status_background
+        border = "#4ade80" if self._selected else self._rarity_color
+        width = 3 if self._selected else 2
+        self.setStyleSheet(
+            f"QFrame#gameItemCard {{ background: {background}; border: {width}px solid {border}; "
+            "border-radius: 10px; }"
+            "QLabel { color: #e8edf5; border: none; background: transparent; }"
+        )
+
+    def set_selected(self, selected: bool, *, emit: bool = False):
+        selected = bool(selected and self.selectable)
+        if selected == self._selected:
+            return
+        self._selected = selected
+        self._apply_selection_style()
+        if emit:
+            self.selection_changed.emit(self._selected)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.selectable:
+            self.set_selected(not self._selected, emit=True)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def _tooltip_text(self):
         first = self.group.instances[0]
