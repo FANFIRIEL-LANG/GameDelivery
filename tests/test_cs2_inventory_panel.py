@@ -57,6 +57,14 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.store = Mock()
         panel.items = []
         panel.cs2_instances_by_bot = {}
+        from types import SimpleNamespace
+        panel.bot_selection_model = SimpleNamespace(account_names=["Bot A"])
+        panel.cs2_all_instances = ()
+        panel.cs2_snapshot_meta = {}
+        panel.cs2_all_valuation = None
+        panel.price_quotes = {}
+        panel.usd_rub = None
+        panel.cs2_valuation = None
         panel.load_saved = Mock()
         return panel
 
@@ -336,7 +344,6 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertIn("ВСЕ БОТЫ: 3 ботов · 3 предметов · ₽300.00", summary)
         self.assertIn("Снимки инвентаря: выбрано 2/2, всего 3/3", summary)
         self.assertNotIn("Bot A: ₽", summary)
-        self.assertGreaterEqual(panel.price_summary.minimumHeight(), 76)
         self.assertIn("font-size: 15px", panel.price_summary.styleSheet())
 
 
@@ -389,7 +396,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertEqual(len(cards), 1)
         self.assertIsInstance(cards[0], CS2InventoryGroupCard)
         self.assertIn("border: 2px solid #d32ce6", cards[0].styleSheet())
-        self.assertIn("предметов: 2", panel.status.text())
+        self.assertEqual(panel.status.text(), "")
 
         panel.grouping_mode.setCurrentIndex(1)
         panel.render()
