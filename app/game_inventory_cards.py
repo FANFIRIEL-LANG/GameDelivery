@@ -150,18 +150,14 @@ class GameItemCard(QFrame):
 
 
 class CS2InventoryGroupCard(QFrame):
-    """Compact CS2 inventory card; operational details remain available in its tooltip."""
+    """Compact CS2 inventory card with a user-facing item-only tooltip."""
 
     def __init__(self, group, parent=None, *, rarity: str = "",
                  price_text: str = "Цена недоступна"):
         super().__init__(parent)
-        from games.cs2.inventory_view import RestrictionStatus, RestrictionType
-
-        self.group = group
-        self._restriction_status = RestrictionStatus
-        self._restriction_type = RestrictionType
         first = group.instances[0]
         color = rarity_color(rarity or first.rarity)
+        self.group = group
         self.setObjectName("gameItemCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet(
@@ -213,117 +209,21 @@ class CS2InventoryGroupCard(QFrame):
         price.setMaximumHeight(42)
         price.setStyleSheet("font-size: 8pt;")
         layout.addWidget(price)
+        self.setToolTip(self._tooltip_text())
 
-        self._refresh_status()
-        if self._has_countdown():
-            self._timer = QTimer(self)
-            self._timer.setInterval(60_000)
-            self._timer.timeout.connect(self._refresh_status)
-            self._timer.start()
-
-    @staticmethod
-    def _known(value):
-        return "Да" if value is True else "Нет" if value is False else "Неизвестно"
-
-    def _transfer_counts(self):
-        counts = {True: 0, False: 0, None: 0}
-        for item in self.group.instances:
-            counts[item.is_tradable] += 1
-        return counts
-
-    def _has_countdown(self):
-        return any(
-            item.is_tradable is False
-            and item.restriction_type not in {
-                self._restriction_type.NONE,
-                self._restriction_type.PERMANENTLY_NON_TRADABLE,
-            }
-            and isinstance(item.tradable_after, datetime)
-            and item.tradable_after.tzinfo is not None
-            and item.tradable_after.utcoffset() is not None
-            for item in self.group.instances
-        )
-
-    def _deadline_text(self, now=None):
-        restricted = [item for item in self.group.instances if item.is_tradable is False]
-        if not restricted:
-            return ""
-        permanent = [item for item in restricted
-                     if item.restriction_type is self._restriction_type.PERMANENTLY_NON_TRADABLE]
-        timed = [item.tradable_after for item in restricted
-                 if item.restriction_type not in {
-                     self._restriction_type.NONE,
-                     self._restriction_type.PERMANENTLY_NON_TRADABLE,
-                 }
-                 and isinstance(item.tradable_after, datetime)
-                 and item.tradable_after.tzinfo is not None
-                 and item.tradable_after.utcoffset() is not None]
-        unknown = len(restricted) - len(permanent) - len(timed)
-        parts = []
-        if timed:
-            release = min(timed, key=lambda value: value.astimezone(timezone.utc))
-            parts.append(f"Ближайший срок: {format_restriction_countdown(release, now=now)}")
-        if unknown:
-            parts.append("Срок неизвестен" + (f": {unknown}" if unknown > 1 else ""))
-        if permanent:
-            parts.append(f"Постоянно непередаваемые: {len(permanent)}")
-        return " · ".join(parts)
-
-    def _tooltip_text(self, now=None):
+    def _tooltip_text(self):
         first = self.group.instances[0]
-        amount_summary = (
-            str(self.group.total_amount) if self.group.total_amount is not None else
-            f"Неизвестно (известно: {self.group.known_amount_sum}; "
-            f"неизвестно у экземпляров: {self.group.unknown_amount_instances})"
-        )
-        type_names = {
-            self._restriction_type.NONE: "Нет",
-            self._restriction_type.MARKET_PURCHASE_COOLDOWN: "Период после покупки на маркете",
-            self._restriction_type.TRADE_PROTECTION: "Защита обмена",
-            self._restriction_type.PERMANENTLY_NON_TRADABLE: "Постоянно непередаваемый",
-            self._restriction_type.UNKNOWN: "Неизвестно",
-        }
-        status_names = {
-            self._restriction_status.AVAILABLE: "Доступен",
-            self._restriction_status.RESTRICTED: "Ограничен",
-            self._restriction_status.UNKNOWN: "Неизвестно",
-        }
-        lines = [
-            first.name or "Название неизвестно",
-            f"Качество / износ: {first.exterior or first.quality or 'Неизвестно'}",
-            f"Тип: {first.item_type or 'Неизвестно'}",
-            f"Market hash: {first.market_hash_name or 'Неизвестно'}",
-            f"Контекст: {first.appid if first.appid is not None else 'Неизвестно'}/"
-            f"{first.context_id if first.context_id is not None else 'Неизвестно'}",
-            f"Редкость: {first.rarity or 'Неизвестно'}",
-            f"StatTrak: {stattrak_label(first)}",
-            f"Характеристики: {', '.join(first.tags) or 'Неизвестно'}",
-            f"Сумма ASF amount: {amount_summary}",
-            "Физические экземпляры:",
-        ]
-        for item in self.group.instances:
-            release = (
-                "Постоянно непередаваемый"
-                if item.restriction_type is self._restriction_type.PERMANENTLY_NON_TRADABLE
-                else format_restriction_countdown(item.tradable_after, now=now)
-                if item.is_tradable is False
-                and item.restriction_type is not self._restriction_type.NONE else "Не указано"
-            )
-            lines.extend((
-                f"{item.bot_name} · asset {item.asset_id} · class {item.class_id} · instance {item.instance_id}",
-                f"  ASF amount: {item.amount if item.amount is not None else 'Неизвестно'}",
-                f"  Передаваемый: {self._known(item.is_tradable)} · Можно продать: {self._known(item.is_marketable)}",
-                f"  Ограничение: {type_names[item.restriction_type]} · {status_names[item.restriction_status]}",
-                f"  Источник ограничения: {item.restriction_source or 'Неизвестно'}",
-                f"  market_tradable_restriction: {item.market_tradable_restriction if item.market_tradable_restriction is not None else 'Неизвестно'}",
-                f"  market_marketable_restriction: {item.market_marketable_restriction if item.market_marketable_restriction is not None else 'Неизвестно'}",
-                f"  Снятие ограничения: {release}",
-            ))
+        lines = [first.name or "Название неизвестно"]
+        quality = first.exterior or first.quality
+        if quality:
+            lines.append(f"Качество / износ: {quality}")
+        if first.rarity:
+            lines.append(f"Редкость: {first.rarity}")
+        if stattrak_label(first) == "Да":
+            lines.append("StatTrak")
+        if first.tags:
+            lines.append(f"Характеристики: {', '.join(first.tags)}")
         return "\n".join(lines)
-
-    def _refresh_status(self, now=None):
-        # Keep detailed delivery/restriction diagnostics available on hover only.
-        self.setToolTip(self._tooltip_text(now))
 
     def set_image(self, pixmap: QPixmap):
         self.image.setText("")
