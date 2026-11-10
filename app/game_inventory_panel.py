@@ -635,60 +635,23 @@ class GameInventoryPanel(QWidget):
         valuation = self.cs2_valuation
         if valuation is None or not hasattr(self, "price_summary"):
             return
-        if valuation.selected_total_rub is not None:
-            total = f"₽{valuation.selected_total_rub:.2f}"
-        elif valuation.unknown_price_instances:
-            total = "Цена в ₽ недоступна; итог неполный"
-        elif valuation.below_threshold_instances:
-            total = "нет предметов, учитываемых в оценке"
-        else:
-            total = "нет предметов для оценки"
-        if valuation.is_partial and valuation.selected_total_rub is not None:
-            total += " · частичный итог"
-        bot_values = []
+        # The inventory screen needs one concise total per bot, not API/cache diagnostics.
+        lines = []
         for entry in valuation.bot_totals:
             if entry.total_rub is not None:
                 value = f"₽{entry.total_rub:.2f}"
-            elif entry.unknown_price_instances:
-                value = "цена в ₽ недоступна"
+                if entry.unknown_price_instances or entry.awaiting_rate_instances:
+                    value += " · частично"
+            elif entry.unknown_price_instances or entry.awaiting_rate_instances:
+                value = "цена неизвестна"
             elif entry.below_threshold_instances:
                 value = "нет учитываемых предметов"
             else:
-                value = "нет предметов для оценки"
-            bot_values.append(f"{entry.bot_name}: {value}")
-        bots = " · ".join(bot_values) or "нет выбранных ботов"
-        lines = [
-            f"Оценка выбранных ботов: {total}",
-            "По ботам: " + bots,
-            (f"С ценой и курсом: {valuation.priced_instances} · "
-             f"не выше $0.05: {valuation.below_threshold_instances} · "
-             f"цена неизвестна: {valuation.unknown_price_instances} · "
-             f"неподдерживаемые варианты: {valuation.unsupported_instances} · "
-             f"ошибки API: {valuation.error_price_instances} · "
-             f"ждут курса: {valuation.awaiting_rate_instances} · "
-             f"устаревшие цены/курс: {valuation.stale_price_instances}"),
-        ]
-        price_quotes = getattr(self, "price_quotes", {})
-        source_dates = [quote.source_updated_at for quote in price_quotes.values()
-                        if quote.source_updated_at]
-        fetched_dates = [quote.fetched_at for quote in price_quotes.values()
-                         if quote.fetched_at]
-        lines.append(
-            "OpenSkin Steam updated: " + (max(source_dates) if source_dates else "неизвестно")
-            + " · получено приложением: " + (max(fetched_dates) if fetched_dates else "неизвестно")
+                value = "нет предметов"
+            lines.append(f"{entry.bot_name}: {value}")
+        self.price_summary.setText(
+            "Стоимость предметов по ботам:\n" + ("\n".join(lines) if lines else "Нет выбранных ботов")
         )
-        rate_text = (
-            f"USD/RUB: дата источника {getattr(self, 'fx_rate_source_date', None) or 'неизвестно'} · "
-            f"получено {getattr(self, 'fx_rate_fetched_at', None) or 'неизвестно'}"
-        )
-        if getattr(self, "fx_rate_is_stale", False):
-            rate_text += " · курс устарел"
-        lines.append(rate_text)
-        if message:
-            lines.append(message)
-        elif getattr(self, "_price_refresh_message", ""):
-            lines.append(self._price_refresh_message)
-        self.price_summary.setText("\n".join(lines))
 
     def _start_price_refresh(self, manual: bool = False):
         if (self._price_refresh_running
@@ -969,7 +932,7 @@ class GameInventoryPanel(QWidget):
                        f"неизвестно (известно: {known_amount}; неизвестно у экземпляров: {unknown_amount})")
         self.status.setText(
             f"Показано групп: {len(filtered)} из {len(source_groups)} · "
-            f"физических экземпляров: {instance_count} · сумма ASF amount: {amount_text}."
+            f"предметов: {instance_count}."
         )
 
     @staticmethod
