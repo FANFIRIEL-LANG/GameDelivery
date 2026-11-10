@@ -163,7 +163,8 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertIn("Цена единицы: ₽90.00", visible)
         self.assertIn("Стоимость группы: ₽180.00", visible)
         summary = panel.price_summary.setText.call_args.args[0]
-        self.assertIn("Оценка выбранных ботов: ₽180.00", summary)
+        self.assertIn("Стоимость предметов по ботам:", summary)
+        self.assertIn("Bot A: ₽180.00", summary)
         self.assertIn("Bot A: ₽180.00", summary)
 
     def test_price_network_work_is_submitted_to_worker_pool(self):
