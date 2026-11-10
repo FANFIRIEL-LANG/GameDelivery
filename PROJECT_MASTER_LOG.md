@@ -2675,3 +2675,45 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - C.6.3.6 stays OPEN until one final local live verification succeeds: proxy probe, OpenSkin pricing API probe, Frankfurter USD/RUB retrieval, and read-only CS2 730/2 valuation using isolated non-production ASF. No production ASF 1242, Steam inventory mutation or Trade Offers.
 - User-facing test instruction should be issued once, together with the final ZIP. The user must paste their proxy line locally; never ask them to share it in chat. Results to share are only safe outcome/category/HTTP status.
 
+---
+
+## 2026-11-10 — C.6.3.6.6 — безопасная диагностика неожиданных OpenSkin исключений
+
+### Что проверено по актуальному коду
+
+- На актуальной ветке `work/local-sync` подтверждён путь сохранения профиля: однострочный proxy parser → `OpenSkinProxySettingsStore.save()` → системный keyring для пароля и QSettings для несекретных полей → `load_enabled_proxy()` → `OpenSkinProxy` → request-scoped `QNetworkAccessManager`.
+- Отдельная кнопка proxy probe использует `probe_proxy_connection()`; OpenSkin pricing request использует `OpenSkinClient` и тот же `_qt_proxy_request()`.
+- CS2 price refresh в `app/game_inventory_panel.py::_PriceRefreshTask` также читает сохранённый профиль через `OpenSkinProxySettingsStore().load_enabled_proxy()` и передаёт его в `OpenSkinClient`. Ошибка запроса помечает цену как неактуальную; это не самостоятельная причина proxy timeout.
+- Ранее общий обработчик в `OpenSkinClient._fetch_batch()` терял текст и координаты неожиданных исключений, записывая только `type(exc).__name__`. Поэтому фактический TypeError нельзя было локализовать по этому логу.
+
+### Изменения диагностики
+
+- В `integrations/openskin/client.py` добавлен `_log_unexpected_exception()`.
+- Для неожиданных исключений в proxy probe и price request фиксируются безопасный context, тип исключения, цепочка координат traceback в формате `file:line:function` и очищенный текст исключения.
+- Перед записью detail вызывается redaction текущего proxy username/password и их URL-encoded/Base64 вариантов.
+- Намеренно НЕ записываются frame locals, полный exception object, `exc_info` или локальные переменные: они могут содержать секреты.
+- Для price request безопасный diagnostic detail также доступен через `OpenSkinError.diagnostic_detail`; пользовательское сообщение остаётся нейтральным и не показывает секрет.
+- Proxy probe логирует неожиданный exception отдельно с context `proxy_probe`; задача UI по-прежнему показывает безопасное общее сообщение.
+
+### Regression tests и CI
+
+- Добавлен тест неожиданного TypeError в proxy price request: проверяет наличие context/type/file/function и отсутствие login/password в логе и diagnostic detail.
+- Добавлен отдельный тест неожиданного TypeError в proxy probe: проверяет traceback coordinates и отсутствие credentials в логе.
+- Commit `a8efacdba6cf1b26269dbbae41f1f57ef698562b` — initial safe exception trace logging.
+- Commit `faf9aa1934ba3937bd2e8880211ad478cbde451d` — price-request diagnostic regression test.
+- Commit `06c7f54b6d2f13ca8cdd60a69916d6917a075641` — proxy-probe diagnostic regression test.
+- Первый прогон на `faf9aa1` выявил несовпадение нового тестового ожидания: context присутствовал в log record, но не в `diagnostic_detail`. Это исправлено отдельным commit `5df080c1d86114cf535b7ef1c11b79dcf984d604`; теперь context включён в оба места.
+- GitHub Tests workflow run `42773375386` на exact HEAD `5df080c1d86114cf535b7ef1c11b79dcf984d604`: SUCCESS. Full unit suite: `Ran 485 tests`, `OK`. Compile, Steam trade credential migration и trade UI flow steps также SUCCESS.
+- Предыдущий run `42773186033` не считается успешным: один новый assertion был неверным; исправление внесено в последующем commit. Отдельный intermittent Qt shutdown exit 139 не объявляется исправленным или объяснённым.
+
+### Статус proxy timeout и OpenSkin live acceptance
+
+- Эта итерация исправляет полноту безопасной диагностики, а не сетевой транспорт.
+- Категория `connect_or_tls_timeout` при `tls_completed=False`, `proxy_auth_requested=False`, `proxy_auth_answered=False`, `request_sent=False` по-прежнему не различает proxy TCP, CONNECT и TLS. Нельзя утверждать точную первопричину без дополнительного evidence.
+- Таймаут не увеличивался; TLS verification не ослаблялся; `ignoreSslErrors()` не добавлялся; global Qt proxy не вводился.
+- C.6.3.6 остаётся OPEN. Live proxy probe, OpenSkin pricing API, Frankfurter USD/RUB и read-only CS2 730/2 acceptance ещё не пройдены.
+
+### Windows package gate и следующий шаг
+
+- Windows package workflow run `42773375211` строится на exact SHA `5df080c1d86114cf535b7ef1c11b79dcf984d604`. На момент этой записи dependency install, compile и Windows trade-secret ACL steps SUCCESS; PyInstaller/remaining smoke/upload steps ещё выполняются. Artifact пока не подтверждён.
+- Не предлагать пользователю старую сборку или повторение предыдущей source-проверки. Выдать одну новую сборку `GameDelivery-Windows-x64` только после успешных packaged EXE smoke и artifact upload; в инструкции — выполнить обновлённую proxy check и OpenSkin API check один раз, затем передать безопасный traceback/category/status без proxy string и без пароля.
