@@ -112,7 +112,8 @@ class CS2PricePanelTests(unittest.TestCase):
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertIn("Цена: ₽90.00/шт. · всего: ₽180.00", visible)
+        self.assertIn("Цена: ₽90.00", visible)
+        self.assertNotIn("₽180.00", visible)
         self.assertNotIn("есть устаревшие данные", visible)
 
     def test_card_price_text_is_compact_and_hides_stale_marker(self):
@@ -148,7 +149,7 @@ class CS2PricePanelTests(unittest.TestCase):
         group = build_cs2_inventory_projection([item]).groups[0]
 
         card = CS2InventoryGroupCard(
-            group, price_text="$0.03 · Не учитывается в оценке — цена не выше $0.05"
+            group, price_text="Цена: $0.03 · Не учитывается в оценке — цена не выше $0.05"
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
