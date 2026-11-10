@@ -270,6 +270,17 @@ class GameInventoryStore:
             quality=r[12], rarity=r[13], exterior=r[14], tags=tuple(json.loads(r[15])),
         ) for r in rows]
 
+    def load_snapshot_meta(self, game_id: str) -> dict[str, int]:
+        """Return which bot inventories have a saved snapshot, including empty ones."""
+        from games.catalog import get_game
+        game = get_game(game_id)
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT bot_name, item_count FROM game_inventory_snapshot_meta WHERE game_id=?",
+                (game.game_id,),
+            ).fetchall()
+        return {str(bot_name): int(item_count) for bot_name, item_count in rows}
+
     def load(self, game_id: str, bot_name: str) -> list[InventoryItem]:
         import json
         from games.catalog import get_game
