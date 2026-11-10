@@ -62,6 +62,8 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.price_cache_store = Mock()
         panel.price_cache_store.get.return_value = None
         panel.price_cache_store.get_fx_rate.return_value = None
+        panel.price_refresh_button = QPushButton()
+        panel._price_refresh_running = True
         panel.items = []
         panel.cs2_instances_by_bot = {}
         from types import SimpleNamespace
