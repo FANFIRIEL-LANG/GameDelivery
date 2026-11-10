@@ -156,6 +156,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertNotIn("asset", card.toolTip())
         self.assertNotIn("ASF amount", card.toolTip())
         self.assertNotIn("market_tradable_restriction", card.toolTip())
+        self.assertNotIn("Характеристики:", card.toolTip())
 
     def test_group_card_shows_stattrak_only_when_present_and_is_compact(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
