@@ -625,7 +625,7 @@ class GameInventoryPanel(QWidget):
         )
         task = _GameInventoryRefreshTask(
             client, self.database_path, game_id, bot_names,
-            store=self.store, test_mode=self.test_mode,
+            store=self.store, test_mode=(self.test_mode or bool(os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip())),
         )
         task.signals.progress.connect(self._inventory_refresh_progress)
         task.signals.finished.connect(self._inventory_refresh_finished)
