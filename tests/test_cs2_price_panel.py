@@ -112,8 +112,8 @@ class CS2PricePanelTests(unittest.TestCase):
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertIn("₽90.00", visible)
-        self.assertIn("₽180.00", visible)
+        self.assertIn("Цена: ₽90.00/шт. · всего: ₽180.00", visible)
+        self.assertNotIn("есть устаревшие данные", visible)
 
     def test_below_threshold_card_keeps_usd_and_omits_ruble_price(self):
         item = CS2InventoryInstance(
@@ -128,7 +128,8 @@ class CS2PricePanelTests(unittest.TestCase):
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
         self.assertIn("$0.03", visible)
-        self.assertIn("не выше $0.05", visible)
+        self.assertIn("не учитывается", visible)
+        self.assertNotIn("не выше $0.05", visible)
         self.assertNotIn("₽", visible)
 
     def test_separate_table_rows_show_individual_asset_price(self):
@@ -169,8 +170,8 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertEqual(panel.cards_layout.count(), 1)
         card = panel.cards_layout.itemAt(0).widget()
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertIn("Цена единицы: ₽90.00", visible)
-        self.assertIn("Стоимость группы: ₽180.00", visible)
+        self.assertIn("Цена: ₽90.00/шт. · всего: ₽180.00", visible)
+        self.assertNotIn("есть устаревшие данные", visible)
         summary = panel.price_summary.setText.call_args.args[0]
         self.assertIn("ВЫБРАНО: 1 из 1 бота · 2 предмета · ₽180.00", summary)
         self.assertIn("ВСЕ БОТЫ: 1 бот · 2 предмета · ₽180.00", summary)
