@@ -237,22 +237,24 @@ class CS2InventoryPanelTests(unittest.TestCase):
         )
         unknown = replace(base, asset_id="1003", bot_name="Bot C", is_tradable=None,
                           is_marketable=None)
-        group, = build_cs2_inventory_projection([base, blocked, unknown]).groups
+        groups = build_cs2_inventory_projection([base, blocked, unknown]).groups
 
-        card = CS2InventoryGroupCard(group)
-        visible = " ".join(label.text() for label in card.findChildren(QLabel))
-
-        self.assertNotIn("Доступно:", visible)
-        self.assertNotIn("Ограничено:", visible)
-        self.assertNotIn("Статус неизвестен:", visible)
-        self.assertIn("Minimal Wear", visible)
-        self.assertNotIn("Количество ASF", visible)
-        self.assertIn("Kilowatt Case", card.toolTip())
-        self.assertNotIn("asset", card.toolTip())
-        self.assertNotIn("market_tradable_restriction", card.toolTip())
-        self.assertNotIn("Передаваемый", card.toolTip())
-        self.assertIn("border: 2px solid #596273", card.styleSheet())
-        self.assertIn("background: #302b2c", card.styleSheet())
+        self.assertEqual(len(groups), 3)
+        cards = [CS2InventoryGroupCard(group) for group in groups]
+        by_state = {card.group.instances[0].is_tradable: card for card in cards}
+        self.assertEqual(set(by_state), {True, False, None})
+        self.assertIn("background: #20382f", by_state[True].styleSheet())
+        self.assertIn("background: #303036", by_state[False].styleSheet())
+        self.assertIn("background: #292936", by_state[None].styleSheet())
+        for card in cards:
+            visible = " ".join(label.text() for label in card.findChildren(QLabel))
+            self.assertNotIn("Доступно:", visible)
+            self.assertNotIn("Ограничено:", visible)
+            self.assertNotIn("Статус неизвестен:", visible)
+            self.assertIn("Kilowatt Case", card.toolTip())
+            self.assertNotIn("asset", card.toolTip())
+            self.assertNotIn("market_tradable_restriction", card.toolTip())
+            self.assertNotIn("Передаваемый", card.toolTip())
 
     def test_nontradable_group_card_is_muted_and_keeps_rarity_border(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
@@ -358,9 +360,10 @@ class CS2InventoryPanelTests(unittest.TestCase):
         summary = panel.price_summary.text()
         self.assertIn("ВЫБРАНО: 2 из 3 ботов · 2 предмета · ₽152.18 · частичная оценка", summary)
         self.assertIn("ВСЕ БОТЫ: 3 бота · 3 предмета · ₽300.00", summary)
-        self.assertIn("Снимки инвентаря: выбрано 2/2, всего 3/3", summary)
+        self.assertEqual(summary.count("\n"), 1)
+        self.assertNotIn("Снимки инвентаря:", summary)
         self.assertNotIn("Bot A: ₽", summary)
-        self.assertIn("font-size: 16px", panel.price_summary.styleSheet())
+        self.assertIn("font-size: 15px", panel.price_summary.styleSheet())
 
 
     def test_summary_does_not_show_zero_rubles_when_only_fx_conversion_is_pending(self):
@@ -430,11 +433,15 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertEqual(len(cards), 1)
         self.assertIsInstance(cards[0], CS2InventoryGroupCard)
         self.assertIn("border: 2px solid #d32ce6", cards[0].styleSheet())
+        visible = " ".join(label.text() for label in cards[0].findChildren(QLabel))
+        self.assertNotIn("Цена:", visible)
+        self.assertNotIn("₽", visible)
+        self.assertEqual(cards[0].height(), 194)
         self.assertEqual(panel.status.text(), "")
 
         panel.grouping_mode.setCurrentIndex(1)
         panel.render()
-        self.assertEqual(panel.cards_layout.count(), 2)
+        self.assertEqual(panel.cards_layout.count(), 1)
         owner_details = " ".join(
             panel.cards_layout.itemAt(index).widget().toolTip()
             for index in range(panel.cards_layout.count())
@@ -484,17 +491,20 @@ class CS2InventoryPanelTests(unittest.TestCase):
         ]
 
         panel.render()
-        self.assertEqual(panel.cards_layout.count(), 1)
-        all_card = panel.cards_layout.itemAt(0).widget()
-        self.assertNotIn("Статус неизвестен:", " ".join(l.text() for l in all_card.findChildren(QLabel)))
+        self.assertEqual(panel.cards_layout.count(), 3)
+        card_states = {
+            panel.cards_layout.itemAt(index).widget().group.instances[0].is_tradable
+            for index in range(panel.cards_layout.count())
+        }
+        self.assertEqual(card_states, {True, False, None})
 
         panel.view_mode.setCurrentIndex(1)
         panel.render()
-        self.assertEqual(panel.table.item(0, 5).text(), "3")
-        self.assertEqual(panel.table.item(0, 6).text(), "1")
-        self.assertEqual(panel.table.item(0, 8).text(), "1")
-        self.assertEqual(panel.table.item(0, 9).text(), "1")
-        self.assertIn("Неизвестно: 1", panel.table.item(0, 3).text())
+        self.assertEqual(panel.table.rowCount(), 3)
+        self.assertNotIn("Цена", [
+            panel.table.horizontalHeaderItem(i).text()
+            for i in range(panel.table.columnCount())
+        ])
         panel.view_mode.setCurrentIndex(0)
         panel.render()
 
@@ -598,7 +608,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertIn("Передаваемые", headers)
         self.assertIn("Непередаваемые", headers)
         self.assertIn("Статус неизвестен", headers)
-        self.assertIn("Цена", headers)
+        self.assertNotIn("Цена", headers)
 
     def test_cs2_table_keeps_stack_amount_separate_from_physical_instances(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection

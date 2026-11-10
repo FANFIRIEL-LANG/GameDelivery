@@ -7,14 +7,14 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QUrl
-from PySide6.QtGui import QColor, QIcon, QPixmap, QTextDocument
+from PySide6.QtGui import QColor, QIcon, QPixmap, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QStyledItemDelegate, QLabel, QStyle, QStyleOptionViewItem, QTableWidget,
     QTableWidgetItem,
 )
 
-from games.inventory_display import InventoryMetrics, PRICE_UNAVAILABLE
+from games.inventory_display import InventoryMetrics
 
 
 METRIC_COLORS = {
@@ -57,7 +57,7 @@ class InventoryCardDelegate(QStyledItemDelegate):
     """Paint metric-bearing selectable cards without replacing QListWidget items."""
 
     def sizeHint(self, option, index):
-        return QSize(176, 184)
+        return QSize(176, 160)
 
     def paint(self, painter, option, index):
         background = QStyleOptionViewItem(option)
@@ -69,6 +69,10 @@ class InventoryCardDelegate(QStyledItemDelegate):
                 background.palette.setColor(background.palette.ColorRole.Base, QColor("#292b30"))
             elif metrics.unknown_status == metrics.total and metrics.total:
                 background.palette.setColor(background.palette.ColorRole.Base, QColor("#292936"))
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        if selected:
+            background.palette.setColor(background.palette.ColorRole.Highlight, QColor("#285b45"))
+            background.palette.setColor(background.palette.ColorRole.HighlightedText, QColor("#f3f6fb"))
         option.widget.style().drawControl(
             QStyle.ControlElement.CE_ItemViewItem, background, painter, option.widget
         )
@@ -77,19 +81,15 @@ class InventoryCardDelegate(QStyledItemDelegate):
         icon = index.data(Qt.ItemDataRole.DecorationRole)
         if isinstance(icon, QIcon) and not icon.isNull():
             icon.paint(painter, rect.x() + (rect.width() - 64) // 2, rect.y(), 64, 58)
-        title_rect = rect.adjusted(3, 60, -3, -rect.height() + 91)
+        title_rect = rect.adjusted(3, 60, -3, -rect.height() + 105)
         painter.save()
-        painter.setPen(option.palette.color(option.palette.ColorRole.Text))
+        painter.setPen(QColor("#f3f6fb") if selected else option.palette.color(option.palette.ColorRole.Text))
         painter.drawText(title_rect, int(Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap),
                          index.data(Qt.ItemDataRole.DisplayRole) or "")
-        painter.restore()
-        document = QTextDocument()
-        document.setDefaultFont(option.font)
-        document.setPlainText(PRICE_UNAVAILABLE)
-        document.setTextWidth(rect.width())
-        painter.save()
-        painter.translate(rect.x(), rect.y() + 91)
-        document.drawContents(painter)
+        if selected:
+            painter.setPen(QPen(QColor("#4ade80"), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 8, 8)
         painter.restore()
 
 

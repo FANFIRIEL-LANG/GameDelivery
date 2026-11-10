@@ -6,9 +6,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QLabel, QLineEdit, QListWidget, QPushButton,
-    QTableWidget, QWidget,
+    QApplication, QAbstractItemView, QComboBox, QLabel, QLineEdit, QListWidget,
+    QPushButton, QSpinBox, QTableWidget, QWidget,
 )
 
 from app.inventory_display import InventoryCardDelegate
@@ -63,6 +64,8 @@ class InventoryPanelDisplayTests(unittest.TestCase):
         panel._selected_asset_keys = {("Bot A", "asset-1")}
         panel._render_instance_choices = Mock()
         panel.item_grid.setItemDelegate(InventoryCardDelegate(panel.item_grid))
+        panel.item_grid.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        panel.item_grid.itemSelectionChanged.connect(panel._card_selection_changed)
         return panel
 
     def test_steam_card_table_has_real_thumbnail_and_separate_metrics(self):
@@ -77,7 +80,8 @@ class InventoryPanelDisplayTests(unittest.TestCase):
         self.assertIn("Непередаваемые", headers)
         self.assertIn("Аккаунтов", headers)
         self.assertIn("Статус неизвестен", headers)
-        self.assertIn("Цена", headers)
+        self.assertNotIn("Цена", headers)
+        self.assertEqual(panel.table.columnCount(), 10)
         self.assertEqual(panel.table.item(0, 3).text(), "3")
         self.assertEqual(panel.table.item(0, 5).text(), "2")
         self.assertEqual(panel.table.item(0, 6).text(), "3")
@@ -154,6 +158,76 @@ class InventoryPanelDisplayTests(unittest.TestCase):
                     if panel.item_grid.item(i).isSelected()]
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0].data(Qt.ItemDataRole.UserRole), (("Bot A", ("asset-1", "asset-2")),))
+
+    def test_send_to_orders_emits_the_exact_selected_bot_asset_keys(self):
+        panel = self.panel()
+        panel.trade_url = QLineEdit("https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc")
+        spy = QSignalSpy(panel.trade_url_requested)
+
+        panel._request_order_with_selected_assets()
+
+        self.assertEqual(spy.count(), 1)
+        emitted = spy.at(0)
+        self.assertEqual(emitted[0], panel.trade_url.text())
+        self.assertEqual(emitted[1], [("Bot A", "asset-1")])
+
+    def test_clicking_a_tradable_card_selects_and_deselects_all_exact_assets(self):
+        panel = self.panel()
+        panel._selected_asset_keys.clear()
+        panel.reservation_rows = {}
+
+        panel.render_inventory()
+
+        tradable_tile = next(
+            panel.item_grid.item(index) for index in range(panel.item_grid.count())
+            if panel.item_grid.item(index).data(Qt.ItemDataRole.UserRole + 2).is_tradable is True
+        )
+        row = tradable_tile.data(Qt.ItemDataRole.UserRole + 2)
+        expected = {
+            (bot, asset_id)
+            for bot, asset_ids in row.assets_by_bot for asset_id in asset_ids
+        }
+
+        tradable_tile.setSelected(True)
+        self.assertEqual(panel._selected_asset_keys, expected)
+        self.assertTrue(tradable_tile.isSelected())
+
+        tradable_tile.setSelected(False)
+        self.assertEqual(panel._selected_asset_keys, set())
+        self.assertFalse(tradable_tile.isSelected())
+
+    def test_nontradable_and_unknown_cards_cannot_be_selected(self):
+        panel = self.panel()
+        panel.inventories = {
+            "Bot A": [
+                CardCopy("tradable", "Game", "Tradable Card", is_tradable=True),
+                CardCopy("blocked", "Game", "Blocked Card", is_tradable=False),
+                CardCopy("unknown", "Game", "Unknown Card", is_tradable=None),
+            ]
+        }
+        panel._selected_asset_keys = {("Bot A", "blocked"), ("Bot A", "tradable")}
+        panel.reservation_rows = {}
+        panel.instance_list = QListWidget()
+        panel.quantity_input = QSpinBox()
+        panel.instance_summary = QLabel()
+        panel._render_instance_choices = InventoryPanel._render_instance_choices.__get__(panel)
+
+        panel.render_inventory()
+
+        by_name = {
+            panel.item_grid.item(index).text().split("\\n", 1)[0]: panel.item_grid.item(index)
+            for index in range(panel.item_grid.count())
+        }
+        selectable_flag = Qt.ItemFlag.ItemIsSelectable
+        self.assertTrue(by_name["Tradable Card"].flags() & selectable_flag)
+        self.assertFalse(by_name["Blocked Card"].flags() & selectable_flag)
+        self.assertFalse(by_name["Unknown Card"].flags() & selectable_flag)
+        self.assertEqual(panel._selected_asset_keys, {("Bot A", "tradable")})
+
+        panel._select_all_visible_items()
+
+        self.assertEqual(panel._selected_asset_keys, {("Bot A", "tradable")})
+        self.assertEqual(panel.quantity_input.maximum(), 1)
 
     def test_steam_card_delegate_renders_without_losing_image_tile(self):
         panel = self.panel()

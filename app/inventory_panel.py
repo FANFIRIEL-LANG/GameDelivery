@@ -16,7 +16,7 @@ from app.inventory_display import (
     InventoryCardDelegate, SteamInventoryImageLoader, metric_table_cells, thumbnail_table_item,
     update_table_thumbnails,
 )
-from games.inventory_display import count_physical_metrics, PRICE_UNAVAILABLE
+from games.inventory_display import count_physical_metrics
 
 from games.steam_cards.selection import find_available_sets
 from games.steam_cards.inventory_views import (
@@ -68,7 +68,7 @@ class _InventoryBatchWorker(QObject):
 class InventoryPanel(QWidget):
     """Read-only UI for local snapshots and reservations."""
 
-    trade_url_requested = Signal(str)
+    trade_url_requested = Signal(str, list)
 
     def __init__(self, parent=None, bot_selection_model: BotSelectionModel | None = None):
         super().__init__(parent)
@@ -160,9 +160,7 @@ class InventoryPanel(QWidget):
         self.trade_url = QLineEdit()
         self.trade_url.setPlaceholderText("HTTPS Steam Trade URL получателя")
         self.send_to_order_button = QPushButton("Отправить через заказы…")
-        self.send_to_order_button.clicked.connect(
-            lambda: self.trade_url_requested.emit(self.trade_url.text().strip())
-        )
+        self.send_to_order_button.clicked.connect(self._request_order_with_selected_assets)
         trade_row.addWidget(self.trade_url, 1)
         trade_row.addWidget(self.send_to_order_button)
         layout.addLayout(trade_row)
@@ -186,10 +184,10 @@ class InventoryPanel(QWidget):
         filters.addWidget(self.item_filter, 1)
         layout.addLayout(filters)
 
-        self.table = QTableWidget(0, 11)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
             ["Игра", "Предмет", "Тип", "Всего", "Непередаваемые", "Аккаунтов",
-             "Передаваемые", "Статус неизвестен", "Цена", "Владелец / asset ID", "Резерв"]
+             "Передаваемые", "Статус неизвестен", "Владелец / asset ID", "Резерв"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -206,7 +204,7 @@ class InventoryPanel(QWidget):
         self.item_grid.setIconSize(QSize(76, 76))
         self.item_grid.setGridSize(QSize(176, 184))
         self.item_grid.setItemDelegate(InventoryCardDelegate(self.item_grid))
-        self.item_grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.item_grid.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self.item_grid.setSpacing(8)
         layout.addWidget(self.item_grid, 1)
         self.instance_summary = QLabel("Выбери карточку, чтобы выбрать конкретные экземпляры.")
@@ -243,7 +241,7 @@ class InventoryPanel(QWidget):
         self.select_visible_button.clicked.connect(self._select_all_visible_items)
         self.select_sets_button.clicked.connect(self._select_complete_sets_for_bots)
         self._selected_asset_keys: set[tuple[str, str]] = set()
-        self.item_grid.itemSelectionChanged.connect(self._render_instance_choices)
+        self.item_grid.itemSelectionChanged.connect(self._card_selection_changed)
         self.apply_quantity_button.clicked.connect(self._apply_quantity_selection)
         self.clear_selection_button.clicked.connect(self._clear_asset_selection)
         self.table.hide()
@@ -489,8 +487,12 @@ class InventoryPanel(QWidget):
         available: list[tuple[str, str]] = []
         for card_item in selected_cards:
             row_data = card_item.data(Qt.ItemDataRole.UserRole + 2)
-            if row_data is not None:
+            if row_data is not None and row_data.is_tradable is True:
                 available.extend(expand_inventory_instances(row_data))
+        available = [
+            (bot, asset) for bot, asset in available
+            if (bot, asset) not in self.reservation_rows
+        ]
         self.quantity_input.setRange(0, len(available))
         for bot_name, asset_id in available:
             key = (bot_name, asset_id)
@@ -513,13 +515,49 @@ class InventoryPanel(QWidget):
             self._selected_asset_keys.add(normalized)
         else:
             self._selected_asset_keys.discard(normalized)
-        self._update_instance_summary()
+        self._sync_tile_selection()
+        self._render_instance_choices()
+
+    def _sync_tile_selection(self):
+        self.item_grid.blockSignals(True)
+        for index in range(self.item_grid.count()):
+            tile = self.item_grid.item(index)
+            row_data = tile.data(Qt.ItemDataRole.UserRole + 2)
+            if row_data is None or row_data.is_tradable is not True:
+                tile.setSelected(False)
+                continue
+            tile.setSelected(any(
+                (bot, asset_id) in self._selected_asset_keys
+                for bot, asset_ids in row_data.assets_by_bot
+                for asset_id in asset_ids
+            ))
+        self.item_grid.blockSignals(False)
+
+    def _card_selection_changed(self):
+        for index in range(self.item_grid.count()):
+            tile = self.item_grid.item(index)
+            if tile.isHidden():
+                continue
+            row_data = tile.data(Qt.ItemDataRole.UserRole + 2)
+            if row_data is None or row_data.is_tradable is not True:
+                continue
+            keys = {
+                (str(bot), str(asset_id))
+                for bot, asset_ids in row_data.assets_by_bot
+                for asset_id in asset_ids
+                if (str(bot), str(asset_id)) not in self.reservation_rows
+            }
+            if tile.isSelected():
+                self._selected_asset_keys.update(keys)
+            else:
+                self._selected_asset_keys.difference_update(keys)
+        self._render_instance_choices()
 
     def _apply_quantity_selection(self):
         available = []
         for card_item in self.item_grid.selectedItems():
             row_data = card_item.data(Qt.ItemDataRole.UserRole + 2)
-            if row_data is not None:
+            if row_data is not None and row_data.is_tradable is True:
                 available.extend(expand_inventory_instances(row_data))
         available = [
             (str(bot), str(asset)) for bot, asset in available
@@ -535,15 +573,19 @@ class InventoryPanel(QWidget):
             )
             return
         self._selected_asset_keys = set(available[:requested])
+        self._sync_tile_selection()
         self._render_instance_choices()
 
     def _clear_item_selection(self):
+        self.item_grid.blockSignals(True)
         self.item_grid.clearSelection()
+        self.item_grid.blockSignals(False)
         self._selected_asset_keys.clear()
         self._render_instance_choices()
 
     def _clear_asset_selection(self):
         self._selected_asset_keys.clear()
+        self._sync_tile_selection()
         self._render_instance_choices()
 
     def _update_instance_summary(self):
@@ -605,6 +647,7 @@ class InventoryPanel(QWidget):
                 if key not in self.reservation_rows:
                     candidates.add(key)
         self._selected_asset_keys.update(candidates)
+        self._sync_tile_selection()
         self._render_instance_choices()
         self.instance_summary.setText(
             f"Добавлено доступных экземпляров: {len(candidates)}. "
@@ -653,11 +696,16 @@ class InventoryPanel(QWidget):
             return
 
         self._selected_asset_keys.update(chosen)
+        self._sync_tile_selection()
         self._render_instance_choices()
         self.instance_summary.setText(
             f"Добавлены полные наборы: {requested} на каждого из {len(selected_bots)} ботов "
             f"({len(chosen)} экземпляров). Наборы между ботами не смешивались."
         )
+
+    def _request_order_with_selected_assets(self):
+        selected = sorted(self._selected_asset_keys)
+        self.trade_url_requested.emit(self.trade_url.text().strip(), selected)
 
     def _load_reservations(self):
         import sqlite3
@@ -690,16 +738,24 @@ class InventoryPanel(QWidget):
         view = build_inventory_view(
             self.inventories, selected, mode=self.mode.currentData()
         )
+        eligible_keys = {
+            (bot, asset_id)
+            for row_data in view.rows if row_data.is_tradable is True
+            for bot, asset_ids in row_data.assets_by_bot for asset_id in asset_ids
+        }
+        eligible_keys.difference_update(getattr(self, "reservation_rows", {}))
+        self._selected_asset_keys.intersection_update(eligible_keys)
         rows = filter_inventory_rows(
             view.rows, self.search_input.text(), item_filter=self.item_filter.currentData()
         )
-        self.table.setColumnCount(11)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(
             ["Игра", "Предмет", "Тип", "Всего", "Непередаваемые", "Аккаунтов",
-             "Передаваемые", "Статус неизвестен", "Цена", "Владелец / asset ID", "Резерв"]
+             "Передаваемые", "Статус неизвестен", "Владелец / asset ID", "Резерв"]
         )
         self.table.setIconSize(QSize(48, 48))
         self.table.setRowCount(0)
+        self.item_grid.blockSignals(True)
         self.item_grid.clear()
         for row_data in rows:
             owners = []
@@ -733,10 +789,9 @@ class InventoryPanel(QWidget):
             self.table.setItem(row, 1, icon_item)
             for column, metric_item in enumerate(metric_table_cells(metrics), 3):
                 self.table.setItem(row, column, metric_item)
-            self.table.setItem(row, 8, QTableWidgetItem(PRICE_UNAVAILABLE))
-            self.table.setItem(row, 9, QTableWidgetItem("\n".join(owners)))
+            self.table.setItem(row, 8, QTableWidgetItem("\n".join(owners)))
             self.table.setItem(
-                row, 10, QTableWidgetItem("\n".join(reservations) if reservations else "Нет")
+                row, 9, QTableWidgetItem("\n".join(reservations) if reservations else "Нет")
             )
 
             owner_lines = [
@@ -764,13 +819,24 @@ class InventoryPanel(QWidget):
                 tile.setIcon(QIcon())
                 if icon_url:
                     self._request_item_image(icon_url)
-            tile_selected = any(
+            selectable = row_data.is_tradable is True and any(
+                (bot, asset_id) not in self.reservation_rows
+                for bot, asset_ids in row_data.assets_by_bot
+                for asset_id in asset_ids
+            )
+            if not selectable:
+                tile.setFlags(tile.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                for bot, asset_ids in row_data.assets_by_bot:
+                    for asset_id in asset_ids:
+                        self._selected_asset_keys.discard((bot, asset_id))
+            tile_selected = selectable and any(
                 (bot, asset_id) in self._selected_asset_keys
                 for bot, asset_ids in row_data.assets_by_bot
                 for asset_id in asset_ids
             )
             self.item_grid.addItem(tile)
             tile.setSelected(tile_selected)
+        self.item_grid.blockSignals(False)
         self._filter_item_tiles()
         self._render_instance_choices()
         self.table.resizeColumnsToContents()

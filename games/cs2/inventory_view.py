@@ -342,11 +342,15 @@ def build_cs2_inventory_projection(
     )))
     grouped: dict[tuple[Any, ...], list[CS2InventoryInstance]] = defaultdict(list)
     for i in normalized:
-        key = (
-            i.game_id, i.appid, i.context_id, i.class_id, i.instance_id,
-            i.name, i.item_type, i.market_hash_name, i.quality, i.exterior,
-            i.rarity, tuple(sorted(i.tags, key=str.casefold)),
+        market_identity = (
+            ("market_hash", i.market_hash_name.strip().casefold())
+            if i.market_hash_name.strip()
+            else ("class_instance", i.class_id.strip(), i.instance_id.strip(),
+                  i.name.strip().casefold())
         )
+        # Group one exact market item together, partitioning only by confirmed
+        # transferability. Marketability and descriptive tags remain per asset.
+        key = (i.game_id, i.appid, i.context_id, market_identity, i.is_tradable)
         grouped[key].append(i)
     groups = []
     for key, members in sorted(grouped.items(), key=lambda pair: str(pair[0]).casefold()):

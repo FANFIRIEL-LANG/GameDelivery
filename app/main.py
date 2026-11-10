@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
             QFrame#card { background: #202731; border: 1px solid #303846; border-radius: 10px; }
         """)
 
-    def _open_order_with_trade_url(self, trade_url: str):
+    def _open_order_with_trade_url(self, trade_url: str, selected_assets=None):
         value = str(trade_url or "").strip()
         if not value:
             QMessageBox.warning(self, "Trade URL", "Укажи Steam Trade URL получателя.")
@@ -124,10 +124,60 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "Некорректный Trade URL", str(exc))
             return
+
+        normalized_assets = sorted({
+            (str(bot).strip(), str(asset).strip())
+            for bot, asset in (selected_assets or [])
+            if str(bot).strip() and str(asset).strip()
+        })
+        if normalized_assets:
+            bots = {bot.casefold() for bot, _asset in normalized_assets}
+            if len(bots) != 1:
+                QMessageBox.warning(
+                    self, "Выбраны предметы нескольких ботов",
+                    "Текущая подготовка одного Steam-предложения поддерживает один ASF-бот. "
+                    "Выбери предметы одного бота; активы остальных ботов отправляются отдельными предложениями.",
+                )
+                return
+
         self.order_recipient.setText(value)
+        if normalized_assets:
+            bot_name = normalized_assets[0][0]
+            self._load_order_bots()
+            bot_index = self.order_bot.findData(bot_name)
+            if bot_index < 0:
+                QMessageBox.warning(
+                    self, "Не найден ASF-бот",
+                    f"Бот {bot_name} отсутствует в списке снимков. Выбранные активы не перенесены.",
+                )
+                return
+            previous_index = self.order_bot.currentIndex()
+            self.order_bot.setCurrentIndex(bot_index)
+            if previous_index == bot_index:
+                self._load_order_assets()
+            selected_set = set(normalized_assets)
+            matched = set()
+            self.order_assets.clearSelection()
+            for row in range(self.order_assets.count()):
+                item = self.order_assets.item(row)
+                key = item.data(Qt.ItemDataRole.UserRole)
+                if key in selected_set and item.flags() & Qt.ItemFlag.ItemIsSelectable:
+                    item.setSelected(True)
+                    matched.add(key)
+            if matched != selected_set:
+                self.order_assets.clearSelection()
+                missing = len(selected_set - matched)
+                QMessageBox.warning(
+                    self, "Не все выбранные активы доступны",
+                    f"{missing} выбранных активов не найдены в свежем снимке или уже зарезервированы. "
+                    "Ничего не перенесено в состав заказа; обнови инвентарь и проверь выбор.",
+                )
+                return
+
         self.tabs.setCurrentIndex(0)
         self.statusBar().showMessage(
-            "Trade URL перенесён в тестовую вкладку «Заказы». Проверь состав и подтверди отправку отдельно."
+            f"Trade URL перенесён в «Заказы». Выбрано активов: {len(normalized_assets)}. "
+            "Проверь состав; резерв и отправка выполняются отдельными подтверждёнными действиями."
         )
 
     def _orders_tab(self):

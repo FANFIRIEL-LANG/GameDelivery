@@ -30,13 +30,10 @@ from games.cs2.inventory_view import (
 )
 from games.cs2.price_store import PriceCacheStore
 from games.cs2.pricing import (
-    PRICE_THRESHOLD_USD, PriceState, asset_price_text, cached_price_from_openskin,
-    calculate_valuation, group_price_text, requestable_positions,
-    unsupported_positions,
+    PRICE_THRESHOLD_USD, PriceState, cached_price_from_openskin,
+    calculate_valuation, requestable_positions, unsupported_positions,
 )
-from games.inventory_display import (
-    build_inventory_groups, count_physical_metrics, PRICE_UNAVAILABLE,
-)
+from games.inventory_display import build_inventory_groups, count_physical_metrics
 from app.inventory_display import (
     InventoryMetricsLabel, metric_table_cells, thumbnail_table_item,
     update_table_thumbnails,
@@ -250,6 +247,12 @@ class GameInventoryPanel(QWidget):
             lambda: self._start_price_refresh(manual=True)
         )
         controls.addWidget(self.price_refresh_button)
+        self.price_missing_button = QPushButton("Запросить цены без снимка")
+        self.price_missing_button.setToolTip(
+            "Запросить только рыночные позиции, для которых ещё нет записи в кэше цен"
+        )
+        self.price_missing_button.clicked.connect(self._start_missing_price_refresh)
+        controls.addWidget(self.price_missing_button)
         layout.addLayout(controls)
 
         trade_row = QHBoxLayout()
@@ -308,19 +311,19 @@ class GameInventoryPanel(QWidget):
         self.price_summary = QLabel("Цены CS2 появятся после загрузки снимка инвентаря.")
         self.price_summary.setObjectName("inventorySummary")
         self.price_summary.setWordWrap(True)
-        self.price_summary.setMinimumHeight(76)
+        self.price_summary.setMinimumHeight(56)
         self.price_summary.setStyleSheet(
             "QLabel#inventorySummary { color: #f3f6fb; background: #202a38; "
             "border: 1px solid #43536a; border-radius: 10px; "
-            "padding: 12px 16px; font-size: 16px; font-weight: 700; }"
+            "padding: 8px 12px; font-size: 15px; font-weight: 700; }"
         )
         layout.addWidget(self.price_summary)
 
-        self.table = QTableWidget(0, 10)
+        self.table = QTableWidget(0, 12)
         self.table.setHorizontalHeaderLabels([
-            "Игра", "Предмет", "Тип / качество", "Всего", "Непередаваемые",
-            "Аккаунтов", "Передаваемые", "Статус неизвестен", "Цена",
-            "Владельцы / asset ID",
+            "Игра", "Предмет", "Тип / качество", "Можно продать", "Сумма ASF amount",
+            "Всего", "Непередаваемые", "Аккаунтов", "Передаваемые",
+            "Статус неизвестен", "Ограничение", "Владельцы / asset ID",
         ])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -356,6 +359,8 @@ class GameInventoryPanel(QWidget):
         is_cs2 = self.game_combo.currentData() == "cs2"
         self.price_summary.setVisible(is_cs2)
         self.price_refresh_button.setVisible(is_cs2)
+        self.price_missing_button.setVisible(is_cs2)
+        self.grouping_mode.setVisible(not is_cs2)
         self.load_saved()
 
     def _game_changed(self, *_):
@@ -363,6 +368,8 @@ class GameInventoryPanel(QWidget):
         self.item_filter.setVisible(is_cs2)
         self.price_summary.setVisible(is_cs2)
         self.price_refresh_button.setVisible(is_cs2)
+        self.price_missing_button.setVisible(is_cs2)
+        self.grouping_mode.setVisible(not is_cs2)
         separate_index = self.grouping_mode.findData("separate")
         if separate_index >= 0:
             self.grouping_mode.setItemText(
@@ -700,13 +707,6 @@ class GameInventoryPanel(QWidget):
         selected_instances = [
             item for item in all_instances if item.bot_name in selected_names
         ]
-        snapshot_meta = getattr(self, "cs2_snapshot_meta", {})
-        selected_snapshot_count = sum(
-            1 for name in selected_names if name in snapshot_meta
-        )
-        all_snapshot_count = sum(
-            1 for name in all_names if name in snapshot_meta
-        )
         if getattr(self, "cs2_valuation", None) is None:
             self.cs2_valuation = calculate_valuation(
                 all_instances, getattr(self, "price_quotes", {}),
@@ -729,14 +729,32 @@ class GameInventoryPanel(QWidget):
             f"ВСЕ БОТЫ: {self._russian_count(len(all_names), ('бот', 'бота', 'ботов'))} · "
             f"{self._russian_count(len(all_instances), ('предмет', 'предмета', 'предметов'))} · {all_total}"
         )
-        coverage = (
-            f"Снимки инвентаря: выбрано {selected_snapshot_count}/{len(selected_names)}, "
-            f"всего {all_snapshot_count}/{len(all_names)} аккаунтов. "
-            "Суммы рассчитаны по сохранённым снимкам; неизвестные цены отмечены как частичная оценка."
-        )
-        self.price_summary.setText(f"{selected_line}\n{all_line}\n{coverage}")
+        self.price_summary.setText(f"{selected_line}\n{all_line}")
 
-    def _start_price_refresh(self, manual: bool = False):
+    def _start_missing_price_refresh(self):
+        if (self._price_refresh_running
+                or self.game_combo.currentData() != "cs2"
+                or not getattr(self, "cs2_all_instances", ())):
+            return
+        if self.price_cache_store is None:
+            try:
+                self.price_cache_store = PriceCacheStore(self.database_path)
+            except Exception:
+                self._price_refresh_message = "Кэш цен недоступен; сетевой запрос не выполнен."
+                self.status.setText(self._price_refresh_message)
+                return
+        positions = requestable_positions(self.cs2_all_instances)
+        missing = tuple(
+            position for position in positions
+            if self.price_cache_store.get(position) is None
+        )
+        if not missing:
+            self._price_refresh_message = "Нет доступных позиций без сохранённого снимка цены."
+            self.status.setText(self._price_refresh_message)
+            return
+        self._start_price_refresh(manual=True, positions=missing)
+
+    def _start_price_refresh(self, manual: bool = False, positions=None):
         if (self._price_refresh_running
                 or self.game_combo.currentData() != "cs2"
                 or not getattr(self, "cs2_all_instances", ())):
@@ -747,7 +765,7 @@ class GameInventoryPanel(QWidget):
             except Exception:
                 self.price_summary.setText("Кэш цен недоступен; сетевой запрос не выполнен.")
                 return
-        positions = requestable_positions(self.cs2_all_instances)
+        positions = tuple(positions) if positions is not None else requestable_positions(self.cs2_all_instances)
         due = self.price_cache_store.due_positions(positions)
         eligible_cached = any(
             (quote := self.price_cache_store.get(position)) is not None
@@ -761,10 +779,12 @@ class GameInventoryPanel(QWidget):
                 self._price_refresh_message = (
                     "Кэш актуален; повторный запрос ограничен частотой обновления Steam Ask."
                 )
-                self._update_price_summary()
+                self.status.setText(self._price_refresh_message)
             return
         self._price_refresh_running = True
         self.price_refresh_button.setEnabled(False)
+        if hasattr(self, "price_missing_button"):
+            self.price_missing_button.setEnabled(False)
         worker = _PriceRefreshTask(self.database_path, positions)
         worker.signals.finished.connect(self._price_refresh_finished)
         self._price_worker = worker
@@ -774,10 +794,13 @@ class GameInventoryPanel(QWidget):
         self._price_refresh_running = False
         self._price_worker = None
         self.price_refresh_button.setEnabled(True)
+        if hasattr(self, "price_missing_button"):
+            self.price_missing_button.setEnabled(True)
         self._price_refresh_message = message
         try:
             self._load_price_cache()
             self.render()
+            self.status.setText(message or "Обновление цен завершено.")
         except Exception:
             self.price_summary.setText("Цены сохранены, но не удалось обновить представление.")
 
@@ -944,15 +967,9 @@ class GameInventoryPanel(QWidget):
                 self.items, containers_only=self.item_filter.currentData() == "containers"
             )
         }
-        items_by_key = {
-            (item.game_id, item.bot_name, item.asset_id): item for item in self.items
-        }
+        # CS2 always groups identical market items across selected bots.
+        # The projection splits a market item only by transferability.
         source_groups = projection.groups
-        if self.grouping_mode.currentData() == "separate":
-            source_groups = tuple(
-                build_cs2_inventory_projection((instance,)).groups[0]
-                for instance in projection.instances
-            )
 
         filtered = []
         rarity_by_key = {}
@@ -967,14 +984,12 @@ class GameInventoryPanel(QWidget):
             if not members:
                 continue
             sample = members[0]
-            legacy_items = [items_by_key[item.physical_key] for item in members
-                            if item.physical_key in items_by_key]
-            group_rarities = {item.rarity for item in legacy_items if item.rarity}
+            group_rarities = {item.rarity for item in members if item.rarity}
             group_rarity = next(iter(group_rarities)) if len(group_rarities) == 1 else ""
             rarity_by_key.update((item.physical_key, group_rarity) for item in members)
-            if rarity and not any(item.rarity == rarity for item in legacy_items):
+            if rarity and not any(item.rarity == rarity for item in members):
                 continue
-            if quality and not any((item.exterior or item.quality) == quality for item in legacy_items):
+            if quality and not any((item.exterior or item.quality) == quality for item in members):
                 continue
             haystack = " ".join((
                 sample.name, sample.item_type, sample.market_hash_name, *sample.tags,
@@ -997,12 +1012,7 @@ class GameInventoryPanel(QWidget):
                 rows.append((group, (item,) if item else (), amount,
                              self._cs2_restriction_text(group),
                              self._cs2_marketable_text(group),
-                             self._cs2_restriction_details(group),
-                             asset_price_text(next(
-                                 entry for entry in self.cs2_valuation.assets
-                                 if entry.physical_key == group.instances[0].physical_key
-                             )) if self.grouping_mode.currentData() == "separate" else
-                             group_price_text(group.instances, self.cs2_valuation)))
+                             self._cs2_restriction_details(group)))
             self._render_cs2_table(rows)
         else:
             self._render_cards([(group, group.instances, "cs2") for group in filtered])
@@ -1045,9 +1055,6 @@ class GameInventoryPanel(QWidget):
         entries = []
         for row_data in rows:
             group, legacy, amount, restriction, marketable, restriction_details = row_data[:6]
-            price_text = row_data[6] if len(row_data) > 6 else group_price_text(
-                group.instances, self.cs2_valuation
-            )
             item = legacy[0] if legacy else None
             first = group.instances[0]
             details = " · ".join(value for value in (
@@ -1060,7 +1067,7 @@ class GameInventoryPanel(QWidget):
                 group.instances, next((item.icon_url_large or item.icon_url
                                        for item in group.instances
                                        if item.icon_url_large or item.icon_url), ""),
-                restriction_details, price_text,
+                restriction_details,
             ))
         self._render_table_entries(entries)
 
@@ -1069,11 +1076,11 @@ class GameInventoryPanel(QWidget):
         self.scroll.hide()
         self.table.show()
         self.table.setRowCount(0)
-        self.table.setColumnCount(13)
+        self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels([
             "Игра", "Предмет", "Тип / качество", "Можно продать", "Сумма ASF amount",
             "Всего", "Непередаваемые", "Аккаунтов", "Передаваемые",
-            "Статус неизвестен", "Ограничение", "Цена", "Владельцы / asset ID",
+            "Статус неизвестен", "Ограничение", "Владельцы / asset ID",
         ])
         for values in entries:
             (game, name, details, marketable, amount, restriction,
@@ -1101,9 +1108,7 @@ class GameInventoryPanel(QWidget):
             restriction_item = QTableWidgetItem(restriction)
             restriction_item.setToolTip(restriction_details)
             self.table.setItem(row, 10, restriction_item)
-            price_text = values[9] if len(values) > 9 else PRICE_UNAVAILABLE
-            self.table.setItem(row, 11, QTableWidgetItem(price_text))
-            self.table.setItem(row, 12, QTableWidgetItem(self._owners_text(instances)))
+            self.table.setItem(row, 11, QTableWidgetItem(self._owners_text(instances)))
             if image_url and cached is None:
                 self.image_loader.request(image_url)
         self.table.resizeColumnsToContents()
@@ -1119,13 +1124,8 @@ class GameInventoryPanel(QWidget):
                 rarity = getattr(self, "_cs2_rarity_by_physical_key", {}).get(
                     first.physical_key, ""
                 )
-                if self.grouping_mode.currentData() == "separate":
-                    prices = {entry.physical_key: entry for entry in self.cs2_valuation.assets}
-                    price_text = asset_price_text(prices[first.physical_key])
-                else:
-                    price_text = group_price_text(item.instances, self.cs2_valuation)
                 card = CS2InventoryGroupCard(
-                    item, self.cards_host, rarity=rarity, price_text=price_text
+                    item, self.cards_host, rarity=rarity, show_price=False
                 )
             else:
                 card = GameItemCard(item, self.cards_host, instances=instances)

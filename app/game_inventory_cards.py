@@ -198,7 +198,7 @@ class CS2InventoryGroupCard(QFrame):
     """Compact CS2 inventory card with status tint and a user-facing item-only tooltip."""
 
     def __init__(self, group, parent=None, *, rarity: str = "",
-                 price_text: str = "Цена недоступна"):
+                 price_text: str = "Цена недоступна", show_price: bool = True):
         super().__init__(parent)
         first = group.instances[0]
         color = rarity_color(rarity or first.rarity)
@@ -225,7 +225,7 @@ class CS2InventoryGroupCard(QFrame):
             "border-radius: 10px; }"
             "QLabel { color: #e8edf5; border: none; background: transparent; }"
         )
-        self.setFixedSize(184, 220)
+        self.setFixedSize(184, 220 if show_price else 194)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(7, 6, 7, 6)
         layout.setSpacing(2)
@@ -268,13 +268,14 @@ class CS2InventoryGroupCard(QFrame):
         count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(count)
 
-        price = QLabel(compact_cs2_card_price_text(price_text, group.instance_count))
-        price.setObjectName("price")
-        price.setWordWrap(True)
-        price.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        price.setMaximumHeight(34)
-        price.setStyleSheet("font-size: 8pt;")
-        layout.addWidget(price)
+        if show_price and price_text:
+            price = QLabel(compact_cs2_card_price_text(price_text, group.instance_count))
+            price.setObjectName("price")
+            price.setWordWrap(True)
+            price.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            price.setMaximumHeight(34)
+            price.setStyleSheet("font-size: 8pt;")
+            layout.addWidget(price)
         self.setToolTip(self._tooltip_text())
 
     def _tooltip_text(self):

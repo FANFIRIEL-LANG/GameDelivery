@@ -93,12 +93,9 @@ class CS2PricePanelTests(unittest.TestCase):
 
         panel.render()
 
-        self.assertEqual(panel.cards_layout.count(), 2)
-        asset_ids = {
-            panel.cards_layout.itemAt(index).widget().group.instances[0].asset_id
-            for index in range(panel.cards_layout.count())
-        }
-        self.assertEqual(asset_ids, {"asset-1", "asset-2"})
+        self.assertEqual(panel.cards_layout.count(), 1)
+        grouped = panel.cards_layout.itemAt(0).widget().group
+        self.assertEqual({item.asset_id for item in grouped.instances}, {"asset-1", "asset-2"})
 
     def test_group_card_displays_ruble_unit_and_group_value(self):
         item = CS2InventoryInstance(
@@ -108,13 +105,14 @@ class CS2PricePanelTests(unittest.TestCase):
         group = build_cs2_inventory_projection([item]).groups[0]
 
         card = CS2InventoryGroupCard(
-            group, price_text="Цена единицы: ₽90.00 · Стоимость группы: ₽180.00"
+            group, price_text="Цена единицы: ₽90.00 · Стоимость группы: ₽180.00",
+            show_price=False,
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertIn("Цена: ₽90.00", visible)
-        self.assertNotIn("₽180.00", visible)
-        self.assertNotIn("есть устаревшие данные", visible)
+        self.assertIn("AK-47 | Redline", visible)
+        self.assertNotIn("Цена:", visible)
+        self.assertNotIn("₽", visible)
 
     def test_card_price_text_is_compact_and_hides_stale_marker(self):
         from app.game_inventory_cards import compact_cs2_card_price_text
@@ -149,13 +147,13 @@ class CS2PricePanelTests(unittest.TestCase):
         group = build_cs2_inventory_projection([item]).groups[0]
 
         card = CS2InventoryGroupCard(
-            group, price_text="Цена: $0.03 · Не учитывается в оценке — цена не выше $0.05"
+            group, price_text="Цена: $0.03 · Не учитывается в оценке — цена не выше $0.05",
+            show_price=False,
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertIn("$0.03", visible)
-        self.assertIn("не учитывается", visible)
-        self.assertNotIn("не выше $0.05", visible)
+        self.assertNotIn("Цена:", visible)
+        self.assertNotIn("$0.03", visible)
         self.assertNotIn("₽", visible)
 
     def test_separate_table_rows_show_individual_asset_price(self):
@@ -174,9 +172,11 @@ class CS2PricePanelTests(unittest.TestCase):
 
         panel.render()
 
-        self.assertEqual(panel.table.rowCount(), 2)
-        for row in range(2):
-            self.assertIn("Цена актива: ₽90.00", panel.table.item(row, 11).text())
+        self.assertEqual(panel.table.rowCount(), 1)
+        headers = [panel.table.horizontalHeaderItem(i).text()
+                   for i in range(panel.table.columnCount())]
+        self.assertNotIn("Цена", headers)
+        self.assertIn("asset-1", panel.table.item(0, 11).text())
 
     def test_shared_card_and_summary_use_physical_assets_and_selected_bot_totals(self):
         items = [CS2InventoryInstance(
@@ -196,8 +196,8 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertEqual(panel.cards_layout.count(), 1)
         card = panel.cards_layout.itemAt(0).widget()
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertIn("Цена: ₽90.00/шт. · всего: ₽180.00", visible)
-        self.assertNotIn("есть устаревшие данные", visible)
+        self.assertNotIn("Цена:", visible)
+        self.assertNotIn("₽", visible)
         summary = panel.price_summary.setText.call_args.args[0]
         self.assertIn("ВЫБРАНО: 1 из 1 бота · 2 предмета · ₽180.00", summary)
         self.assertIn("ВСЕ БОТЫ: 1 бот · 2 предмета · ₽180.00", summary)
@@ -243,7 +243,8 @@ class CS2PricePanelTests(unittest.TestCase):
         summary = panel.price_summary.setText.call_args.args[0]
         self.assertIn("ВЫБРАНО: 1 из 3 ботов · 1 предмет · ₽100.00", summary)
         self.assertIn("ВСЕ БОТЫ: 3 бота · 2 предмета · ₽300.00", summary)
-        self.assertIn("всего 2/3 аккаунтов", summary)
+        self.assertNotIn("Снимки инвентаря:", summary)
+        self.assertEqual(summary.count("\n"), 1)
 
     def test_price_network_work_is_submitted_to_worker_pool(self):
         instance = CS2InventoryInstance(
@@ -265,6 +266,41 @@ class CS2PricePanelTests(unittest.TestCase):
         pool.start.assert_called_once()
         self.assertTrue(panel._price_refresh_running)
         self.assertIs(panel._price_worker, pool.start.call_args.args[0])
+
+    def test_missing_price_action_submits_only_positions_without_any_price_snapshot(self):
+        from unittest.mock import patch
+
+        items = [
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "asset-1", "class-1", "0", 1,
+                "AK-47 | Redline", "Rifle", "AK-47 | Redline", True, True,
+            ),
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "asset-2", "class-2", "0", 1,
+                "M4A1-S | Decimator", "Rifle", "M4A1-S | Decimator", True, True,
+            ),
+        ]
+        panel = self.panel_with_items(items)
+        existing = CachedPrice(
+            PricePosition(730, "AK-47 | Redline"), Decimal("1.00"), "USD",
+            None, None, PriceState.CURRENT,
+        )
+        missing_position = PricePosition(730, "M4A1-S | Decimator")
+        store = Mock()
+        store.get.side_effect = lambda position: existing if position == existing.position else None
+        store.due_positions.return_value = (missing_position,)
+        store.fx_rate_due.return_value = False
+        panel.price_cache_store = store
+        panel.price_missing_button = QPushButton()
+        panel.price_refresh_button = QPushButton()
+        pool = Mock()
+
+        with patch("app.game_inventory_panel.QThreadPool.globalInstance", return_value=pool):
+            panel._start_missing_price_refresh()
+
+        worker = pool.start.call_args.args[0]
+        self.assertEqual(worker.positions, (missing_position,))
+        self.assertFalse(panel.price_missing_button.isEnabled())
 
     def test_worker_does_not_fetch_or_convert_fx_for_below_threshold_price(self):
         position = PricePosition(730, "Kilowatt Case")
