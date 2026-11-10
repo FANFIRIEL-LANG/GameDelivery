@@ -81,7 +81,12 @@ class _GameInventoryRefreshTask(QRunnable):
         self.signals = _InventoryRefreshSignals()
 
     def run(self):
-        store = GameInventoryStore(self.database_path)
+        try:
+            store = GameInventoryStore(self.database_path)
+        except Exception as exc:
+            detail = _safe_test_asf_error(exc) if self.test_mode else str(exc)
+            self.signals.finished.emit(0, [f"Не удалось открыть базу снимков: {detail}"], {})
+            return
         succeeded, failed, instances_by_bot = 0, [], {}
         game = next((entry for entry in GAME_CATALOG if entry.game_id == self.game_id), None)
         if game is None:
@@ -629,13 +634,14 @@ class GameInventoryPanel(QWidget):
 
     def _inventory_refresh_finished(self, succeeded: int, failed: list, instances_by_bot: dict):
         self._inventory_refresh_running = False
+        task = self._inventory_refresh_task
+        total = len(task.bot_names) if task is not None else succeeded + len(failed)
         self._inventory_refresh_task = None
         self.load_button.setEnabled(True)
         self.load_all_button.setEnabled(True)
         if self.game_combo.currentData() == "cs2":
             self.cs2_instances_by_bot.update(instances_by_bot)
         self.load_saved()
-        total = succeeded + len(failed)
         message = f"Свежий инвентарь получен: {succeeded} из {total} аккаунтов."
         if failed:
             message += " Не обновлены: " + " | ".join(failed[:5])
