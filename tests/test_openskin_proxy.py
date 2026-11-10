@@ -239,7 +239,7 @@ class OpenSkinProxyTests(unittest.TestCase):
 
         self.assertEqual(status, 403)  # An HTTP response proves the proxy/TLS path connected.
         self.assertEqual(len(requests), 1)
-        self.assertEqual(requests[0][0], "https://api.openskin.dev/")
+        self.assertEqual(requests[0][0], "https://api.openskin.dev/health")
         self.assertEqual(requests[0][5], "GET")
         self.assertEqual(requests[0][2]["Range"], "bytes=0-0")
         self.assertIs(requests[0][4], proxy)
@@ -528,6 +528,36 @@ class OpenSkinProxyTests(unittest.TestCase):
             "Content-Type": "application/json",
             "Retry-After": "30",
         })
+
+    def test_client_accepts_utf8_bom_in_valid_price_json(self):
+        raw = b'\\xef\\xbb\\xbf{"results":[{"item":"AK-47 | Redline","steam":{"ask":12.5,"currency":"USD"}}]}'
+        client = OpenSkinClient(request_func=lambda *_args: (200, raw, {
+            "Content-Type": "application/json",
+        }))
+
+        price, = client.fetch_prices([PricePosition(730, "AK-47 | Redline")])
+
+        self.assertEqual(price.steam_ask, 12.5)
+        self.assertEqual(price.currency, "USD")
+
+    def test_invalid_price_json_logs_safe_response_metadata(self):
+        raw = b"<html>upstream response</html>"
+        client = OpenSkinClient(request_func=lambda *_args: (200, raw, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Encoding": "identity",
+        }))
+
+        with self.assertLogs("integrations.openskin.client", level="WARNING") as captured:
+            with self.assertRaises(OpenSkinError) as caught:
+                client.fetch_prices([PricePosition(730, "AK-47 | Redline")])
+
+        self.assertEqual(caught.exception.category, "invalid_response")
+        output = " ".join(captured.output)
+        self.assertIn("content_type=text/html", output)
+        self.assertIn("content_encoding=identity", output)
+        self.assertIn(f"body_bytes={len(raw)}", output)
+        self.assertIn(raw[:16].hex(), output)
+        self.assertNotIn("upstream response", output)
 
     def test_proxy_probe_logs_safe_traceback_for_unexpected_transport_error(self):
         proxy = OpenSkinProxy(
