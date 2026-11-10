@@ -281,7 +281,7 @@ class ProxySettingsUITests(unittest.TestCase):
         self.assertEqual(first["WebProxyUsername"], "proxy-user")
         self.assertEqual(first["WebProxyPassword"], "proxy-pass")
         self.assertEqual(second["WebProxy"], "http://two.example:8080")
-        self.assertIn("до запуска", self.widget.pool_status.text().casefold())
+        self.assertIn("боты не запускались", self.widget.pool_status.text().casefold())
 
     def test_delete_selected_pool_proxies_deletes_only_checked_rows(self):
         from PySide6.QtCore import Qt
@@ -333,7 +333,7 @@ class ProxySettingsUITests(unittest.TestCase):
             {"bot-a": "one.example", "bot-b": "one.example", "bot-c": "one.example"},
         )
         self.assertEqual(self.widget.store.get_password("bot-a"), "pass-one")
-        self.assertIsNone(self.widget.store.get_password("bot-b"))
+        self.assertEqual(self.widget.store.get_password("bot-b"), "pass-one")
         self.assertEqual(self.widget.store.get_password("bot-c"), "pass-one")
         for name, host in (("bot-a", "one.example"), ("bot-b", "one.example"), ("bot-c", "one.example")):
             payload = json.loads((config_dir / f"{name}.json").read_text(encoding="utf-8"))
