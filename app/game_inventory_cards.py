@@ -153,7 +153,7 @@ class GameItemCard(QFrame):
 def compact_cs2_card_price_text(price_text: str, instance_count: int = 1) -> str:
     """Keep card pricing concise; detailed staleness/diagnostics stay out of the tile."""
     value = str(price_text or "").strip()
-    value = re.sub(r"\\s*·\\s*есть устаревшие данные\\s*$", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*·\s*есть устаревшие данные\s*$", "", value, flags=re.IGNORECASE)
 
     if value.startswith("Цена единицы: "):
         remainder = value.removeprefix("Цена единицы: ")
@@ -163,7 +163,7 @@ def compact_cs2_card_price_text(price_text: str, instance_count: int = 1) -> str
             return "Цена неизвестна"
         if instance_count > 1 and separator:
             match = re.search(
-                r"(Частичная стоимость группы|Стоимость группы):\\s*(₽[0-9]+(?:\\.[0-9]{2})?)",
+                r"(Частичная стоимость группы|Стоимость группы):\s*(₽[0-9]+(?:\.[0-9]{2})?)",
                 tail,
             )
             if match:
