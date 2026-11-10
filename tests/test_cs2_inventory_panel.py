@@ -135,12 +135,12 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertNotIn("Цена: 0", rendered)
         self.assertNotIn("Передаваемый", rendered)
         self.assertIn("#d32ce6", card.styleSheet())
-        self.assertIn("Передаваемый: Да", card.toolTip())
-        self.assertIn("Bot A", card.toolTip())
-        self.assertIn("Bot B", card.toolTip())
-        self.assertIn("Можно продать: Нет", card.toolTip())
-        self.assertIn("Неизвестно", card.toolTip())
-        self.assertIn("ASF amount", card.toolTip())
+        self.assertIn("AK-47 | Redline", card.toolTip())
+        self.assertNotIn("Передаваемый", card.toolTip())
+        self.assertNotIn("Можно продать", card.toolTip())
+        self.assertNotIn("asset", card.toolTip())
+        self.assertNotIn("ASF amount", card.toolTip())
+        self.assertNotIn("market_tradable_restriction", card.toolTip())
 
     def test_group_card_shows_stattrak_only_when_present_and_is_compact(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
@@ -227,10 +227,10 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertNotIn("Статус неизвестен:", visible)
         self.assertIn("Minimal Wear", visible)
         self.assertNotIn("Количество ASF", visible)
-        self.assertIn("asset 1001", card.toolTip())
-        self.assertIn("asset 1002", card.toolTip())
-        self.assertIn("asset 1003", card.toolTip())
-        self.assertIn("market_tradable_restriction: 7", card.toolTip())
+        self.assertIn("Kilowatt Case", card.toolTip())
+        self.assertNotIn("asset", card.toolTip())
+        self.assertNotIn("market_tradable_restriction", card.toolTip())
+        self.assertNotIn("Передаваемый", card.toolTip())
         self.assertIn("border: 2px solid #596273", card.styleSheet())
 
     def test_nontradable_group_card_is_muted_and_keeps_rarity_border(self):
@@ -261,8 +261,8 @@ class CS2InventoryPanelTests(unittest.TestCase):
         )
         card = CS2InventoryGroupCard(build_cs2_inventory_projection([item]).groups[0])
 
-        self.assertFalse(card._has_countdown())
-        self.assertIn("Ограничение: Постоянно непередаваемый", card.toolTip())
+        self.assertNotIn("Постоянно непередаваемый", card.toolTip())
+        self.assertNotIn("Снятие ограничения", card.toolTip())
 
     def test_unknown_release_deadline_never_treats_expiry_as_tradable(self):
         from datetime import datetime, timezone
@@ -288,37 +288,57 @@ class CS2InventoryPanelTests(unittest.TestCase):
         )
         expired = replace(base, tradable_after=deadline)
         card = CS2InventoryGroupCard(build_cs2_inventory_projection([expired]).groups[0])
-        card._refresh_status(now=datetime(2026, 11, 10, tzinfo=timezone.utc))
         self.assertIs(card.group.instances[0].is_tradable, False)
-        self.assertIn("обновите снимок ASF", card.toolTip())
+        self.assertNotIn("Срок истёк", card.toolTip())
+        self.assertNotIn("обновите снимок ASF", card.toolTip())
 
-    def test_price_summary_shows_only_per_bot_totals(self):
+    def test_price_summary_shows_selected_and_all_bot_totals_prominently(self):
         from decimal import Decimal
         from types import SimpleNamespace
 
         panel = self.bare_panel()
-        panel.price_summary = QLabel()
-        panel.cs2_valuation = SimpleNamespace(bot_totals=(
-            SimpleNamespace(
-                bot_name="Bot A", total_rub=Decimal("152.18"),
-                unknown_price_instances=0, awaiting_rate_instances=0,
-                below_threshold_instances=0,
+        panel._selected_bot_names = Mock(return_value=["Bot A", "Bot B"])
+        panel.bot_selection_model = SimpleNamespace(
+            account_names=["Bot A", "Bot B", "Bot C"]
+        )
+        panel.cs2_all_instances = (
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "a1", "class", "0", 1,
+                "AK-47", "Rifle", "AK-47", True, True,
             ),
-            SimpleNamespace(
-                bot_name="Bot B", total_rub=None,
-                unknown_price_instances=2, awaiting_rate_instances=0,
-                below_threshold_instances=0,
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot B", "b1", "class", "0", 1,
+                "M4A1-S", "Rifle", "M4A1-S", True, True,
             ),
-        ))
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot C", "c1", "class", "0", 1,
+                "AWP", "Rifle", "AWP", True, True,
+            ),
+        )
+        panel.cs2_snapshot_meta = {"Bot A": 1, "Bot B": 1, "Bot C": 1}
+        panel.price_quotes = {}
+        panel.usd_rub = None
+        panel.cs2_valuation = SimpleNamespace(
+            selected_total_rub=Decimal("152.18"), is_partial=True,
+            unknown_price_instances=1, awaiting_rate_instances=0,
+            below_threshold_instances=0,
+        )
+        panel.cs2_all_valuation = SimpleNamespace(
+            selected_total_rub=Decimal("300.00"), is_partial=False,
+            unknown_price_instances=0, awaiting_rate_instances=0,
+            below_threshold_instances=0,
+        )
 
         panel._update_price_summary()
 
         summary = panel.price_summary.text()
-        self.assertIn("Bot A: ₽152.18", summary)
-        self.assertIn("Bot B: цена неизвестна", summary)
-        self.assertNotIn("OpenSkin Steam updated", summary)
-        self.assertNotIn("USD/RUB", summary)
-        self.assertNotIn("ошибки API", summary)
+        self.assertIn("ВЫБРАНО: 2 из 3 ботов · 2 предметов · ₽152.18 · частичная оценка", summary)
+        self.assertIn("ВСЕ БОТЫ: 3 ботов · 3 предметов · ₽300.00", summary)
+        self.assertIn("Снимки инвентаря: выбрано 2/2, всего 3/3", summary)
+        self.assertNotIn("Bot A: ₽", summary)
+        self.assertGreaterEqual(panel.price_summary.minimumHeight(), 76)
+        self.assertIn("font-size: 15px", panel.price_summary.styleSheet())
+
 
     def test_existing_panel_render_uses_group_cards_for_cs2_projection(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
