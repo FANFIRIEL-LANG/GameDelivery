@@ -395,6 +395,8 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.cards_host = QWidget(panel)
         panel.cards_layout = QGridLayout(panel.cards_host)
         panel.cards_by_image = {}
+        panel._selected_asset_keys = set()
+        panel.selection_summary = QLabel("Выбрано предметов для заказа: 0")
         panel.image_loader = Mock(cache={})
         panel.width = Mock(return_value=620)
         panel.grouping_mode = QComboBox()
