@@ -426,7 +426,7 @@ class ASFManagementWidget(QWidget):
                     payload["LoginLimiterDelay"] = 0
                     temporary = global_config.with_suffix(".json.gamedelivery-tmp")
                     temporary.write_text(
-                        json.dumps(payload, ensure_ascii=False, indent=2) + "\\n",
+                        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                         encoding="utf-8",
                     )
                     temporary.replace(global_config)
