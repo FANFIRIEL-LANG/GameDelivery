@@ -2781,3 +2781,11 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
   - `3fef3f5e693937d2954fbdc6da61d2fc1f68aabb` — fix probe URL and invalid JSON diagnostics.
   - `743cb0d8d54a1ea6fc6d30e0459bb06318c354d6` — tests for health probe and price JSON diagnostics.
 - На момент записи CI после этих коммитов ещё не проверен; live-причина invalid JSON не установлена. Не считать C.6.3.6 завершённым. После CI потребуется новая Windows-сборка и одна пользовательская проверка: proxy check должен показать HTTP 200 (либо иной фактический health status), затем OpenSkin API check. Если JSON снова невалиден, новый лог покажет content type/encoding/body length/prefix hex и позволит отличить HTML/challenge, пустой/сжатый ответ и другой формат без раскрытия тела или credentials.
+
+
+### Дополнение к C.6.3.6.8 — исправлена ошибка новой регрессии BOM-теста (2026-11-10)
+
+- Первый Tests run `42778077056` на HEAD `e6dbc44` завершился failure не из-за приложения, а из-за некорректно записанного тестового fixture: байты UTF-8 BOM были заданы как буквальные символы `\\xef\\xbb\\xbf`, а не как три BOM-байта. Из-за этого тест `test_client_accepts_utf8_bom_in_valid_price_json` получил invalid JSON. В полном прогоне было `Ran 488 tests`, `FAILED (errors=1)`; после завершения также проявился exit 139 Qt shutdown. Изолированные модули, включая OpenSkin tests, завершились успешно/проверяются на исправленном fixture; не считать этот неуспешный запуск зелёным.
+- Ошибочный fixture исправлен в `tests/test_openskin_proxy.py`: теперь исходник содержит корректный Python bytes literal `b'\\xef\\xbb\\xbf...'`, который создаёт реальные байты UTF-8 BOM.
+- Исправление: commit `37f0eff5a2ee8ddf164652c09d410fa70b730447`.
+- На новом HEAD запущены свежие Tests run `42778806650` и Windows package run `42778806617`; на момент записи оба queued. Результат не объявлять до завершения.
