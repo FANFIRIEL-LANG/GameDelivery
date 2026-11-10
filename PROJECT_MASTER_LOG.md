@@ -3094,3 +3094,25 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 5. Не менять IPCPassword, Steam Guard, ASF лимитеры, proxy assignments и логику batch-start. `LoginLimiterDelay=0` остаётся ранее согласованным; `WebLimiterDelay` и прочие параметры не трогать.
 6. После зелёного CI выдать пользователю новую сборку и попросить один тест одного бота. Не запускать все 107 до подтверждения, что запрос реально идёт на 1243 и возвращает inventory.
 7. Обновить этот журнал после итогового CI с exact SHA, run IDs, artifact ID/SHA-256 и чёткими следующими шагами.
+### 2026-11-10 — ASF IPC endpoint fix: CI failure corrected; verified Windows artifact
+
+**Final code HEAD verified by both required workflows:** `9ba208216537b553e728e0c1fe64389245bb6fbd` (`work/local-sync`).
+
+**CI issue found and corrected:**
+- First full test run `42843090643` failed because `test_default_client_keeps_standard_endpoint_and_existing_password_field` expected the old ASFClient call signature. The panel now explicitly supplies the resolved base_url and alternate-port flag, and QSettings state leaked between tests. Production logic was retained; the test was corrected to mock QSettings with no saved config/executable paths, so it truly tests the no-config fallback.
+- Code adjustment in `app/game_inventory_panel.py`: if no ASF config directory and no ASF executable path are saved, preserve the original default ASFClient constructor call; if a selected ASF path exists, resolve and use its IPC.config endpoint.
+- Test adjustment in `tests/test_cs2_inventory_panel.py`: isolate the default-client test from persisted QSettings values.
+- Earlier run `42844523149` had the same test failure (516 tests, one failure); the isolated per-module diagnostic confirmed it was a test fixture issue, not an IPC resolver failure. After the fixture correction, the full suite passed.
+
+**Final CI results on the same exact HEAD `9ba208216537b553e728e0c1fe64389245bb6fbd`:**
+- Tests run `42844849453`: SUCCESS. Python compile, trade credential tests, trade UI tests, full unit suite: **516 tests passed**, `Ran 516 tests`, `OK`; isolated module diagnostics also completed successfully.
+- Windows package run `42844849258`: SUCCESS. Python compile, Windows trade-secret ACL hardening, PyInstaller GUI build, packaged executable smoke test, build metadata and artifact upload all passed.
+- Artifact: `GameDelivery-Windows-x64`, ID `13777910808`, size `55,027,174` bytes, SHA-256 `47ae75811fdaf1413acbf0064d35f12bda94c8ed4c4f27de36492628cfc6d1a9`, expires `2026-12-10T15:31:13Z`.
+
+**Codex instructions:**
+1. Continue only on `work/local-sync`; read this master log from GitHub and verify exact HEAD before any edit.
+2. Do not change the passing IPC resolver/client/management/game-inventory implementation or its tests without a reproduced defect. Both required CI workflows are green on the exact HEAD above.
+3. Next validation is a user live smoke test: launch the newly built package with the existing ASF setup, refresh inventory for ONE bot, and verify that the request uses the selected ASF endpoint from `IPC.config` (expected user environment: port 1243). Do not refresh all 107 bots until one-bot refresh succeeds.
+4. Do not ask the user to change IPCPassword or restart/reconfigure ASF unless live logs prove authentication or process failure. The earlier failure was endpoint mismatch, not evidence of a wrong password.
+5. Do not change Steam Guard, proxy assignments, ASF throttles, or batch-start logic. Keep the agreed `LoginLimiterDelay=0`; leave other limiters untouched.
+6. After the user reports the one-bot result, inspect only the relevant log/path and proceed one step at a time. Update this log after meaningful changes.
