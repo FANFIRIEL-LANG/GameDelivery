@@ -670,6 +670,8 @@ class GameInventoryPanel(QWidget):
             if valuation.below_threshold_instances:
                 return "нет предметов выше $0.05"
             return "нет данных"
+        if total == 0 and valuation.priced_instances == 0 and valuation.awaiting_rate_instances:
+            return "ожидает курс USD/RUB"
         suffix = " · частичная оценка" if valuation.is_partial else ""
         return f"₽{total:.2f}{suffix}"
 
