@@ -142,6 +142,30 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertIn("Неизвестно", card.toolTip())
         self.assertIn("ASF amount", card.toolTip())
 
+    def test_group_card_shows_stattrak_only_when_present_and_is_compact(self):
+        from games.cs2.inventory_view import build_cs2_inventory_projection
+
+        normal = CS2InventoryInstance(
+            "cs2", 730, 2, "Bot A", "1001", "2001", "0", 1,
+            "AK-47 | Redline", "Classified Rifle", "AK-47 | Redline",
+            True, True, tags=("Classified",), exterior="Field-Tested",
+        )
+        stattrak = replace(
+            normal, asset_id="1002", name="StatTrak™ AK-47 | Redline",
+            market_hash_name="StatTrak™ AK-47 | Redline",
+            tags=("Classified", "StatTrak"),
+        )
+        normal_card = CS2InventoryGroupCard(build_cs2_inventory_projection([normal]).groups[0])
+        stattrak_card = CS2InventoryGroupCard(build_cs2_inventory_projection([stattrak]).groups[0])
+
+        normal_visible = " ".join(label.text() for label in normal_card.findChildren(QLabel))
+        stattrak_visible = " ".join(label.text() for label in stattrak_card.findChildren(QLabel))
+        self.assertNotIn("StatTrak", normal_visible)
+        self.assertIn("StatTrak", stattrak_visible)
+        self.assertIn("Field-Tested", normal_visible)
+        self.assertIn("Количество: 1", normal_visible)
+        self.assertEqual(normal_card.height(), 226)
+
     def test_group_card_uses_only_typed_rarity_source(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
 
@@ -221,7 +245,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
 
         card = CS2InventoryGroupCard(group, rarity="Classified")
 
-        self.assertEqual(card.image.graphicsEffect().opacity(), 0.55)
+        self.assertIsNone(card.image.graphicsEffect())
         self.assertNotIn("Непередаваемые:", " ".join(l.text() for l in card.findChildren(QLabel)))
         self.assertIn("border: 2px solid #d32ce6", card.styleSheet())
 
