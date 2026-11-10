@@ -52,6 +52,8 @@ class ASFManagementWidgetTests(unittest.TestCase):
         self.widget = ASFManagementWidget()
 
     def tearDown(self):
+        if hasattr(self.widget, "_bot_status_poll_timer"):
+            self.widget._bot_status_poll_timer.stop()
         self.widget.close()
         self.widget.deleteLater()
         self.app.processEvents()
@@ -138,6 +140,34 @@ class ASFManagementWidgetTests(unittest.TestCase):
         with patch.object(self.widget, "refresh_bots"):
             self.widget.start_all_bots()
         start_bots.assert_called_once_with(["bot-a", "bot-b"])
+
+    def test_started_bots_are_polled_until_all_are_online(self):
+        self.widget._begin_bot_status_poll(["Bot-A", "bot-b"])
+        self.assertTrue(self.widget._bot_status_poll_timer.isActive())
+        self.widget.table.setRowCount(2)
+        self.widget.table.setItem(0, 0, QTableWidgetItem("bot-a"))
+        self.widget.table.setItem(0, 1, QTableWidgetItem("В сети"))
+        self.widget.table.setItem(1, 0, QTableWidgetItem("bot-b"))
+        self.widget.table.setItem(1, 1, QTableWidgetItem("В сети"))
+
+        with patch.object(self.widget, "refresh_bots"):
+            self.widget._poll_started_bot_status()
+
+        self.assertFalse(self.widget._bot_status_poll_timer.isActive())
+        self.assertIn("2/2", self.widget.status.text())
+
+    def test_bot_status_poll_stops_after_ten_minutes_without_claiming_offline_as_online(self):
+        self.widget._begin_bot_status_poll(["bot-a"])
+        self.widget._bot_status_poll_attempts = 39
+        self.widget.table.setRowCount(1)
+        self.widget.table.setItem(0, 0, QTableWidgetItem("bot-a"))
+        self.widget.table.setItem(0, 1, QTableWidgetItem("Не в сети"))
+
+        with patch.object(self.widget, "refresh_bots"):
+            self.widget._poll_started_bot_status()
+
+        self.assertFalse(self.widget._bot_status_poll_timer.isActive())
+        self.assertIn("0/1", self.widget.status.text())
 
     @patch("app.asf_management.ASFClient.get_bots")
     def test_refresh_lists_loaded_bots_without_secrets(self, get_bots):
