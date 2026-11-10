@@ -312,7 +312,7 @@ class GameInventoryPanel(QWidget):
         self.price_summary.setStyleSheet(
             "QLabel#inventorySummary { color: #f3f6fb; background: #202a38; "
             "border: 1px solid #43536a; border-radius: 10px; "
-            "padding: 12px 16px; font-size: 15px; font-weight: 650; }"
+            "padding: 12px 16px; font-size: 16px; font-weight: 700; }"
         )
         layout.addWidget(self.price_summary)
 
@@ -673,6 +673,20 @@ class GameInventoryPanel(QWidget):
         suffix = " · частичная оценка" if valuation.is_partial else ""
         return f"₽{total:.2f}{suffix}"
 
+    @staticmethod
+    def _russian_count(value: int, forms: tuple[str, str, str]) -> str:
+        value = abs(int(value))
+        tail = value % 100
+        if 11 <= tail <= 14:
+            form = forms[2]
+        elif value % 10 == 1:
+            form = forms[0]
+        elif 2 <= value % 10 <= 4:
+            form = forms[1]
+        else:
+            form = forms[2]
+        return f"{value} {form}"
+
     def _update_price_summary(self, message: str = ""):
         if not hasattr(self, "price_summary"):
             return
@@ -706,11 +720,12 @@ class GameInventoryPanel(QWidget):
         selected_total = self._valuation_total_text(self.cs2_valuation)
         all_total = self._valuation_total_text(self.cs2_all_valuation)
         selected_line = (
-            f"ВЫБРАНО: {len(selected_names)} из {len(all_names)} ботов · "
-            f"{len(selected_instances)} предметов · {selected_total}"
+            f"ВЫБРАНО: {len(selected_names)} из {self._russian_count(len(all_names), ('бота', 'ботов', 'ботов'))} · "
+            f"{self._russian_count(len(selected_instances), ('предмет', 'предмета', 'предметов'))} · {selected_total}"
         )
         all_line = (
-            f"ВСЕ БОТЫ: {len(all_names)} ботов · {len(all_instances)} предметов · {all_total}"
+            f"ВСЕ БОТЫ: {self._russian_count(len(all_names), ('бот', 'бота', 'ботов'))} · "
+            f"{self._russian_count(len(all_instances), ('предмет', 'предмета', 'предметов'))} · {all_total}"
         )
         coverage = (
             f"Снимки инвентаря: выбрано {selected_snapshot_count}/{len(selected_names)}, "
