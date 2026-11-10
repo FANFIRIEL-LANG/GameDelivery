@@ -54,6 +54,9 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.load_button = QPushButton()
         panel.password = QLineEdit()
         panel.status = QLabel()
+        panel.price_summary = QLabel()
+        panel.price_summary.setMinimumHeight(76)
+        panel.price_summary.setStyleSheet("font-size: 15px; font-weight: 650;")
         panel.store = Mock()
         panel.items = []
         panel.cs2_instances_by_bot = {}
@@ -405,7 +408,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
             panel.cards_layout.itemAt(index).widget().toolTip()
             for index in range(panel.cards_layout.count())
         )
-        self.assertIn("Bot A", owner_details)
+        self.assertNotIn("Bot A", owner_details)
         self.assertIn("Bot B", owner_details)
 
     def test_transfer_filter_selects_instances_inside_a_mixed_variant_group(self):
