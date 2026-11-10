@@ -7,13 +7,13 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 from integrations.openskin.client import (
     OpenSkinClient, OpenSkinError, PricePosition, build_qnetwork_proxy,
     classify_qnetwork_error, probe_proxy_connection, redact_network_detail,
-    _log_network_failure, _qt_proxy_request,
+    _log_network_failure, _qt_proxy_request, _read_qnetwork_response_headers,
 )
 from integrations.openskin.proxy import (
     OpenSkinProxy, OpenSkinProxySettingsStore, parse_openskin_proxy_text,
@@ -508,6 +508,27 @@ class OpenSkinProxyTests(unittest.TestCase):
             ("GET", proxy), ("POST", proxy),
         ])
 
+    def test_qnetwork_response_headers_pass_str_names_to_pyside_raw_header(self):
+        class Reply:
+            def rawHeaderList(self):
+                return [QByteArray(b"Content-Type"), QByteArray(b"Retry-After")]
+
+            def rawHeader(self, header_name: str):
+                if not isinstance(header_name, str):
+                    raise TypeError("rawHeader requires str")
+                values = {
+                    "Content-Type": QByteArray(b"application/json"),
+                    "Retry-After": QByteArray(b"30"),
+                }
+                return values[header_name]
+
+        headers = _read_qnetwork_response_headers(Reply())
+
+        self.assertEqual(headers, {
+            "Content-Type": "application/json",
+            "Retry-After": "30",
+        })
+
     def test_proxy_probe_logs_safe_traceback_for_unexpected_transport_error(self):
         proxy = OpenSkinProxy(
             "http", "proxy.example", 8080, "proxy-user", "proxy-pass",
@@ -522,6 +543,7 @@ class OpenSkinProxyTests(unittest.TestCase):
 
         output = "\\n".join(captured.output)
         self.assertIn("context=proxy_probe", output)
+        self.assertEqual(output.count("context=proxy_probe"), 1)
         self.assertIn("exception=TypeError", output)
         self.assertIn("test_openskin_proxy.py", output)
         self.assertIn("broken_request", output)
