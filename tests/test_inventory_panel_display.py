@@ -135,6 +135,20 @@ class InventoryPanelDisplayTests(unittest.TestCase):
         self.assertIn("IsolatedTestBot", panel.bot_list.item(0).text())
         self.assertNotIn("ProductionBot", panel.bot_list.item(0).text())
 
+    def test_steam_inventory_tiles_have_larger_artwork_and_title_layout(self):
+        panel = self.panel()
+
+        panel.render_inventory()
+
+        self.assertEqual(panel.item_grid.iconSize().width(), 96)
+        self.assertEqual(panel.item_grid.iconSize().height(), 84)
+        self.assertEqual(panel.item_grid.gridSize().width(), 196)
+        self.assertEqual(panel.item_grid.gridSize().height(), 190)
+        self.assertEqual(
+            panel.item_grid.itemDelegate().sizeHint(None, panel.item_grid.model().index(0, 0)).height(),
+            190,
+        )
+
     def test_steam_card_tiles_use_compact_inventory_delegate(self):
         panel = self.panel()
 
