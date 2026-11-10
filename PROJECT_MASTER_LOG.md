@@ -2766,3 +2766,18 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Live proxy route / actual HTTP status / OpenSkin pricing API после исправления ещё НЕ проверены. C.6.3.6 остаётся OPEN; не закрывать этап по CI.
 - Следующая и единственная ручная проверка на этом участке: пользователь использует только новый ZIP из artifact `13743906257`, выполняет один `Проверить прокси`, затем один `Проверить OpenSkin API`, присылает безопасные outcome/category/HTTP status и новый `openskin-proxy.log` без proxy line/password. Не повторять старые проверки со старым ZIP.
 - Далее по отдельному плану C.6.3.6: Frankfurter USD/RUB и read-only CS2 730/2 acceptance на изолированном ASF; никаких production ASF 1242, inventory mutations или Steam Trade Offers.
+
+
+## 2026-11-10 — C.6.3.6.8 — OpenSkin live-проверка: HTTP 404 на probe и invalid JSON
+
+- Пользователь провёл live-проверку Windows-сборки и прислал два скриншота/фрагмент лога. Секреты прокси не запрашивались и не сохранялись.
+- Подтверждённый результат: прокси проходит HTTPS CONNECT/SOCKS5 и TLS; контрольный запрос получает HTTP 404. Это означает, что сетевой маршрут установился и HTTP-ответ получен, но не доказывает успешность API price endpoint.
+- По исходнику установлено, что proxy probe обращался к `https://api.openskin.dev/` (корень API host). В публичной документации OpenSkin выделен отдельный health endpoint `GET /health`; корень сайта не является health-check. Поэтому 404 на корне — некорректная контрольная точка, а не диагноз сбоя прокси.
+- Изменение `integrations/openskin/client.py`: probe URL заменён на `https://api.openskin.dev/health`. Probe по-прежнему рассматривает любой HTTP-ответ, кроме 407, как подтверждение сетевого пути; HTTP 503 от health endpoint будет означать, что транспорт доступен, но сервис health сообщает о деградации.
+- Пользовательский лог `2026-11-10T07:42:52Z WARNING OpenSkin API returned invalid JSON` подтверждает отдельный сбой обработки ответа ценового POST-запроса. Точный формат полученного ответа пока неизвестен: текущая версия логировала только общий текст и не сохраняла диагностические метаданные.
+- Изменение `integrations/openskin/client.py`: JSON decoder теперь принимает UTF-8 BOM через `utf-8-sig`; при невалидном JSON логируются только безопасные метаданные ответа: Content-Type, Content-Encoding, размер тела и hex первых 16 байт. Само тело ответа не записывается, proxy credentials редактируются.
+- Регрессионные тесты добавлены в `tests/test_openskin_proxy.py`: health URL, BOM JSON и безопасная диагностика HTML/invalid JSON без записи тела ответа.
+- Коммиты:
+  - `3fef3f5e693937d2954fbdc6da61d2fc1f68aabb` — fix probe URL and invalid JSON diagnostics.
+  - `743cb0d8d54a1ea6fc6d30e0459bb06318c354d6` — tests for health probe and price JSON diagnostics.
+- На момент записи CI после этих коммитов ещё не проверен; live-причина invalid JSON не установлена. Не считать C.6.3.6 завершённым. После CI потребуется новая Windows-сборка и одна пользовательская проверка: proxy check должен показать HTTP 200 (либо иной фактический health status), затем OpenSkin API check. Если JSON снова невалиден, новый лог покажет content type/encoding/body length/prefix hex и позволит отличить HTML/challenge, пустой/сжатый ответ и другой формат без раскрытия тела или credentials.
