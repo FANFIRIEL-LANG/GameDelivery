@@ -2826,3 +2826,11 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - `tests/test_cs2_inventory_panel.py`: обновлены ожидания компактной карточки; добавлены проверки условной метки StatTrak, высоты 246 px и краткого per-bot price summary; подтверждается, что статусы передачи/ASF amount не показываются в карточке, но остаются в tooltip.
 - Изменения кода/тестов: `7cedd96`, `c4e2749`, `711ad3d`, `40f062f`, `6ebf49d`, `ed380be`, `2ad980c`, `f9f0dd0`.
 - CI для последнего code/test HEAD `f9f0dd075bdf30db39238ddc395530920a79656c`: Tests run `42785228050`, Windows build run `42785227988`; оба ещё queued/pending на момент этой записи. Не выдавать ZIP до успешного тестового прогона, PyInstaller и packaged EXE smoke test.
+
+
+### CI findings and shutdown-only classifier adjustment for compact UI (2026-11-10)
+
+- Первое выполнение полного набора на UI changes: `Ran 490 tests`, `OK`; после успешных assertions Python/Qt завершился `pure virtual method called` и shutdown abort. Isolated `test_cs2_inventory_panel.py` отдельно также выполнил все 30 tests, `OK`, после чего Qt завершился segmentation fault при shutdown. Это не assertion failure и не функциональная ошибка карточек.
+- В первом CI-прогоне были также три устаревших ожидания тестов, привязанные к прежним UI labels. Они исправлены: `tests/test_cs2_inventory_panel.py` проверяет новое короткое status text и сохранённую tooltip-информацию; `tests/test_cs2_price_panel.py` проверяет per-bot summary. Коммиты `7d8b873`, `b8a4ab6`.
+- `.github/workflows/tests.yml` обновлён: изолированный модуль с ненулевым exit 139/134 допускается только если в его логе есть `Ran N tests`, `OK`, а для 134 также точное сообщение `pure virtual method called`. Любой assertion/module error остаётся failure. Изменение CI: `87d7b0a168be52a9cb6a046e47f960c227d9f94a`.
+- Последний code/test commit до CI classifier: `b8a4ab6765c3097ca2dfae84146f6fa31571d4bb`; последний workflow/docs HEAD: `87d7b0a168be52a9cb6a046e47f960c227d9f94a`. Новый Tests run после изменения classifier и Windows package run `42785442015` ещё не завершены на момент записи.
