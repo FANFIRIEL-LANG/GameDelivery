@@ -48,7 +48,7 @@ jobs:
           fi
           exit "$result"
       - name: Isolate test modules after full-suite failure or Qt shutdown crash
-        if: failure() || steps.full-suite.outputs.qt_shutdown_exit == '139'
+        if: failure() || steps['full-suite'].outputs.qt_shutdown_exit == '139'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
