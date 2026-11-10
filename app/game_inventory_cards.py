@@ -169,7 +169,7 @@ class CS2InventoryGroupCard(QFrame):
             "border-radius: 10px; }"
             "QLabel { color: #e8edf5; border: none; background: transparent; }"
         )
-        self.setFixedSize(184, 226)
+        self.setFixedSize(184, 246)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(9, 7, 9, 7)
         layout.setSpacing(3)
