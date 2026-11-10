@@ -81,6 +81,61 @@ class GameInventoryParserTests(unittest.TestCase):
             parse_game_inventory(data, "cs2", "Bot A")
 
 
+class GameInventoryRefreshTaskTests(unittest.TestCase):
+    def test_worker_refreshes_only_requested_bots_and_replaces_old_snapshot(self):
+        from app.game_inventory_panel import _GameInventoryRefreshTask
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
+            old = parse_game_inventory(payload(), "cs2", "Bot A")
+            store.replace("cs2", "Bot A", old)
+            client = Mock()
+            empty_payload = {
+                "Success": True,
+                "Result": {"Bot A": {"Assets": [], "Descriptions": []}},
+            }
+            client.get_bot_inventory.return_value = empty_payload
+            task = _GameInventoryRefreshTask(
+                client, Path(directory) / "inventory.sqlite3", "cs2", ["Bot A"]
+            )
+            completed = []
+            task.signals.finished.connect(
+                lambda succeeded, failed, instances: completed.append((succeeded, failed, instances))
+            )
+
+            task.run()
+
+            client.get_bot_inventory.assert_called_once_with(
+                "Bot A", app_id=730, context_id=2, language="english"
+            )
+            self.assertEqual(store.load("cs2", "Bot A"), [])
+            self.assertEqual(store.load_snapshot_meta("cs2"), {"Bot A": 0})
+            self.assertEqual(completed[0][0], 1)
+            self.assertEqual(completed[0][1], [])
+
+    def test_worker_preserves_last_good_snapshot_when_asf_request_fails(self):
+        from app.game_inventory_panel import _GameInventoryRefreshTask
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "inventory.sqlite3"
+            store = GameInventoryStore(database)
+            old = parse_game_inventory(payload(), "cs2", "Bot A")
+            store.replace("cs2", "Bot A", old)
+            client = Mock()
+            client.get_bot_inventory.side_effect = OSError("offline")
+            task = _GameInventoryRefreshTask(client, database, "cs2", ["Bot A"])
+            completed = []
+            task.signals.finished.connect(
+                lambda succeeded, failed, instances: completed.append((succeeded, failed, instances))
+            )
+
+            task.run()
+
+            self.assertEqual(store.load("cs2", "Bot A"), old)
+            self.assertEqual(completed[0][0], 0)
+            self.assertIn("Bot A", completed[0][1][0])
+
+
 class GameInventoryStoreTests(unittest.TestCase):
     def test_refresh_uses_game_route_and_persists_separate_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
