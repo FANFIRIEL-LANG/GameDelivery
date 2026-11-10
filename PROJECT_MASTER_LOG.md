@@ -2798,3 +2798,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Исправленный BOM regression test включён в этот полный успешный прогон. Ошибка fixture из предыдущего запуска устранена.
 - Windows package run `42778806617` на code commit `37f0eff5a2ee8ddf164652c09d410fa70b730447`: compile и Windows trade-secret ACL test прошли; PyInstaller build ещё выполнялся на момент обновления. Не считать пакет готовым, пока workflow не завершится успешно и smoke test/upload не пройдут.
 - Новый live-причина OpenSkin invalid JSON всё ещё не установлена: новые диагностические поля появятся только после проверки свежей сборки, если ошибка повторится.
+
+
+### Windows package completed and archive verified (2026-11-10)
+
+- Windows package workflow `42778806617` завершился **SUCCESS**. Все шаги успешны: compile, Windows trade-secret ACL hardening, PyInstaller build, packaged executable smoke test, build info/readme, artifact upload.
+- Artifact: `GameDelivery-Windows-x64`, ID `13745795141`, размер `55,013,477` bytes, срок хранения до `2026-12-10T07:58:05Z`.
+- ZIP загружен через GitHub Actions artifact download и проверен локально: `unzip -t` — no errors; SHA-256 `a2b3443cfd21309f5181a8c7b53b4b8551aa68a5d83b9d138df219926bac6ba7`.
+- В архиве присутствуют `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`; build commit в BUILD_INFO: `37f0eff5a2ee8ddf164652c09d410fa70b730447`, Python runtime 3.12, onedir.
+- CI smoke test packaged EXE успешен. CI не проверяет live ASF/Steam delivery и live OpenSkin API; C.6.3.6 остаётся открытым до пользовательской проверки OpenSkin на этой сборке.
