@@ -355,6 +355,24 @@ class CS2InventoryPanelTests(unittest.TestCase):
         self.assertIn("font-size: 16px", panel.price_summary.styleSheet())
 
 
+    def test_summary_does_not_show_zero_rubles_when_only_fx_conversion_is_pending(self):
+        from types import SimpleNamespace
+
+        panel = self.bare_panel()
+        panel.cs2_all_instances = ()
+        panel.cs2_snapshot_meta = {}
+        panel.cs2_valuation = SimpleNamespace(
+            selected_total_rub=0, is_partial=True,
+            unknown_price_instances=0, awaiting_rate_instances=1,
+            priced_instances=0, below_threshold_instances=0,
+        )
+        panel.cs2_all_valuation = panel.cs2_valuation
+
+        self.assertEqual(
+            panel._valuation_total_text(panel.cs2_valuation),
+            "ожидает курс USD/RUB",
+        )
+
     def test_existing_panel_render_uses_group_cards_for_cs2_projection(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
 
