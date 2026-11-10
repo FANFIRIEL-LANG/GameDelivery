@@ -7,6 +7,8 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QGridLayout, QLabel, QLineEdit, QScrollArea,
     QPushButton, QTableWidget, QWidget,
@@ -51,6 +53,9 @@ class CS2PricePanelTests(unittest.TestCase):
         panel.cards_host = QWidget()
         panel.cards_layout = QGridLayout(panel.cards_host)
         panel.cards_by_image = {}
+        panel._selected_asset_keys = set()
+        panel.selection_summary = QLabel("Выбрано предметов для заказа: 0")
+        panel.trade_url = QLineEdit("https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc")
         panel.image_loader = Mock(cache={})
         panel.width = Mock(return_value=620)
         panel.items = [InventoryItem(
@@ -104,15 +109,67 @@ class CS2PricePanelTests(unittest.TestCase):
         )
         group = build_cs2_inventory_projection([item]).groups[0]
 
+        second = replace(item, asset_id="asset-2")
+        group = build_cs2_inventory_projection([item, second]).groups[0]
         card = CS2InventoryGroupCard(
             group, price_text="Цена единицы: ₽90.00 · Стоимость группы: ₽180.00",
-            show_price=False,
+            show_price=True,
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
         self.assertIn("AK-47 | Redline", visible)
-        self.assertNotIn("Цена:", visible)
-        self.assertNotIn("₽", visible)
+        self.assertIn("Цена: ₽90.00/шт. · всего: ₽180.00", visible)
+        self.assertIn("₽180.00", visible)
+
+    def test_cs2_tradable_card_click_selects_exact_assets_and_hands_them_to_orders(self):
+        items = [
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "asset-1", "class", "0", 1,
+                "AK-47 | Redline", "Rifle", "AK-47 | Redline", True, True,
+            ),
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "asset-2", "class", "0", 1,
+                "AK-47 | Redline", "Rifle", "AK-47 | Redline", True, True,
+            ),
+        ]
+        panel = self.panel_with_items(items)
+        panel.render()
+        card = panel.cards_layout.itemAt(0).widget()
+        self.assertTrue(card.selectable)
+        spy = QSignalSpy(panel.trade_url_requested)
+
+        QTest.mouseClick(card, Qt.MouseButton.LeftButton)
+
+        self.assertEqual(panel._selected_asset_keys, {("Bot A", "asset-1"), ("Bot A", "asset-2")})
+        self.assertIn("border: 3px solid #4ade80", card.styleSheet())
+        panel._request_order_with_selected_assets()
+        self.assertEqual(spy.count(), 1)
+        self.assertEqual(
+            spy.at(0)[1],
+            [("Bot A", "asset-1"), ("Bot A", "asset-2")],
+        )
+
+    def test_cs2_nontradable_and_unknown_cards_cannot_be_selected(self):
+        items = [
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "blocked", "class-1", "0", 1,
+                "Kilowatt Case", "Container", "Kilowatt Case", False, True,
+            ),
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "unknown", "class-2", "0", 1,
+                "Revolution Case", "Container", "Revolution Case", None, True,
+            ),
+        ]
+        panel = self.panel_with_items(items)
+        panel.render()
+
+        self.assertEqual(panel.cards_layout.count(), 2)
+        for index in range(panel.cards_layout.count()):
+            card = panel.cards_layout.itemAt(index).widget()
+            self.assertFalse(card.selectable)
+            QTest.mouseClick(card, Qt.MouseButton.LeftButton)
+            self.assertFalse(card._selected)
+        self.assertEqual(panel._selected_asset_keys, set())
 
     def test_card_price_text_is_compact_and_hides_stale_marker(self):
         from app.game_inventory_cards import compact_cs2_card_price_text
@@ -148,12 +205,11 @@ class CS2PricePanelTests(unittest.TestCase):
 
         card = CS2InventoryGroupCard(
             group, price_text="Цена: $0.03 · Не учитывается в оценке — цена не выше $0.05",
-            show_price=False,
+            show_price=True,
         )
 
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertNotIn("Цена:", visible)
-        self.assertNotIn("$0.03", visible)
+        self.assertIn("Цена: $0.03 (не учитывается)", visible)
         self.assertNotIn("₽", visible)
 
     def test_separate_table_rows_show_individual_asset_price(self):
@@ -196,8 +252,8 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertEqual(panel.cards_layout.count(), 1)
         card = panel.cards_layout.itemAt(0).widget()
         visible = " ".join(label.text() for label in card.findChildren(QLabel))
-        self.assertNotIn("Цена:", visible)
-        self.assertNotIn("₽", visible)
+        self.assertIn("Цена: ₽90.00/шт. · всего: ₽180.00", visible)
+        self.assertIn("₽180.00", visible)
         summary = panel.price_summary.setText.call_args.args[0]
         self.assertIn("ВЫБРАНО: 1 из 1 бота · 2 предмета · ₽180.00", summary)
         self.assertIn("ВСЕ БОТЫ: 1 бот · 2 предмета · ₽180.00", summary)
