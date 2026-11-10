@@ -49,6 +49,7 @@ class OpenSkinProxyTests(unittest.TestCase):
             ("proxy.example:8082", "http", "proxy.example", 8082, None, None),
             ("user:pass@proxy.example:8083", "http", "proxy.example", 8083, "user", "pass"),
             ("http://encoded%40user:p%3Ass@proxy.example:8084", "http", "proxy.example", 8084, "encoded@user", "p:ss"),
+            ("socks5://ipv6-user:ipv6-pass@[2001:db8::10]:1080", "socks5", "2001:db8::10", 1080, "ipv6-user", "ipv6-pass"),
         ]
         for value, scheme, host, port, username, password in cases:
             with self.subTest(host=host, port=port):
@@ -421,7 +422,7 @@ class OpenSkinProxyTests(unittest.TestCase):
                                         side_effect=transport):
                 widget.proxy_check_button.click()
                 proxy_task = pool.start.call_args.args[0]
-                self.assertEqual(widget.password.text(), "")
+                self.assertEqual(widget.proxy_input.text(), "")
                 proxy_task.run()
                 widget.openskin_check_button.click()
                 api_task = pool.start.call_args.args[0]
