@@ -173,7 +173,7 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertIn("Стоимость группы: ₽180.00", visible)
         summary = panel.price_summary.setText.call_args.args[0]
         self.assertIn("ВЫБРАНО: 1 из 1 бота · 2 предмета · ₽180.00", summary)
-        self.assertIn("ВСЕ БОТЫ: 1 ботов · 2 предметов · ₽180.00", summary)
+        self.assertIn("ВСЕ БОТЫ: 1 бот · 2 предмета · ₽180.00", summary)
 
     def test_price_cache_and_totals_include_all_saved_bots_not_only_selected(self):
         from types import SimpleNamespace
@@ -215,7 +215,7 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertEqual(panel.cs2_all_valuation.selected_total_rub, Decimal("300.00"))
         summary = panel.price_summary.setText.call_args.args[0]
         self.assertIn("ВЫБРАНО: 1 из 3 ботов · 1 предмет · ₽100.00", summary)
-        self.assertIn("ВСЕ БОТЫ: 3 ботов · 2 предметов · ₽300.00", summary)
+        self.assertIn("ВСЕ БОТЫ: 3 бота · 2 предмета · ₽300.00", summary)
         self.assertIn("всего 2/3 аккаунтов", summary)
 
     def test_price_network_work_is_submitted_to_worker_pool(self):
