@@ -71,10 +71,11 @@ class _InventoryRefreshSignals(QObject):
 class _GameInventoryRefreshTask(QRunnable):
     """Fetch fresh per-bot inventories off the UI thread and replace snapshots atomically."""
 
-    def __init__(self, client, database_path, game_id, bot_names, *, test_mode=False):
+    def __init__(self, client, database_path, game_id, bot_names, *, store=None, test_mode=False):
         super().__init__()
         self.client = client
         self.database_path = str(database_path)
+        self.store = store
         self.game_id = str(game_id)
         self.bot_names = tuple(bot_names)
         self.test_mode = bool(test_mode)
@@ -82,7 +83,7 @@ class _GameInventoryRefreshTask(QRunnable):
 
     def run(self):
         try:
-            store = GameInventoryStore(self.database_path)
+            store = self.store or GameInventoryStore(self.database_path)
         except Exception as exc:
             detail = _safe_test_asf_error(exc) if self.test_mode else str(exc)
             self.signals.finished.emit(0, [f"Не удалось открыть базу снимков: {detail}"], {})
@@ -95,6 +96,10 @@ class _GameInventoryRefreshTask(QRunnable):
         for index, bot_name in enumerate(self.bot_names, 1):
             self.signals.progress.emit(index, len(self.bot_names), bot_name)
             try:
+                if self.game_id != "cs2":
+                    refresh_game_inventory(self.client, store, self.game_id, bot_name)
+                    succeeded += 1
+                    continue
                 payload = self.client.get_bot_inventory(
                     bot_name, app_id=game.app_id, context_id=game.context_id,
                     language="english",
@@ -619,11 +624,16 @@ class GameInventoryPanel(QWidget):
             f"Начинаю обновление инвентаря {game_id}: 0/{len(bot_names)} аккаунтов…"
         )
         task = _GameInventoryRefreshTask(
-            client, self.database_path, game_id, bot_names, test_mode=self.test_mode,
+            client, self.database_path, game_id, bot_names,
+            store=self.store, test_mode=self.test_mode,
         )
         task.signals.progress.connect(self._inventory_refresh_progress)
         task.signals.finished.connect(self._inventory_refresh_finished)
         self._inventory_refresh_task = task
+        self._queue_inventory_task(task)
+
+    @staticmethod
+    def _queue_inventory_task(task):
         QThreadPool.globalInstance().start(task)
 
     def _inventory_refresh_progress(self, index: int, total: int, bot_name: str):
