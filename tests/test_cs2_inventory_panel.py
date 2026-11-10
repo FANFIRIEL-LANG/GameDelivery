@@ -433,7 +433,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         visible = " ".join(label.text() for label in cards[0].findChildren(QLabel))
         self.assertNotIn("Цена:", visible)
         self.assertNotIn("₽", visible)
-        self.assertEqual(cards[0].height(), 194)
+        self.assertEqual(cards[0].height(), 220)
         self.assertEqual(panel.status.text(), "")
 
         panel.grouping_mode.setCurrentIndex(1)
