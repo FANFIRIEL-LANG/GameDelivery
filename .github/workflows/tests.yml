@@ -42,16 +42,24 @@ jobs:
           if [ "$result" -eq 139 ] \
             && grep -Eq '^Ran [0-9]+ tests in ' "$RUNNER_TEMP/full-suite.log" \
             && grep -qx 'OK' "$RUNNER_TEMP/full-suite.log"; then
+            touch "$RUNNER_TEMP/full-suite-needs-isolation"
             echo "qt_shutdown_exit=139" >> "$GITHUB_OUTPUT"
             echo "::warning::All unit-test assertions passed; Python/Qt segfaulted only during process shutdown. Every test module will be verified in isolation."
             exit 0
           fi
+          if [ "$result" -ne 0 ]; then
+            touch "$RUNNER_TEMP/full-suite-needs-isolation"
+          fi
           exit "$result"
       - name: Isolate test modules after full-suite failure or Qt shutdown crash
-        if: failure() || steps['full-suite'].outputs.qt_shutdown_exit == '139'
+        if: always()
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          if [ ! -f "$RUNNER_TEMP/full-suite-needs-isolation" ]; then
+            echo "Full suite passed without shutdown crash; isolated diagnostic is not required."
+            exit 0
+          fi
           failures=0
           for test_file in tests/test_*.py; do
             test_name=$(basename "$test_file")
