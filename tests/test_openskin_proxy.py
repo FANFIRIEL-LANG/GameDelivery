@@ -507,3 +507,24 @@ class OpenSkinProxyTests(unittest.TestCase):
         self.assertEqual([(method, selected_proxy) for _, method, selected_proxy in calls], [
             ("GET", proxy), ("POST", proxy),
         ])
+
+    def test_proxy_probe_logs_safe_traceback_for_unexpected_transport_error(self):
+        proxy = OpenSkinProxy(
+            "http", "proxy.example", 8080, "proxy-user", "proxy-pass",
+        )
+
+        def broken_request(*_args, **_kwargs):
+            raise TypeError("transport rejected proxy-user proxy-pass")
+
+        with self.assertLogs("integrations.openskin.client", level="WARNING") as captured:
+            with self.assertRaises(TypeError):
+                probe_proxy_connection(proxy, request_func=broken_request)
+
+        output = "\\n".join(captured.output)
+        self.assertIn("context=proxy_probe", output)
+        self.assertIn("exception=TypeError", output)
+        self.assertIn("test_openskin_proxy.py", output)
+        self.assertIn("broken_request", output)
+        self.assertNotIn("proxy-user", output)
+        self.assertNotIn("proxy-pass", output)
+
