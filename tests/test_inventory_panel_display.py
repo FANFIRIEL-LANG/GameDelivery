@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import (
@@ -52,6 +52,8 @@ class InventoryPanelDisplayTests(unittest.TestCase):
         panel.view_mode.addItem("Таблица подробностей", "table")
         panel.table = QTableWidget()
         panel.item_grid = QListWidget()
+        panel.item_grid.setIconSize(QSize(96, 84))
+        panel.item_grid.setGridSize(QSize(196, 190))
         panel.summary = QLabel()
         panel.statuses = {}
         panel.reservation_rows = {}
