@@ -548,6 +548,9 @@ class GameInventoryPanel(QWidget):
         game_id = str(self.game_combo.currentData() or "")
         if not game_id:
             self.items = []
+            self.cs2_all_instances = ()
+            self.cs2_snapshot_meta = {}
+            self.cs2_all_valuation = None
             self.cs2_projection = None
             self.render()
             return
@@ -607,6 +610,11 @@ class GameInventoryPanel(QWidget):
                 self._start_price_refresh()
         except Exception as exc:
             self.items = []
+            self.cs2_all_instances = ()
+            self.cs2_snapshot_meta = {}
+            self.cs2_all_valuation = None
+            self.cs2_valuation = None
+            self.cs2_projection = None
             self.render()
             self.status.setText(f"Не удалось прочитать снимок: {exc}")
 
@@ -669,7 +677,8 @@ class GameInventoryPanel(QWidget):
         if not hasattr(self, "price_summary"):
             return
         selected_names = set(self._selected_bot_names())
-        all_names = set(getattr(self.bot_selection_model, "account_names", ()))
+        bot_model = getattr(self, "bot_selection_model", None)
+        all_names = set(getattr(bot_model, "account_names", ()))
         all_instances = tuple(getattr(self, "cs2_all_instances", ()))
         all_names.update(item.bot_name for item in all_instances)
         selected_instances = [
@@ -981,11 +990,8 @@ class GameInventoryPanel(QWidget):
         else:
             self._render_cards([(group, group.instances, "cs2") for group in filtered])
 
-        instance_count = sum(group.instance_count for group in filtered)
-        self.status.setText(
-            f"Показано групп: {len(filtered)} из {len(source_groups)} · "
-            f"предметов: {instance_count}."
-        )
+        # The prominent summary above already owns bot/item counts and valuation.
+        self.status.setText("")
 
     @staticmethod
     def _owners_text(instances):
