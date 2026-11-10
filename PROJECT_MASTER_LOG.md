@@ -2863,3 +2863,10 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Windows package workflow `42787999841` на commit `540a4fd6437037be24186588e508dd69985b471d`: **SUCCESS**, включая PyInstaller и packaged EXE smoke test. В этом commit приложение содержит те же последние runtime code blobs, что указаны выше; последующие изменения до HEAD `097beaf` касались только test assertions/fixtures.
 - Artifact `GameDelivery-Windows-x64`, ID `13749961198`, размер `55,009,547` bytes, expiry `2026-12-10`. ZIP скачан и проверен локально (`unzip -t`: no errors); SHA-256 `1264658a5615c2c9046ad1f2c86991c1932b6ade95db1c2ed7a89efe3064a33f`. Содержит `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`; BUILD_INFO: Python 3.12, onedir, build commit `540a4fd...`.
 - Готовая пользовательская сборка: `GameDelivery-CS2-Summary-Tooltip-Cleanup.zip`. Live ASF/Steam delivery этим UI-пакетом не проверялись и не менялись.
+
+
+### Exact-HEAD Windows package for compact CS2 inventory UI (2026-11-10)
+
+- Дополнительная Windows package workflow `42788149163` завершилась **SUCCESS** на точном application/test HEAD `097beaf9b69243418c7a14d464b1a7c2b4fcde60`; packaged EXE smoke test и artifact upload успешны.
+- Финальный artifact `GameDelivery-Windows-x64`, ID `13751030356`, размер `55,010,057` bytes. Скачан и повторно проверен локально: `unzip -t` — no errors; SHA-256 `1eb8ccb81cead102248886e2d33a75cec40d400752d5dc1f2896a08ad1e1bd84`. `BUILD_INFO.txt` подтверждает build commit `097beaf9...`, Python 3.12, onedir.
+- Именно этот exact-HEAD ZIP передаётся пользователю как `GameDelivery-CS2-Summary-Tooltip-Cleanup.zip`.
