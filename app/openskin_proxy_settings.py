@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from integrations.openskin.client import (
     OpenSkinClient, OpenSkinError, PricePosition, probe_proxy_connection,
 )
-from integrations.openskin.proxy import OpenSkinProxy, OpenSkinProxySettingsStore
+from integrations.openskin.proxy import (
+    OpenSkinProxy, OpenSkinProxySettingsStore, parse_openskin_proxy_text,
+)
 
 
 class _CheckSignals(QObject):
@@ -37,7 +38,7 @@ class _ProxyCheckTask(QRunnable):
 
 
 class _OpenSkinCheckTask(QRunnable):
-    def __init__(self, proxy: OpenSkinProxy):
+    def __init__(self, proxy: OpenSkinProxy | None):
         super().__init__()
         self.proxy = proxy
         self.signals = _CheckSignals()
@@ -79,26 +80,14 @@ class OpenSkinProxySettingsWidget(QWidget):
 
         self.enabled = QCheckBox("Использовать прокси для OpenSkin")
         layout.addWidget(self.enabled)
-        form = QFormLayout()
-        self.scheme = QComboBox()
-        self.scheme.addItem("HTTP CONNECT", "http")
-        self.scheme.addItem("SOCKS5", "socks5")
-        self.host = QLineEdit()
-        self.host.setPlaceholderText("proxy.example или IP-адрес")
-        self.port = QSpinBox()
-        self.port.setRange(1, 65535)
-        self.port.setValue(8080)
-        self.username = QLineEdit()
-        self.username.setPlaceholderText("Необязательно")
-        self.password = QLineEdit()
-        self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password.setPlaceholderText("Пустое поле оставляет пароль из хранилища")
-        form.addRow("Тип прокси", self.scheme)
-        form.addRow("IP-адрес или домен", self.host)
-        form.addRow("Порт", self.port)
-        form.addRow("Логин", self.username)
-        form.addRow("Пароль", self.password)
-        layout.addLayout(form)
+        layout.addWidget(QLabel("Прокси — вставь всю строку целиком"))
+        self.proxy_input = QLineEdit()
+        self.proxy_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_input.setPlaceholderText(
+            "http://login:password@host:port | socks5://login:password@host:port | host:port:login:password"
+        )
+        self.proxy_input.setClearButtonEnabled(True)
+        layout.addWidget(self.proxy_input)
 
         buttons = QHBoxLayout()
         self.save_button = QPushButton("Сохранить настройки")
@@ -129,42 +118,77 @@ class OpenSkinProxySettingsWidget(QWidget):
     def _load_profile(self):
         profile = self.store.load_profile()
         self.enabled.setChecked(bool(profile["enabled"]))
-        self.host.setText(str(profile["host"]))
-        self.port.setValue(int(profile["port"]))
-        self.username.setText(str(profile["username"]))
-        index = self.scheme.findData(profile["scheme"])
-        self.scheme.setCurrentIndex(index if index >= 0 else 0)
-        if self.enabled.isChecked():
+        self.proxy_input.clear()
+        host = str(profile.get("host", "") or "")
+        if host:
+            scheme = str(profile.get("scheme", "http") or "http")
+            port = int(profile.get("port", 8080))
+            auth = " (авторизация сохранена)" if profile.get("username") else ""
             self.proxy_status.setText(
-                "Настройки прокси загружены; новые запросы перечитают их автоматически."
+                f"Сохранён {scheme}://{host}:{port}{auth}. Строка с паролем не отображается."
+            )
+        elif self.enabled.isChecked():
+            self.proxy_status.setText(
+                "Прокси включён, но профиль не найден. Вставь строку прокси."
             )
 
-    def _form_proxy(self) -> OpenSkinProxy:
-        username = self.username.text().strip() or None
-        password = self.password.text() or None
-        if username and not password:
-            password = self.store.saved_password()
-        return OpenSkinProxy(
-            str(self.scheme.currentData()), self.host.text(), self.port.value(),
-            username, password,
-        )
+    def _form_proxy(self) -> OpenSkinProxy | None:
+        value = self.proxy_input.text().strip()
+        if value:
+            return parse_openskin_proxy_text(value)
+        if not self.enabled.isChecked():
+            return None
+        proxy = self.store.load_enabled_proxy()
+        if proxy is None:
+            raise ValueError("Вставь прокси целиком в одно поле или выключи прокси.")
+        return proxy
 
     def save_settings(self):
         try:
-            username = self.username.text().strip() or None
-            self.store.save(
-                enabled=self.enabled.isChecked(),
-                scheme=str(self.scheme.currentData()), host=self.host.text(),
-                port=self.port.value(), username=username,
-                password=self.password.text() or None,
-            )
+            value = self.proxy_input.text().strip()
+            profile = self.store.load_profile()
+            if value:
+                proxy = parse_openskin_proxy_text(value)
+            elif self.enabled.isChecked():
+                proxy = self.store.load_enabled_proxy()
+                if proxy is None:
+                    raise ValueError("Вставь прокси целиком в одно поле.")
+            else:
+                proxy = None
+
+            if proxy is not None:
+                self.store.save(
+                    enabled=self.enabled.isChecked(), scheme=proxy.scheme,
+                    host=proxy.host, port=proxy.port, username=proxy.username,
+                    password=proxy.password,
+                )
+                summary = proxy.safe_summary()
+                safe_route = f"{summary['scheme']}://{summary['host']}:{summary['port']}"
+                auth = " (авторизация сохранена)" if summary["authentication"] else ""
+            else:
+                host = str(profile.get("host", "") or "")
+                if host:
+                    self.store.save(
+                        enabled=False, scheme=str(profile.get("scheme", "http")),
+                        host=host, port=int(profile.get("port", 8080)),
+                        username=str(profile.get("username", "") or "") or None,
+                        password=None,
+                    )
+                else:
+                    self.store.save(
+                        enabled=False, scheme="http", host="", port=8080,
+                        username=None, password=None,
+                    )
+                safe_route = ""
+                auth = ""
         except (ValueError, RuntimeError, OSError) as exc:
             self.proxy_status.setText(str(exc))
             return
-        self.password.clear()
+        self.proxy_input.clear()
         self.proxy_status.setText(
-            "Настройки OpenSkin сохранены; новые запросы применят их без перезапуска ASF."
-            if self.enabled.isChecked() else "Прокси OpenSkin выключен; применяется прямое соединение."
+            f"Настройки сохранены: {safe_route}{auth}. Пароль хранится в системном хранилище."
+            if self.enabled.isChecked() and proxy is not None
+            else "Прокси OpenSkin выключен; применяется прямое соединение."
         )
 
     def check_proxy_connection(self):
@@ -172,6 +196,8 @@ class OpenSkinProxySettingsWidget(QWidget):
             return
         try:
             proxy = self._form_proxy()
+            if proxy is None:
+                raise ValueError("Вставь строку прокси или включи сохранённый профиль.")
         except (ValueError, RuntimeError, OSError) as exc:
             self.proxy_status.setText(str(exc))
             return

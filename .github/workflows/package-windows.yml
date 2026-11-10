@@ -17,6 +17,7 @@ on:
   push:
     branches:
       - feature/steam-card-set-selection
+      - work/local-sync
     paths:
       - app/**
       - core/**

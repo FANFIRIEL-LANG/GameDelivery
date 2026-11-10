@@ -6,7 +6,30 @@ from typing import Any
 
 from PySide6.QtCore import QSettings
 
-from integrations.asf.proxy_config import SteamProxy
+from integrations.asf.proxy_config import SteamProxy, parse_proxy_list_text
+
+
+def parse_openskin_proxy_text(value: str) -> "OpenSkinProxy":
+    """Parse one proxy line through the shared ASF parser."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Вставь прокси целиком в одно поле.")
+    line = value.strip()
+    if "://" not in line and "@" in line:
+        line = "http://" + line
+    try:
+        parsed = parse_proxy_list_text(line)
+    except ValueError:
+        raise ValueError(
+            "Не удалось распознать прокси. Используй URI, host:port или host:port:логин:пароль."
+        ) from None
+    if len(parsed) != 1:
+        raise ValueError("Укажи ровно один прокси в одной строке.")
+    proxy = parsed[0]
+    try:
+        return OpenSkinProxy(proxy.scheme, proxy.host, proxy.port,
+                             proxy.username, proxy.password)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from None
 
 
 @dataclass(frozen=True, repr=False)

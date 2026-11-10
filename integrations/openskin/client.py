@@ -99,8 +99,10 @@ class OpenSkinError(RuntimeError):
 
 def classify_qnetwork_error(error, status_code: int, proxy_scheme: str,
                             *, timed_out: bool = False,
-                            request_sent: bool | None = None) -> tuple[str, str]:
-    """Map Qt's transport result to a concise, user-facing failure category."""
+                            request_sent: bool | None = None,
+                            tls_completed: bool = False,
+                            proxy_auth_requested: bool = False) -> tuple[str, str]:
+    """Classify Qt transport using observed authentication, TLS and request milestones."""
     if status_code == 407 or error == QNetworkReply.NetworkError.ProxyAuthenticationRequiredError:
         return "proxy_auth", "Прокси отклонил авторизацию (HTTP 407). Проверь логин и пароль."
     if status_code == 403:
@@ -114,11 +116,21 @@ def classify_qnetwork_error(error, status_code: int, proxy_scheme: str,
 
     network_error = QNetworkReply.NetworkError
     if timed_out:
-        if request_sent is False:
-            if proxy_scheme == "socks5":
-                return "socks5_timeout", "Время ожидания SOCKS5-соединения истекло до отправки запроса."
-            return "proxy_timeout", "Время ожидания proxy/HTTPS-туннеля истекло до отправки запроса."
-        return "response_timeout", "Истекло время ожидания ответа."
+        if request_sent:
+            return "response_timeout", "Запрос отправлен, но удалённый сервер не ответил вовремя."
+        if proxy_auth_requested:
+            return "proxy_auth_timeout", "Прокси запросил авторизацию, но этап авторизации не завершился вовремя."
+        if tls_completed:
+            return "pre_response_timeout", "TLS-соединение установлено, но HTTP-ответ не получен вовремя."
+        if proxy_scheme == "socks5":
+            return "socks5_or_tls_timeout", (
+                "Не завершилось соединение через SOCKS5 или TLS. Qt не подтвердил завершение TLS; "
+                "точный этап сбоя не установлен."
+            )
+        return "connect_or_tls_timeout", (
+            "Не завершилось соединение через HTTP CONNECT или TLS. Qt не подтвердил завершение TLS; "
+            "это не доказывает, что завис именно proxy-туннель."
+        )
     if error == network_error.ProxyNotFoundError:
         return "proxy_dns", "Не удалось разрешить DNS-имя proxy-сервера."
     if error == network_error.HostNotFoundError:
@@ -235,16 +247,37 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     """Use one manager-local proxy for the whole request, including HTTPS CONNECT."""
     if QCoreApplication.instance() is None:
         raise OpenSkinError("Проверка прокси OpenSkin доступна только из приложения.")
+    ssl_error_details: list[str] = []
     manager = QNetworkAccessManager()
     # This is intentionally manager-local and happens before get()/post().
     manager.setProxy(build_qnetwork_proxy(proxy))
+    phase = {
+        "proxy_auth_requested": False,
+        "tls_completed": False,
+        "request_sent": False,
+        "metadata_received": False,
+    }
 
     def apply_auth(_proxy, authenticator: QAuthenticator):
+        phase["proxy_auth_requested"] = True
         if proxy.username is not None:
             authenticator.setUser(proxy.username)
             authenticator.setPassword(proxy.password or "")
 
+    def mark_tls_completed(*_args):
+        phase["tls_completed"] = True
+
+    def mark_ssl_errors(*args):
+        errors = args[-1] if args else ()
+        ssl_error_details.extend(error.errorString() for error in errors)
+
     manager.proxyAuthenticationRequired.connect(apply_auth)
+    encrypted_signal = getattr(manager, "encrypted", None)
+    if encrypted_signal is not None:
+        encrypted_signal.connect(mark_tls_completed)
+    manager_ssl_signal = getattr(manager, "sslErrors", None)
+    if manager_ssl_signal is not None:
+        manager_ssl_signal.connect(mark_ssl_errors)
     request = QNetworkRequest(QUrl(url))
     for name, value in headers.items():
         if name.casefold() == "content-type":
@@ -257,7 +290,6 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         reply = manager.get(request)
     else:
         reply = manager.post(request, body)
-    ssl_error_details: list[str] = []
     reply.sslErrors.connect(
         lambda errors: ssl_error_details.extend(error.errorString() for error in errors)
     )
@@ -265,7 +297,6 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     timer = QTimer()
     timer.setSingleShot(True)
     timed_out = []
-    request_sent = []
 
     def abort_request():
         timed_out.append(True)
@@ -273,7 +304,10 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         event_loop.quit()
 
     reply.finished.connect(event_loop.quit)
-    reply.requestSent.connect(lambda: request_sent.append(True))
+    reply.requestSent.connect(lambda: phase.__setitem__("request_sent", True))
+    metadata_signal = getattr(reply, "metaDataChanged", None)
+    if metadata_signal is not None:
+        metadata_signal.connect(lambda: phase.__setitem__("metadata_received", True))
     timer.timeout.connect(abort_request)
     # A reply may finish before its finished signal is observed; never wait on a missed signal.
     if not reply.isFinished():
@@ -296,11 +330,20 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         if status == 0:
             category, message = classify_qnetwork_error(
                 qt_error, status, proxy.scheme, timed_out=bool(timed_out),
-                request_sent=bool(request_sent) if timed_out else None,
+                request_sent=phase["request_sent"] if timed_out else None,
+                tls_completed=phase["tls_completed"],
+                proxy_auth_requested=phase["proxy_auth_requested"],
             )
             detail = " | ".join(ssl_error_details) or reply.errorString()
+            phase_detail = (
+                f"tls_completed={phase['tls_completed']}; "
+                f"proxy_auth_requested={phase['proxy_auth_requested']}; "
+                f"request_sent={phase['request_sent']}; "
+                f"metadata_received={phase['metadata_received']}"
+            )
             safe_detail = _log_network_failure(
-                category, getattr(qt_error, "name", str(qt_error)), detail, proxy
+                category, getattr(qt_error, "name", str(qt_error)),
+                f"{phase_detail}; {detail}", proxy
             )
             raise OpenSkinError(
                 message, category=category, diagnostic_detail=safe_detail

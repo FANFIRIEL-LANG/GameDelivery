@@ -16,7 +16,7 @@ from integrations.openskin.client import (
     _log_network_failure, _qt_proxy_request,
 )
 from integrations.openskin.proxy import (
-    OpenSkinProxy, OpenSkinProxySettingsStore,
+    OpenSkinProxy, OpenSkinProxySettingsStore, parse_openskin_proxy_text,
 )
 
 
@@ -40,6 +40,39 @@ class OpenSkinProxyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_single_line_proxy_parser_accepts_common_formats(self):
+        cases = [
+            ("http://user:pass@proxy.example:8080", "http", "proxy.example", 8080, "user", "pass"),
+            ("socks5://user:pass@proxy.example:1080", "socks5", "proxy.example", 1080, "user", "pass"),
+            ("proxy.example:8081:user:pass", "http", "proxy.example", 8081, "user", "pass"),
+            ("proxy.example:8082", "http", "proxy.example", 8082, None, None),
+            ("user:pass@proxy.example:8083", "http", "proxy.example", 8083, "user", "pass"),
+            ("http://encoded%40user:p%3Ass@proxy.example:8084", "http", "proxy.example", 8084, "encoded@user", "p:ss"),
+        ]
+        for value, scheme, host, port, username, password in cases:
+            with self.subTest(host=host, port=port):
+                proxy = parse_openskin_proxy_text(value)
+                self.assertEqual(
+                    (proxy.scheme, proxy.host, proxy.port, proxy.username, proxy.password),
+                    (scheme, host, port, username, password),
+                )
+                if password:
+                    self.assertNotIn(password, repr(proxy))
+                    self.assertNotIn(password, str(proxy.safe_summary()))
+
+    def test_single_line_proxy_parser_rejects_unsupported_and_invalid_values_without_echoing_secrets(self):
+        for value in (
+            "https://user:secret@proxy.example:443",
+            "http://user:secret@proxy.example",
+            "proxy.example:70000",
+            "user:secret@proxy.example",
+            "",
+        ):
+            with self.subTest(value=value.split("@")[-1]):
+                with self.assertRaises(ValueError) as caught:
+                    parse_openskin_proxy_text(value)
+                self.assertNotIn("secret", str(caught.exception))
 
     def test_proxy_credentials_are_kept_out_of_repr_and_safe_summary(self):
         proxy = OpenSkinProxy("http", "proxy.example", 8080, "vpn-user", "vault-only")
@@ -155,26 +188,29 @@ class OpenSkinProxyTests(unittest.TestCase):
             (QNetworkReply.NetworkError.SslHandshakeFailedError, 0, "http", False, "tls"),
             (QNetworkReply.NetworkError.UnknownProxyError, 0, "socks5", False, "socks5_handshake"),
             (QNetworkReply.NetworkError.UnknownProxyError, 0, "http", False, "http_tunnel"),
-            (QNetworkReply.NetworkError.OperationCanceledError, 0, "http", True, "response_timeout"),
         ]
         for error, status, scheme, timed_out, expected in cases:
             with self.subTest(expected=expected):
-                category, _message = classify_qnetwork_error(
-                    error, status, scheme, timed_out=timed_out,
-                )
+                category, _message = classify_qnetwork_error(error, status, scheme, timed_out=timed_out)
                 self.assertEqual(category, expected)
 
-        for scheme, sent, expected in (
-            ("http", False, "proxy_timeout"),
-            ("socks5", False, "socks5_timeout"),
-            ("http", True, "response_timeout"),
-        ):
+        timeout_cases = (
+            ("http", False, False, False, "connect_or_tls_timeout"),
+            ("socks5", False, False, False, "socks5_or_tls_timeout"),
+            ("http", False, True, False, "pre_response_timeout"),
+            ("http", False, False, True, "proxy_auth_timeout"),
+            ("http", True, True, False, "response_timeout"),
+        )
+        for scheme, sent, tls_done, auth_requested, expected in timeout_cases:
             with self.subTest(timeout_stage=expected):
-                category, _message = classify_qnetwork_error(
+                category, message = classify_qnetwork_error(
                     QNetworkReply.NetworkError.OperationCanceledError, 0, scheme,
                     timed_out=True, request_sent=sent,
+                    tls_completed=tls_done, proxy_auth_requested=auth_requested,
                 )
                 self.assertEqual(category, expected)
+                if expected == "connect_or_tls_timeout":
+                    self.assertIn("не доказывает", message)
 
     def test_http_statuses_are_distinguished_from_proxy_transport_failures(self):
         from PySide6.QtNetwork import QNetworkReply
@@ -260,7 +296,7 @@ class OpenSkinProxyTests(unittest.TestCase):
         self.assertEqual(proxy_request.call_args.args[-1], proxy)
         direct_request.assert_not_called()
 
-    def test_settings_widget_masks_and_clears_password_without_showing_it(self):
+    def test_settings_widget_uses_one_masked_proxy_line_and_saves_parsed_credentials(self):
         from app.openskin_proxy_settings import OpenSkinProxySettingsWidget
 
         store = Mock()
@@ -268,18 +304,21 @@ class OpenSkinProxyTests(unittest.TestCase):
             "enabled": False, "scheme": "http", "host": "", "port": 8080,
             "username": "",
         }
+        store.load_enabled_proxy.return_value = None
         widget = OpenSkinProxySettingsWidget(store=store)
         widget.enabled.setChecked(True)
-        widget.host.setText("proxy.example")
-        widget.password.setText("hidden-password")
+        widget.proxy_input.setText("http://user:hidden-password@proxy.example:8080")
 
-        self.assertEqual(widget.password.echoMode(), QLineEdit.EchoMode.Password)
+        self.assertEqual(len(widget.findChildren(QLineEdit)), 1)
+        self.assertEqual(widget.proxy_input.echoMode(), QLineEdit.EchoMode.Password)
         widget.save_settings()
 
-        store.save.assert_called_once()
-        self.assertEqual(store.save.call_args.kwargs["password"], "hidden-password")
-        self.assertEqual(widget.password.text(), "")
-        self.assertNotIn("hidden-password", widget.status.text())
+        store.save.assert_called_once_with(
+            enabled=True, scheme="http", host="proxy.example", port=8080,
+            username="user", password="hidden-password",
+        )
+        self.assertEqual(widget.proxy_input.text(), "")
+        self.assertNotIn("hidden-password", widget.proxy_status.text())
 
     def test_proxy_check_task_runs_transport_probe_without_price_request(self):
         from app.openskin_proxy_settings import _ProxyCheckTask
@@ -337,6 +376,7 @@ class OpenSkinProxyTests(unittest.TestCase):
             "enabled": True, "scheme": "http", "host": "proxy.example",
             "port": 8080, "username": "",
         }
+        store.load_enabled_proxy.return_value = OpenSkinProxy("http", "proxy.example", 8080)
         widget = OpenSkinProxySettingsWidget(store=store)
         pool = Mock()
 
