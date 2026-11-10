@@ -298,3 +298,26 @@ Latest exact-HEAD GitHub Actions runs pending at time of this update:
 - Windows package: `42769444129`
 
 Do not treat the prior Windows build artifact from `42769252005` (SHA `7b00dd2`) as final after the auth/CI code change. Wait for the package run on `434f724`, inspect its artifact and self-test. The user's only next check should be on one final package; do not ask for intermediate testing.
+
+
+---
+
+## 2026-11-10 — final implementation/package handoff
+
+**Runtime implementation commit:** `de81fe70f5ae360a609b75c980b373bca4ae519f`. **Current branch after CI/docs corrections:** `work/local-sync`, HEAD `4dccda09f904fa2c0dd2ad5bdc142086f6807bd5`.
+
+### Delivered code
+- OpenSkin proxy settings now use one masked QLineEdit; complete proxy string parsed using shared ASF parser adapter.
+- Accepted common forms include HTTP URI with userinfo, SOCKS5 URI with userinfo, host:port:login:password, host:port and unqualified login:password@host:port. Percent-encoded credentials and bracketed IPv6 covered. Only HTTP CONNECT and SOCKS5 are currently supported.
+- Password stored only in OS keyring; QSettings stores no password. Input clears after save.
+- Proxy remains request-scoped to OpenSkin only. Frankfurter/Steam/ASF IPC/images remain separate.
+- Timeout classification uses observed auth challenge, whether credentials were answered, TLS encrypted, requestSent and metadata markers. TLS verification is not weakened.
+
+### Final tests and package
+- Tests run `42770097317`: SUCCESS, 483 tests, output OK, exit 0 on final run.
+- Windows build run `42769808164`: SUCCESS, all compile/ACL/PyInstaller/smoke/upload steps passed.
+- Artifact `GameDelivery-Windows-x64`, ID `13742020034`; ZIP checked; `GameDelivery.exe` present; `BUILD_INFO.txt` build SHA `de81fe7`, bundled Python 3.12 runtime and Qt.
+- Qt shutdown exit 139 occurred on earlier runs after all assertions or in one failing test run; the final run did not reproduce it. Root cause not established.
+
+### Remaining requirement
+Do not ask the user to test intermediate versions. Provide this one final package and ask for a single local live verification sequence (proxy probe → OpenSkin API → Frankfurter → read-only CS2 730/2 on isolated ASF). C.6.3.6 remains OPEN until this live acceptance. Never send production ASF 1242 or Trade Offers into this test.

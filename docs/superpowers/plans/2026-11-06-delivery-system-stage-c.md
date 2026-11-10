@@ -760,3 +760,18 @@ Implementation on `work/local-sync`:
 - Commits: `abe5fd0da54baa3452699002fec8af4e082687e1`, `7b00dd2812adc48506c7fe62ad899a428da355fe`, `434f7243c7d389fd44f9af3451fd811141515453`.
 
 CI is being rerun on exact HEAD `434f724` after correcting an obsolete test that still referenced the removed `widget.password` input. Do not issue a user download until the exact Windows package workflow and tests finish. C.6.3.6 live acceptance remains pending.
+
+
+---
+
+## 2026-11-10 — C.6.3.6.5 final automated acceptance
+
+The earlier separate-field OpenSkin proxy UI note is superseded. The implemented UI has one masked input, parsed by adapter `parse_openskin_proxy_text()` over the existing ASF shared proxy parser. Supported HTTP CONNECT/SOCKS5 formats and keyring-only credential storage are covered by `tests.test_openskin_proxy`. Network timeout categories use observed proxy auth, auth answer, TLS completion, request sent and response metadata markers.
+
+Final verification:
+- Tests run `42770097317`, branch `work/local-sync`, HEAD `4dccda09f904fa2c0dd2ad5bdc142086f6807bd5`: SUCCESS; 483 tests, final output OK; full suite process exited 0.
+- Windows package run `42769808164`, implementation SHA `de81fe70f5ae360a609b75c980b373bca4ae519f`: SUCCESS. Compile, Windows ACL test, PyInstaller, packaged `GameDelivery.exe --self-test`, and upload completed.
+- Artifact `GameDelivery-Windows-x64`, ID `13742020034`. ZIP inspected successfully; contains `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`; embedded Python runtime 3.12 and Qt are bundled.
+- Earlier Qt exit 139 after test assertions is intermittent and remains unexplained; it did not occur on final run. Do not report it as fixed.
+
+C.6.3.6 remains open only for final live acceptance using this one finished package: OpenSkin proxy check, OpenSkin API read-only price probe, Frankfurter rate, and read-only CS2 730/2 validation on isolated ASF. No production ASF, inventory mutations or trade actions.

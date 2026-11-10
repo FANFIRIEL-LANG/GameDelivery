@@ -2628,3 +2628,50 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Единственный оставшийся user action после выдачи final package: локально в одном поле вставить proxy string (секрет не присылать в чат), сохранить, выполнить proxy probe, API probe; затем Frankfurter FX + read-only CS2 730/2 price acceptance на изолированном ASF.
 - Production ASF 1242, реальный inventory mutation, reservations, создание/подтверждение/отмена Steam Trade Offers запрещены в рамках C.6.3.6.
 - C.6.3.6 остаётся OPEN до successful live proxy probe, OpenSkin pricing API response, Frankfurter FX fetch и read-only CS2 acceptance.
+
+
+---
+
+## 2026-11-10 — C.6.3.6.5 final verification and Windows package ready
+
+### Final exact-HEAD CI
+
+- Implementation/runtime code commit: `de81fe70f5ae360a609b75c980b373bca4ae519f`.
+- CI policy-only descendants: `a376fdfff56da554381028bcf585e98a131dd43f`, `4dccda09f904fa2c0dd2ad5bdc142086f6807bd5`.
+- Final Tests workflow run `42770097317`, exact HEAD `4dccda0`: SUCCESS.
+- `python -m compileall`: SUCCESS.
+- Steam trade credential migration tests: SUCCESS.
+- Full Steam trade UI-flow tests: SUCCESS.
+- Full unit suite: `Ran 483 tests`, final output `OK`, process exit 0 on this final run.
+- Qt shutdown exit 139 did not reproduce on this final run. The root cause of the intermittent earlier Qt shutdown crash remains unknown; do not claim a root cause or code fix. CI fallback was also hardened to detect a post-assertion exit 139 and run every module separately using an explicit runner marker. Earlier run `42769252384` showed 483/483 assertions OK followed by exit 139; isolated fallback completed SUCCESS on that SHA. A later run `42769645392` identified a real new test tuple arity issue (not a Qt issue); it was corrected before the final run.
+- The final test workflow run `42770097317` completed SUCCESS with the full test module's summary `483 tests / OK`. The diagnostic isolation step did not need to run on that final attempt because the full process ended normally.
+
+### Final Windows x64 package
+
+- Windows build workflow run `42769808164` completed SUCCESS on implementation commit `de81fe70f5ae360a609b75c980b373bca4ae519f`.
+- Successful steps: dependency installation, compile, Windows trade-secret ACL test, PyInstaller GUI executable build, packaged executable smoke test (`GameDelivery.exe --self-test`), build-info/package documentation, artifact upload.
+- Uploaded artifact: `GameDelivery-Windows-x64`, artifact ID `13742020034`, 55,013,043 bytes, not expired at time of retrieval.
+- Downloaded archive was inspected: ZIP integrity check SUCCESS, 269 entries, root `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt`.
+- `BUILD_INFO.txt`: Build commit `de81fe70f5ae360a609b75c980b373bca4ae519f`, Python runtime 3.12, package type onedir. Package contains Python and Qt runtime dependencies; user does not need to install Python 3.12 to run this EXE.
+- This artifact contains the exact completed OpenSkin UI/transport implementation. Branch commits after `de81fe7` changed only test-workflow YAML; no runtime application code changed after the package build.
+- CI smoke confirms the executable starts and passes `--self-test`; it does NOT prove live OpenSkin proxy/API, Frankfurter or ASF/Steam account integration.
+
+### Final implementation and tests summary
+
+- OpenSkin UI is one masked input `proxy_input`, not separate host/port/login/password controls.
+- Shared ASF proxy parser adapter accepts HTTP/SOCKS5 URI userinfo, `host:port:login:password`, `host:port`, unqualified `login:password@host:port`, percent-encoded URI credentials and bracketed IPv6.
+- Password remains only in OS Credential Manager/keyring; QSettings holds non-secret profile values. Save clears the input and shows only redacted route/auth status.
+- Proxy remains manager-local and OpenSkin-only. Frankfurter remains direct/separate; no global Qt proxy was introduced.
+- Timeout diagnostics now distinguish proxy auth requested vs credentials answered, TLS encrypted, request sent and response metadata. No unsupported claim that `requestSent=False` proves HTTP CONNECT failure. TLS verification remains enabled.
+- Unit tests cover parser formats/invalid inputs/redaction, UI field count/masking/clearing, timeout classification including auth answer, and existing proxy transport/keyring isolation.
+- No user proxy credentials, IPCPassword, Steam credentials, or raw private logs were added to GitHub.
+
+### Current GitHub state and remaining live acceptance
+
+- Current branch HEAD before this final documentation commit: `4dccda09f904fa2c0dd2ad5bdc142086f6807bd5` (`work/local-sync`). This HEAD includes the runtime code commit `de81fe7` plus CI-only commits and test/handoff documentation corrections.
+- `main` and PR #4 were not changed; no force push.
+- User's old source-test attempt was on an earlier checkout and ended with the timeout message; do not ask them to retest that old folder/version.
+- Deliver one final Windows x64 ZIP only. The user should not install Python 3.12 and should not repeat intermediate checks.
+- C.6.3.6 stays OPEN until one final local live verification succeeds: proxy probe, OpenSkin pricing API probe, Frankfurter USD/RUB retrieval, and read-only CS2 730/2 valuation using isolated non-production ASF. No production ASF 1242, Steam inventory mutation or Trade Offers.
+- User-facing test instruction should be issued once, together with the final ZIP. The user must paste their proxy line locally; never ask them to share it in chat. Results to share are only safe outcome/category/HTTP status.
+
