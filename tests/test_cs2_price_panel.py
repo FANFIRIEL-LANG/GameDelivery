@@ -59,6 +59,14 @@ class CS2PricePanelTests(unittest.TestCase):
             is_tradable=item.is_tradable, is_marketable=item.is_marketable,
         ) for item in items]
         panel.cs2_projection = build_cs2_inventory_projection(items)
+        panel.cs2_all_instances = tuple(items)
+        panel.cs2_snapshot_meta = {name: len([x for x in items if x.bot_name == name])
+                                   for name in {x.bot_name for x in items}}
+        from types import SimpleNamespace
+        panel.bot_selection_model = SimpleNamespace(
+            account_names=sorted({x.bot_name for x in items})
+        )
+        panel.cs2_all_valuation = None
         panel.price_quotes = {}
         panel.usd_rub = None
         panel.cs2_valuation = None
@@ -163,9 +171,8 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertIn("Цена единицы: ₽90.00", visible)
         self.assertIn("Стоимость группы: ₽180.00", visible)
         summary = panel.price_summary.setText.call_args.args[0]
-        self.assertIn("Стоимость предметов по ботам:", summary)
-        self.assertIn("Bot A: ₽180.00", summary)
-        self.assertIn("Bot A: ₽180.00", summary)
+        self.assertIn("ВЫБРАНО: 1 из 1 ботов · 2 предметов · ₽180.00", summary)
+        self.assertIn("ВСЕ БОТЫ: 1 ботов · 2 предметов · ₽180.00", summary)
 
     def test_price_network_work_is_submitted_to_worker_pool(self):
         instance = CS2InventoryInstance(
