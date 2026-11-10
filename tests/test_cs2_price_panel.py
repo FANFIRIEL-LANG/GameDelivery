@@ -174,6 +174,49 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertIn("ВЫБРАНО: 1 из 1 ботов · 2 предметов · ₽180.00", summary)
         self.assertIn("ВСЕ БОТЫ: 1 ботов · 2 предметов · ₽180.00", summary)
 
+    def test_price_cache_and_totals_include_all_saved_bots_not_only_selected(self):
+        from types import SimpleNamespace
+
+        items = [
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot A", "a1", "class", "0", 1,
+                "AK-47 | Redline", "Rifle", "AK-47 | Redline", True, True,
+            ),
+            CS2InventoryInstance(
+                "cs2", 730, 2, "Bot B", "b1", "class", "0", 1,
+                "M4A1-S | Decimator", "Rifle", "M4A1-S | Decimator", True, True,
+            ),
+        ]
+        panel = self.panel_with_items(items)
+        panel._selected_bot_names = Mock(return_value=["Bot A"])
+        panel.bot_selection_model.account_names = ["Bot A", "Bot B", "Bot C"]
+        panel.cs2_snapshot_meta = {"Bot A": 1, "Bot B": 1}
+        quote_a = CachedPrice(
+            PricePosition(730, "AK-47 | Redline"), Decimal("1.00"), "USD",
+            None, None, PriceState.CURRENT,
+        )
+        quote_b = CachedPrice(
+            PricePosition(730, "M4A1-S | Decimator"), Decimal("2.00"), "USD",
+            None, None, PriceState.CURRENT,
+        )
+        panel.price_cache_store = Mock()
+        panel.price_cache_store.get.side_effect = lambda position: {
+            quote_a.position: quote_a, quote_b.position: quote_b,
+        }.get(position)
+        panel.price_cache_store.get_fx_rate.return_value = SimpleNamespace(
+            rate=Decimal("100"), source_date="2026-11-10",
+            fetched_at="2026-11-10T10:00:00+00:00", is_stale=False,
+        )
+
+        panel._load_price_cache()
+
+        self.assertEqual(panel.cs2_valuation.selected_total_rub, Decimal("100.00"))
+        self.assertEqual(panel.cs2_all_valuation.selected_total_rub, Decimal("300.00"))
+        summary = panel.price_summary.setText.call_args.args[0]
+        self.assertIn("ВЫБРАНО: 1 из 3 ботов · 1 предметов · ₽100.00", summary)
+        self.assertIn("ВСЕ БОТЫ: 3 ботов · 2 предметов · ₽300.00", summary)
+        self.assertIn("всего 2/3 аккаунтов", summary)
+
     def test_price_network_work_is_submitted_to_worker_pool(self):
         instance = CS2InventoryInstance(
             "cs2", 730, 2, "Bot A", "asset-1", "class", "0", 1,
