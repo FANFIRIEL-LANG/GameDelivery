@@ -390,11 +390,16 @@ class ASFManagementWidget(QWidget):
         try:
             self._client().get_status()
         except (ASFError, ValueError, OSError):
-            if self._ipc_port_is_open(self._ipc_base_url()):
+            try:
+                configured_endpoint = self._ipc_base_url()
+            except ASFError as config_error:
+                self.status.setText(f"Не удалось определить адрес ASF IPC: {config_error}")
+                return
+            if self._ipc_port_is_open(configured_endpoint):
                 self._pending_start_bot_names.clear()
                 self.status.setText(
-                    "На порту ASF IPC уже есть процесс, но запрос не прошёл. "
-                    "Проверь IPCPassword и настройки ASF; второй экземпляр не запускаю."
+                    f"На {configured_endpoint} уже есть процесс ASF IPC, но запрос не прошёл. "
+                    "Проверь IPCPassword; второй экземпляр не запускаю."
                 )
                 return
         else:
