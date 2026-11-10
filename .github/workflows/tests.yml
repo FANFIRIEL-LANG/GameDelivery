@@ -29,11 +29,26 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: timeout 120s python -m unittest discover -s tests -p test_trade_delivery_ui.py -v
       - name: Run full unit test suite
+        id: full-suite
         env:
           QT_QPA_PLATFORM: offscreen
-        run: timeout 180s python -m unittest discover -s tests -v
-      - name: Isolate test modules after full-suite failure
-        if: failure()
+        shell: bash
+        run: |
+          ulimit -c 0
+          set +e
+          timeout 180s python -m unittest discover -s tests -v > "$RUNNER_TEMP/full-suite.log" 2>&1
+          result=$?
+          cat "$RUNNER_TEMP/full-suite.log"
+          if [ "$result" -eq 139 ] \
+            && grep -Eq '^Ran [0-9]+ tests in ' "$RUNNER_TEMP/full-suite.log" \
+            && grep -qx 'OK' "$RUNNER_TEMP/full-suite.log"; then
+            echo "qt_shutdown_exit=139" >> "$GITHUB_OUTPUT"
+            echo "::warning::All unit-test assertions passed; Python/Qt segfaulted only during process shutdown. Every test module will be verified in isolation."
+            exit 0
+          fi
+          exit "$result"
+      - name: Isolate test modules after full-suite failure or Qt shutdown crash
+        if: failure() || steps.full-suite.outputs.qt_shutdown_exit == '139'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |

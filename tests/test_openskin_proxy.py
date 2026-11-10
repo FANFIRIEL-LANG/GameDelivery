@@ -199,15 +199,17 @@ class OpenSkinProxyTests(unittest.TestCase):
             ("http", False, False, False, "connect_or_tls_timeout"),
             ("socks5", False, False, False, "socks5_or_tls_timeout"),
             ("http", False, True, False, "pre_response_timeout"),
-            ("http", False, False, True, "proxy_auth_timeout"),
-            ("http", True, True, False, "response_timeout"),
+            ("http", False, False, True, False, "proxy_auth_timeout"),
+            ("http", False, False, True, True, "connect_or_tls_timeout"),
+            ("http", True, True, False, False, "response_timeout"),
         )
-        for scheme, sent, tls_done, auth_requested, expected in timeout_cases:
+        for scheme, sent, tls_done, auth_requested, auth_answered, expected in timeout_cases:
             with self.subTest(timeout_stage=expected):
                 category, message = classify_qnetwork_error(
                     QNetworkReply.NetworkError.OperationCanceledError, 0, scheme,
                     timed_out=True, request_sent=sent,
                     tls_completed=tls_done, proxy_auth_requested=auth_requested,
+                    proxy_auth_answered=auth_answered,
                 )
                 self.assertEqual(category, expected)
                 if expected == "connect_or_tls_timeout":

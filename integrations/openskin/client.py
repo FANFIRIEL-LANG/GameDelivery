@@ -101,7 +101,8 @@ def classify_qnetwork_error(error, status_code: int, proxy_scheme: str,
                             *, timed_out: bool = False,
                             request_sent: bool | None = None,
                             tls_completed: bool = False,
-                            proxy_auth_requested: bool = False) -> tuple[str, str]:
+                            proxy_auth_requested: bool = False,
+                            proxy_auth_answered: bool = False) -> tuple[str, str]:
     """Classify Qt transport using observed authentication, TLS and request milestones."""
     if status_code == 407 or error == QNetworkReply.NetworkError.ProxyAuthenticationRequiredError:
         return "proxy_auth", "Прокси отклонил авторизацию (HTTP 407). Проверь логин и пароль."
@@ -118,8 +119,8 @@ def classify_qnetwork_error(error, status_code: int, proxy_scheme: str,
     if timed_out:
         if request_sent:
             return "response_timeout", "Запрос отправлен, но удалённый сервер не ответил вовремя."
-        if proxy_auth_requested:
-            return "proxy_auth_timeout", "Прокси запросил авторизацию, но этап авторизации не завершился вовремя."
+        if proxy_auth_requested and not proxy_auth_answered:
+            return "proxy_auth_timeout", "Прокси запросил авторизацию, но ответ на запрос авторизации не был отправлен вовремя."
         if tls_completed:
             return "pre_response_timeout", "TLS-соединение установлено, но HTTP-ответ не получен вовремя."
         if proxy_scheme == "socks5":
@@ -253,6 +254,7 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     manager.setProxy(build_qnetwork_proxy(proxy))
     phase = {
         "proxy_auth_requested": False,
+        "proxy_auth_answered": False,
         "tls_completed": False,
         "request_sent": False,
         "metadata_received": False,
@@ -263,6 +265,7 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         if proxy.username is not None:
             authenticator.setUser(proxy.username)
             authenticator.setPassword(proxy.password or "")
+            phase["proxy_auth_answered"] = True
 
     def mark_tls_completed(*_args):
         phase["tls_completed"] = True
@@ -333,11 +336,13 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
                 request_sent=phase["request_sent"] if timed_out else None,
                 tls_completed=phase["tls_completed"],
                 proxy_auth_requested=phase["proxy_auth_requested"],
+                proxy_auth_answered=phase["proxy_auth_answered"],
             )
             detail = " | ".join(ssl_error_details) or reply.errorString()
             phase_detail = (
                 f"tls_completed={phase['tls_completed']}; "
                 f"proxy_auth_requested={phase['proxy_auth_requested']}; "
+                f"proxy_auth_answered={phase['proxy_auth_answered']}; "
                 f"request_sent={phase['request_sent']}; "
                 f"metadata_received={phase['metadata_received']}"
             )
