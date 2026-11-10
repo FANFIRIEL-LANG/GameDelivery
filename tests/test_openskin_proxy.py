@@ -14,6 +14,7 @@ from integrations.openskin.client import (
     OpenSkinClient, OpenSkinError, PricePosition, build_qnetwork_proxy,
     classify_qnetwork_error, probe_proxy_connection, redact_network_detail,
     _log_network_failure, _qt_proxy_request, _read_qnetwork_response_headers,
+    _set_qt_request_headers,
 )
 from integrations.openskin.proxy import (
     OpenSkinProxy, OpenSkinProxySettingsStore, parse_openskin_proxy_text,
@@ -507,6 +508,43 @@ class OpenSkinProxyTests(unittest.TestCase):
         self.assertEqual([(method, selected_proxy) for _, method, selected_proxy in calls], [
             ("GET", proxy), ("POST", proxy),
         ])
+
+    def test_qt_price_requests_explicitly_request_identity_encoding(self):
+        class Request:
+            def __init__(self):
+                self.headers = {}
+
+            def setRawHeader(self, name, value):
+                self.headers[name.decode("ascii")] = value.decode("latin-1")
+
+            def setHeader(self, _known_header, value):
+                self.headers["Content-Type"] = value
+
+        request = Request()
+        _set_qt_request_headers(request, {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        })
+
+        self.assertEqual(request.headers["Accept-Encoding"], "identity")
+        self.assertEqual(request.headers["Accept"], "application/json")
+        self.assertEqual(request.headers["Content-Type"], "application/json")
+
+    def test_qt_request_preserves_explicit_accept_encoding(self):
+        class Request:
+            def __init__(self):
+                self.headers = {}
+
+            def setRawHeader(self, name, value):
+                self.headers[name.decode("ascii")] = value.decode("latin-1")
+
+            def setHeader(self, _known_header, value):
+                self.headers["Content-Type"] = value
+
+        request = Request()
+        _set_qt_request_headers(request, {"Accept-Encoding": "gzip"})
+
+        self.assertEqual(request.headers["Accept-Encoding"], "gzip")
 
     def test_qnetwork_response_headers_pass_str_names_to_pyside_raw_header(self):
         class Reply:
