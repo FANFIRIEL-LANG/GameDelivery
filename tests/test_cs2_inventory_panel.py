@@ -379,6 +379,25 @@ class CS2InventoryPanelTests(unittest.TestCase):
             "ожидает курс USD/RUB",
         )
 
+    def test_cs2_game_change_keeps_bot_grouping_mode_visible(self):
+        panel = self.bare_panel()
+        panel.game_combo = QComboBox()
+        panel.game_combo.addItem("CS2", "cs2")
+        panel.item_filter = QComboBox()
+        panel.price_summary = QLabel()
+        panel.price_refresh_button = QPushButton()
+        panel.price_missing_button = QPushButton()
+        panel.grouping_mode = QComboBox()
+        panel.grouping_mode.addItem("Общий вид", "shared")
+        panel.grouping_mode.addItem("Раздельно по ботам", "separate")
+        panel.grouping_mode.setVisible(False)
+        panel.load_saved = Mock()
+
+        panel._game_changed()
+
+        self.assertFalse(panel.grouping_mode.isHidden())
+        self.assertEqual(panel.grouping_mode.itemText(1), "Раздельно по ботам")
+
     def test_existing_panel_render_uses_group_cards_for_cs2_projection(self):
         from games.cs2.inventory_view import build_cs2_inventory_projection
 
@@ -403,6 +422,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.grouping_mode = QComboBox()
         panel.grouping_mode.addItem("Общий вид", "shared")
         panel.grouping_mode.addItem("Раздельно по ботам", "separate")
+        panel.grouping_mode.setVisible(True)
         panel.view_mode = QComboBox()
         panel.view_mode.addItem("Карточки предметов", "cards")
         panel.view_mode.addItem("Таблица подробностей", "table")
@@ -438,13 +458,15 @@ class CS2InventoryPanelTests(unittest.TestCase):
 
         panel.grouping_mode.setCurrentIndex(1)
         panel.render()
-        self.assertEqual(panel.cards_layout.count(), 1)
-        owner_details = " ".join(
-            panel.cards_layout.itemAt(index).widget().toolTip()
-            for index in range(panel.cards_layout.count())
-        )
-        self.assertNotIn("Bot A", owner_details)
-        self.assertNotIn("Bot B", owner_details)
+        self.assertEqual(panel.cards_layout.count(), 2)
+        separated_bots = {
+            card.group.instances[0].bot_name
+            for card in (
+                panel.cards_layout.itemAt(index).widget()
+                for index in range(panel.cards_layout.count())
+            )
+        }
+        self.assertEqual(separated_bots, {"Bot A", "Bot B"})
 
     def test_transfer_filter_selects_instances_inside_a_mixed_variant_group(self):
         panel = self.bare_panel()
