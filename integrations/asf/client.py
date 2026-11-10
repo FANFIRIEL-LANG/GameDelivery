@@ -15,6 +15,79 @@ from urllib.request import Request, urlopen
 
 TEST_ASF_IPC_URL_ENV = "GAMEDELIVERY_TEST_ASF_IPC_URL"
 
+def resolve_asf_ipc_base_url(
+    config_dir: str | Path | None = None,
+    executable_path: str | Path | None = None,
+) -> str:
+    """Resolve ASF's local IPC URL from IPC.config; default to the documented port.
+
+    ASF keeps its Kestrel endpoint in IPC.config. Depending on installation
+    layout that file can live beside the selected config directory or beside
+    ArchiSteamFarm.exe/.dll, so inspect both locations without guessing a port.
+    """
+    candidates: list[Path] = []
+    if config_dir:
+        config_path = Path(config_dir).expanduser()
+        candidates.extend((config_path / "IPC.config", config_path.parent / "IPC.config"))
+    if executable_path:
+        executable = Path(executable_path).expanduser()
+        candidates.append(executable.parent / "IPC.config")
+
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ASFError(f"Не удалось прочитать {path.name}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ASFError(f"{path.name} должен содержать JSON-объект")
+
+        def member(value: Any, name: str) -> Any:
+            if not isinstance(value, dict):
+                return None
+            actual = _find_key(value, name)
+            return value.get(actual) if actual is not None else None
+
+        kestrel = member(payload, "Kestrel")
+        endpoints = member(kestrel, "Endpoints")
+        http = member(endpoints, "Http")
+        url = member(http, "Url")
+        if not isinstance(url, str) or not url.strip():
+            raise ASFError(
+                f"В {path.name} не найден Kestrel.Endpoints.Http.Url; "
+                "проверь конфигурацию ASF IPC"
+            )
+        endpoint = url.strip().rstrip("/")
+        try:
+            parsed = urlsplit(endpoint)
+            port = parsed.port
+        except ValueError:
+            port = None
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or port is None or not 0 < port <= 65535
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path or parsed.query or parsed.fragment
+        ):
+            raise ASFError(
+                f"ASF IPC в {path.name} должен использовать HTTP localhost с явным портом"
+            )
+        return endpoint
+
+    return "http://127.0.0.1:1242"
+
+
+
 
 class ASFError(RuntimeError):
     """Raised when ASF IPC cannot complete a request."""
