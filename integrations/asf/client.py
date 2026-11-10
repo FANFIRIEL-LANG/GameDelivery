@@ -70,8 +70,8 @@ def resolve_asf_ipc_base_url(
         try:
             parsed = urlsplit(endpoint)
             port = parsed.port
-        except ValueError:
-            port = None
+        except ValueError as exc:
+            raise ASFError(f"Некорректный адрес ASF IPC в {path.name}") from exc
         if (
             parsed.scheme != "http"
             or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
