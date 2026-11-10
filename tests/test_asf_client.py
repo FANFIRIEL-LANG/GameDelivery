@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from integrations.asf.client import ASFClient, ASFError
+from integrations.asf.client import ASFClient, ASFError, resolve_asf_ipc_base_url
 
 
 class FakeResponse:
@@ -24,6 +24,47 @@ class FakeResponse:
 
 
 class ASFClientTests(unittest.TestCase):
+    def test_resolve_ipc_endpoint_reads_selected_config_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config_dir = Path(temporary) / "config"
+            config_dir.mkdir()
+            (config_dir / "IPC.config").write_text(json.dumps({
+                "Kestrel": {"Endpoints": {"Http": {"Url": "http://127.0.0.1:1243"}}}
+            }), encoding="utf-8")
+            self.assertEqual(
+                resolve_asf_ipc_base_url(config_dir),
+                "http://127.0.0.1:1243",
+            )
+
+    def test_resolve_ipc_endpoint_checks_asf_home_when_config_file_is_adjacent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            config_dir = home / "config"
+            config_dir.mkdir()
+            (home / "IPC.config").write_text(json.dumps({
+                "Kestrel": {"Endpoints": {"Http": {"Url": "http://localhost:1243/"}}}
+            }), encoding="utf-8")
+            self.assertEqual(
+                resolve_asf_ipc_base_url(config_dir),
+                "http://localhost:1243",
+            )
+
+    def test_resolve_ipc_endpoint_defaults_to_1242_only_when_config_is_absent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(
+                resolve_asf_ipc_base_url(Path(temporary) / "missing"),
+                "http://127.0.0.1:1242",
+            )
+
+    def test_resolve_ipc_endpoint_rejects_non_loopback_or_invalid_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config_dir = Path(temporary)
+            (config_dir / "IPC.config").write_text(json.dumps({
+                "Kestrel": {"Endpoints": {"Http": {"Url": "http://192.168.1.5:1243"}}}
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ASFError, "localhost"):
+                resolve_asf_ipc_base_url(config_dir)
+
     @patch("integrations.asf.client.urlopen")
     def test_status_uses_local_ipc_and_auth_header(self, urlopen):
         urlopen.return_value = FakeResponse({"Success": True})
