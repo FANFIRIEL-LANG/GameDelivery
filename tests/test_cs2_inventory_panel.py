@@ -56,7 +56,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel.status = QLabel()
         panel.price_summary = QLabel()
         panel.price_summary.setMinimumHeight(76)
-        panel.price_summary.setStyleSheet("font-size: 15px; font-weight: 650;")
+        panel.price_summary.setStyleSheet("font-size: 16px; font-weight: 700;")
         panel.store = Mock()
         panel.store.load_snapshot_meta.return_value = {}
         panel.price_cache_store = Mock()
@@ -347,11 +347,11 @@ class CS2InventoryPanelTests(unittest.TestCase):
         panel._update_price_summary()
 
         summary = panel.price_summary.text()
-        self.assertIn("ВЫБРАНО: 2 из 3 ботов · 2 предметов · ₽152.18 · частичная оценка", summary)
-        self.assertIn("ВСЕ БОТЫ: 3 ботов · 3 предметов · ₽300.00", summary)
+        self.assertIn("ВЫБРАНО: 2 из 3 ботов · 2 предмета · ₽152.18 · частичная оценка", summary)
+        self.assertIn("ВСЕ БОТЫ: 3 бота · 3 предмета · ₽300.00", summary)
         self.assertIn("Снимки инвентаря: выбрано 2/2, всего 3/3", summary)
         self.assertNotIn("Bot A: ₽", summary)
-        self.assertIn("font-size: 15px", panel.price_summary.styleSheet())
+        self.assertIn("font-size: 16px", panel.price_summary.styleSheet())
 
 
     def test_existing_panel_render_uses_group_cards_for_cs2_projection(self):
