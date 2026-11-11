@@ -385,6 +385,21 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         response_body = b""
         if method == "POST" and status == 200 and qt_error == QNetworkReply.NetworkError.NoError:
             response_body = bytes(reply.readAll())
+        if method == "POST" and status == 200 and timed_out and not response_body:
+            _logger.warning(
+                "OpenSkin response body timed out after HTTP headers "
+                "status=200 qt_error=%s request_sent=%s metadata_received=%s "
+                "download_received=%s download_total=%s",
+                getattr(qt_error, "name", str(qt_error)), phase["request_sent"],
+                phase["metadata_received"], phase["download_received"],
+                phase["download_total"],
+            )
+            raise OpenSkinError(
+                "OpenSkin прислал HTTP-заголовки, но тело ответа не загрузилось за отведённое время. "
+                "Проверь доступность API через прокси и повтори позже.",
+                http_status=200, category="response_timeout",
+                diagnostic_detail="HTTP 200 headers received; response body timed out",
+            )
         if method == "POST" and status == 200 and not response_body:
             def response_header(name):
                 value = next(
@@ -473,7 +488,7 @@ def probe_proxy_connection(proxy: OpenSkinProxy, *, timeout: float = 15.0,
 class OpenSkinClient:
     """Sends sequential batches and reads only steam.ask from ordered results."""
 
-    def __init__(self, *, timeout: float = 20.0,
+    def __init__(self, *, timeout: float = 45.0,
                  request_func: Callable | None = None,
                  proxy_request_func: Callable | None = None,
                  proxy: OpenSkinProxy | None = None):
