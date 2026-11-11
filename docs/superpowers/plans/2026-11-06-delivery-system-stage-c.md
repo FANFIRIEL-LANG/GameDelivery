@@ -792,3 +792,117 @@ Fix: commit d08b7e13ef49801b86624837c655922ec6d69259 направляет test-m
 Пользователь обновил выбранного тестового бота через уже настроенный ASF endpoint 127.0.0.1:1243 и сравнил полученный CS2 730/2 inventory с фактическим инвентарём в ASF. Пользователь подтвердил полное совпадение. Live gate получения/снимка/отображения CS2-инвентаря в test-mode закрыт. Автоматические 526 tests и Windows Build/package smoke test ранее прошли. Test-mode использует отдельную SQLite, а order handoff отключён. Не повторять проверку без конкретной причины.
 
 Это не подтверждает отправку CS2-предметов через delivery pipeline. OpenSkin proxy/API acceptance из C.6.3.6 остаётся отдельным gate, если он не закрыт отдельным live-результатом.
+
+
+---
+
+## C.2.8 — Сквозной процесс заказа, проверка Steam-получателя и точность идентификаторов
+
+<badge>Статус: требования уточнены пользователем 2026-11-11; реализация не начата</badge>
+
+Этот раздел дополняет C.2.1–C.2.7 и не отменяет их. Целевой путь — один управляемый lifecycle от подтверждённой покупки до фактически принятого Steam-обмена. Steam Cards и CS2 используют общий order/delivery orchestration, но разные валидаторы и delivery handlers.
+
+### A. Источник заказа и идентичность покупателя
+
+1. Подтверждённое событие покупки создаёт отдельный `Deal` и отдельный внутренний `Order`. Уникальный внешний ключ сделки — минимум `(marketplace, external_deal_id)`; повторный импорт/повторное событие для того же deal не создаёт второй заказ, резерв или отправку.
+2. `customer_id`, `chat_id`, `deal_id`, `listing_id`, `order_id`, SteamID64 и trade URL — разные идентификаторы и не заменяют друг друга.
+3. Для одного диалога Playerok сохраняется один постоянный `chat_id`, связанный с покупателем. Новая покупка того же покупателя создаёт новый `deal_id` и новый `order_id`, но не новый заказ в старом deal и не перезаписывает `chat_id`. Один chat может иметь много deals/orders; связь `chat_id → deals[]` — one-to-many. Уникальность заказа по `chat_id` запрещена.
+4. Сохранять внешний `customer_id` отдельно от `chat_id`: один и тот же покупатель может иметь несколько диалогов, а один диалог — много сделок. При повторном импорте обновлять только подтверждённые изменяемые поля сделки; канонический chat reference и исторические связи не перезаписывать. Если площадка неожиданно возвращает другой chat ID для того же диалога, фиксировать alias/conflict для проверки, а не молча менять старый ID.
+5. SteamID64 получателя — отдельная проверенная identity, извлечённая/подтверждённая из trade URL и проверенная через ASF/Steam Community identity response. Не считать username, display name или partner number достаточным подтверждением личности.
+6. До выполнения заказа сохранять snapshot listing/config version, promised quantity, выбранный delivery handler, разрешённый пул ботов/ресурсов и исходные external IDs. Изменение объявления не меняет уже созданное обязательство.
+7. Базовая загрузка старых сделок, повторное сканирование истории, новое сообщение в чате или смена unread count не являются основанием для автоматической выдачи. Запуск delivery разрешён только на однозначно подтверждённом новом paid event/состоянии, с дедупликацией по deal ID.
+
+### B. Нормализация trade URL и предварительная проверка получателя
+
+До чтения значков и подбора активов отдельный recipient preflight должен разобрать и проверить ссылку:
+
+- разрешать только HTTPS и точный ожидаемый Steam Community host/path `/tradeoffer/new`; валидировать обязательные `partner` и `token`, формат и длину token, отсутствие дублирующих/конфликтующих параметров и недопустимых redirect/host;
+- вычислять/проверять SteamID64 из partner по корректному SteamID conversion и подтверждать, что Steam identity response соответствует ожидаемому профилю; не доверять одному partner без identity check;
+- хранить trade token только в защищённом хранилище, не писать полную ссылку, token, cookies или IPC secret в логи, Telegram, Playerok или diagnostics. В журнале допустимы только безопасный идентификатор заказа и факт наличия/валидности ссылки;
+- отдельно проверять достижимость профиля, корректность individual Steam account identity, доступность требуемых публичных данных, доступность inventory, trade permissions/ограничения получателя и возможность ASF/Steam выполнить offer;
+- не путать валидную синтаксически trade URL с разрешением торговать: ссылка может быть корректной, но профиль/инвентарь приватный, пользователь не может принимать обмены, ссылка отозвана/устарела, SteamID не совпадает, trade restriction активен либо Steam/ASF временно недоступны;
+- проверять фактические ответы Steam/ASF и final URI/identity, а не только HTTP 200. Redirect на login, challenge, community error page, HTML вместо ожидаемого JSON, неполная pagination или некорректный JSON — не успешная проверка;
+- сохранять `recipient_preflight` как отдельный результат с `checked_at`, безопасным SteamID64, классифицированным outcome, источником и retryability. Результат имеет ограниченный срок актуальности; перед отправкой повторно проверять получателя и каждый asset.
+
+Классы результата должны быть явными, а не одним сообщением «ошибка»: `invalid_trade_url`, `recipient_identity_mismatch`, `profile_private_or_unavailable`, `badges_private_or_unavailable`, `inventory_private_or_unavailable`, `trade_disabled_or_restricted`, `trade_url_revoked_or_invalid`, `recipient_not_tradeable`, `steam_rate_limited`, `steam_unavailable`, `asf_bot_unavailable`, `malformed_or_incomplete_response`, `unknown`. Различать permanent/blocking и transient/retryable причины. Не утверждать конкретную причину, если Steam/ASF её достоверно не сообщает: показывать «причина не подтверждена» и исходные безопасные diagnostic details.
+
+При проблеме приватности заказ переходит в ожидание действий покупателя, не резервирует активы навсегда и не отправляет offer. Покупателю направляется одна понятная инструкция со всеми необходимыми настройками профиля/игровых сведений/значков/инвентаря; инструкция повторно не спамится при каждом poll. После `!настроил приватность` выполнять повторную проверку. Команда связывается с конкретным deal/order, а не только с chat: если в одном чате несколько одновременно ожидающих заказов, нельзя угадывать, какой заказ продолжать; использовать короткий order reference или запросить уточнение. Команда идемпотентна и не обходит уже начатые/unknown отправки.
+
+### C. Получение badge data и точное определение карточек
+
+Для Steam Trading Cards:
+
+1. Использовать ASF session-aware Steam Community provider; не добавлять прямой Steam Web API путь без отдельного решения. Сначала повторно использовать существующую read-only `gamedelivery-diagnose`, не создавать второй диагностический provider.
+2. Проверять каждый релевантный AppID: наличие корректного badge response, идентичность профиля, AppID, обычный/foil border/type, level/maxLevel и полный список `rgCards`. Отсутствие ответа не равно level 0; level 0 принимается только из валидного полного ответа.
+3. Authoritative set definition — полный набор уникальных ordinary-card `markethash` из проверенных badge metadata. Не строить состав по тем карточкам, которые случайно есть у наших ботов: отсутствующая у продавцов карточка всё равно может входить в полный набор. Не смешивать foil badge/card с обычным.
+4. Подтвердить exact mapping `rgCards[].markethash` ↔ ASF `MarketHashName` на нескольких играх. Никакого fuzzy match по display name, перевода, обрезания, локализованного названия или приблизительного совпадения. Неоднозначность блокирует подбор и даёт diagnostic, а не молча пропускает карту.
+5. Инвентарь покупателя читать полностью, с pagination, dedup и проверкой completeness; считать только обычные TradingCard с соответствующим `RealAppID` и exact `MarketHashName`. Для buyer inventory учитывать `Amount` независимо от tradable, так как собственные неторгуемые карточки уже могут закрывать набор. Не использовать reverse-engineered поле `owned` как источник истины.
+6. Число полных наборов покупателя по игре считать как минимум количества экземпляров каждой обязательной MarketHashName из authoritative set definition. Частичные наборы не вычитать. Уровень значка и полные наборы учитывать вместе по утверждённой формуле C.2.2; border/type проверять до расчёта.
+7. Донорский пул ботов читать отдельно: только обычные карты с подтверждённой `tradable=true`, свежим snapshot, точным `(bot_name, asset_id)` и отсутствием другого резерва. Buyer-owned counts никогда не смешивать с seller inventory/reservations.
+8. Проверить Steam level 0–5, level 5, 0/частичные/несколько полных buyer sets, duplicate inventory entries, amount >1, foil, неизвестный AppID, отсутствующую карту, неполную pagination, privacy и transient errors. Сохранять безопасный snapshot входных данных/версии расчёта для аудита, но не сохранять лишние персональные данные покупателя.
+
+### D. Подбор, общий пул, список отправки и атомарная резервация
+
+- После успешного recipient/badge preflight система получает точное обещанное количество из OrderLine и автоматически выбирает игры/наборы по утверждённому C.2.7 allocation. Если точное количество полных наборов собрать невозможно, не отправлять ни одного offer и не резервировать частичный заказ.
+- Планировщик строит immutable delivery manifest: для каждого набора — AppID, set identity и ровно по одному asset каждого требуемого card hash; для каждого asset — точные `bot_name`, `asset_id`, AppID/context, MarketHashName, snapshot version и tradability evidence.
+- Перед фиксацией manifest проверять повторные asset IDs, конфликтующие reservations, свежесть snapshot, полный состав набора, точное количество, наличие всех required bots и совместимость handler. Резервирование всех активов заказа атомарное: либо зарезервирован весь manifest, либо не зарезервировано ничего.
+- Составлять delivery legs группировкой manifest по отправляющему ASF bot и recipient. Каждая leg содержит точный immutable asset list, recipient SteamID64, bot, app/context, idempotency key, own status and attempt history. Один заказ может включать несколько offers; один набор может состоять из карточек разных ботов.
+- До первого внешнего вызова сохранить parent order, все legs, asset reservations и idempotency keys. Перед каждой leg заново проверить доступность бота, recipient, exact asset ownership, свежий live inventory, tradable/type/app/context и совпадение с manifest. Если до первого offer одна из проверок не прошла — ни один offer не создаётся, весь безопасно снимаемый reservation освобождается.
+- Отправлять legs управляемо (первоначально последовательно, если не доказана безопасность параллельного исполнения), фиксировать результат каждой отдельно. Не считать успех одной leg успехом всего заказа. После начала внешних действий частичный успех физически не откатывается: уже созданные/принятые legs не повторять; остальные переводить в retryable/unknown/manual reconciliation согласно достоверному исходу.
+- Для CS2 использовать отдельный handler с AppID 730/context 2, exact asset IDs и проверкой restriction/tradable; badge analysis к CS2 не применяется. Общий lifecycle не должен смешивать Steam Community 753/6 и игровые 730/2.
+
+### E. Отслеживание Steam offer и статусы
+
+Хранить три независимых уровня статусов:
+
+1. **Marketplace Deal status** — статус сделки на Playerok (например, paid/sent/confirmed в фактической терминологии API). Его нельзя подменять внутренним статусом заказа и нельзя изменять, пока не реализован разрешённый и проверенный marketplace action.
+2. **Parent Order status** — общий статус выполнения обязательства в GameDelivery.
+3. **DeliveryLeg / Steam Offer status** — состояние каждого конкретного предложения от отдельного бота, включая Steam offer ID, bot, timestamps, last checked, attempts и подтверждение Steam Guard/mobile confirmation.
+
+Для UI сохранить пользовательские понятные состояния, которые пользователь ранее назвал: **«Выполняется», «Отправлен», «Отклонён», «Принят»**, но определять их строго:
+- «Выполняется» — заказ обрабатывается/ожидает приватность/проверку/подбор/резерв/создание и подтверждение offers; в деталях обязательно показывать конкретную причину ожидания.
+- «Отправлен» — все обязательные legs созданы и реально находятся в состоянии, означающем отправленное/активное предложение для покупателя. Если Steam требует mobile confirmation и она ещё не выполнена, не показывать окончательный «Отправлен»: показывать отдельное ожидание подтверждения отправителя.
+- «Отклонён» — Steam достоверно сообщил declined для соответствующей leg. На parent order этот статус допустим как общий только если отклонены все обязательные legs и нет другой активной/принятой leg; при смешанном результате показывать «Частично исполнен / требуется решение» с деталями legs.
+- «Принят» — все обязательные Steam offers заказа достоверно приняты, и ASF/Steam подтвердил завершённый обмен по каждой leg. Если Steam API различает accepted и escrow/hold/другие промежуточные состояния, не считать их финальным delivered без проверки фактического состояния.
+- Дополнительные внутренние состояния обязательны: `awaiting_privacy`, `recipient_check_failed`, `insufficient_inventory`, `reserved`, `awaiting_sender_confirmation`, `sending`, `sent_pending_recipient`, `partially_sent`, `partially_accepted`, `declined`, `canceled`, `expired`, `failed_before_action`, `outcome_unknown`, `manual_reconciliation`, `completed`. Не обязательно показывать все технические состояния как отдельные главные статусы, но детали и история должны сохранять их различия.
+- Статус parent order вычисляется из статусов всех обязательных legs и количества OrderLine; нельзя вручную выставить «Принят» по одной leg, если есть другие обязательные legs.
+- Перед реализацией зафиксировать точную таблицу соответствия ASF/Steam `ETradeOfferState` и mobile confirmation result → внутренний leg status на целевой версии ASF. Не угадывать числовые enum значения и не считать HTTP 200/успешную команду доказательством принятия.
+
+### F. Мониторинг, восстановление и защита от повторной выдачи
+
+- После создания offer сохранять Steam offer ID сразу при получении подтверждённого результата; вести durable polling/reconciliation по сохранённым offer IDs через ASF. Проверить наличие событий ASF; если они не дают надёжную полноту, использовать ограниченный polling с backoff/rate limit и контрольным периодическим reconcile.
+- Проверять активные offers после перезапуска приложения/бота; не создавать новый offer из-за отсутствия локального ответа, пока старый offer не сверён по offer ID/idempotency key.
+- Терминальные состояния (accepted/declined/canceled/expired/invalid) фиксировать один раз; поздние/повторные события не должны откатывать статус назад. Для каждого изменения хранить source timestamp, observed_at и исходный безопасный status code.
+- Резерв сохраняется, пока offer активен, ожидает mobile confirmation или outcome неизвестен. При declined/canceled/expired release выполняется только после проверки фактического состояния и текущего inventory; при accepted reservation атомарно переводится в delivered. Не освобождать asset только по локальному timeout.
+- Классифицировать ошибки до/после внешнего действия. До вызова Steam можно безопасно повторить только явно transient и идемпотентную операцию. После вызова Steam timeout/connection reset/process crash — `outcome_unknown`, поиск существующего offer и ручная/автоматическая read-only reconciliation; повторный send запрещён до однозначного доказательства, что offer не был создан.
+- Отдельно обрабатывать: offline/disconnected bot, недостаточный или устаревший inventory, asset moved/sold/traded, tradability changed, Steam maintenance/5xx, rate limit/429, timeout до/после отправки, malformed response, missing offer ID, duplicate command, mobile confirmation pending/denied/expired, buyer declined/canceled/expired, counteroffer, invalid items, account trade restriction, privacy changes between preview and send.
+- Один проблемный заказ не останавливает очередь других заказов. Повторы ограничены, с backoff, лимитом и журналом; ручное вмешательство имеет actor/time/reason.
+
+### G. Сообщения Playerok и Telegram
+
+- Playerok chat — канал сообщений покупателю; Telegram bot — приватный канал оператора. Это разные адресаты и разные permissions. Не отправлять операторские диагностики/внутренние причины/ботов/asset IDs покупателю.
+- Каждое исходящее сообщение покупателю адресуется по сохранённому постоянному `chat_id`, а событие и контекст — по конкретному `deal_id/order_id`. Один chat может содержать несколько сделок: шаблон сообщения должен явно указывать нужный заказ/товар, а команда покупателя не должна случайно возобновить соседний заказ.
+- В Playerok отправлять только заранее определённые безопасные шаблоны: запрос открыть приватность, подтверждение получения/начала обработки, сообщение о временной проблеме или нехватке карточек, просьба проверить/принять Steam offer, сообщение об отклонённом/истёкшем offer и подтверждение завершения. Фактические возможности отправки сообщений, разрешённые endpoints/UI, ограничения площадки и правила платформы проверить до включения автоматической отправки.
+- В Telegram отправлять оператору полную операционную timeline: новый deal/order, покупатель (без лишних персональных данных), listing/quantity, безопасный SteamID64, privacy/preflight outcome, выбранные игры/наборы, список bot→asset IDs, каждая delivery leg/offer ID, mobile confirmation, принятие/отклонение/истечение, unknown, retry/reconcile, ошибки и ручные действия. Trade URL token, IPC password, cookies, session keys и полные секретные ссылки запрещены.
+- Telegram unavailable не блокирует заказ и не меняет его статус. Использовать durable notification outbox с уникальным `(event_id, channel, recipient)`, состоянием pending/sent/failed, ограниченными retry/backoff и дедупликацией. Отправка сообщения не выполняет повторно delivery action.
+- Playerok messaging и Telegram должны подключаться через отдельные adapters/event subscribers; их сбой не должен ломать Steam send/reconcile. События статуса записываются в локальную историю прежде отправки уведомлений; сообщения можно повторить независимо и безопасно.
+- Все сообщения логировать по message ID, channel, deal/order/chat IDs и результату, но без секретов и избыточного содержимого переписки.
+
+### H. Сценарии ошибок и обязательные acceptance tests
+
+До live включения проверить как минимум:
+- некорректная/неполная/отозванная trade URL; неправильный partner/token; URL с лишним host/redirect; SteamID mismatch;
+- public/private profile, game details, badge data, inventory; приватность меняется после первого preflight;
+- покупатель не может торговать, trade restriction/community restriction, профиль удалён/не существует, неверный тип аккаунта;
+- валидная ссылка при недоступном Steam; ASF bot offline; rate limit; captcha/login redirect; 5xx; malformed/partial JSON; incomplete pagination;
+- level 0–5, ordinary/foil, incomplete/complete buyer sets, Amount >1, duplicate hashes, unknown/missing hash, exact hash mismatch, неизвестный AppID;
+- смешанный набор между ботами; несколько legs; один бот отключился; один asset уже зарезервирован/перемещён; изменение tradable между preview и send;
+- отказ mobile confirmation; accepted/declined/canceled/expired/countered/invalid; escrow/hold если применимо; offer status unavailable;
+- timeout/process crash до вызова, во время вызова и после успешного создания offer до сохранения ответа; рестарт приложения с active/unknown offers; duplicate event/command;
+- два разных deal ID одного chat ID; один buyer с несколькими chat/deal IDs; повторная загрузка одного deal; входящая `!настроил приватность` при одном и нескольких ожидающих заказах;
+- Playerok messaging unavailable/duplicate send; Telegram unavailable/429/timeout; повтор notification без повторной доставки;
+- частичный успех нескольких legs, позднее принятие одной leg, decline другой, ручная сверка и корректный итог parent order.
+
+**Критерии приёмки:** ни один ошибочный/неполный recipient preflight не запускает отправку; полный manifest и все резервы фиксируются до первого offer; каждый offer отслеживается независимо; parent order никогда не объявляется принятым до принятия всех обязательных legs; повтор/перезапуск не создаёт повторную выдачу; chat/deal/order identity не смешиваются; ошибки отображаются конкретно и безопасно; Playerok/Telegram сообщения доставляются независимо от исполнения и не меняют его исход.
+
+**Порядок реализации:** сначала завершить автоматические проверки текущего card-only слоя; затем закрыть read-only ASF live gates для профиля/значков/inventory и точной identity; затем реализовать recipient/trade-link preflight и verified input adapter; далее multi-leg ledger/dispatch/reconciliation; затем Steam Cards handler; после его live acceptance — отдельный CS2 730/2 handler. Playerok messaging и Telegram notification adapters подключать после стабилизации order/deal/chat identity и event/outbox contracts. Не перескакивать через gates и не включать автоматическую отправку до acceptance tests.
