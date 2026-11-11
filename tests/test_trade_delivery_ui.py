@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 from app.main import MainWindow
 from games.steam_cards.reservations import AssetReservationStore
@@ -125,7 +126,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                         for i in range(window.order_assets.count())
                         if "Untradable Card" in window.order_assets.item(i).text()
                     )
-                    self.assertFalse(locked_item.flags() & locked_item.flags().ItemIsSelectable)
+                    self.assertFalse(locked_item.flags() & Qt.ItemFlag.ItemIsSelectable)
                 finally:
                     window.close()
                     window.deleteLater()
@@ -145,7 +146,6 @@ class TradeDeliveryUITests(unittest.TestCase):
                         "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
                     )
                     from PySide6.QtWidgets import QListWidgetItem
-                    from PySide6.QtCore import Qt
                     injected = QListWidgetItem("Injected item")
                     injected.setData(Qt.ItemDataRole.UserRole, ("Bot A", "not-card"))
                     window.order_assets.addItem(injected)
