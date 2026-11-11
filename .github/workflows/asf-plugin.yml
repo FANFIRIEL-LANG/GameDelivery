@@ -15,6 +15,7 @@ on:
   push:
     branches:
       - feature/asf-bulk-account-import
+      - work/local-sync
     paths:
       - integrations/asf_plugin/**
       - integrations/asf/client.py
