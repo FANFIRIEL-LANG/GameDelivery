@@ -3584,3 +3584,13 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Изменение: commit `d9e4abaed94afa5ca00b5358a4b1e9e2a2d6c194`, файл `tests/test_asf_plugin_contract.py`. Повторная загрузка файла подтвердила: card-only contract test сохранён, stale generic test отсутствует.
 - CI status для нового commit на момент записи ещё не появился в GitHub status endpoint. Не считать тесты исправленными/пройденными до нового успешного run на текущем HEAD.
 - Следующий шаг: дождаться Tests workflow на актуальном `work/local-sync`; при успехе перейти к проверке ASF plugin/Windows build на том же code SHA. Не просить пользователя скачивать или запускать приложение до этих результатов.
+
+
+### 2026-11-11 — CI после исправления ASF card-only contract test
+
+- Актуальная рабочая ветка `work/local-sync` подтверждена на HEAD `26a2b4088971637980fa0af4a3ecdf3636def23c` (commit `docs: record ASF card-only contract test correction`). Кодовый родительский commit — `d9e4abaed94afa5ca00b5358a4b1e9e2a2d6c194`; сам HEAD содержит только обновление этого журнала.
+- **Tests на актуальном HEAD:** workflow run `43069848255`, job `test` — `success`. Это первый успешный полный CI run после удаления противоречившего card-only правилам теста. Логи job подтверждают успешное завершение полного workflow и изолированных модулей Steam Cards / trade UI.
+- **ASF plugin build на кодовом commit `d9e4aba...`:** run `43069728218` — success. Jobs `build-plugin`, `windows-storage-acl-smoke` и `generic-runtime-smoke` завершились успешно; `win-x64-trimmed-runtime-smoke` skipped согласно текущей политике.
+- **Windows application build на кодовом commit `d9e4aba...`:** run `43069728175`, job `build-windows` — success.
+- Актуальный HEAD `26a2b408...` отличается от проверенного build commit только docs-only изменением `PROJECT_MASTER_LOG.md`; production source/build inputs после успешных plugin и Windows builds не изменялись. Отдельные build runs на docs-only HEAD не создавались.
+- Production-код в этой проверке не менялся; новый live Steam trade после card-only guard ещё не выполнен. **Пользователю пока ничего скачивать и запускать не нужно:** следующий технический шаг — сверить артефакты успешных plugin/Windows builds и затем подготовить один контролируемый live Steam Cards сценарий. CS2 delivery остаётся отдельной задачей после подтверждения Steam Cards.
