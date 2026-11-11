@@ -3433,3 +3433,26 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 **Проверки:** выполнен read-only аудит GitHub исходников/документации и сопоставление call paths. Код и пользовательские данные не изменялись; тесты/CI/live send в рамках аудита не запускались. Никаких файлов скачивать и никаких действий в ASF/Steam сейчас не требуется.
 
 **Точный следующий шаг:** отдельная минимальная задача Steam Cards — подключить card-specific preflight/selection к фактическому MainWindow order path и обеспечить фильтр типов до резервации и повторно в ASF plugin preview/send; сначала проверить существующие тесты и добавить focused regression coverage, затем запустить только релевантный набор и CI. CS2 delivery не начинать до закрытия этого шага и подтверждения пользователя.
+
+### 2026-11-11 — Steam Cards: первый безопасный слой card-only order/send
+
+**Изменения в `work/local-sync` после аудита:**
+- `app/main.py`: список активов в карточном заказе теперь показывает только обычные Steam Trading Cards (`is_trading_card=1`, `is_foil=0`). Другие Steam Community items и foil cards не предлагаются к выбору. Обычные карточки с запрещённой/неизвестной передаваемостью остаются видимыми как заблокированные, чтобы причина была понятна.
+- `app/main.py`: перед резервированием тип актива повторно читается из SQLite. Даже если UI selection подменён или устарел, резерв не создаётся для не-карточки/foil; передаваемость по-прежнему должна быть явно подтверждена.
+- `integrations/asf_plugin/TradeDelivery.cs`: добавлен единый helper `IsNormalTradingCard`, который требует ASF description type с `Trading Card` и исключает `Foil`. Отправка повторно проверяет это по live ASF inventory до записи состояния отправки и до вызова Steam `SendTradeOffer`.
+- `integrations/asf_plugin/GameDeliveryPlugin.cs`: preview использует тот же helper; неподходящий тип блокируется ещё до ручного подтверждения.
+- `integrations/asf_plugin/README.md`: описан строгий контракт normal non-foil cards; CS2 остаётся вне этого обработчика.
+- `tests/test_trade_delivery_ui.py`: добавлены тесты, что список показывает только обычные карточки, непередаваемая карточка видна, foil и CS2 item скрыты; добавлен тест на подменённый selection, который должен блокироваться до заказа/резерва.
+- `tests/test_asf_plugin_contract.py`: добавлена проверка общего правила для preview/send.
+- `.github/workflows/asf-plugin.yml`: добавлена текущая рабочая ветка `work/local-sync` в push trigger, чтобы ASF plugin build действительно запускался на изменениях активной ветки; прежняя feature branch оставлена.
+- Изменения выполнены отдельными коммитами на `work/local-sync`; последний на момент записи: `08fb623affd93717cca98d3a5ae4b2e7d6dcfac3`.
+
+**CI на текущем HEAD:** запущены GitHub Actions:
+- Tests run `43048378871` — queued/pending на момент записи.
+- Windows executable run `43048378601` — in progress.
+- ASF plugin ASF 6.3.11.7 run `43048378767` — in progress; скачивание/проверка официального ASF Generic archive уже прошло, идёт build против точных ASF host assemblies.
+Ссылки: [Tests](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43048378871), [Windows build](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43048378601), [ASF plugin build](https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43048378767).
+
+**Граница выполненного:** это только первый слой защиты card-only order/preview/send. `SteamCardOrderPreflight` (автоматическое распределение комплектов с учётом значков и состава инвентаря покупателя) ещё не подключён к MainWindow. Нельзя объявлять Steam Cards этап полностью завершённым до проверки CI, согласования/подключения этого preflight и последующего контролируемого live test. CS2 delivery не начинать.
+
+**Пользовательские действия:** пока не требуются. Не устанавливать промежуточную сборку и не запускать Steam trade; сначала дождаться всех трёх CI gates и исправить только фактически обнаруженные ошибки.
