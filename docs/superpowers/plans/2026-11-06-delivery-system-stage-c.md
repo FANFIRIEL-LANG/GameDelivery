@@ -775,3 +775,13 @@ Final verification:
 - Earlier Qt exit 139 after test assertions is intermittent and remains unexplained; it did not occur on final run. Do not report it as fixed.
 
 C.6.3.6 remains open only for final live acceptance using this one finished package: OpenSkin proxy check, OpenSkin API read-only price probe, Frankfurter rate, and read-only CS2 730/2 validation on isolated ASF. No production ASF, inventory mutations or trade actions.
+
+#### C.6.3.7 — test-mode storage isolation before live acceptance (2026-11-11)
+
+Повторный аудит выявил, что отдельный loopback ASF endpoint 1243 не обеспечивал полной изоляции данных приложения: GameInventoryPanel в test-mode продолжал использовать основную SQLite GameDelivery. Поэтому тестовый snapshot и price cache могли записываться в production DB. Также в тестовом режиме оставалась активной кнопка передачи предметов в заказ.
+
+Test-first: commit 2dcd4073213e4a26cccf3e6deb77edd603d0194c добавил regression assertions; Tests run 42993872881 показал один ожидаемый failure в test_test_mode_constructor_does_not_load_saved_password, подтвердив общий путь к БД.
+
+Fix: commit d08b7e13ef49801b86624837c655922ec6d69259 направляет test-mode в ~/.gamedelivery/test-mode/gamedelivery-test.sqlite3, оставляет обычный DB path без изменений и отключает Trade URL/order handoff controls в тестовом режиме. Полный Tests run 42994049124 — SUCCESS, 526 tests. Windows Build run 42994049118 на том же SHA на момент записи выполняется.
+
+**Live acceptance status:** pending. После успешной сборки выполнить один запуск приложения с GAMEDELIVERY_TEST_ASF_IPC_URL=http://127.0.0.1:1243, обновить список ботов из изолированного ASF, выбрать только тестового бота и обновить его CS2 730/2 snapshot. Сверить физические asset IDs/число записей и видимые метаданные с изолированным ASF. Не обращаться к production ASF/1242, не запускать торговые команды. Приёмка должна подтвердить также, что test-mode использует отдельную SQLite test-mode базу.
