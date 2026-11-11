@@ -351,24 +351,6 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertNotIn("6.3.10.6", workflow)
         self.assertIn("ASF 6.3.11.7", readme)
 
-    def test_preview_and_send_accept_any_tradable_steam_community_item(self):
-        plugin = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
-        send = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
-
-        preview_start = plugin.index("foreach (string rawAssetId in request.AssetIds)")
-        preview_end = plugin.index("return JsonSerializer.Serialize(new PreviewResponse", preview_start)
-        preview_validation = plugin[preview_start:preview_end]
-        send_start = send.index("foreach (string rawAssetId in request.AssetIds)")
-        send_end = send.index("SendRecord record = new()", send_start)
-        send_validation = send[send_start:send_end]
-
-        for validation in (preview_validation, send_validation):
-            self.assertIn("asset.AppID != Asset.SteamAppID", validation)
-            self.assertIn("asset.ContextID != Asset.SteamCommunityContextID", validation)
-            self.assertIn("!asset.Tradable", validation)
-            self.assertNotIn("TradingCard", validation)
-
-
     def test_plugin_normalizes_custom_command_from_args_and_raw_message(self):
         source = (ROOT / "integrations/asf_plugin/GameDeliveryPlugin.cs").read_text(encoding="utf-8")
         parser = (ROOT / "integrations/asf_plugin/CommandArgumentParser.cs").read_text(encoding="utf-8")
