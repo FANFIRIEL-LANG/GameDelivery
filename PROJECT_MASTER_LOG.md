@@ -3255,3 +3255,17 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Следующий минимальный шаг для Codex: не менять transport behavior; расширить только безопасные diagnostics в `_qt_proxy_request()` полями `method`, фиксированным endpoint label (`health_probe`/`prices_batch`, не произвольный URL), configured timeout, elapsed milliseconds, `reply.isFinished()`, конечный `qt_error`, milestone flags и безопасный `errorString` после redaction. Добавить elapsed/milestone log для обеих операций, чтобы пользователь мог сравнить probe и API call на одном запуске. Не писать proxy host, username/password, URL, body, item names или response contents.
 - Не делать автоматический повторный GET или POST и не запускать второй запрос ради диагностики: одна ручная проверка кнопкой `Проверить прокси` и одна кнопкой `Проверить OpenSkin API` после CI — только если это действительно нужно для сопоставления. Не менять timeout, proxy type, TLS verification, endpoint, parser, Steam Ask mapping, cooldown или Retry-After.
 - Production-код пока не менялся. Причина различия между успешным GET probe и неуспешным POST остаётся не установленной; следующий этап — добавить безопасное сопоставимое наблюдение, а не объявлять прокси причиной.
+
+### 2026-11-11 — добавлена сопоставимая диагностика OpenSkin probe и prices POST
+
+- Исправлен процесс работы: реализацию выполняет ChatGPT непосредственно в GitHub; Codex не является исполнителем задачи и не должен получать вместо работы пользователя.
+- В `integrations/openskin/client.py` добавлена безопасная диагностика в общем `_qt_proxy_request()` без изменения сетевого поведения:
+  - фиксируется ограниченная метка операции `health_probe` / `prices_batch` / `other` и HTTP method (произвольный URL не логируется);
+  - фиксируются `timeout_ms`, `elapsed_ms`, `reply.isFinished()`, факт сигнала `finished`, доступный сигнал `socketStartedConnecting`;
+  - сохраняются существующие milestones: proxy auth requested/answered, TLS encrypted, requestSent, metadataReceived;
+  - при успешном HTTP-ответе пишется единая строка `OpenSkin transport completed`, чтобы можно было сравнить успешный GET probe и неуспешный POST;
+  - при ошибке те же дополнительные поля включаются в существующий безопасный phase detail.
+- Не менялись proxy configuration, endpoint, HTTP method/body/headers, timeout values, TLS certificate verification, parser, `results` mapping, `steam.ask`, batch size, cooldown и Retry-After. Автоматические повторные запросы не добавлялись.
+- Изменение закоммичено в `work/local-sync`: `138705a02ea9b3985aa98d180b5ca3094fde2552` (`diagnostics: compare OpenSkin probe and pricing milestones`).
+- Проверки: после push требуется проверить GitHub Actions Tests и Windows Build именно на одном конечном SHA. До получения зелёного CI не просить пользователя устанавливать сборку. Если workflow упадёт — изучить конкретный failing step/log и исправлять причину, не запускать повторные проверки без основания.
+- Следующий ручной шаг после успешного CI: сравнить в одном коротком сеансе лог `Проверить прокси` (`operation=health_probe`) и `Проверить OpenSkin API` (`operation=prices_batch`). Пользователь выполняет эти две кнопки только после установки проверенной сборки; до этого ничего вручную делать не требуется.
