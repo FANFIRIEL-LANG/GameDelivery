@@ -383,22 +383,33 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
             int(bytes_available()) if callable(bytes_available) else -1
         )
         response_body = b""
-        if method == "POST" and status == 200 and qt_error == QNetworkReply.NetworkError.NoError:
+        if method == "POST" and status == 200:
+            # Qt may report OperationCanceledError after the full response body
+            # has already arrived. Always drain the reply buffer before deciding
+            # that the request timed out or returned an empty body.
             response_body = bytes(reply.readAll())
-        if method == "POST" and status == 200 and timed_out and not response_body:
+        response_complete = (
+            phase["download_total"] > 0
+            and phase["download_received"] >= phase["download_total"]
+        )
+        if method == "POST" and status == 200 and timed_out and not response_complete:
             _logger.warning(
-                "OpenSkin response body timed out after HTTP headers "
-                "status=200 qt_error=%s request_sent=%s metadata_received=%s "
-                "download_received=%s download_total=%s",
-                getattr(qt_error, "name", str(qt_error)), phase["request_sent"],
-                phase["metadata_received"], phase["download_received"],
-                phase["download_total"],
+                "OpenSkin response body timed out before completion "
+                "status=200 qt_error=%s bytes_read=%s download_received=%s download_total=%s",
+                getattr(qt_error, "name", str(qt_error)), len(response_body),
+                phase["download_received"], phase["download_total"],
             )
             raise OpenSkinError(
-                "OpenSkin прислал HTTP-заголовки, но тело ответа не загрузилось за отведённое время. "
+                "OpenSkin прислал HTTP-заголовки, но тело ответа не загрузилось полностью за отведённое время. "
                 "Проверь доступность API через прокси и повтори позже.",
                 http_status=200, category="response_timeout",
-                diagnostic_detail="HTTP 200 headers received; response body timed out",
+                diagnostic_detail="HTTP 200 headers received; response body incomplete at timeout",
+            )
+        if method == "POST" and status == 200 and timed_out and response_complete:
+            _logger.info(
+                "OpenSkin response body recovered after Qt timeout "
+                "bytes_read=%s download_received=%s download_total=%s",
+                len(response_body), phase["download_received"], phase["download_total"],
             )
         if method == "POST" and status == 200 and not response_body:
             def response_header(name):
