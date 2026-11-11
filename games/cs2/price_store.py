@@ -234,6 +234,50 @@ class PriceCacheStore:
             """, (*self._key(position), current.isoformat(), state.value,
                   http_status, retry.isoformat()))
 
+    def manual_refresh_wait(self, positions, *, now: datetime | None = None):
+        """Return the earliest next manual refresh time and its blocking reason.
+
+        This is only a UI explanation; it does not alter retry eligibility.
+        """
+        current = _utc(now)
+        candidates = []
+        seen = set()
+        with self._connect() as db:
+            for position in positions:
+                key = self._key(position)
+                if key in seen:
+                    continue
+                seen.add(key)
+                row = db.execute("""
+                    SELECT retry_after_at,last_attempt_at FROM cs2_price_cache
+                    WHERE appid=? AND market_hash_name=? AND pattern=?
+                """, key).fetchone()
+                if row is None:
+                    return None
+                retry_after = datetime.fromisoformat(row[0]) if row[0] else None
+                last_attempt = datetime.fromisoformat(row[1]) if row[1] else None
+                local_until = (
+                    _utc(last_attempt) + self.MANUAL_REFRESH_INTERVAL
+                    if last_attempt is not None else None
+                )
+                retry_until = _utc(retry_after) if retry_after is not None else None
+                blocked_until = max(
+                    (value for value in (local_until, retry_until) if value is not None),
+                    default=None,
+                )
+                if blocked_until is not None and current < blocked_until:
+                    reasons = []
+                    if local_until is not None and current < local_until:
+                        reasons.append("локальный интервал Steam Ask")
+                    if retry_until is not None and current < retry_until:
+                        reasons.append("Retry-After OpenSkin")
+                    candidates.append((blocked_until, " и ".join(reasons)))
+        if not candidates:
+            return None
+        next_at = min(item[0] for item in candidates)
+        reasons = sorted({reason for at, reason in candidates if at == next_at})
+        return next_at, " / ".join(reasons)
+
     def due_positions(self, positions, *, now: datetime | None = None,
                       force: bool = False) -> tuple[PricePosition, ...]:
         """Return positions eligible for refresh.
