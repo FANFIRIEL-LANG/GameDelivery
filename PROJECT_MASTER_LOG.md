@@ -3649,3 +3649,37 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - После каждого существенного изменения обновить этот GitHub Master Log отдельной записью с точным commit, изменёнными файлами, тестами/CI, оставшимися ограничениями и следующим конкретным шагом для Codex. После обновления повторно прочитать файл с GitHub и сверить commit/blob SHA.
 
 **Результат переноса:** CI ещё не проверен в новой сессии; исправление IPC routing не подтверждено пользователем на работающем UI; исходники, локальная БД, Steam/ASF состояние и workflow runs в ходе этой записи не изменялись. До проверки CI пользователю пока ничего скачивать и запускать не нужно.
+
+
+### 2026-11-11 — GitHub Actions audit после IPC routing fix 855933e2
+
+**Проверенные workflow runs (GitHub API, ветка `work/local-sync`):**
+- Tests run `43095571161` (run #1557), head SHA `855933e2c43017870e09abc904e175e9858d862c`: `queued`, conclusion отсутствует.
+- Windows application build run `43095571174` (run #795), тот же head SHA `855933e2...`: `queued`, conclusion отсутствует.
+- Для обоих указанных runs запрос списка jobs вернул `total_count=0`; wrapper также вернул 0 jobs. Следовательно, пока не создан ни один job и нет runner/step logs для диагностики.
+- Commit combined status для `855933e2...` вернул пустой список statuses. Нельзя утверждать ни success, ни failure.
+- Последующие docs-only pushes также породили ожидающие Tests runs: `43095611186` на `75282bfd...` и `43097699947` на текущем docs HEAD `361a7379...`. Они не заменяют проверки исходного code SHA.
+- Вскоре перед целевым commit в ветку были отправлены несколько мелких последовательных изменений endpoint routing; для предыдущих SHA `df21867...`, `f2c9634...`, `2521d25...`, `95a3d8a...`, `4c4eca4...` и `7a47ca5...` в списке Actions также видны queued Tests/Windows build runs. Это фиксируется как факт всплеска запусков, но не как доказанная причина задержки.
+- Тексты workflow проверены: `.github/workflows/tests.yml` использует `ubuntu-latest`, timeout 8 минут и concurrency group с `cancel-in-progress: true`; `.github/workflows/package-windows.yml` использует `windows-latest`. В этих файлах нет self-hosted runner или environment approval gate.
+- Точная причина задержки до создания jobs не установлена. Это не ошибка тестов или Python/Qt steps: jobs ещё нет. Workflow rerun не выполнялся; никаких действий по перезапуску/отмене runs не предпринималось.
+- Старые успешные Tests/Windows/plugin runs на `d9e4aba...` остаются историческими результатами и не закрывают CI для `855933e2...`.
+
+**Вывод и ограничения:**
+- CI для IPC routing change пока не подтверждён. Сборку пользователю не выдавать, live-проверку не начинать.
+- Пока Actions остаются queued без jobs, разрешён только read-only аудит endpoint routing и подготовка точечной диагностики. Не менять исходники и не создавать дополнительные workflow runs без установленной необходимости.
+- Проверить позже только фактические статусы двух целевых runs `43095571161` и `43095571174`; если jobs появятся, изучать только конкретные failing/hanging steps. Не обходить проблему повторным запуском тестов локально или новым push.
+
+**Следующий read-only аудит:**
+1. Сверить в `work/local-sync` фактические версии `app/asf_inventory_controller.py`, `app/inventory_panel.py`, `app/asf_management.py`, `app/main.py`, `app/proxy_settings.py` и `tests/test_asf_inventory.py` на commit `855933e2...`.
+2. Проследить, откуда UI получает конфигурацию выбранного ASF, как resolver читает `IPC.config`, и какой endpoint передаётся каждому refresh/preview/send/proxy action. Искать не только literal `1242`, но и места, где создаётся `ASFClient()` без endpoint или контроллер теряет выбранный config.
+3. Сопоставить тест на alternate loopback port с реальными вызовами UI. Не считать наличие одного unit test доказательством, что все кнопки обновления работают.
+4. Если код корректно использует выбранный endpoint, не придумывать новые правки; сформулировать одну следующую проверку, которая отличает проблему выбора ASF/config path от проблемы UI обновления снимка. Если найден реальный дефект — зафиксировать доказательство, ограничить diff и только потом менять код.
+
+**Обязательные инструкции для Codex (обновление handoff):**
+- CI snapshot на 2026-11-11: runs `43095571161` и `43095571174` всё ещё queued, оба без jobs. Не выдавать это за passed/failed и не запускать rerun.
+- Текущая задача Codex — read-only trace ASF endpoint routing для перечисленных выше файлов и сверка с focused test. Никаких source edits, пока не установлена точная причина или не появятся результаты CI.
+- Не использовать hardcoded `1243`: endpoint всегда должен определяться из конфигурации выбранного ASF. Не допускать случайного default `1242` при уже известном alternate port.
+- После аудита перед любым исправлением записать в Master Log краткое доказательство дефекта и точные файлы. После исправления: focused test + Tests + Windows build на одном SHA; проверить package artifact и SHA-256 до передачи пользователю.
+- Не менять Steam trade logic, Plugin, DB schema, CS2 delivery или общий инвентарь в рамках endpoint-routing проверки.
+
+**Изменения в этой проверке:** только аудит GitHub Actions и workflow YAML; исходники, пользовательская БД, ASF/Steam состояние и workflow runs не менялись. GitHub Master Log обновлён этой записью.
