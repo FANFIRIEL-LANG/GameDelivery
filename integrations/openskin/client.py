@@ -668,15 +668,19 @@ class OpenSkinClient:
             raise OpenSkinError("OpenSkin вернул ответ в неожиданном формате.",
                                 category="invalid_response") from None
         rows = payload.get("results") if isinstance(payload, dict) else None
-        if not isinstance(rows, list) or len(rows) != len(positions):
+        if not isinstance(rows, list):
             diagnostic = _invalid_results_diagnostic(payload, positions, raw, headers)
             raise OpenSkinError(
-                "OpenSkin вернул неполный список результатов.",
+                "OpenSkin вернул список результатов в неожиданном формате.",
                 category="invalid_response", diagnostic_detail=diagnostic,
             )
 
-        prices = []
-        for index, (position, row) in enumerate(zip(positions, rows)):
+        positions_by_identity = {
+            (position.market_hash_name, position.pattern or ""): position
+            for position in positions
+        }
+        prices_by_position = {}
+        for index, row in enumerate(rows):
             if not isinstance(row, dict):
                 diagnostic = _invalid_result_row_diagnostic(
                     index, "row_not_object", positions, rows,
@@ -685,35 +689,46 @@ class OpenSkinClient:
                     "OpenSkin вернул результат в неожиданном формате.",
                     category="invalid_response", diagnostic_detail=diagnostic,
                 )
-            if row.get("item") != position.market_hash_name:
-                diagnostic = _invalid_result_row_diagnostic(
-                    index, "item_identity_mismatch", positions, rows,
-                )
-                raise OpenSkinError(
-                    "OpenSkin вернул результат с несовпадающим предметом.",
-                    category="invalid_response", diagnostic_detail=diagnostic,
-                )
+            item_name = row.get("item")
             echoed_pattern = row.get("pattern")
-            if position.pattern is not None and echoed_pattern != position.pattern:
+            if not isinstance(item_name, str):
                 diagnostic = _invalid_result_row_diagnostic(
-                    index, "pattern_mismatch", positions, rows,
+                    index, "missing_item_identity", positions, rows,
                 )
                 raise OpenSkinError(
-                    "OpenSkin вернул результат с несовпадающим pattern.",
+                    "OpenSkin вернул результат без идентификатора предмета.",
                     category="invalid_response", diagnostic_detail=diagnostic,
                 )
-            if position.pattern is None and echoed_pattern not in (None, ""):
+            if echoed_pattern not in (None, "") and not isinstance(echoed_pattern, str):
                 diagnostic = _invalid_result_row_diagnostic(
-                    index, "unexpected_pattern", positions, rows,
+                    index, "invalid_pattern_identity", positions, rows,
                 )
                 raise OpenSkinError(
-                    "OpenSkin вернул pattern без запроса точного варианта.",
+                    "OpenSkin вернул некорректный pattern.",
+                    category="invalid_response", diagnostic_detail=diagnostic,
+                )
+            identity = (item_name, echoed_pattern or "")
+            position = positions_by_identity.get(identity)
+            if position is None:
+                diagnostic = _invalid_result_row_diagnostic(
+                    index, "unexpected_item_or_pattern", positions, rows,
+                )
+                raise OpenSkinError(
+                    "OpenSkin вернул результат с неизвестным предметом или pattern.",
+                    category="invalid_response", diagnostic_detail=diagnostic,
+                )
+            if position in prices_by_position:
+                diagnostic = _invalid_result_row_diagnostic(
+                    index, "duplicate_result_identity", positions, rows,
+                )
+                raise OpenSkinError(
+                    "OpenSkin повторил результат одного предмета.",
                     category="invalid_response", diagnostic_detail=diagnostic,
                 )
 
             steam = row.get("steam")
             if not isinstance(steam, dict):
-                prices.append(OpenSkinPrice(position, None, None, None))
+                prices_by_position[position] = OpenSkinPrice(position, None, None, None)
                 continue
             ask = steam.get("ask")
             if isinstance(ask, bool) or not isinstance(ask, (Decimal, int)):
@@ -737,5 +752,15 @@ class OpenSkinClient:
                     updated = None
             else:
                 updated = None
-            prices.append(OpenSkinPrice(position, ask, currency, updated))
-        return tuple(prices)
+            prices_by_position[position] = OpenSkinPrice(position, ask, currency, updated)
+
+        missing = [position for position in positions if position not in prices_by_position]
+        if missing:
+            _logger.warning(
+                "OpenSkin API omitted result rows; missing prices will be marked unknown "
+                "requested_count=%s received_count=%s missing_count=%s",
+                len(positions), len(rows), len(missing),
+            )
+            for position in missing:
+                prices_by_position[position] = OpenSkinPrice(position, None, None, None)
+        return tuple(prices_by_position[position] for position in positions)
