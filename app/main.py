@@ -456,7 +456,9 @@ class MainWindow(QMainWindow):
                 ).fetchall()
             reserved_ids = {row[0] for row in existing}
             for asset_id, game, name, is_card, is_foil, is_tradable in rows:
-                kind = "Foil" if is_foil else ("Карточка" if is_card else "Предмет")
+                if is_card != 1 or is_foil == 1:
+                    continue
+                kind = "Карточка"
                 label = f"{game} — {name} [{kind}] · asset {asset_id}"
                 if is_tradable != 1:
                     state = (
@@ -475,8 +477,8 @@ class MainWindow(QMainWindow):
                     item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, (bot, asset_id))
                 self.order_assets.addItem(item)
-            if not rows:
-                self.order_assets.addItem("В снимке нет предметов.")
+            if self.order_assets.count() == 0:
+                self.order_assets.addItem("В снимке нет обычных Steam Trading Cards.")
         except (OSError, sqlite3.Error, ValueError) as exc:
             self.order_assets.clear()
             self.order_assets.addItem(f"Ошибка чтения инвентаря: {exc}")
@@ -523,11 +525,15 @@ class MainWindow(QMainWindow):
             with sqlite3.connect(self._database_path) as db:
                 for bot_name, asset_id in selected:
                     row = db.execute(
-                        "SELECT is_tradable FROM steam_inventory_snapshot "
-                        "WHERE bot_name = ? AND asset_id = ?",
+                        "SELECT is_trading_card, is_foil, is_tradable "
+                        "FROM steam_inventory_snapshot WHERE bot_name = ? AND asset_id = ?",
                         (bot_name, asset_id),
                     ).fetchone()
-                    if row is None or row[0] != 1:
+                    if row is None or row[0] != 1 or row[1] == 1:
+                        raise ValueError(
+                            f"Актив {bot_name}/{asset_id} не является обычной Steam Trading Card."
+                        )
+                    if row[2] != 1:
                         raise ValueError(
                             f"Актив {bot_name}/{asset_id} нельзя резервировать: "
                             "передаваемость запрещена или не подтверждена. Обнови снимок ASF."
