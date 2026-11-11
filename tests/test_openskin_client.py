@@ -25,7 +25,11 @@ class OpenSkinClientTests(unittest.TestCase):
                               "updated_at": "2026-11-09T10:00:00Z", "median": 999},
                     "skinport": {"ask": 0.01}, "lowest_ask": {"price": 0.01},
                 })
-            return 200, json.dumps({"results": results}, default=float).encode(), {}
+            # OpenSkin returns both a name-keyed data map and an ordered results list.
+            data = {row["item"]: row for row in results}
+            return 200, json.dumps(
+                {"data": data, "results": results}, default=float,
+            ).encode(), {}
 
         positions = [
             PricePosition(730, "★ Knife | Doppler (Factory New)", "Phase 1"),
@@ -66,6 +70,60 @@ class OpenSkinClientTests(unittest.TestCase):
 
         with self.assertRaises(OpenSkinError):
             OpenSkinClient(request_func=request).fetch_prices([PricePosition(730, "Expected")])
+
+    def test_invalid_results_collection_diagnostics_cover_schema_variants(self):
+        position = PricePosition(730, "PRIVATE ITEM NAME")
+        cases = (
+            ("missing_results", b'{"data":{"PRIVATE ITEM NAME":{}}}', "results_type=missing"),
+            ("results_not_list", b'{"data":{},"results":{}}', "results_type=dict"),
+            ("results_count_mismatch", b'{"data":{},"results":[]}', "results_count=0"),
+            ("root_not_object", b'[]', "root_type=list"),
+        )
+        for label, response, expected_detail in cases:
+            with self.subTest(label=label):
+                def request(_url, _body, _headers, _timeout):
+                    return 200, response, {
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(response)),
+                    }
+
+                with self.assertLogs("integrations.openskin.client", level="WARNING") as captured:
+                    with self.assertRaises(OpenSkinError) as caught:
+                        OpenSkinClient(request_func=request).fetch_prices([position])
+
+                self.assertEqual(caught.exception.category, "invalid_response")
+                self.assertIn(expected_detail, caught.exception.diagnostic_detail)
+                self.assertIn("requested_count=1", caught.exception.diagnostic_detail)
+                self.assertIn("body_bytes=", caught.exception.diagnostic_detail)
+                self.assertIn("content_type=application/json", caught.exception.diagnostic_detail)
+                combined = "\\n".join(captured.output) + caught.exception.diagnostic_detail
+                self.assertNotIn("PRIVATE ITEM NAME", combined)
+                self.assertNotIn(response.decode("utf-8"), combined)
+
+    def test_invalid_result_rows_report_index_and_reason_without_item_names(self):
+        position = PricePosition(730, "PRIVATE ITEM NAME", "Ruby")
+        cases = (
+            ("not_object", [{"item": "PRIVATE ITEM NAME", "pattern": "Ruby"}], "row_not_object"),
+            ("identity_mismatch", [{"item": "OTHER PRIVATE ITEM", "pattern": "Ruby"}], "item_identity_mismatch"),
+            ("pattern_mismatch", [{"item": "PRIVATE ITEM NAME", "pattern": "Sapphire"}], "pattern_mismatch"),
+        )
+        for label, rows, expected_reason in cases:
+            with self.subTest(label=label):
+                response = json.dumps({"results": rows}).encode()
+
+                def request(_url, _body, _headers, _timeout):
+                    return 200, response, {}
+
+                with self.assertLogs("integrations.openskin.client", level="WARNING") as captured:
+                    with self.assertRaises(OpenSkinError) as caught:
+                        OpenSkinClient(request_func=request).fetch_prices([position])
+
+                self.assertEqual(caught.exception.category, "invalid_response")
+                self.assertIn("result_index=0", caught.exception.diagnostic_detail)
+                self.assertIn(f"reason={expected_reason}", caught.exception.diagnostic_detail)
+                combined = "\\n".join(captured.output) + caught.exception.diagnostic_detail
+                self.assertNotIn("PRIVATE ITEM NAME", combined)
+                self.assertNotIn("OTHER PRIVATE ITEM", combined)
 
     def test_string_ask_is_unknown_because_contract_requires_a_number(self):
         def request(_url, _body, _headers, _timeout):
