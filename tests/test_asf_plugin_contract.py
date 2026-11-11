@@ -29,6 +29,7 @@ class ASFPluginContractTests(unittest.TestCase):
 
     def test_plugin_push_workflow_targets_the_active_feature_branch(self):
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
+        self.assertIn("      - work/local-sync", workflow)
         self.assertIn("      - feature/asf-bulk-account-import", workflow)
         self.assertNotIn("      - feature/steam-card-set-selection", workflow)
 
