@@ -1434,7 +1434,13 @@ class ASFManagementWidget(QWidget):
         bot_name = self.table.item(row, 0).text()
         self.snapshot_button.setEnabled(False)
         try:
-            controller = ASFInventoryController(Path.home() / ".gamedelivery" / "gamedelivery.sqlite3")
+            base_url = self._ipc_base_url()
+            port = urlsplit(base_url).port
+            controller = ASFInventoryController(
+                Path.home() / ".gamedelivery" / "gamedelivery.sqlite3",
+                base_url=base_url,
+                allow_alternate_loopback_port=port != 1242,
+            )
             result = controller.refresh(bot_name, self.ipc_password.text() or None)
         except (ASFError, ValueError, RuntimeError, OSError) as exc:
             self.status.setText(f"Снимок инвентаря не обновлён для {bot_name}: {exc}")
