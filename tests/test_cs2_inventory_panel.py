@@ -786,7 +786,7 @@ class CS2InventoryPanelTests(unittest.TestCase):
         with patch.dict(os.environ, {"GAMEDELIVERY_TEST_ASF_IPC_URL": "http://127.0.0.1:1243"}), \
                 patch("app.game_inventory_panel.InventoryPanel._load_saved_ipc_password",
                       side_effect=AssertionError("test mode must not read saved IPCPassword")), \
-                patch("app.game_inventory_panel.GameInventoryStore", return_value=store), \
+                patch("app.game_inventory_panel.GameInventoryStore", return_value=store) as store_factory, \
                 patch("app.game_inventory_panel.configured_bot_names",
                       return_value=["ProductionBot"]) as configured:
             panel = GameInventoryPanel()
@@ -794,6 +794,11 @@ class CS2InventoryPanelTests(unittest.TestCase):
         configured.assert_not_called()
         self.assertEqual(panel.password.text(), "")
         self.assertEqual(panel.bot_list.count(), 0)
+        database_path = str(store_factory.call_args.args[0]).replace("\\", "/").casefold()
+        self.assertIn("/.gamedelivery/test-mode/", database_path)
+        self.assertTrue(database_path.endswith("/gamedelivery-test.sqlite3"))
+        self.assertFalse(panel.trade_url.isEnabled())
+        self.assertFalse(panel.send_to_order_button.isEnabled())
 
     def test_test_mode_suppresses_saved_password_loaders_across_main_window_panels(self):
         with patch.dict(os.environ, {"GAMEDELIVERY_TEST_ASF_IPC_URL": "http://127.0.0.1:1243"}):
