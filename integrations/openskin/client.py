@@ -562,14 +562,29 @@ class OpenSkinClient:
             )
         try:
             payload = json.loads(raw.decode("utf-8-sig"), parse_float=Decimal)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except UnicodeDecodeError as exc:
             content_type = next((v for k, v in headers.items() if k.casefold() == "content-type"), "unknown")
             content_encoding = next((v for k, v in headers.items() if k.casefold() == "content-encoding"), "identity")
             _logger.warning(
-                "OpenSkin API returned invalid JSON content_type=%s content_encoding=%s body_bytes=%s prefix_hex=%s",
+                "OpenSkin API returned non-UTF8 response content_type=%s content_encoding=%s "
+                "body_bytes=%s decode_error_start=%s prefix_hex=%s suffix_hex=%s",
                 redact_network_detail(content_type, self.proxy),
                 redact_network_detail(content_encoding, self.proxy),
-                len(raw), raw[:16].hex(),
+                len(raw), exc.start, raw[:16].hex(), raw[-16:].hex(),
+            )
+            raise OpenSkinError("OpenSkin вернул ответ в неожиданной кодировке.",
+                                category="invalid_response") from None
+        except json.JSONDecodeError as exc:
+            content_type = next((v for k, v in headers.items() if k.casefold() == "content-type"), "unknown")
+            content_encoding = next((v for k, v in headers.items() if k.casefold() == "content-encoding"), "identity")
+            _logger.warning(
+                "OpenSkin API returned invalid JSON content_type=%s content_encoding=%s "
+                "body_bytes=%s json_error=%s json_error_pos=%s json_error_line=%s "
+                "json_error_column=%s prefix_hex=%s suffix_hex=%s",
+                redact_network_detail(content_type, self.proxy),
+                redact_network_detail(content_encoding, self.proxy),
+                len(raw), exc.msg, exc.pos, exc.lineno, exc.colno,
+                raw[:16].hex(), raw[-16:].hex(),
             )
             raise OpenSkinError("OpenSkin вернул ответ в неожиданном формате.",
                                 category="invalid_response") from None
