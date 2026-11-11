@@ -658,7 +658,7 @@ class MainWindow(QMainWindow):
 
             bot_name = next(iter(bot_names))
             ipc_password = self.asf_management.ipc_password.text().strip() or None
-            preview = ASFClient(ipc_password=ipc_password, timeout=30.0).preview_trade_offer(
+            preview = self.asf_management._client(timeout=30.0).preview_trade_offer(
                 order_id=order_id,
                 bot_name=bot_name,
                 trade_url=recipient,
@@ -741,7 +741,7 @@ class MainWindow(QMainWindow):
             bot_name = next(iter(bot_names))
             asset_ids = [str(asset_id) for _bot, asset_id in assets]
             ipc_password = self.asf_management.ipc_password.text().strip() or None
-            client = ASFClient(ipc_password=ipc_password, timeout=45.0)
+            client = self.asf_management._client(timeout=45.0)
 
             # Re-check the recipient, bot, exact asset list and tradability against the live ASF inventory.
             preview = client.preview_trade_offer(
@@ -821,7 +821,7 @@ class MainWindow(QMainWindow):
 
             try:
                 request_started = True
-                outcome = ASFClient(ipc_password=ipc_password, timeout=120.0).send_trade_offer(
+                outcome = self.asf_management._client(timeout=120.0).send_trade_offer(
                     order_id=order_id,
                     bot_name=bot_name,
                     trade_url=recipient,
