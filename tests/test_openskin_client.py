@@ -103,7 +103,7 @@ class OpenSkinClientTests(unittest.TestCase):
     def test_invalid_result_rows_report_index_and_reason_without_item_names(self):
         position = PricePosition(730, "PRIVATE ITEM NAME", "Ruby")
         cases = (
-            ("not_object", [{"item": "PRIVATE ITEM NAME", "pattern": "Ruby"}], "row_not_object"),
+            ("not_object", ["not an object"], "row_not_object"),
             ("identity_mismatch", [{"item": "OTHER PRIVATE ITEM", "pattern": "Ruby"}], "item_identity_mismatch"),
             ("pattern_mismatch", [{"item": "PRIVATE ITEM NAME", "pattern": "Sapphire"}], "pattern_mismatch"),
         )
