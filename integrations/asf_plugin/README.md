@@ -45,7 +45,7 @@ GameDelivery calls local, authenticated `POST /Api/Command` with `gamedelivery-p
 - requires ASF Owner access;
 - resolves the requested bot in the running ASF instance and requires it to be online;
 - fetches the current inventory through ASF's Actions API;
-- verifies every requested asset exists and is tradable in Steam Community inventory (AppID 753/context 6). This includes trading cards and other tradable items in that inventory. Game inventories such as CS2 (AppID 730/context 2) are outside this trade path;
+- verifies every requested asset exists, is tradable, and is a normal (non-foil) Steam Trading Card in Steam Community inventory (AppID 753/context 6). Foil cards and all other Steam Community items are rejected. Game inventories such as CS2 (AppID 730/context 2) are outside this trade path;
 - returns a preview bound to the order, recipient, and exact ordered asset list;
 - returns `sendEnabled: false`.
 
@@ -55,7 +55,7 @@ Only the GameDelivery order screen calls `gamedelivery-send` after an explicit c
 
 - The plugin accepts commands only from ASF Owner.
 - The target must be an individual Steam account and must not be the sending bot itself.
-- The plugin re-fetches the live inventory immediately before creating the offer and rejects missing, untradable, duplicate, or assets outside Steam Community inventory (AppID 753/context 6).
+- The plugin re-fetches the live inventory immediately before creating the offer and rejects missing, untradable, duplicate, foil, non-card, or assets outside Steam Community inventory (AppID 753/context 6).
 - The one-use command payload contains a random nonce, not the recipient trade token. GameDelivery stores the token in a one-use JSON file under the current user's LocalAppData; the plugin verifies the file's order, bot, recipient, nonce, and exact asset list and then deletes the file.
 - The plugin writes a persistent record keyed by order ID with a fingerprint of the order, recipient, bot, and assets. Reusing the order with a different payload is refused. Repeated calls for a recorded offer do not create a second offer. If the outcome is unknown, the plugin blocks an automatic retry and instructs the operator to inspect Steam's outgoing offers.
 - The result contains the offer ID(s) and whether an ASF/mobile confirmation remains pending. This does **not** mean the recipient has accepted the offer.
