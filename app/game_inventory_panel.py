@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -750,8 +751,6 @@ class GameInventoryPanel(QWidget):
             )
             self._refresh_filter_values()
             self.render()
-            if game_id == "cs2" and self.cs2_all_instances:
-                self._start_price_refresh()
         except Exception as exc:
             self.items = []
             self.cs2_all_instances = ()
@@ -913,10 +912,17 @@ class GameInventoryPanel(QWidget):
         rate_due = eligible_cached and self.price_cache_store.fx_rate_due()
         if not due and not rate_due:
             if manual:
-                self._price_refresh_message = (
-                    "Повторный запрос пока отложен: действует минимальный интервал обновления "
-                    "Steam Ask или Retry-After OpenSkin."
-                )
+                wait = self.price_cache_store.manual_refresh_wait(positions)
+                if wait is None:
+                    self._price_refresh_message = "Нет позиций, доступных для обновления цен."
+                else:
+                    available_at, reason = wait
+                    seconds = max(1, int((available_at - datetime.now(timezone.utc)).total_seconds() + 0.999))
+                    minutes, remainder = divmod(seconds, 60)
+                    wait_text = f"{minutes} мин." if minutes else f"{remainder} сек."
+                    self._price_refresh_message = (
+                        f"Обновление пока недоступно: {reason}. Повторить можно через {wait_text}."
+                    )
                 self.status.setText(self._price_refresh_message)
             return
         self._price_refresh_running = True
