@@ -3573,3 +3573,14 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 3. Только после фактической проверки обоих delivery types возвращаться к остальным этапам плана. Не повторять CS2 inventory read test и не использовать изолированный endpoint 1243 для production trade. Test-mode storage isolation и запрет order handoff остаются обязательными.
 
 **В этой сессии:** выполнен read-only аудит текущих исходников и CI результатов; код, пользовательская БД и Steam/ASF состояние не менялись. Пока скачивать и запускать live trade ничего не нужно. Следующее действие — работа над focused Steam Cards acceptance, а не архитектурный аудит или аналитика наборов.
+
+
+### 2026-11-11 — устранён устаревший ASF contract test для generic Steam items
+
+- Повторный CI run `43055172827` уже успешно прошёл установку Qt dependencies, checkout, Python setup, установку зависимостей, compileall, credential migration tests и complete Steam trade UI tests.
+- Полный suite дошёл до `Ran 529 tests` и выявил ровно один assertion failure в `tests/test_asf_plugin_contract.py::test_preview_and_send_accept_any_tradable_steam_community_item`: тест требовал отсутствия проверки `TradingCard`, то есть закреплял прежнее разрешение любых Steam Community items. Это прямо противоречило новому card-only правилу и текущей реализации ASF-плагина. Последующий exit 139 возник при завершении процесса после уже обнаруженного test failure; не трактовать его как единственную причину падения.
+- Все остальные изолированные test modules в fallback-проверке прошли; единственный изолированный failure повторился в том же устаревшем контрактном тесте. В частности, отдельные Steam trade UI tests (11), preflight tests, shared card set tests, badge tests и остальные модули прошли.
+- В текущем файле уже был корректный тест `test_preview_and_send_accept_only_normal_steam_trading_cards`, проверяющий общий ASF helper и его использование preview/send. Удалён только дублирующий устаревший generic-item тест; production Python/C# код и правила отправки не менялись.
+- Изменение: commit `d9e4abaed94afa5ca00b5358a4b1e9e2a2d6c194`, файл `tests/test_asf_plugin_contract.py`. Повторная загрузка файла подтвердила: card-only contract test сохранён, stale generic test отсутствует.
+- CI status для нового commit на момент записи ещё не появился в GitHub status endpoint. Не считать тесты исправленными/пройденными до нового успешного run на текущем HEAD.
+- Следующий шаг: дождаться Tests workflow на актуальном `work/local-sync`; при успехе перейти к проверке ASF plugin/Windows build на том же code SHA. Не просить пользователя скачивать или запускать приложение до этих результатов.
