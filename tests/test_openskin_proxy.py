@@ -325,11 +325,14 @@ class OpenSkinProxyTests(unittest.TestCase):
             def deleteLater(self):
                 pass
 
+        timer_instances = []
+
         class EventLoop:
             def exec(self):
                 reply.buffer.extend(payload)
                 reply.downloadProgress.emit(len(payload), len(payload))
                 reply.readyRead.emit()
+                timer_instances[0].timeout.emit()
 
             def quit(self):
                 pass
@@ -337,12 +340,13 @@ class OpenSkinProxyTests(unittest.TestCase):
         class Timer:
             def __init__(self):
                 self.timeout = Signal()
+                timer_instances.append(self)
 
             def setSingleShot(self, _enabled):
                 pass
 
             def start(self, _milliseconds):
-                self.timeout.emit()
+                pass
 
             def stop(self):
                 pass
