@@ -3318,3 +3318,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Ошибка `OpenSkinError` теперь содержит `diagnostic_detail` для этих случаев, а UI уже записывает это поле в `openskin-proxy.log`; сетевой transport, endpoint, payload, batch size, Steam ask mapping, cooldown и Retry-After не менялись.
 - В `tests/test_openskin_client.py` расширен валидный fixture с обеими формами ответа `data + results`; добавлены параметризованные сценарии в двух тестах для корневого типа, отсутствующего/неверного/неполного `results`, неправильного типа строки, несовпадения item/pattern и проверки отсутствия имён предметов в логах. Не создавался отдельный тест на каждый вариант.
 - Commits: `7175a6289e8e30cc0a57625de84bcb0f121ac842` (diagnostics), `678866b2f9dc298838ca833d46743b4dc0148892` (test coverage), `19dd36d65647f521b4f3305d051e6116eb98858d` (fixture correction). Проверки и CI ещё не запускались на конечном SHA; следующий шаг — один целевой модульный прогон, затем один полный Tests и Windows Build на актуальном HEAD. Не просить пользователя скачивать сборку до зелёного CI.
+
+
+### 2026-11-11 — подтверждены тесты OpenSkin batch schema diagnostics
+
+- GitHub Actions Tests run `42975877843` завершился `success` на SHA `1cae1adb838aa63ef3a9704ec21ed17d693dbe33`. Успешны compile, Steam trade credential storage/migration, complete Steam trade UI flow, полный unit test suite и isolate step.
+- Полный набор: `Ran 525 tests in 3.443s`, `OK`. Оба новых параметризованных теста OpenSkin прошли; существующие сценарии batch split, ordered results, Steam ask mapping, pattern identity и proxy diagnostics также прошли.
+- Windows Build run `42975859821` на SHA `19dd36d65647f521b4f3305d051e6116eb98858d` на момент записи находится в работе: compile и Windows trade-secret ACL step успешны; сборка GUI ещё выполняется. Финальную сборку и smoke test пока не подтверждать.
+- Последний кодовый SHA содержит все изменения OpenSkin; разница SHA между Tests и Windows Build — только последующая запись/корректировка тестового файла? Проверять по фактическому diff при необходимости; не считать их идентичными без проверки.
+- Следующий шаг: дождаться завершения текущего Windows Build и зафиксировать его итог/артефакт отдельной записью. Пользователю пока не скачивать сборку.
