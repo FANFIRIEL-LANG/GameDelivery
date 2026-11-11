@@ -3327,3 +3327,13 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Windows Build run `42975859821` на SHA `19dd36d65647f521b4f3305d051e6116eb98858d` на момент записи находится в работе: compile и Windows trade-secret ACL step успешны; сборка GUI ещё выполняется. Финальную сборку и smoke test пока не подтверждать.
 - Последний кодовый SHA содержит все изменения OpenSkin; Tests SHA `1cae1adb...` является дочерним относительно Windows Build SHA `19dd36d...`, между ними добавлена только запись в `PROJECT_MASTER_LOG.md`. Production-код и тестовый набор совпадают, но workflow SHA формально различаются.
 - Следующий шаг: дождаться завершения текущего Windows Build и зафиксировать его итог/артефакт отдельной записью. Пользователю пока не скачивать сборку.
+
+
+### 2026-11-11 — Windows build OpenSkin diagnostics готова
+
+- Windows Build workflow run `42975859821` завершился `success` на кодовом SHA `19dd36d65647f521b4f3305d051e6116eb98858d`.
+- Успешны все этапы: compile Python, Windows trade-secret ACL hardening, Build Windows GUI executable, Smoke test packaged executable, build information/package instructions, Upload artifact.
+- Артефакт: `GameDelivery-Windows-x64`, ID `13835795574`, размер `55,034,403` bytes, SHA-256 `1793f819d56310389efeefbcafce6750a593f80eda5f710070eff63c44e83bf2`, срок хранения до `2026-12-11T06:57:50Z`.
+- Ссылка на сборку: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42975859821
+- Tests workflow run `42975877843` завершился `success`: полный набор `525 tests`, `OK`; OpenSkin diagnostic tests passed.
+- Ветка `work/local-sync` после последующей записи журнала обновлена отдельным docs-коммитом; кодовая сборка включает все изменения OpenSkin и прошла Windows smoke test. Не заявлять, что фактический массовый запрос к OpenSkin теперь работает: сборка проверяет корректность локального кода, а причина серверного ответа будет определена по расширенному `openskin-proxy.log` после обновления приложения.
