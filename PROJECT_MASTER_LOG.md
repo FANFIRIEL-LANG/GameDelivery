@@ -3463,3 +3463,25 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Generic ASF runtime smoke in the same workflow was still running at last observation; trimmed runtime job was skipped by workflow policy.
 - Tests workflow `43048568725` and Windows application package workflow `43048568049` on the same HEAD were still in progress at last observation. No result is claimed for those gates until GitHub reports completion.
 - Initial failed build is retained as a useful finding; the follow-up build confirms the enum correction compiles on Linux and Windows. No user-side Steam/ASF test is authorized or needed at this stage.
+
+
+### 2026-11-11 — уточнение следующего шага Steam Cards после повторного чтения Stage C
+
+**Проверенная точка:** ветка `work/local-sync`, HEAD `6b185e572b543bfcc75f33e71ef510c94b6a5d4a`. Повторно прочитаны актуальные `PROJECT_MASTER_LOG.md`, Stage C plan, `games/steam_cards/order_preflight.py`, badge/allocation/shared-set modules, `integrations/asf/client.py`, `integrations/asf_plugin/GameDeliveryPlugin.cs`, `ReadOnlyDiagnostic.cs`, `app/main.py` и соответствующие тесты.
+
+**Уточнение по ASF diagnostic (исправляет неполное предположение предыдущего обсуждения):**
+- ASF-плагин уже содержит read-only команду `gamedelivery-diagnose <BotName> [AppID ...] --recipient <SteamID64>`.
+- В режиме с получателем плагин проверяет SteamID64 профиля через XML identity, запрашивает badge metadata через ASF session-aware Steam Community request, проверяет recipient response final URI, получает полный recipient inventory через ASF `GetInventoryAsync(steamID, 753, 6)` с pagination, агрегирует только обычные TradingCard по `RealAppID + MarketHashName + Amount` и возвращает сравнение `matchedHashes/missingHashes/extraHashes`.
+- Это уже существующий ASF-native read-only provider для экспериментального C.2 data path; Python `ASFClient.send_command()` также уже существует как низкоуровневая IPC-примитива. Но MainWindow не вызывает diagnostic и не преобразует его ответ в verified preflight inputs. Не создавать второй provider до проверки существующего.
+- Точный состав набора может быть восстановлен из объединения `matchedHashes + missingHashes` конкретной успешной recipient comparison; количество полных наборов покупателя должно считаться по `Amount` каждой требуемой MarketHashName из recipient inventory. Поле `owned` не использовать.
+- Diagnostic остаётся reverse-engineered Steam Community endpoint, поэтому production-готовность не подтверждена. Необходимо закрыть live gates C.2.5/C.2.6: публичный профиль, приватность, badge level 0–5, пагинация, обычный/foil badge, точное равенство `markethash` и `MarketHashName`, отсутствие ложного нулевого результата.
+
+**Обнаруженные границы интеграции, которые нельзя скрывать:**
+- `SteamCardOrderPreflight.prepare_multi_game()` уже умеет точный allocation и резервирование по общему пулу нескольких ботов, но это пока изолированный adapter и не подключён к UI.
+- Текущий production UI/send path сохраняет ровно один Steam offer на заказ и явно отклоняет состав из нескольких ASF-ботов. При этом утверждённые C.2.1 правила разрешают набор из карточек разных ботов и требуют несколько DeliveryLeg/Steam offers в одном родительском заказе. Поэтому простое подключение multi-game preflight к текущему send path было бы некорректным и могло бы зарезервировать состав, который текущий отправщик не способен передать целиком.
+- `GAME_CATALOG` сейчас ограничен AppID 730, 570, 440, 252490 и Steam Community 753; `prepare_multi_game()` отбрасывает сам модуль Steam и блокирует неизвестные названия игр. Это не доказывает покрытие всех игр, чьи карточки могут присутствовать в Steam inventory. До production call site требуется подтвердить scope/discovery полного каталога карточных игр; не расширять игровые inventory modules (CS2 + Steam Cards остаются целевыми подсистемами).
+- Stage C plan прямо запрещает менять пользовательскую БД/большой UI до завершения C.2 data-source gates. Следующий правильный шаг — не UI rewrite и не CS2 delivery, а завершить автоматические CI gates текущего card-only слоя, затем выполнить ограниченный live read-only acceptance уже существующей ASF diagnostic на нескольких известных AppID. После этого спроектировать адаптеры verified diagnostic → preflight и многоботовые DeliveryLeg в утверждённой последовательности.
+
+**CI на момент записи:** ASF plugin workflow run `43048568088` — success; Windows executable workflow run `43048568049` — success; Tests run `43048818543` на HEAD выше — in progress. Результат тестов не объявлять до завершения workflow. Ранее отменённые Tests runs не считать ошибками тестов.
+
+**Изменения:** код, пользовательская БД и ASF/Steam состояние не менялись. Это аудит и уточнение безопасной последовательности. Пользовательские скачивания/live-проверки пока не запрашивать до завершения текущего Tests workflow.
