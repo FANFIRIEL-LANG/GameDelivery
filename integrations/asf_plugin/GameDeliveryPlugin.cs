@@ -354,6 +354,11 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                     return Failure("Актив " + rawAssetId + " сейчас нельзя передать.");
                 }
 
+                if (!TradeDelivery.IsNormalTradingCard(asset))
+                {
+                    return Failure("Актив " + rawAssetId + " не является обычной Steam Trading Card.");
+                }
+
                 previewAssets.Add(new PreviewAsset
                 {
                     AssetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
