@@ -361,6 +361,40 @@ class CS2PricePanelTests(unittest.TestCase):
         self.assertEqual(worker.positions, (missing_position,))
         self.assertFalse(panel.price_missing_button.isEnabled())
 
+    def test_worker_logs_bulk_opensky_failure_details_and_emits_specific_status(self):
+        from unittest.mock import patch
+        from integrations.openskin.client import OpenSkinError
+        from app.game_inventory_panel import _PriceRefreshTask
+
+        position = PricePosition(730, "AK-47 | Redline")
+        with tempfile.TemporaryDirectory() as temp:
+            database = os.path.join(temp, "prices.sqlite3")
+            with patch("app.game_inventory_panel.OpenSkinProxySettingsStore") as settings_store, \\
+                    patch("app.game_inventory_panel.OpenSkinClient") as openskin, \\
+                    patch("app.game_inventory_panel.FrankfurterClient"):
+                settings_store.return_value.load_enabled_proxy.return_value = None
+                openskin.return_value.fetch_prices.side_effect = OpenSkinError(
+                    "invalid response", category="invalid_response",
+                    diagnostic_detail="json_error_pos=8192 suffix_hex=7d",
+                )
+                task = _PriceRefreshTask(database, [position])
+                messages = []
+                task.signals.finished.connect(messages.append)
+
+                with self.assertLogs("app.game_inventory_panel", level="WARNING") as captured:
+                    task.run()
+
+        self.assertEqual(
+            messages,
+            ["OpenSkin: ошибка массового запроса (invalid_response); подробности в openskin-proxy.log"],
+        )
+        output = "\\n".join(captured.output)
+        self.assertIn("due_positions=1", output)
+        self.assertIn("category=invalid_response", output)
+        self.assertIn("json_error_pos=8192", output)
+        self.assertNotIn("AK-47", output)
+
+
     def test_worker_does_not_fetch_or_convert_fx_for_below_threshold_price(self):
         position = PricePosition(730, "Kilowatt Case")
         with tempfile.TemporaryDirectory() as temp:
