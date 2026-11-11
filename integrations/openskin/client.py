@@ -354,6 +354,16 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
 
     reply.finished.connect(event_loop.quit)
     reply.requestSent.connect(lambda: phase.__setitem__("request_sent", True))
+    response_chunks = bytearray()
+
+    def collect_reply_data():
+        chunk = bytes(reply.readAll())
+        if chunk:
+            response_chunks.extend(chunk)
+
+    ready_read_signal = getattr(reply, "readyRead", None)
+    if ready_read_signal is not None:
+        ready_read_signal.connect(collect_reply_data)
     metadata_signal = getattr(reply, "metaDataChanged", None)
     if metadata_signal is not None:
         metadata_signal.connect(lambda: phase.__setitem__("metadata_received", True))
@@ -384,10 +394,10 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         )
         response_body = b""
         if method == "POST" and status == 200:
-            # Qt may report OperationCanceledError after the full response body
-            # has already arrived. Always drain the reply buffer before deciding
-            # that the request timed out or returned an empty body.
-            response_body = bytes(reply.readAll())
+            # Drain once more after finished/abort in case data arrived between
+            # readyRead notifications and the final state inspection.
+            collect_reply_data()
+            response_body = bytes(response_chunks)
         response_complete = (
             phase["download_total"] > 0
             and phase["download_received"] >= phase["download_total"]
