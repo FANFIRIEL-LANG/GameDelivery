@@ -102,6 +102,67 @@ class TradeDeliveryUITests(unittest.TestCase):
             bot_name="Bot A",
         )
 
+    def test_order_asset_picker_shows_only_normal_trading_cards(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            InventorySnapshotStore(database).replace([
+                CardCopy("normal", "Example Game", "Normal Card"),
+                CardCopy("foil", "Example Game", "Foil Card", is_foil=True),
+                CardCopy("item", "Counter-Strike 2", "AK-47", is_trading_card=False),
+                CardCopy("locked", "Example Game", "Untradable Card", is_tradable=False),
+            ], bot_name="Bot A")
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                try:
+                    labels = [window.order_assets.item(i).text() for i in range(window.order_assets.count())]
+                    self.assertEqual(len(labels), 2)
+                    self.assertTrue(any("Normal Card" in label for label in labels))
+                    self.assertTrue(any("Untradable Card" in label for label in labels))
+                    self.assertFalse(any("Foil Card" in label for label in labels))
+                    self.assertFalse(any("AK-47" in label for label in labels))
+                    locked_item = next(
+                        window.order_assets.item(i)
+                        for i in range(window.order_assets.count())
+                        if "Untradable Card" in window.order_assets.item(i).text()
+                    )
+                    self.assertFalse(locked_item.flags() & locked_item.flags().ItemIsSelectable)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+    def test_prepare_order_rejects_non_card_even_if_injected_into_selection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            InventorySnapshotStore(database).replace([
+                CardCopy("not-card", "Counter-Strike 2", "AK-47", is_trading_card=False),
+            ], bot_name="Bot A")
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                window._trade_credentials = SteamTradeCredentialStore(backend=MemoryKeyring())
+                try:
+                    window.order_recipient.setText(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+                    )
+                    from PySide6.QtWidgets import QListWidgetItem
+                    from PySide6.QtCore import Qt
+                    injected = QListWidgetItem("Injected item")
+                    injected.setData(Qt.ItemDataRole.UserRole, ("Bot A", "not-card"))
+                    window.order_assets.addItem(injected)
+                    injected.setSelected(True)
+                    with patch("app.main.QMessageBox.warning") as warning:
+                        window._prepare_delivery_order()
+                    warning.assert_called_once()
+                    with sqlite3.connect(database) as db:
+                        orders = db.execute("SELECT COUNT(*) FROM delivery_orders").fetchone()[0]
+                        reservations = db.execute("SELECT COUNT(*) FROM steam_asset_reservations").fetchone()[0]
+                    self.assertEqual(orders, 0)
+                    self.assertEqual(reservations, 0)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
     def _run_with_window(self, database, body):
         self._make_database(database)
         with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
