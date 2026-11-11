@@ -3594,3 +3594,5 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - **Windows application build на кодовом commit `d9e4aba...`:** run `43069728175`, job `build-windows` — success.
 - Актуальный HEAD `26a2b408...` отличается от проверенного build commit только docs-only изменением `PROJECT_MASTER_LOG.md`; production source/build inputs после успешных plugin и Windows builds не изменялись. Отдельные build runs на docs-only HEAD не создавались.
 - Production-код в этой проверке не менялся; новый live Steam trade после card-only guard ещё не выполнен. **Пользователю пока ничего скачивать и запускать не нужно:** следующий технический шаг — сверить артефакты успешных plugin/Windows builds и затем подготовить один контролируемый live Steam Cards сценарий. CS2 delivery остаётся отдельной задачей после подтверждения Steam Cards.
+
+- Дополнительно проверены опубликованные артефакты: run `43069728218` содержит действующий (не expired) `GameDelivery-ASFPlugin` (57,182 bytes); run `43069728175` содержит действующий `GameDelivery-Windows-x64` (55,034,285 bytes). Артефакты доступны в GitHub Actions, но их содержимое пока не скачивалось и не инспектировалось.
