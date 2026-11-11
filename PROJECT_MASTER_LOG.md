@@ -3269,3 +3269,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Изменение закоммичено в `work/local-sync`: `138705a02ea9b3985aa98d180b5ca3094fde2552` (`diagnostics: compare OpenSkin probe and pricing milestones`).
 - Проверки: после push требуется проверить GitHub Actions Tests и Windows Build именно на одном конечном SHA. До получения зелёного CI не просить пользователя устанавливать сборку. Если workflow упадёт — изучить конкретный failing step/log и исправлять причину, не запускать повторные проверки без основания.
 - Следующий ручной шаг после успешного CI: сравнить в одном коротком сеансе лог `Проверить прокси` (`operation=health_probe`) и `Проверить OpenSkin API` (`operation=prices_batch`). Пользователь выполняет эти две кнопки только после установки проверенной сборки; до этого ничего вручную делать не требуется.
+
+### 2026-11-11 — CI завершён для OpenSkin transport diagnostics
+
+- GitHub Actions Tests run `42969925236` завершился `success` на commit `21538e376563b555bd463fbf6ffc37ab6378880d`. Все шаги, включая compile, Steam trade credential tests, полный unit test suite и isolate step, завершились успешно.
+- Windows Build run `42969902892` завершился `success` на commit `138705a02ea9b3985aa98d180b5ca3094fde2552`. Успешны compileall, Windows trade-secret ACL test, PyInstaller build, packaged executable smoke test и upload artifact.
+- Artifact `GameDelivery-Windows-x64` создан, ID `13832259800`, размер 55,032,464 bytes, не истёк.
+- Важно о SHA: Tests запускался на последующем commit `21538e3...`, который содержит только обновление `PROJECT_MASTER_LOG.md` поверх `138705a...`; Windows Build запускался непосредственно на `138705a...`, где находится изменение `integrations/openskin/client.py`. Между ними production-код не менялся. Таким образом, оба CI зелёные и проверяют один и тот же production source tree, но GitHub run SHA формально различаются. Не заявлять, что оба workflow были на идентичном SHA.
+- Текущий `work/local-sync` HEAD: `21538e376563b555bd463fbf6ffc37ab6378880d`. Изменение OpenSkin пока только диагностическое; первопричина транспортного расхождения не установлена.
+- Следующий шаг: после установки этой проверенной сборки выполнить ровно одну проверку прокси и одну проверку OpenSkin API в одном сеансе, затем сравнить `operation=health_probe` и `operation=prices_batch` по elapsed time, socket/TLS/request/metadata/finished milestones. Не запускать автоматические повторы и не менять транспорт/парсер до анализа этих логов.
