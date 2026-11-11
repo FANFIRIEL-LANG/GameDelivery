@@ -300,7 +300,15 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
     manager = QNetworkAccessManager()
     # This is intentionally manager-local and happens before get()/post().
     manager.setProxy(build_qnetwork_proxy(proxy))
+    started_at = time.monotonic()
+    operation = (
+        "health_probe" if method == "GET" and url == _PROXY_PROBE_URL
+        else "prices_batch" if method == "POST" and url == _ENDPOINT
+        else "other"
+    )
     phase = {
+        "socket_started_connecting": False,
+        "finished_signal": False,
         "proxy_auth_requested": False,
         "proxy_auth_answered": False,
         "tls_completed": False,
@@ -352,8 +360,14 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
         reply.abort()
         event_loop.quit()
 
+    reply.finished.connect(lambda: phase.__setitem__("finished_signal", True))
     reply.finished.connect(event_loop.quit)
     reply.requestSent.connect(lambda: phase.__setitem__("request_sent", True))
+    socket_started_signal = getattr(reply, "socketStartedConnecting", None)
+    if socket_started_signal is not None:
+        socket_started_signal.connect(
+            lambda: phase.__setitem__("socket_started_connecting", True)
+        )
     response_chunks = bytearray()
 
     def collect_reply_data():
@@ -450,7 +464,13 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
                 proxy_auth_answered=phase["proxy_auth_answered"],
             )
             detail = " | ".join(ssl_error_details) or reply.errorString()
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            reply_finished = bool(reply.isFinished())
             phase_detail = (
+                f"operation={operation}; method={method}; timeout_ms={int(timeout * 1000)}; "
+                f"elapsed_ms={elapsed_ms}; reply_finished={reply_finished}; "
+                f"socket_started_connecting={phase['socket_started_connecting']}; "
+                f"finished_signal={phase['finished_signal']}; "
                 f"tls_completed={phase['tls_completed']}; "
                 f"proxy_auth_requested={phase['proxy_auth_requested']}; "
                 f"proxy_auth_answered={phase['proxy_auth_answered']}; "
@@ -464,6 +484,18 @@ def _qt_proxy_request(url: str, body: bytes, headers: Mapping[str, str],
             raise OpenSkinError(
                 message, category=category, diagnostic_detail=safe_detail
             )
+        _logger.info(
+            "OpenSkin transport completed operation=%s method=%s status=%s "
+            "timeout_ms=%s elapsed_ms=%s reply_finished=%s "
+            "socket_started_connecting=%s tls_completed=%s "
+            "proxy_auth_requested=%s proxy_auth_answered=%s "
+            "request_sent=%s metadata_received=%s",
+            operation, method, status, int(timeout * 1000),
+            int((time.monotonic() - started_at) * 1000), bool(reply.isFinished()),
+            phase["socket_started_connecting"], phase["tls_completed"],
+            phase["proxy_auth_requested"], phase["proxy_auth_answered"],
+            phase["request_sent"], phase["metadata_received"],
+        )
         return status, response_body, response_headers
     finally:
         reply.deleteLater()
