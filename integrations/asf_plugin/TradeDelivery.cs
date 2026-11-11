@@ -120,9 +120,8 @@ internal static class TradeDelivery
 
     internal static bool IsNormalTradingCard(Asset asset)
     {
-        string itemType = asset.Description?.Type ?? "";
-        return itemType.Contains("Trading Card", StringComparison.OrdinalIgnoreCase)
-            && !itemType.Contains("Foil", StringComparison.OrdinalIgnoreCase);
+        string itemType = asset.Description?.Type.ToString() ?? "";
+        return string.Equals(itemType, "TradingCard", StringComparison.OrdinalIgnoreCase);
     }
 
     public static async Task<string> ProcessSendCommand(
