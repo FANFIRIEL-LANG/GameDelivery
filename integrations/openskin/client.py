@@ -710,12 +710,22 @@ class OpenSkinClient:
             identity = (item_name, echoed_pattern or "")
             position = positions_by_identity.get(identity)
             if position is None:
+                requested_names = {candidate.market_hash_name for candidate in positions}
+                reason = (
+                    "pattern_mismatch" if item_name in requested_names
+                    else "item_identity_mismatch"
+                )
                 diagnostic = _invalid_result_row_diagnostic(
-                    index, "unexpected_item_or_pattern", positions, rows,
+                    index, reason, positions, rows,
+                )
+                message = (
+                    "OpenSkin вернул результат с несовпадающим pattern."
+                    if reason == "pattern_mismatch"
+                    else "OpenSkin вернул результат с несовпадающим предметом."
                 )
                 raise OpenSkinError(
-                    "OpenSkin вернул результат с неизвестным предметом или pattern.",
-                    category="invalid_response", diagnostic_detail=diagnostic,
+                    message, category="invalid_response",
+                    diagnostic_detail=diagnostic,
                 )
             if position in prices_by_position:
                 diagnostic = _invalid_result_row_diagnostic(
