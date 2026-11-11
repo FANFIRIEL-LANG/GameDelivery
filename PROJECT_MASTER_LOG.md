@@ -3388,3 +3388,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Tests run 42994049124: SUCCESS, полный набор 526 tests. Этот артефакт собран из точного кодового SHA с изолированной test-mode SQLite и отключённой передачей в заказ.
 - После code commit записаны docs-only commits 428bc7d383dba3e1e018b30347347b7ace059855 (master log) и a8580a70ddab30ed603137d298c6dbcaed2b2d88 (Stage C plan). Они не меняют код; artifact остаётся привязан к d08b7e1.
 - Следующий и единственный пользовательский шаг: проверить этот артефакт на изолированном ASF endpoint 1243, только GET 730/2, без production ASF, trade и order handoff.
+
+### 2026-11-11 — C.6.3.7 isolated CS2 inventory live acceptance passed
+
+- Пользователь выполнил свежий refresh выбранного тестового бота через уже настроенный ASF endpoint `127.0.0.1:1243` и сравнил CS2 730/2 inventory с фактическим инвентарём бота в ASF. Пользователь подтвердил полное совпадение.
+- Live gate получения, снимка и отображения CS2 inventory в test-mode закрыт. Автоматические 526 tests и Windows Build/package smoke gate ранее прошли.
+- Перенастройка порта не требовалась: 1243 уже использовался как изолированный endpoint. Простое открытие раздела показывало прежний snapshot; свежие данные были получены кнопкой «Обновить выбранные аккаунты».
+- Test-mode использует отдельную SQLite `~/.gamedelivery/test-mode/gamedelivery-test.sqlite3`; обычная база остаётся `~/.gamedelivery/gamedelivery.sqlite3`; передача Trade URL/order handoff в test-mode отключена.
+- Граница подтверждения: это закрывает только live inventory gate. Отправка CS2-предметов через delivery pipeline этим не подтверждена. OpenSkin proxy/API acceptance из C.6.3.6 остаётся отдельной проверкой, если ещё не закрыта отдельным результатом.
+- Следующий шаг: вернуться к следующей незакрытой задаче Stage C по утверждённой последовательности. Не повторять проверку ASF 1243/CS2 inventory без изменения кода или конкретной ошибки.
