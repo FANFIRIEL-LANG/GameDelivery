@@ -3551,3 +3551,25 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Реализацию планировать как read-model/pure calculation поверх существующих snapshot данных; не создавать дублирующее inventory и не менять DB schema без отдельного обоснования.
 
 **Текущая позиция:** Stage C обновлён docs-only commit `59756a9a608fab263801f401f122afe39712d921`. Код/UI/БД/торговая логика не менялись. Следующий шаг по этому требованию — сначала аудит существующих Steam Cards inventory views/models и planner inputs, затем pure calculation + tests; не начинать UI/DB rewrite без отдельного решения.
+
+### 2026-11-11 — приоритет пользователя: фактическая проверка Steam Cards и CS2 delivery
+
+**Решение пользователя:** прежде чем заниматься архитектурной уборкой, аналитикой складских наборов или расширением функций, сначала проверить и довести до подтверждённого состояния отправку Steam Trading Cards и CS2-предметов. Не менять этот приоритет без нового решения пользователя.
+
+**Повторная сверка текущих путей на `work/local-sync`:**
+- Steam Cards: production order/send path существует через MainWindow → ASFClient → `gamedelivery-preview` / `gamedelivery-send` → GameDelivery ASF plugin → Steam Trade Offer. UI сейчас показывает только обычные Trading Cards и исключает foil/прочие Steam Community items; перед резервом тип и tradability проверяются повторно. ASF plugin повторно получает живой Steam Community inventory 753/6, требует `TradingCard` и `Tradable=true`, проверяет одноразовый secret, owner access, exact asset IDs, idempotency и блокирует автоматический повтор при unknown outcome. Mobile confirmation обрабатывается отдельно.
+- Историческая live-отправка offer от 2026-11-07 подтверждена пользователем, но она предшествует последнему card-only guard. Текущий guard и сквозной UI → plugin → Steam путь после его изменения ещё не имеют нового live acceptance.
+- Ограничение текущего пути: один order/send обрабатывает один ASF-бот/один offer. Multi-bot/multi-leg доставка не реализована в текущем UI/send flow. `SteamCardOrderPreflight.prepare_multi_game()` не подключён к MainWindow и содержит старые входы `buyer_inventory_verified` / `buyer_complete_sets_by_app_id`, противоречащие C.2.9. Не подключать его к production без предварительного исправления входного контракта: только badge level покупателя + composition ordinary badge наших ботов + seller inventory наших ботов; buyer card inventory не читать/не учитывать.
+- CS2: live inventory read/refresh 730/2 подтверждён пользователем ранее, но GameInventoryPanel остаётся read-only. Его selected assets не проходят в корректный delivery path: текущий order flow ищет активы в Steam Community 753/6, а ASF plugin send payload и live validation жёстко привязаны к 753/6. Отдельного CS2 730/2 delivery handler нет. Поэтому отправка CS2-предметов не реализована и не проверена.
+
+**CI, проверенный повторно:**
+- ASF plugin workflow run `43048568088`: Linux plugin build/smoke и Windows plugin/ACL jobs — success; Generic runtime smoke — success; trimmed runtime smoke skipped согласно workflow policy.
+- Windows application build run `43048568049`: success.
+- Tests run `43055172827`: failure до checkout и до запуска тестов на шаге установки Qt runtime libraries; логи показывают DNS resolution failure для Ubuntu package mirrors (`azure.archive.ubuntu.com`, `archive.ubuntu.com`, `security.ubuntu.com`). Это инфраструктурный сбой runner, а не failure тестов; тестовый suite в этом run не выполнялся. Не считать automated tests пройденными.
+
+**Точный порядок продолжения:**
+1. Steam Cards: закончить focused automated acceptance текущего card-only UI/plugin contract, не подключая устаревший preflight. Исправить/адаптировать preflight под C.2.9 только в рамках минимально необходимого card order path; сохранить безопасную одноботовую отправку до отдельной реализации multi-leg. Затем получить успешные Tests + Windows app + ASF plugin builds и провести один контролируемый live send на малорисковом аккаунте.
+2. После подтверждения Steam Cards — отдельный CS2 730/2 delivery contract/handler в приложении и ASF plugin, с exact asset IDs, live revalidation, tradability/restriction checks, idempotency и unknown-outcome protection; затем focused tests/builds и отдельный контролируемый live send.
+3. Только после фактической проверки обоих delivery types возвращаться к остальным этапам плана. Не повторять CS2 inventory read test и не использовать изолированный endpoint 1243 для production trade. Test-mode storage isolation и запрет order handoff остаются обязательными.
+
+**В этой сессии:** выполнен read-only аудит текущих исходников и CI результатов; код, пользовательская БД и Steam/ASF состояние не менялись. Пока скачивать и запускать live trade ничего не нужно. Следующее действие — работа над focused Steam Cards acceptance, а не архитектурный аудит или аналитика наборов.
