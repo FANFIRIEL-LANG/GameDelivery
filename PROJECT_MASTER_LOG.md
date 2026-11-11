@@ -3485,3 +3485,31 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 **CI на момент записи:** ASF plugin workflow run `43048568088` — success; Windows executable workflow run `43048568049` — success; Tests run `43048818543` на HEAD выше — in progress. Результат тестов не объявлять до завершения workflow. Ранее отменённые Tests runs не считать ошибками тестов.
 
 **Изменения:** код, пользовательская БД и ASF/Steam состояние не менялись. Это аудит и уточнение безопасной последовательности. Пользовательские скачивания/live-проверки пока не запрашивать до завершения текущего Tests workflow.
+
+
+### 2026-11-11 — пользователь уточнил целевой сквозной lifecycle доставки
+
+**Источник:** обсуждение пользователя о потоке «новый заказ → анализ Steam-профиля из trade URL → проверка значков/инвентаря → точный подбор карточек → manifest bot/asset → отправка несколькими ботами → отслеживание Steam offer → статусы → Playerok и Telegram». Сверено с текущим Master Log, Stage C, существующим ASF diagnostic и текущими границами Playerok/Steam.
+
+**Зафиксировано в Stage C, новый раздел C.2.8:**
+- Разделены `customer_id`, постоянный `chat_id`, уникальные `deal_id`, внутренний `order_id`, listing/config version, SteamID64 и trade URL. Один chat может иметь много отдельных deals/orders; chat ID не является ключом уникальности заказа и не перезаписывается новой покупкой.
+- Добавлен полный recipient/trade URL preflight: строгая HTTPS URL validation, partner→SteamID64, подтверждение identity, проверки приватности/доступности профиля, badge/inventory, trade restrictions, redirect/login/challenge, malformed/incomplete responses и отдельная классификация permanent/transient/unknown ошибок.
+- Уточнена точная card-set идентификация: authoritative обычный набор из badge metadata, exact `markethash ↔ MarketHashName`, buyer inventory pagination + Amount, полные наборы считаются по минимуму каждого required hash; поле `owned` не используется; foil исключён; unknown/incomplete data fail closed.
+- Добавлен immutable delivery manifest с точными AppID/context, bot, asset ID, recipient, snapshot evidence и idempotency key; весь заказ резервируется атомарно до первого внешнего offer; legs группируются по ботам и отслеживаются независимо.
+- Уточнено разделение marketplace deal status, parent order status и Steam delivery-leg/offer status. Пользовательские состояния «Выполняется», «Отправлен», «Отклонён», «Принят» сохранены как понятные UI labels, но введены строгие условия отображения и технические промежуточные состояния. «Принят» возможен только после подтверждения всех обязательных legs.
+- Добавлены polling/event/reconciliation, перезапуск и recovery, удержание резервов при active/unknown offers, запрет автоматического повтора после неизвестного внешнего результата, обработка mobile confirmation и partial success.
+- Зафиксированы Playerok buyer messaging и Telegram operator notifications как независимые event/outbox adapters. Telegram недоступность не блокирует delivery; сообщения покупателю адресуются по chat ID и конкретному deal/order; секреты/полные trade URL не передаются.
+- Добавлены сценарии тестирования privacy, URL/identity mismatch, Steam/ASF errors, rate limit, incomplete pagination, changed tradability, multi-bot legs, crash windows, same chat/multiple deals, duplicate notifications and partial acceptance.
+- Сохранён порядок: завершить текущие CI gates → read-only ASF live gates → recipient/trade preflight → multi-leg ledger/dispatch/reconciliation → Steam Cards acceptance → отдельный CS2 handler → Playerok messaging/Telegram adapters. Не включать автоматическую отправку до доказанных gates.
+
+**Важные уточнения к исходной формулировке пользователя:**
+- Проверка trade URL и Steam identity должна идти до badge analysis; наличие валидной ссылки само по себе не означает, что получатель может принимать обмены.
+- Для карточек нужно учитывать не только уровень значка, но и полные наборы, уже находящиеся у покупателя; частичные наборы не уменьшают требуемое количество.
+- Список отправки фиксируется как неизменяемый manifest, а не динамический список, который может измениться во время отправки.
+- Для нескольких ботов один parent order включает несколько Steam offers; каждый offer имеет свой ID/status. Частичный внешний успех не может быть откатан, поэтому требует отдельного состояния и ручной/автоматической read-only reconciliation.
+- Состояния Playerok, внутреннего заказа и Steam offer не смешиваются. «Отправлен» не равен «Принят»; mobile confirmation отправителя также является отдельным этапом.
+- `!настроил приватность` связывается с конкретным deal/order. Если в одном chat несколько заказов ждут приватность, нельзя угадывать целевой заказ.
+
+**Текущее состояние реализации не меняется:** этот коммит — только спецификация/решения. Не добавлялись код, DB schema/migrations, новые Playerok/Telegram endpoints, Steam polling или live send. Существующий Playerok adapter остаётся read-only; Telegram messaging и Playerok buyer messaging пока не реализованы. Stage C и исторический completion plan не объявляются завершёнными. Следующий разрешённый технический шаг не изменён: завершить текущие automated CI checks и затем идти по новым C.2.8 gates.
+
+**Документы:** Stage C обновлён commit `c383f247aa13ad196cb66a3090390276a5ac1b7b`; обновление Master Log следует отдельным docs-only commit.
