@@ -369,9 +369,7 @@ class CS2PricePanelTests(unittest.TestCase):
         position = PricePosition(730, "AK-47 | Redline")
         with tempfile.TemporaryDirectory() as temp:
             database = os.path.join(temp, "prices.sqlite3")
-            with patch("app.game_inventory_panel.OpenSkinProxySettingsStore") as settings_store, \\
-                    patch("app.game_inventory_panel.OpenSkinClient") as openskin, \\
-                    patch("app.game_inventory_panel.FrankfurterClient"):
+            with patch("app.game_inventory_panel.OpenSkinProxySettingsStore") as settings_store, patch("app.game_inventory_panel.OpenSkinClient") as openskin, patch("app.game_inventory_panel.FrankfurterClient"):
                 settings_store.return_value.load_enabled_proxy.return_value = None
                 openskin.return_value.fetch_prices.side_effect = OpenSkinError(
                     "invalid response", category="invalid_response",
