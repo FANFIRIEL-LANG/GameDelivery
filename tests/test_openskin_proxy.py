@@ -625,7 +625,8 @@ class OpenSkinProxyTests(unittest.TestCase):
         self.assertEqual([method for _, method, _ in calls], ["GET", "POST"])
         self.assertTrue(all(proxy.password == "saved-password" for _, _, proxy in calls))
         self.assertTrue(widget.proxy_status.text().startswith("Прокси, HTTPS"))
-        self.assertIn("OpenSkin API ответил", widget.openskin_status.text())
+        self.assertIn("Контрольный запрос OpenSkin для одного предмета прошёл", widget.openskin_status.text())
+        self.assertIn("массовое обновление инвентаря проверяется отдельно", widget.openskin_status.text())
         self.assertNotIn("saved-password", widget.proxy_status.text())
         self.assertNotIn("saved-password", widget.openskin_status.text())
 
