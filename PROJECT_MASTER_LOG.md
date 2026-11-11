@@ -3184,3 +3184,13 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Изменения записаны в work/local-sync отдельными последовательными коммитами: 749df6134a7754ddbac9674b985afe7858ab4903 (cooldown wait calculation); 476937dc91efb63ecb437f0ed67be22bd8572690 (response-body timeout classification and 45-second request timeout); d19cdebe55a56cd81b8dd762386fa912209594ae (manual-only CS2 price refresh); 27631de19941898b4aa99cb20c4a2d046a7da324 (cooldown tests).
 - CI для итогового коммита 27631de19941898b4aa99cb20c4a2d046a7da324 запущен; до успешного завершения Tests и Windows Build сборку не распространять.
 - Не сбрасывать SQLite cooldown, не отключать Retry-After, не менять OpenSkin endpoint, Steam Ask contract или обработку цен. Увеличенный тайм-аут — ограниченная попытка дать телу ответа больше времени, но не доказательство исправления upstream/proxy.
+
+
+### 2026-11-11 — сохранение полного OpenSkin body после Qt OperationCanceledError
+
+- Пользователь проверил новую сборку: health/proxy probe показал HTTP 200, а ценовой POST зафиксировал `download_received=8192`, `download_total=8192`, затем `OperationCanceledError` по тайм-ауту. Это новая улика: полный объём тела уже был принят Qt, но предыдущая реализация читала `reply.readAll()` только при `QNetworkReply.NoError`, поэтому отбрасывала буфер при позднем `OperationCanceledError`.
+- `integrations/openskin/client.py`: для POST HTTP 200 теперь всегда читается буфер `reply.readAll()` независимо от Qt error. Если сработал тайм-аут, тело принимается только при подтверждённом полном download progress (`received >= total > 0`); иначе запрос классифицируется как `response_timeout` и не парсится как полноценный ответ. Добавлено безопасное INFO-сообщение о восстановлении полного тела после Qt timeout.
+- `tests/test_openskin_proxy.py`: добавлен тест, подтверждающий, что тело читается и возвращается при HTTP 200 + OperationCanceledError, когда reply уже завершён.
+- Коммиты: `17b7e8312384c218999ff8080a91290278fb9149` (код), `477455df3cced03e3e5a4b99e6235c132cb7497e` (регрессионный тест).
+- Следующий шаг: выполнить CI Tests и Windows Build на актуальном HEAD; новую сборку не распространять до успешного завершения. После установки попросить пользователя выполнить одну ручную попытку обновления цен. Проверить, появляется ли INFO `OpenSkin response body recovered after Qt timeout` и сохраняются ли цены.
+- Не менять endpoint, Steam Ask-only contract, Retry-After, локальный cooldown или базу. Пока это исправление буферизации/поздней отмены Qt; причина тайм-аута на сетевом уровне остаётся открытой, если полного тела всё же не будет.
