@@ -48,7 +48,7 @@ class _OpenSkinCheckTask(QRunnable):
             OpenSkinClient(proxy=self.proxy).fetch_prices(
                 [PricePosition(730, "AK-47 | Redline (Field-Tested)")]
             )
-            self.signals.finished.emit(True, "OpenSkin API ответил на ценовой запрос.")
+            self.signals.finished.emit(True, "Контрольный запрос OpenSkin для одного предмета прошёл; массовое обновление инвентаря проверяется отдельно.")
         except OpenSkinError as exc:
             self.signals.finished.emit(False, exc.user_message)
         except Exception:
