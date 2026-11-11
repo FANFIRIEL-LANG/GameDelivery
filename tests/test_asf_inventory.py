@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from app.asf_inventory_controller import ASFInventoryController
 from games.steam_cards.asf_inventory import parse_bot_inventory
 from integrations.asf.client import ASFClient, ASFError
 
@@ -10,6 +11,26 @@ class ASFInventoryTests(unittest.TestCase):
         with patch.object(ASFClient, "request", return_value={"Success": True, "Result": {}}) as request:
             ASFClient().get_bot_inventory("My Bot", app_id=753, context_id=6)
         request.assert_called_once_with("/Api/Bot/My%20Bot/Inventory/753/6?language=english")
+
+    @patch("app.asf_inventory_controller.refresh_bot_snapshot")
+    @patch("app.asf_inventory_controller.ASFClient")
+    def test_inventory_controller_uses_configured_alternate_ipc_port(self, client_type, refresh):
+        refresh.return_value = {"item_count": 1}
+        controller = ASFInventoryController(
+            "unused.sqlite3",
+            base_url="http://127.0.0.1:1243",
+            allow_alternate_loopback_port=True,
+        )
+
+        controller.refresh("Bot A", "ipc-secret")
+
+        client_type.assert_called_once_with(
+            base_url="http://127.0.0.1:1243",
+            ipc_password="ipc-secret",
+            timeout=30.0,
+            allow_alternate_loopback_port=True,
+        )
+        refresh.assert_called_once()
 
     def test_parser_matches_descriptions_and_identifies_normal_and_foil_cards(self):
         payload = {
