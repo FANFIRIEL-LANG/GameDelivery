@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from dataclasses import replace
@@ -45,6 +46,9 @@ from integrations.asf.client import (
 from integrations.frankfurter.client import FrankfurterClient, FrankfurterError
 from integrations.openskin.client import OpenSkinClient, OpenSkinError
 from integrations.openskin.proxy import OpenSkinProxySettingsStore
+
+
+_logger = logging.getLogger(__name__)
 
 
 class _BotListRefreshSignals(QObject):
@@ -159,20 +163,37 @@ class _PriceRefreshTask(QRunnable):
             store = PriceCacheStore(self.database_path)
             due = store.due_positions(self.positions, force=self.force)
             if due:
+                proxy = OpenSkinProxySettingsStore().load_enabled_proxy()
+                _logger.info(
+                    "CS2 price refresh started positions=%s due_positions=%s force=%s proxy_enabled=%s",
+                    len(self.positions), len(due), self.force, proxy is not None,
+                )
                 try:
-                    proxy = OpenSkinProxySettingsStore().load_enabled_proxy()
                     prices = OpenSkinClient(proxy=proxy).fetch_prices(due)
                     for price in prices:
                         store.save_quote(cached_price_from_openskin(price))
+                    _logger.info(
+                        "CS2 price refresh completed requested_positions=%s received_quotes=%s",
+                        len(due), len(prices),
+                    )
                 except OpenSkinError as exc:
                     for position in due:
                         store.mark_error(
                             position, exc.http_status,
                             retry_after_seconds=exc.retry_after_seconds,
                         )
-                    messages.append(
-                        f"OpenSkin HTTP {exc.http_status}" if exc.http_status else "OpenSkin недоступен"
+                    _logger.warning(
+                        "CS2 price refresh failed due_positions=%s category=%s http_status=%s "
+                        "retry_after_seconds=%s diagnostic=%s",
+                        len(due), exc.category, exc.http_status,
+                        exc.retry_after_seconds, exc.diagnostic_detail or "none",
                     )
+                    if exc.http_status:
+                        messages.append(f"OpenSkin HTTP {exc.http_status}")
+                    else:
+                        messages.append(
+                            f"OpenSkin: ошибка массового запроса ({exc.category}); подробности в openskin-proxy.log"
+                        )
             cached_quotes = (store.get(position) for position in self.positions)
             needs_conversion = any(
                 quote is not None and quote.currency == "USD"
