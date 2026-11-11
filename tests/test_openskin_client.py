@@ -64,6 +64,33 @@ class OpenSkinClientTests(unittest.TestCase):
         self.assertEqual(sizes, [500, 500, 1])
         self.assertEqual(len(quotes), 1001)
 
+    def test_partial_batch_results_are_mapped_by_identity_and_missing_prices_are_unknown(self):
+        positions = [
+            PricePosition(730, "Item A"),
+            PricePosition(730, "Item B"),
+            PricePosition(730, "Item C"),
+        ]
+
+        def request(_url, _body, _headers, _timeout):
+            # The API omits Item B and returns the remaining rows out of order.
+            return 200, json.dumps({"results": [
+                {"item": "Item C", "steam": {"ask": 3, "currency": "USD"}},
+                {"item": "Item A", "steam": {"ask": 1, "currency": "USD"}},
+            ]}).encode(), {}
+
+        with self.assertLogs("integrations.openskin.client", level="WARNING") as captured:
+            quotes = OpenSkinClient(request_func=request).fetch_prices(positions)
+
+        self.assertEqual([quote.position for quote in quotes], positions)
+        self.assertEqual([quote.steam_ask for quote in quotes],
+                         [Decimal("1"), None, Decimal("3")])
+        self.assertEqual(quotes[1].currency, None)
+        self.assertIn("requested_count=3 received_count=2 missing_count=1",
+                      "\\n".join(captured.output))
+        self.assertNotIn("Item A", "\\n".join(captured.output))
+        self.assertNotIn("Item B", "\\n".join(captured.output))
+        self.assertNotIn("Item C", "\\n".join(captured.output))
+
     def test_rejects_result_identity_mismatch(self):
         def request(_url, _body, _headers, _timeout):
             return 200, b'{"results":[{"item":"different item","steam":{"ask":1,"currency":"USD"}}]}', {}
@@ -76,7 +103,6 @@ class OpenSkinClientTests(unittest.TestCase):
         cases = (
             ("missing_results", b'{"data":{"PRIVATE ITEM NAME":{}}}', "results_type=missing"),
             ("results_not_list", b'{"data":{},"results":{}}', "results_type=dict"),
-            ("results_count_mismatch", b'{"data":{},"results":[]}', "results_count=0"),
             ("root_not_object", b'[]', "root_type=list"),
         )
         for label, response, expected_detail in cases:
