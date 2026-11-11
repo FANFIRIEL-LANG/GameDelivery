@@ -12,8 +12,8 @@ class ASFPluginContractTests(unittest.TestCase):
         helper_start = delivery.index("internal static bool IsNormalTradingCard")
         helper_end = delivery.index("public static async Task<string> ProcessSendCommand", helper_start)
         helper = delivery[helper_start:helper_end]
-        self.assertIn('itemType.Contains("Trading Card"', helper)
-        self.assertIn('!itemType.Contains("Foil"', helper)
+        self.assertIn('asset.Description?.Type.ToString()', helper)
+        self.assertIn('string.Equals(itemType, "TradingCard"', helper)
         self.assertIn("|| !IsNormalTradingCard(asset)", delivery)
         self.assertIn("TradeDelivery.IsNormalTradingCard(asset)", plugin)
 
