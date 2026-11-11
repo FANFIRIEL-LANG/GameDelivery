@@ -6,6 +6,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ASFPluginContractTests(unittest.TestCase):
+    def test_preview_and_send_accept_only_normal_steam_trading_cards(self):
+        delivery = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
+        plugin = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        helper_start = delivery.index("internal static bool IsNormalTradingCard")
+        helper_end = delivery.index("public static async Task<string> ProcessSendCommand", helper_start)
+        helper = delivery[helper_start:helper_end]
+        self.assertIn('itemType.Contains("Trading Card"', helper)
+        self.assertIn('!itemType.Contains("Foil"', helper)
+        self.assertIn("|| !IsNormalTradingCard(asset)", delivery)
+        self.assertIn("TradeDelivery.IsNormalTradingCard(asset)", plugin)
+
     def test_inventory_api_failure_is_reported_as_pre_send_and_never_as_unknown_trade(self):
         source = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         inventory_call = source.index("targetBot.Actions.GetInventory")
