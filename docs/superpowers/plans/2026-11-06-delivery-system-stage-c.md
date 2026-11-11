@@ -786,3 +786,9 @@ Fix: commit d08b7e13ef49801b86624837c655922ec6d69259 направляет test-m
 
 **Live acceptance status:** pending. После успешной сборки выполнить один запуск приложения с GAMEDELIVERY_TEST_ASF_IPC_URL=http://127.0.0.1:1243, обновить список ботов из изолированного ASF, выбрать только тестового бота и обновить его CS2 730/2 snapshot. Сверить физические asset IDs/число записей и видимые метаданные с изолированным ASF. Не обращаться к production ASF/1242, не запускать торговые команды. Приёмка должна подтвердить также, что test-mode использует отдельную SQLite test-mode базу.
 **Windows package completion:** run 42994049118 on exact code SHA d08b7e13ef49801b86624837c655922ec6d69259 — SUCCESS; compile, ACL, PyInstaller GUI build, packaged EXE smoke and artifact upload passed. Artifact GameDelivery-Windows-x64 ID 13842917283, size 55,033,113 bytes, SHA-256 ab5841b0ff21ae300572ef8b306333d21e3ac12126382d1f4abb7817c398bce3, expires 2026-12-11T09:20:33Z. Tests run 42994049124 — SUCCESS, 526 tests. Live acceptance remains pending; do not mark C.6 complete until the isolated ASF 730/2 refresh is compared with the actual test bot inventory.
+
+#### Дополнение к C.6.3.7 — live acceptance инвентаря подтверждена (2026-11-11)
+
+Пользователь обновил выбранного тестового бота через уже настроенный ASF endpoint 127.0.0.1:1243 и сравнил полученный CS2 730/2 inventory с фактическим инвентарём в ASF. Пользователь подтвердил полное совпадение. Live gate получения/снимка/отображения CS2-инвентаря в test-mode закрыт. Автоматические 526 tests и Windows Build/package smoke test ранее прошли. Test-mode использует отдельную SQLite, а order handoff отключён. Не повторять проверку без конкретной причины.
+
+Это не подтверждает отправку CS2-предметов через delivery pipeline. OpenSkin proxy/API acceptance из C.6.3.6 остаётся отдельным gate, если он не закрыт отдельным live-результатом.
