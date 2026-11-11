@@ -3381,3 +3381,10 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Tests run 42994049124 на точном кодовом SHA d08b7e13ef49801b86624837c655922ec6d69259 — SUCCESS, полный набор 526 tests, OK. Compile, trade-secret ACL и complete Steam trade UI steps также прошли.
 - Windows Build run 42994049118 на том же SHA на момент записи ещё выполняется; compile Python и Windows trade-secret ACL прошли, GUI packaging находится в процессе. Не скачивать предыдущий артефакт для этой проверки.
 - Live acceptance C.6 ещё не выполнен. После успешной Windows сборки нужен один запуск именно test-mode на отдельном ASF 1243: обновить список ботов, выбрать только тестового бота, выполнить один read-only CS2 730/2 refresh и сравнить отображённые физические assets с изолированным ASF. Не использовать production ASF/порт 1242, не нажимать передачу в заказ; test-mode теперь отдельно изолирует и SQLite.
+#### Дополнение к C.6.3.7 — Windows package gate закрыт (2026-11-11)
+
+- Windows Build run 42994049118 на кодовом SHA d08b7e13ef49801b86624837c655922ec6d69259 завершился SUCCESS. Compile Python, Windows trade-secret ACL, GUI executable, packaged EXE smoke test, build info/package instructions и artifact upload — все шаги успешны.
+- Артефакт GameDelivery-Windows-x64: ID 13842917283, размер 55,033,113 bytes, SHA-256 ab5841b0ff21ae300572ef8b306333d21e3ac12126382d1f4abb7817c398bce3, expires 2026-12-11T09:20:33Z. Workflow: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42994049118 → Artifacts.
+- Tests run 42994049124: SUCCESS, полный набор 526 tests. Этот артефакт собран из точного кодового SHA с изолированной test-mode SQLite и отключённой передачей в заказ.
+- После code commit записаны docs-only commits 428bc7d383dba3e1e018b30347347b7ace059855 (master log) и a8580a70ddab30ed603137d298c6dbcaed2b2d88 (Stage C plan). Они не меняют код; artifact остаётся привязан к d08b7e1.
+- Следующий и единственный пользовательский шаг: проверить этот артефакт на изолированном ASF endpoint 1243, только GET 730/2, без production ASF, trade и order handoff.
