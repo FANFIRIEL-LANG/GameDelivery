@@ -538,6 +538,53 @@ def probe_proxy_connection(proxy: OpenSkinProxy, *, timeout: float = 15.0,
     return status
 
 
+def _invalid_results_diagnostic(payload, positions, raw, headers):
+    """Describe the batch response shape without logging item names or response data."""
+    root_type = type(payload).__name__
+    has_data = isinstance(payload, dict) and "data" in payload
+    has_results = isinstance(payload, dict) and "results" in payload
+    has_count = isinstance(payload, dict) and "count" in payload
+    data = payload.get("data") if isinstance(payload, dict) else None
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    data_count = len(data) if isinstance(data, dict) else -1
+    results_count = len(rows) if isinstance(rows, list) else -1
+    results_type = type(rows).__name__ if has_results else "missing"
+    data_type = type(data).__name__ if has_data else "missing"
+    content_type = next(
+        (value for key, value in (headers or {}).items()
+         if key.casefold() == "content-type"), "unknown",
+    )
+    content_encoding = next(
+        (value for key, value in (headers or {}).items()
+         if key.casefold() == "content-encoding"), "identity",
+    )
+    content_length = next(
+        (value for key, value in (headers or {}).items()
+         if key.casefold() == "content-length"), "missing",
+    )
+    detail = (
+        f"root_type={root_type}; has_data={has_data}; data_type={data_type}; "
+        f"data_count={data_count}; has_results={has_results}; "
+        f"results_type={results_type}; results_count={results_count}; "
+        f"has_count={has_count}; requested_count={len(positions)}; "
+        f"body_bytes={len(raw)}; content_type={redact_network_detail(content_type)}; "
+        f"content_encoding={redact_network_detail(content_encoding)}; "
+        f"content_length={redact_network_detail(content_length)}"
+    )
+    _logger.warning("OpenSkin API returned an invalid results collection %s", detail)
+    return detail
+
+
+def _invalid_result_row_diagnostic(index, reason, positions, rows):
+    """Log only the failing result index and shape; never include market names."""
+    detail = (
+        f"result_index={index}; reason={reason}; requested_count={len(positions)}; "
+        f"results_count={len(rows)}"
+    )
+    _logger.warning("OpenSkin API returned an invalid result row %s", detail)
+    return detail
+
+
 class OpenSkinClient:
     """Sends sequential batches and reads only steam.ask from ordered results."""
 
@@ -622,19 +669,47 @@ class OpenSkinClient:
                                 category="invalid_response") from None
         rows = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(rows, list) or len(rows) != len(positions):
-            _logger.warning("OpenSkin API returned an invalid results collection")
-            raise OpenSkinError("OpenSkin вернул неполный список результатов.",
-                                category="invalid_response")
+            diagnostic = _invalid_results_diagnostic(payload, positions, raw, headers)
+            raise OpenSkinError(
+                "OpenSkin вернул неполный список результатов.",
+                category="invalid_response", diagnostic_detail=diagnostic,
+            )
 
         prices = []
-        for position, row in zip(positions, rows):
-            if not isinstance(row, dict) or row.get("item") != position.market_hash_name:
-                raise OpenSkinError("OpenSkin вернул результат с несовпадающим предметом.")
+        for index, (position, row) in enumerate(zip(positions, rows)):
+            if not isinstance(row, dict):
+                diagnostic = _invalid_result_row_diagnostic(
+                    index, "row_not_object", positions, rows,
+                )
+                raise OpenSkinError(
+                    "OpenSkin вернул результат в неожиданном формате.",
+                    category="invalid_response", diagnostic_detail=diagnostic,
+                )
+            if row.get("item") != position.market_hash_name:
+                diagnostic = _invalid_result_row_diagnostic(
+                    index, "item_identity_mismatch", positions, rows,
+                )
+                raise OpenSkinError(
+                    "OpenSkin вернул результат с несовпадающим предметом.",
+                    category="invalid_response", diagnostic_detail=diagnostic,
+                )
             echoed_pattern = row.get("pattern")
             if position.pattern is not None and echoed_pattern != position.pattern:
-                raise OpenSkinError("OpenSkin вернул результат с несовпадающим pattern.")
+                diagnostic = _invalid_result_row_diagnostic(
+                    index, "pattern_mismatch", positions, rows,
+                )
+                raise OpenSkinError(
+                    "OpenSkin вернул результат с несовпадающим pattern.",
+                    category="invalid_response", diagnostic_detail=diagnostic,
+                )
             if position.pattern is None and echoed_pattern not in (None, ""):
-                raise OpenSkinError("OpenSkin вернул pattern без запроса точного варианта.")
+                diagnostic = _invalid_result_row_diagnostic(
+                    index, "unexpected_pattern", positions, rows,
+                )
+                raise OpenSkinError(
+                    "OpenSkin вернул pattern без запроса точного варианта.",
+                    category="invalid_response", diagnostic_detail=diagnostic,
+                )
 
             steam = row.get("steam")
             if not isinstance(steam, dict):
