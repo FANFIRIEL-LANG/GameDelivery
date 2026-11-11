@@ -3683,3 +3683,38 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Не менять Steam trade logic, Plugin, DB schema, CS2 delivery или общий инвентарь в рамках endpoint-routing проверки.
 
 **Изменения в этой проверке:** только аудит GitHub Actions и workflow YAML; исходники, пользовательская БД, ASF/Steam состояние и workflow runs не менялись. GitHub Master Log обновлён этой записью.
+
+
+### 2026-11-11 — read-only trace Steam Cards UI и ASF endpoint после CI queue audit
+
+**Проверенные исходники на точном code SHA `855933e2c43017870e09abc904e175e9858d862c`:**
+- `app/inventory_panel.py` (blob `56b8172e...`), `app/asf_inventory_controller.py` (blob `08c0ff7f...`), `app/asf_management.py` (blob `d05fb77a...`), `app/main.py` (blob `08bdca0e...`), `app/proxy_settings.py` (blob `03538a51...`), `app/game_inventory_panel.py`, `integrations/asf/client.py` (blob `...`), `tests/test_asf_inventory.py` (blob `333858b4...`).
+- Commit `855933e2...` diff дополнительно проверен: последняя часть patch направляет ProxySettings через resolver из сохранённых QSettings; более ранние части цепочки описаны выше в журнале.
+ 
+**Подтверждённые особенности UI и найденная проблема:**
+1. В Steam Cards `InventoryPanel.__init__` однократно читает `asf/config_path` и `asf/executable_path` из QSettings, вызывает `resolve_asf_ipc_base_url` и создаёт `self.asf_controller` с этим endpoint. Повторного разрешения endpoint перед каждым сетевым запросом в этом классе нет.
+2. Видимая кнопка `«Проверить выбранных»` вызывает `fetch_selected_from_asf()`; batch worker получает `self.asf_controller.base_url` и `allow_alternate_loopback_port` из уже созданного controller. Следовательно, если пользователь меняет ASF config/executable во вкладке «ASF-боты» после создания MainWindow, QSettings обновляется, но Steam Cards controller остаётся со старым endpoint. Это подтверждённый дефект синхронизации конфигурации в UI; проявляется при смене ASF config во время открытой программы.
+3. `MainWindow` сначала создаёт `InventoryPanel`, а `ASFManagementWidget` — позже; `ASFManagementWidget.choose_config()` и выбор executable могут изменить соответствующие QSettings уже после создания Steam Cards controller. В коде нет сигнала, пересоздающего controller в ответ на эту смену.
+4. Кнопка `«Обновить»` в Steam Cards подключена только к `InventoryPanel.refresh()`, которая перечитывает локальную SQLite snapshot store и ничего не запрашивает у ASF. Это локальное обновление отображения, а не сетевое обновление инвентаря.
+5. Реальный сетевой путь в этой вкладке — `«Проверить выбранных»`. Внутренняя single-bot кнопка `«Загрузить из ASF»` скрыта; одиночная проверка возможна через выбор одного бота и batch button. `«Обновить список ботов»` — отдельная операция обновления списка аккаунтов и не означает обновление item snapshots.
+6. Другие проверенные пути разрешают endpoint в момент действия: `ASFManagementWidget._client()` / `refresh_inventory_snapshot()`, `ProxySettingsWidget._asf_client()`, `GameInventoryPanel._create_asf_client()`; `MainWindow` preview/send используют `ASFManagementWidget._client(timeout=...)`. Для текущего кода это не тот же stale-controller path.
+7. Focused test `test_inventory_controller_uses_configured_alternate_ipc_port` доказывает, что controller корректно создаёт `ASFClient` при явно переданном 1243, но не тестирует жизненный цикл `InventoryPanel` при изменении config path после старта приложения. Поэтому одного этого теста недостаточно для полного UI acceptance.
+8. Этот дефект может объяснять обращение к прежнему порту, **только если** выбранный ASF config/executable был изменён после открытия приложения. Пока это не подтверждено как точная последовательность действий пользователя; не выдавать условный сценарий за доказанную причину конкретного пользовательского запуска.
+
+**План исправления после завершения CI gate:**
+- Перед одиночным и batch Steam Cards refresh получать свежие значения config/executable из QSettings и обновлять/пересоздавать controller по текущему `resolve_asf_ipc_base_url`; не хардкодить 1243.
+- Добавить focused UI/controller regression test: создать InventoryPanel с исходным endpoint, изменить QSettings на другой config path с IPC.config на alternate port, запустить batch refresh и доказать, что worker получает новый endpoint и explicit alternate-port permission. Проверить и single path, если он остаётся доступным/поддерживается.
+- Отдельно решить UI naming: переименовать `«Обновить»` так, чтобы было ясно, что это перечитывание локальных снимков, либо не менять интерфейс без отдельного решения; не превращать локальную кнопку в неявную сеть без явного UX решения.
+- Не менять ASF plugin, trade send, parser, snapshot schema, CS2 delivery или OpenSkin. Не затрагивать текущую card-only политику.
+
+**CI gate остаётся открытым:** Runs `43095571161` и `43095571174` всё ещё не имеют jobs на момент предыдущей записи. Изменение кода пока запрещено текущими инструкциями handoff; перед исправлением повторно проверить только эти два runs и подтвердить их статус.
+
+**Обязательные инструкции Codex (точка продолжения):**
+- Выполнить minimal fix только после того, как Actions для `855933e2...` получат jobs и результаты будут зафиксированы. Сейчас код не менять.
+- Разрешённая будущая область: `app/inventory_panel.py` и точечные тесты для dynamic ASF endpoint resolution; остальные файлы менять только при установленной необходимости.
+- Не ломать разделение: `refresh()` = local snapshot reload; `fetch_selected_from_asf()` = live ASF refresh. Не перепутать эти semantics.
+- При смене config/executable во вкладке ASF следующий Steam Cards network refresh должен использовать новые QSettings и `IPC.config`, а не закэшированный при старте endpoint. Alternate port должен разрешаться только через уже существующий явный флаг и loopback validation в ASFClient.
+- До пользовательской проверки обязателен успешный Tests run и Windows package/build на одном code SHA. Затем проверить содержимое артефакта, build commit и SHA-256; только после этого дать пользователю одну конкретную live-проверку.
+- После исправления обновить Master Log на GitHub до любых следующих задач и перечитать файл для подтверждения commit/blob SHA.
+
+**Статус:** только read-only аудит; source files, пользовательская БД, ASF/Steam состояние и workflows не изменялись. Точный пользовательский сценарий, приведший к неактуальному endpoint, пока не доказан.
