@@ -785,6 +785,8 @@ class OpenSkinProxyTests(unittest.TestCase):
         self.assertIn("content_type=text/html", output)
         self.assertIn("content_encoding=identity", output)
         self.assertIn(f"body_bytes={len(raw)}", output)
+        self.assertIn("json_error_pos=", output)
+        self.assertIn("suffix_hex=", output)
         self.assertIn(raw[:16].hex(), output)
         self.assertNotIn("upstream response", output)
 
