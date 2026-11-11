@@ -173,6 +173,86 @@ class OpenSkinProxyTests(unittest.TestCase):
 
         self.assertEqual((status, body), (204, b""))
 
+    def test_post_reads_complete_body_even_when_qt_reports_canceled(self):
+        from PySide6.QtNetwork import QNetworkReply
+        from unittest.mock import patch
+
+        payload = b'{"results":[{"steam":{"ask":"1.25","currency":"USD"}}]}'
+
+        class Signal:
+            def connect(self, _callback):
+                pass
+
+        class Reply:
+            sslErrors = Signal()
+            finished = Signal()
+            requestSent = Signal()
+            downloadProgress = Signal()
+
+            def isFinished(self):
+                return True
+
+            def attribute(self, _attribute):
+                return 200
+
+            def rawHeaderList(self):
+                return []
+
+            def error(self):
+                return QNetworkReply.NetworkError.OperationCanceledError
+
+            def bytesAvailable(self):
+                return len(payload)
+
+            def readAll(self):
+                return payload
+
+            def deleteLater(self):
+                pass
+
+        class Manager:
+            proxyAuthenticationRequired = Signal()
+
+            def setProxy(self, _proxy):
+                pass
+
+            def post(self, _request, _body):
+                return Reply()
+
+            def deleteLater(self):
+                pass
+
+        class EventLoop:
+            def exec(self):
+                raise AssertionError("finished reply must not enter the event loop")
+
+            def quit(self):
+                pass
+
+        class Timer:
+            timeout = Signal()
+
+            def setSingleShot(self, _enabled):
+                pass
+
+            def start(self, _milliseconds):
+                raise AssertionError("finished reply must not start timeout")
+
+            def stop(self):
+                pass
+
+        with patch("integrations.openskin.client.QNetworkAccessManager", Manager), \
+                patch("integrations.openskin.client.QEventLoop", EventLoop), \
+                patch("integrations.openskin.client.QTimer", Timer):
+            status, body, _headers = _qt_proxy_request(
+                "https://api.openskin.dev/v1/prices/batch", b"{}",
+                {"Content-Type": "application/json"}, 1.0,
+                OpenSkinProxy("http", "proxy.example", 8080), method="POST",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, payload)
+
     def test_https_proxy_transport_is_rejected_when_qt_does_not_support_it(self):
         with self.assertRaises(ValueError):
             OpenSkinProxy("https", "proxy.example", 443)
