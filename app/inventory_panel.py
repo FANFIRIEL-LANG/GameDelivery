@@ -26,7 +26,8 @@ from games.steam_cards.inventory_views import (
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.snapshot import InventorySnapshotStore
 from app.asf_inventory_controller import ASFInventoryController
-from integrations.asf.client import ASFError, TEST_ASF_IPC_URL_ENV
+from integrations.asf.client import ASFError, TEST_ASF_IPC_URL_ENV, resolve_asf_ipc_base_url
+from urllib.parse import urlsplit
 from app.bot_selector import (
     BotSelectionModel, checked_bot_names, connect_account_search,
     configured_bot_names, populate_bot_combo, populate_bot_list,
@@ -38,15 +39,20 @@ class _InventoryBatchWorker(QObject):
     progress = Signal(int, int, str, str)
     finished = Signal(list)
 
-    def __init__(self, bot_names: list[str], ipc_password: str, database_path):
+    def __init__(self, bot_names: list[str], ipc_password: str, database_path, base_url: str, allow_alternate_loopback_port: bool):
         super().__init__()
         self.bot_names = list(bot_names)
         self.ipc_password = ipc_password
         self.database_path = database_path
+        self.base_url = base_url
+        self.allow_alternate_loopback_port = allow_alternate_loopback_port
 
     def run(self):
         results = []
-        controller = ASFInventoryController(self.database_path)
+        controller = ASFInventoryController(
+            self.database_path, base_url=self.base_url,
+            allow_alternate_loopback_port=self.allow_alternate_loopback_port,
+        )
         total = len(self.bot_names)
         for index, bot_name in enumerate(self.bot_names, 1):
             self.progress.emit(index, total, bot_name, "Запрашиваю инвентарь через ASF…")
@@ -90,7 +96,15 @@ class InventoryPanel(QWidget):
         else:
             self.snapshots = InventorySnapshotStore(self.database_path)
             self.reservations = AssetReservationStore(self.database_path)
-            self.asf_controller = ASFInventoryController(self.database_path)
+            settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+            config_dir = str(settings.value("asf/config_path", "") or "").strip()
+            executable = str(settings.value("asf/executable_path", "") or "").strip()
+            endpoint = resolve_asf_ipc_base_url(config_dir or None, executable or None)
+            port = urlsplit(endpoint).port
+            self.asf_controller = ASFInventoryController(
+                self.database_path, base_url=endpoint,
+                allow_alternate_loopback_port=port != 1242,
+            )
 
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -439,7 +453,8 @@ class InventoryPanel(QWidget):
         self.summary.setText(f"Начинаю проверку инвентарей: 0 из {len(bot_names)}…")
         self._batch_thread = QThread(self)
         self._batch_worker = _InventoryBatchWorker(
-            bot_names, self.ipc_password_input.text(), self.database_path
+            bot_names, self.ipc_password_input.text(), self.database_path,
+            self.asf_controller.base_url, self.asf_controller.allow_alternate_loopback_port,
         )
         self._batch_worker.moveToThread(self._batch_thread)
         self._batch_thread.started.connect(self._batch_worker.run)
