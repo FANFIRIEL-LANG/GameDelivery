@@ -3456,3 +3456,10 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 **Граница выполненного:** это только первый слой защиты card-only order/preview/send. `SteamCardOrderPreflight` (автоматическое распределение комплектов с учётом значков и состава инвентаря покупателя) ещё не подключён к MainWindow. Нельзя объявлять Steam Cards этап полностью завершённым до проверки CI, согласования/подключения этого preflight и последующего контролируемого live test. CS2 delivery не начинать.
 
 **Пользовательские действия:** пока не требуются. Не устанавливать промежуточную сборку и не запускать Steam trade; сначала дождаться всех трёх CI gates и исправить только фактически обнаруженные ошибки.
+
+**CI follow-up — 2026-11-11, latest observed state:**
+- First ASF build exposed compile error: `Asset.Description.Type` is nullable `EAssetType`, not a string. Replaced invalid null-coalescing expression with enum-name comparison (`Type.ToString() == "TradingCard"`, case-insensitive). This deliberately allows only the ASF `TradingCard` enum value; `FoilTradingCard` and all other types fail closed.
+- Corrected ASF plugin build run on commit `585aa430986abcbd9ac19106a382b16af6d5653c`: Linux `build-plugin` job passed, including compile, plugin smoke, package preparation and artifact upload. Windows ASF plugin build and protected-journal ACL smoke also passed.
+- Generic ASF runtime smoke in the same workflow was still running at last observation; trimmed runtime job was skipped by workflow policy.
+- Tests workflow `43048568725` and Windows application package workflow `43048568049` on the same HEAD were still in progress at last observation. No result is claimed for those gates until GitHub reports completion.
+- Initial failed build is retained as a useful finding; the follow-up build confirms the enum correction compiles on Linux and Windows. No user-side Steam/ASF test is authorized or needed at this stage.
