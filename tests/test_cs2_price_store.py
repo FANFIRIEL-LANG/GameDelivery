@@ -178,6 +178,24 @@ class CS2PriceStoreTests(unittest.TestCase):
         self.assertEqual(cached.source_date, "2026-11-08")
         self.assertEqual(cached.fetched_at, self.now.isoformat())
 
+    def test_manual_refresh_wait_reports_local_guard_and_provider_retry_after(self):
+        self.store.mark_error(
+            self.position, 429, retry_after_seconds=900, now=self.now,
+        )
+
+        wait = self.store.manual_refresh_wait(
+            (self.position,), now=self.now + timedelta(minutes=5),
+        )
+
+        self.assertEqual(wait[0], self.now + timedelta(minutes=15))
+        self.assertIn("Retry-After OpenSkin", wait[1])
+        self.assertIn("локальный интервал Steam Ask", wait[1])
+
+    def test_manual_refresh_wait_returns_none_when_position_is_eligible(self):
+        self.assertIsNone(self.store.manual_refresh_wait(
+            (self.position,), now=self.now,
+        ))
+
     def test_exchange_error_retains_last_rate_and_error_code(self):
         self.store.save_fx_rate(Decimal("91.2345"), "2026-11-08", now=self.now)
         self.store.mark_fx_error(503, now=self.now + timedelta(days=1))
