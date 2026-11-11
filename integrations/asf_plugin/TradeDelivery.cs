@@ -118,6 +118,13 @@ internal static class TradeDelivery
     internal static bool IsSameSteamAccount(ulong botSteamId64, ulong recipientSteamId64)
         => botSteamId64 == recipientSteamId64;
 
+    internal static bool IsNormalTradingCard(Asset asset)
+    {
+        string itemType = asset.Description?.Type ?? "";
+        return itemType.Contains("Trading Card", StringComparison.OrdinalIgnoreCase)
+            && !itemType.Contains("Foil", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static async Task<string> ProcessSendCommand(
         string encodedPayload,
         string ipcContextBotName,
@@ -312,9 +319,10 @@ internal static class TradeDelivery
                 if (!byAssetId.TryGetValue(assetId, out Asset? asset)
                     || asset.AppID != Asset.SteamAppID
                     || asset.ContextID != Asset.SteamCommunityContextID
-                    || !asset.Tradable)
+                    || !asset.Tradable
+                    || !IsNormalTradingCard(asset))
                 {
-                    return Failure("Актив " + rawAssetId + " отсутствует в Steam Community inventory (753/6) или сейчас не передаваем.");
+                    return Failure("Актив " + rawAssetId + " отсутствует в Steam Community inventory (753/6), не является обычной Trading Card или сейчас не передаваем.");
                 }
 
                 selectedAssets.Add(asset);
