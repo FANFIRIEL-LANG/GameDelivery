@@ -3596,3 +3596,15 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Production-код в этой проверке не менялся; новый live Steam trade после card-only guard ещё не выполнен. **Пользователю пока ничего скачивать и запускать не нужно:** следующий технический шаг — сверить артефакты успешных plugin/Windows builds и затем подготовить один контролируемый live Steam Cards сценарий. CS2 delivery остаётся отдельной задачей после подтверждения Steam Cards.
 
 - Дополнительно проверены опубликованные артефакты: run `43069728218` содержит действующий (не expired) `GameDelivery-ASFPlugin` (57,182 bytes); run `43069728175` содержит действующий `GameDelivery-Windows-x64` (55,034,285 bytes). Артефакты доступны в GitHub Actions, но их содержимое пока не скачивалось и не инспектировалось.
+
+
+### 2026-11-11 — исправлен обход ASF IPC-порта при обновлении инвентаря и торговых действиях
+
+- По скриншотам пользователя установлено, что Steam Cards refresh использовал `ASFInventoryController`, который создавал `ASFClient` с default `http://127.0.0.1:1242`; контроллер не получал выбранный ASF endpoint из `IPC.config`. Поэтому при рабочем ASF на `127.0.0.1:1243` запрос снимка уходил в другой/неработающий экземпляр, а выбранный asset не находился в актуальном снимке. Это подтверждённая причина дефекта в коде, а не предположение.
+- Исправлено: `InventoryPanel` теперь получает endpoint из сохранённых `asf/config_path` / `asf/executable_path`, читает `IPC.config` через `resolve_asf_ipc_base_url` и передаёт адрес + разрешение alternate loopback port в single и batch refresh controller. `ASFInventoryController` теперь использует переданный endpoint вместо неявного default.
+- Исправлено: кнопка snapshot refresh во вкладке ASF использует endpoint `_ipc_base_url()` выбранного экземпляра. `MainWindow` preview/send actions теперь создают ASF client через `ASFManagementWidget._client(timeout=...)`, а не через default `ASFClient()`.
+- Исправлено: кнопки применения прокси в `ProxySettingsWidget` теперь тоже используют endpoint из выбранного ASF `IPC.config`, а не default 1242. `GameInventoryPanel` уже использовал resolver выбранного endpoint; его путь сохранён.
+- Добавлен focused regression test `test_inventory_controller_uses_configured_alternate_ipc_port`, проверяющий что controller создаёт ASF client с `http://127.0.0.1:1243` и `allow_alternate_loopback_port=True`.
+- Изменённые файлы: `app/asf_inventory_controller.py`, `app/inventory_panel.py`, `app/asf_management.py`, `app/main.py`, `app/proxy_settings.py`, `tests/test_asf_inventory.py`. Последний кодовый commit: `855933e2c43017870e09abc904e175e9858d862c`.
+- CI для последнего commit запущен автоматически, но на момент записи Tests и Windows build находятся в `queued`; не считать исправление проверенным до их завершения. ASF plugin code не менялся, но plugin workflow мог быть вызван промежуточным push; он не требуется для этого изменения.
+- До успешных Tests и Windows build пользователь ничего не скачивает и не проверяет. После зелёного CI нужно дать точные артефакты приложения, но перед live send отдельно подтвердить, что UI refresh действительно обращается к выбранному порту 1243.
