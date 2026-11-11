@@ -259,7 +259,11 @@ class GameInventoryPanel(QWidget):
         self.bot_selection_model = bot_selection_model or BotSelectionModel(self)
         if not self.test_mode and not self.bot_selection_model.account_names:
             self.bot_selection_model.set_accounts(configured_bot_names())
-        self.database_path = Path.home() / ".gamedelivery" / "gamedelivery.sqlite3"
+        self.database_path = (
+            Path.home() / ".gamedelivery" / "test-mode" / "gamedelivery-test.sqlite3"
+            if self.test_mode
+            else Path.home() / ".gamedelivery" / "gamedelivery.sqlite3"
+        )
         self.store = GameInventoryStore(self.database_path)
         self.items = []
         self.cs2_instances_by_bot: dict[str, tuple[CS2InventoryInstance, ...]] = {}
@@ -364,6 +368,9 @@ class GameInventoryPanel(QWidget):
         self.trade_url.setPlaceholderText("HTTPS Steam Trade URL получателя")
         self.send_to_order_button = QPushButton("Отправить через заказы…")
         self.send_to_order_button.clicked.connect(self._request_order_with_selected_assets)
+        if self.test_mode:
+            self.trade_url.setEnabled(False)
+            self.send_to_order_button.setEnabled(False)
         self.selection_summary = QLabel("Выбрано предметов для заказа: 0")
         self.selection_summary.setObjectName("muted")
         trade_row.addWidget(self.selection_summary)
