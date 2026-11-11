@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import (
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget, QInputDialog, QTabWidget,
 )
 
-from integrations.asf.client import ASFClient, ASFError
+from integrations.asf.client import ASFClient, ASFError, resolve_asf_ipc_base_url
 from integrations.asf.proxy_config import SteamProxy, parse_proxy_list_text
 from integrations.asf.proxy_store import ProxyStore
 from app.bot_selector import populate_bot_combo
@@ -537,6 +538,18 @@ class ProxySettingsWidget(QWidget):
                 pass
         return None
 
+    def _asf_client(self, ipc_password: str | None) -> ASFClient:
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        config_dir = str(settings.value("asf/config_path", "") or "").strip()
+        executable = str(settings.value("asf/executable_path", "") or "").strip()
+        endpoint = resolve_asf_ipc_base_url(config_dir or None, executable or None)
+        port = urlsplit(endpoint).port
+        return ASFClient(
+            base_url=endpoint,
+            ipc_password=ipc_password,
+            allow_alternate_loopback_port=port != 1242,
+        )
+
     def _ask_ipc_password(self):
         saved = self._saved_ipc_password()
         if saved:
@@ -565,7 +578,7 @@ class ProxySettingsWidget(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        client, applied, failed = ASFClient(ipc_password=ipc_password), [], []
+        client, applied, failed = self._asf_client(ipc_password), [], []
         for profile in profiles:
             bot_name = str(profile["bot_name"])
             try:
@@ -592,7 +605,7 @@ class ProxySettingsWidget(QWidget):
         ipc_password, accepted = self._ask_ipc_password()
         if not accepted:
             return
-        self._confirm_steam_cm_proxy(ASFClient(ipc_password=ipc_password))
+        self._confirm_steam_cm_proxy(self._asf_client(ipc_password))
 
     def _confirm_steam_cm_proxy(self, client: ASFClient, bot_name: str | None = None):
         answer = QMessageBox.question(
@@ -660,7 +673,7 @@ class ProxySettingsWidget(QWidget):
             username = str(profile["username"]) if profile["username"] else None
             password = self.store.get_password(bot_name) if username else None
             proxy = SteamProxy(str(profile["scheme"]), str(profile["host"]), int(profile["port"]), username, password)
-            client = ASFClient(ipc_password=ipc_password)
+            client = self._asf_client(ipc_password)
             client.apply_proxy_settings(bot_name, proxy.asf_bot_settings())
         except (ValueError, RuntimeError, OSError, ASFError, KeyError) as exc:
             QMessageBox.warning(self, "Не удалось применить прокси", str(exc))
