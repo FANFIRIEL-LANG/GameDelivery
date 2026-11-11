@@ -3299,3 +3299,11 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Исправлено в `tests/test_opensky_proxy.py`: тест теперь проверяет обе части нового корректного статуса — успешность контрольного запроса одного предмета и явное указание, что массовое обновление проверяется отдельно.
 - Commit: `bae7983d17fc948d1d8ceb8f18fa2cb8919cd78f` (`test: match explicit single-item OpenSkin check status`).
 - На `d31acfa...` Windows Build завершился success (run `42972621949`), но это не конечный SHA. На `ce7f4f9...` Tests завершился failure из-за описанного assertion. Следующий шаг: проверить, что Actions Tests и Windows Build запустились на новом HEAD `bae7983...`; разбирать только новые ошибки и не повторять уже успешные проверки без причины.
+
+### 2026-11-11 — CI исправление подтверждено, Windows-сборка готова
+
+- Повторный workflow Tests `42973497160` на HEAD `b996a398adfacdc086bca157fbd5fc80827e1bf0` завершился `success`. Шаг `Run full unit test suite` завершился `success`; изолированная проверка модулей также `success`. Исправленное ожидание OpenSkin статуса больше не падает.
+- Windows Build workflow `42973468767` на коммите `bae7983d17fc948d1d8ceb8f18fa2cb8919cd78f` завершился `success`. Успешны сборка GUI executable, smoke test упакованного EXE, добавление build info/instructions и загрузка артефакта.
+- Артефакт: `GameDelivery-Windows-x64`, artifact ID `13833943517`, размер 55,032,402 байта (~52.5 MiB), SHA-256 `5f3b11d34d866d2ab21636f5af59288b645991a38e53e495126faae921823183`, срок хранения до `2026-12-11T06:37:07Z`. Ссылка на скачивание доступна в GitHub Actions run `https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/42973468767` → Artifacts.
+- Текущая ветка `work/local-sync` указывает на `b996a398adfacdc086bca157fbd5fc80827e1bf0`; master log обновлён этим commit.
+- Ограничение проверки: тесты и Windows package build прошли, но это не подтверждает исправление сетевой/массовой ошибки OpenSkin в реальном окружении пользователя. Это требует отдельной проверки приложения после установки артефакта.
