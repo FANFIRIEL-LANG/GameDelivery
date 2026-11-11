@@ -894,12 +894,13 @@ class ASFManagementWidget(QWidget):
             self.remember_ipc_password.setChecked(True)
             self.remember_ipc_password.blockSignals(False)
 
-    def _client(self) -> ASFClient:
+    def _client(self, *, timeout: float = 5.0) -> ASFClient:
         base_url = self._ipc_base_url()
         port = urlsplit(base_url).port
         return ASFClient(
             base_url=base_url,
             ipc_password=self.ipc_password.text() or None,
+            timeout=timeout,
             allow_alternate_loopback_port=port != 1242,
         )
 
