@@ -253,6 +253,113 @@ class OpenSkinProxyTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, payload)
 
+    def test_post_buffers_ready_read_chunks_before_qt_timeout_clears_reply(self):
+        from PySide6.QtNetwork import QNetworkReply
+        from unittest.mock import patch
+
+        payload = b'{"results":[{"steam":{"ask":"1.25","currency":"USD"}}]}'
+
+        class Signal:
+            def __init__(self):
+                self.callbacks = []
+
+            def connect(self, callback):
+                self.callbacks.append(callback)
+
+            def emit(self, *args):
+                for callback in tuple(self.callbacks):
+                    callback(*args)
+
+        class Reply:
+            def __init__(self):
+                self.sslErrors = Signal()
+                self.finished = Signal()
+                self.requestSent = Signal()
+                self.readyRead = Signal()
+                self.downloadProgress = Signal()
+                self.buffer = bytearray()
+                self.aborted = False
+
+            def isFinished(self):
+                return False
+
+            def attribute(self, _attribute):
+                return 200
+
+            def rawHeaderList(self):
+                return []
+
+            def error(self):
+                return (
+                    QNetworkReply.NetworkError.OperationCanceledError
+                    if self.aborted else QNetworkReply.NetworkError.NoError
+                )
+
+            def bytesAvailable(self):
+                return len(self.buffer)
+
+            def readAll(self):
+                data = bytes(self.buffer)
+                self.buffer.clear()
+                return data
+
+            def abort(self):
+                self.aborted = True
+                # Simulate Qt discarding its internal buffer on abort.
+                self.buffer.clear()
+
+            def deleteLater(self):
+                pass
+
+        reply = Reply()
+
+        class Manager:
+            proxyAuthenticationRequired = Signal()
+
+            def setProxy(self, _proxy):
+                pass
+
+            def post(self, _request, _body):
+                return reply
+
+            def deleteLater(self):
+                pass
+
+        class EventLoop:
+            def exec(self):
+                reply.buffer.extend(payload)
+                reply.downloadProgress.emit(len(payload), len(payload))
+                reply.readyRead.emit()
+
+            def quit(self):
+                pass
+
+        class Timer:
+            def __init__(self):
+                self.timeout = Signal()
+
+            def setSingleShot(self, _enabled):
+                pass
+
+            def start(self, _milliseconds):
+                self.timeout.emit()
+
+            def stop(self):
+                pass
+
+        with patch("integrations.openskin.client.QNetworkAccessManager", Manager), \
+                patch("integrations.openskin.client.QEventLoop", EventLoop), \
+                patch("integrations.openskin.client.QTimer", Timer):
+            status, body, _headers = _qt_proxy_request(
+                "https://api.openskin.dev/v1/prices/batch", b"{}",
+                {"Content-Type": "application/json"}, 1.0,
+                OpenSkinProxy("http", "proxy.example", 8080), method="POST",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, payload)
+        self.assertTrue(reply.aborted)
+
     def test_https_proxy_transport_is_rejected_when_qt_does_not_support_it(self):
         with self.assertRaises(ValueError):
             OpenSkinProxy("https", "proxy.example", 443)
