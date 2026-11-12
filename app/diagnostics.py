@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import traceback
 import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -90,8 +91,7 @@ def get_logger(component: str) -> logging.Logger:
 def log_exception(logger: logging.Logger, event: str, exception: BaseException) -> None:
     """Log exception type and a sanitized traceback without echoing arbitrary secrets."""
     logger.error("%s failed; exception_type=%s", event, type(exception).__name__)
-    # Traceback text can contain response payloads, so emit it only through the
-    # redaction filter and never serialize request bodies or authentication headers.
-    logger.debug("Traceback follows for event=%s", event, exc_info=(
-        type(exception), exception, exception.__traceback__
-    ))
+    # Render the traceback into a message so the redaction filter processes it
+    # before it reaches the file handler.
+    rendered = "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+    logger.debug("Sanitized traceback for event=%s:\\n%s", event, rendered)
