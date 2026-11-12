@@ -4234,3 +4234,15 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Следовательно, установка .NET 10.0.15 устраняет только возможный блокер запуска ASF. Она сама по себе не подтверждает подключение IPC, корректность выбранных путей, загрузку плагина, работу кнопок или delivery. Нельзя объявлять приложение исправным только по package smoke test.
 - Требуется локализовать конкретный отказ по `asf-supervisor.log` и видимому состоянию приложения. Следующий диагностический запрос к пользователю: приложить `%USERPROFILE%\\.gamedelivery\\asf-supervisor.log` (предварительно можно проверить, что в нём нет секретов; не присылать ASF.json, bot JSON, maFiles, IPCPassword, Steam credentials) и одним предложением указать, какая именно функция не работает/что отображается в статусе GameDelivery.
 - До получения этих данных не менять конфиги ASF, не менять порт IPC, не запускать торговые операции и не предлагать повторную установку runtime. Следующая работа — установить первопричину по журналу и исходникам, затем исправить код/сборку и повторно проверить.
+
+
+### 2026-11-12 — ASF 6.3.11.7 launch argument compatibility
+
+- User-provided runtime log confirms .NET 10.0.15 is now available and the custom ASF Generic 6.3.11.7 starts successfully.
+- Confirmed runtime facts: GameDeliveryPlugin V1.0.2.0 loaded successfully; ASF registered one plugin/command handler; IPC is listening on `http://127.0.0.1:1243` and reports the server ready.
+- The log also exposed a non-fatal compatibility warning: `ParseArgs()` rejects `--process-required` as an unknown command-line argument.
+- Root cause verified in `app/asf_management.py`: both EXE and Generic DLL launch paths appended the unsupported argument. Removed it from both launch commands.
+- Updated `tests/test_asf_management.py` so the EXE and Generic DLL launch tests assert the supported argument-free command lines.
+- No Steam offers, bot configs, SQLite schema, IPC port, or ASF runtime files were changed.
+- Code changes are committed on `work/local-sync`; targeted test execution and the replacement Windows package/CI verification remain pending. Do not treat the current installed desktop package as containing this fix until a new artifact passes CI.
+- OpenSkin warning in the supplied log (`259/262` rows) is separate from ASF startup; the three omitted price rows are marked unknown by the existing OpenSkin handling and are not evidence of an IPC/plugin failure.
