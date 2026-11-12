@@ -3787,3 +3787,16 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 5. Отдельно изучить failure Tests #1564, используя его job logs, прежде чем считать CI gate разблокированным.
 
 **Codex handoff:** текущий branch — `work/local-sync`; последний известный HEAD до этой записи — `324bd1448469b356abc9cffd8157f79d1e69cf5c`. Не трогать `app/inventory_panel.py` до получения успешных Tests + Windows build на одном code SHA. После этого продолжить ранее описанный minimal fix динамического перечитывания ASF config/executable для Steam Cards refresh и focused regression test. Сохранять разделение local snapshot reload/live ASF refresh; не менять plugin, trade logic, parser/store, DB schema, CS2 и OpenSkin.
+
+
+### 2026-11-12 — пользовательская отмена queued workflow завершилась ошибкой
+
+- Пользователь попытался отменить зависший workflow через GitHub UI; интерфейс показал точное сообщение `Failed to cancel workflow.`
+- Это подтверждает, что UI-команда отмены не завершилась успешно. Само сообщение не раскрывает HTTP/API причину и не доказывает отсутствие прав: причина пока неизвестна.
+- В контексте предыдущего аудита 18 queued runs все имели `jobs.total_count=0`. Вероятно, проблема связана с зависшим состоянием workflow до создания jobs, но это остаётся гипотезой, пока нет ответа cancel endpoint.
+- Доступный GitHub connector предоставляет read-only fetch для run details и jobs, но не предоставляет поддерживаемое действие cancel workflow run. Не пытаться обходить это неподдерживаемым HTTP POST через read-only fetch; не просить пользователя повторять cancel многократно.
+- Никакие runs не были отменены или перезапущены в этой сессии; исходники и workflow configuration не менялись.
+
+**Следующий шаг:** read-only перепроверить актуальные статусы нескольких репрезентативных runs (включая самые старые и новые) и текущий Tests #1565; при сохранении queued/no-jobs зафиксировать blocker как проблему GitHub Actions control plane. Для отмены использовать GitHub UI один раз только после определения точной причины/восстановления Actions; если UI снова выдаёт ту же ошибку, обратиться к GitHub Support с run IDs и timestamps, а не плодить reruns.
+
+**Codex handoff:** не менять код GameDelivery до успешных Tests и Windows build на одном SHA. Не запускать новые workflows для промежуточных docs commits. Сохранить текущую очередь run IDs в предыдущей записи и продолжить с read-only проверки статусов; после восстановления отмены очистить устаревшие промежуточные runs и оставить только актуальные проверки.
