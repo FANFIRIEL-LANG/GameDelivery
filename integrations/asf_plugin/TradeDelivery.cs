@@ -356,7 +356,7 @@ internal static class TradeDelivery
                         request.TargetSteamId64,
                         itemsToGive: selectedAssets,
                         token: secret.TradeToken,
-                        customMessage: "GameDelivery order " + request.OrderId,
+                        customMessage: string.Empty,
                         forcedSingleOffer: true,
                         itemsPerTrade: (ushort)selectedAssets.Count).ConfigureAwait(false);
 
@@ -396,7 +396,7 @@ internal static class TradeDelivery
                             true,
                             EMobileConfirmationType.Trade,
                             mobileTradeOfferIds,
-                            waitIfNeeded: true).ConfigureAwait(false);
+                            waitIfNeeded: false).ConfigureAwait(false);
                     confirmationPending = !twoFactorSuccess;
                     record.Message = SafeMessage(confirmationMessage, secret.TradeToken);
                 }
