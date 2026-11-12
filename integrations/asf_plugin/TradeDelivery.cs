@@ -278,12 +278,21 @@ internal static class TradeDelivery
 
             HashSet<Asset>? inventory;
             string inventoryMessage;
+            DateTimeOffset inventoryStartedAt = DateTimeOffset.UtcNow;
+            targetBot.ArchiLogger.LogGenericInfo(
+                "GameDelivery send phase: phase=inventory_fetch_started; orderId="
+                + SafeMessage(request.OrderId) + ".");
             try
             {
                 (inventory, inventoryMessage) = await targetBot.Actions.GetInventory(
                     Asset.SteamAppID,
                     Asset.SteamCommunityContextID,
                     language: "english").ConfigureAwait(false);
+                targetBot.ArchiLogger.LogGenericInfo(
+                    "GameDelivery send phase: phase=inventory_fetch_completed; orderId="
+                    + SafeMessage(request.OrderId)
+                    + "; elapsedMs=" + (DateTimeOffset.UtcNow - inventoryStartedAt).TotalMilliseconds.ToString("F0", CultureInfo.InvariantCulture)
+                    + "; assetCount=" + (inventory?.Count ?? 0).ToString(CultureInfo.InvariantCulture) + ".");
             }
             catch (MissingMethodException exception)
             {
@@ -351,6 +360,11 @@ internal static class TradeDelivery
             {
                 // From this point onward the result may be unknown if ASF or Steam fails.
                 onExternalDispatchStarted();
+                DateTimeOffset sendStartedAt = DateTimeOffset.UtcNow;
+                targetBot.ArchiLogger.LogGenericInfo(
+                    "GameDelivery send phase: phase=steam_offer_dispatch_started; orderId="
+                    + SafeMessage(request.OrderId)
+                    + "; assetCount=" + selectedAssets.Count.ToString(CultureInfo.InvariantCulture) + ".");
                 (bool success, HashSet<ulong>? tradeOfferIds, HashSet<ulong>? mobileTradeOfferIds) =
                     await targetBot.ArchiWebHandler.SendTradeOffer(
                         request.TargetSteamId64,
@@ -359,6 +373,13 @@ internal static class TradeDelivery
                         customMessage: string.Empty,
                         forcedSingleOffer: true,
                         itemsPerTrade: (ushort)selectedAssets.Count).ConfigureAwait(false);
+                targetBot.ArchiLogger.LogGenericInfo(
+                    "GameDelivery send phase: phase=steam_offer_dispatch_completed; orderId="
+                    + SafeMessage(request.OrderId)
+                    + "; elapsedMs=" + (DateTimeOffset.UtcNow - sendStartedAt).TotalMilliseconds.ToString("F0", CultureInfo.InvariantCulture)
+                    + "; success=" + success.ToString(CultureInfo.InvariantCulture)
+                    + "; regularOfferCount=" + (tradeOfferIds?.Count ?? 0).ToString(CultureInfo.InvariantCulture)
+                    + "; mobileOfferCount=" + (mobileTradeOfferIds?.Count ?? 0).ToString(CultureInfo.InvariantCulture) + ".");
 
                 HashSet<ulong> allOfferIds = new();
                 if (tradeOfferIds is not null) allOfferIds.UnionWith(tradeOfferIds);
@@ -391,6 +412,11 @@ internal static class TradeDelivery
                 bool confirmationPending = mobileTradeOfferIds?.Count > 0;
                 if (confirmationPending && targetBot.HasMobileAuthenticator)
                 {
+                    DateTimeOffset confirmationStartedAt = DateTimeOffset.UtcNow;
+                    targetBot.ArchiLogger.LogGenericInfo(
+                        "GameDelivery send phase: phase=mobile_confirmation_started; orderId="
+                        + SafeMessage(request.OrderId)
+                        + "; mobileOfferCount=" + mobileTradeOfferIds!.Count.ToString(CultureInfo.InvariantCulture) + ".");
                     (bool twoFactorSuccess, _, string confirmationMessage) =
                         await targetBot.Actions.HandleTwoFactorAuthenticationConfirmations(
                             true,
@@ -399,6 +425,11 @@ internal static class TradeDelivery
                             waitIfNeeded: false).ConfigureAwait(false);
                     confirmationPending = !twoFactorSuccess;
                     record.Message = SafeMessage(confirmationMessage, secret.TradeToken);
+                    targetBot.ArchiLogger.LogGenericInfo(
+                        "GameDelivery send phase: phase=mobile_confirmation_completed; orderId="
+                        + SafeMessage(request.OrderId)
+                        + "; elapsedMs=" + (DateTimeOffset.UtcNow - confirmationStartedAt).TotalMilliseconds.ToString("F0", CultureInfo.InvariantCulture)
+                        + "; confirmed=" + twoFactorSuccess.ToString(CultureInfo.InvariantCulture) + ".");
                 }
 
                 record.State = confirmationPending ? "awaiting_confirmation" : "sent";
@@ -408,6 +439,11 @@ internal static class TradeDelivery
             }
             catch (Exception exception)
             {
+                targetBot.ArchiLogger.LogGenericError(
+                    "GameDelivery send phase: phase=send_pipeline_failed; orderId="
+                    + SafeMessage(request.OrderId)
+                    + "; exceptionType=" + exception.GetType().Name
+                    + "; message=" + SafeMessage(exception.Message, secret.TradeToken) + ".");
                 record.State = "unknown";
                 record.Message = "Exception while sending; do not retry automatically";
                 record.UpdatedAtUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
