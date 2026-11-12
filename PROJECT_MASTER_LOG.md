@@ -4024,3 +4024,22 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Пока НЕ исправлено: GUI send path всё ещё синхронный. Требуется вынести IPC send call в Qt worker/thread, сохранить обновление SQLite и QMessageBox только в GUI thread, отключать кнопку отправки на время операции, а после завершения безопасно восстановить UI. Это следующий обязательный source change до новой пользовательской сборки.
 - Изменены файлы: `integrations/asf_plugin/TradeDelivery.cs`, `tests/test_asf_plugin_contract.py`. Коммиты: `57ca513592cf507ea41380b3886015cc86114e0d`, `408bcd9ba7a855979efadac474924f01a2e87861`. Branch `work/local-sync`, текущий HEAD на момент записи `408bcd9ba7a855979efadac474924f01a2e87861`.
 - Не менять DB schema, order records, Steam credentials, inventory, CS2 delivery, OpenSkin, ASF endpoint policy, PR #4 или main. Не запускать live send и не просить пользователя повторять отправку. После завершения async UI fix выполнить targeted tests и один согласованный CI; только затем готовить новую сборку.
+
+### 2026-11-12 — базовая система диагностических логов GameDelivery
+
+- По согласованию с пользователем начато внедрение единой системы журналирования; рабочая ветка остаётся `work/local-sync`.
+- Добавлен `app/diagnostics.py`:
+  - единый namespace логгеров `gamedelivery.*`;
+  - UTF-8 rotating log `%LOCALAPPDATA%/GameDelivery/logs/gamedelivery.log` (fallback XDG state / user local state);
+  - ограничение 2 MiB на файл и 5 архивных файлов;
+  - маскирование IPCPassword/password, API key, Authorization/Bearer и Steam Trade URL token;
+  - безопасный helper регистрации исключений с фильтрацией traceback.
+- Подключено логирование запуска/закрытия и инициализации локального хранилища в `app/main.py`.
+- ASF IPC client теперь записывает route category, HTTP status, elapsed milliseconds, transport failure type и timeout без логирования request body, Authentication header или полного trade URL.
+- Отправка заказа записывает безопасные этапы: preflight, проверка состава, отмена пользователем, IPC dispatch, подтверждённый ответ, unknown result и исключение. Секреты и Trade URL не записываются.
+- Существующая вкладка `Журнал` дополнена просмотром `gamedelivery.log` и кнопкой открытия папки логов; старые ASF/OpenSkin log источники сохранены.
+- Добавлены `tests/test_diagnostics.py`: UTF-8 запись, idempotent setup и проверка маскирования секретов в сообщениях/traceback.
+- Изменённые файлы: `app/diagnostics.py`, `app/main.py`, `integrations/asf/client.py`, `tests/test_diagnostics.py`. Последний code SHA перед записью: `6c54132d4296ac7564700cb1f342023483367fd9`.
+- CI на этом code SHA: Tests #1610 (run `43159569793`) in progress; Windows Build #820 (run `43159569704`) in progress; ASF plugin #630 (run `43159569734`) — plugin build job SUCCESS, Windows ACL smoke pending. Не объявлять этап завершённым до итоговых результатов.
+- Следующий шаг после CI: проверить все ошибки/результаты; затем отдельно завершить перенос preview/send network operations в Qt worker thread, чтобы GUI не блокировался. После этого расширить structured diagnostics на инвентарь/CS2/OpenSkin и добавить экспорт диагностического архива с повторной очисткой секретов.
+- Не менять SQLite schema, production send idempotency, ASF endpoint policy, CS2 delivery, OpenSkin routing, PR #4 или main. Никаких реальных Steam offers не создавать; пользователь не должен повторять отправку `GD-4AFAF6ED060`.
