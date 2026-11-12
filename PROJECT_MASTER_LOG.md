@@ -3921,3 +3921,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Вывод: ASF plugin сам по себе прошёл build/runtime CI. GameDelivery application пока НЕ готова к live-send повторному тесту: test suite красный, Windows EXE не собран. Не запускать Steam send и не просить пользователя обновлять приложение.
 - Следующий разрешённый шаг: минимально исправить test mock в `tests/test_asf_client.py` через `patch.object(ASFClient, "send_command", ...)`, затем отдельно разобрать resolver test fixtures в ASF management / trade UI / database migration / proxy settings. Не менять production fallback без анализа реального config path; не затрагивать CS2/OpenSkin/plugin trade logic. После согласования — один новый CI run.
 - Codex handoff: branch `work/local-sync`; code SHA `bd0db55a67337d08ab3aa143b06ea996c5f9bc52`; docs HEAD `e4e915b198d7eb5811dc1146cf6a49d7f5b05450`; plugin CI зелёный `43151720181`; Tests красный `43151746398`; Windows build красный `43151720183`. Никаких реальных Steam offers; первым делом починить frozen-dataclass test mocking, затем test fixtures для resolver.
+
+
+### 2026-11-12 — начато исправление красного CI после fail-closed IPC
+
+- Перед правками повторно проверены GitHub branch `work/local-sync` и `PROJECT_MASTER_LOG.md`. Branch HEAD: `962fef97dc534915d6afd17c734e960e33df32e3`; Master Log blob SHA: `5753a994c33f3520acb16734c5511fcf552c48a8`.
+- Подтверждён первый конкретный дефект теста: `test_send_trade_offer_returns_unknown_when_ipc_response_is_lost_after_dispatch` присваивает `send_command` экземпляру frozen dataclass `ASFClient`, из-за чего возникает `FrozenInstanceError`. Исправление ограничено тестом: использовать `patch.object(ASFClient, "send_command", ...)` вместо присваивания экземпляру.
+- Resolver failures требуют отдельной проверки fixture setup. Fail-closed поведение для явно выбранного ASF пути сохраняется: нельзя возвращать скрытый fallback на порт 1242, когда пользователь выбрал ASF с IPC 1243.
+- Разрешённая область текущего шага: `tests/test_asf_client.py` для frozen-dataclass mock. После точечной правки — targeted test и далее исправление только подтверждённых test fixtures; production код пока не менять. Не создавать Steam offers, не менять plugin/CS2/OpenSkin/DB schema.
+- Codex handoff: branch `work/local-sync`, base HEAD `962fef97dc534915d6afd17c734e960e33df32e3`; first edit `tests/test_asf_client.py`; preserve IPC fail-closed contract and 1243 routing; run focused ASF client test before broader suites.
