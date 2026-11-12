@@ -624,16 +624,18 @@ class ASFClientTests(unittest.TestCase):
                     "send_command",
                     return_value={"Success": True, "Result": json.dumps(outcome)},
                 ) as send_command:
-                    with self.assertRaisesRegex(ASFError, "не повторяй отправку") as raised:
-                        ASFClient().send_trade_offer(
-                            order_id="GD-UNKNOWN-PARSE",
-                            bot_name="card-bot",
-                            trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
-                            asset_ids=["123"],
-                        )
+                    result = ASFClient().send_trade_offer(
+                        order_id="GD-UNKNOWN-PARSE",
+                        bot_name="card-bot",
+                        trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                        asset_ids=["123"],
+                    )
 
             send_command.assert_called_once()
-            self.assertNotIn("Tok-abc_1", str(raised.exception))
+            self.assertFalse(result["success"])
+            self.assertTrue(result["resultUnknown"])
+            self.assertIn("не повторяй отправку", result["error"])
+            self.assertNotIn("Tok-abc_1", result["error"])
             secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
             self.assertEqual(list(secret_dir.iterdir()), [])
 
@@ -658,13 +660,15 @@ class ASFClientTests(unittest.TestCase):
                 }
                 with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
                     with patch.object(ASFClient, "send_command", return_value=response) as send_command:
-                        with self.assertRaisesRegex(ASFError, "не повторяй отправку"):
-                            ASFClient().send_trade_offer(
-                                order_id="GD-MALFORMED-OFFER",
-                                bot_name="card-bot",
-                                trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
-                                asset_ids=["123"],
-                            )
+                        result = ASFClient().send_trade_offer(
+                            order_id="GD-MALFORMED-OFFER",
+                            bot_name="card-bot",
+                            trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                            asset_ids=["123"],
+                        )
+                self.assertFalse(result["success"])
+                self.assertTrue(result["resultUnknown"])
+                self.assertIn("не повторяй отправку", result["error"])
                 send_command.assert_called_once()
                 secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
                 self.assertEqual(list(secret_dir.iterdir()), [])
