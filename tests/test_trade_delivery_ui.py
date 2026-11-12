@@ -360,6 +360,120 @@ class TradeDeliveryUITests(unittest.TestCase):
 
             self._run_with_window(database, exercise)
 
+
+    def test_reconcile_manually_cancelled_unknown_offer_releases_reservation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+
+            def exercise(window):
+                with sqlite3.connect(database) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ?, trade_offer_id = ? WHERE order_id = ?",
+                        ("cancelled — результат отправки требует сверки", "9876543210", "GD-ORDER-1"),
+                    )
+                with patch(
+                    "app.main.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ), patch("app.main.QMessageBox.warning") as warning:
+                    window._reconcile_cancelled_order_reservation()
+
+                warning.assert_not_called()
+                with sqlite3.connect(database) as db:
+                    row = db.execute(
+                        "SELECT status, trade_confirmation_status FROM delivery_orders WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()
+                    reservations = db.execute(
+                        "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                self.assertEqual(
+                    row,
+                    ("cancelled — предложение Steam отменено оператором", "cancelled_by_operator"),
+                )
+                self.assertEqual(reservations, 0)
+
+            self._run_with_window(database, exercise)
+
+    def test_delete_reserved_order_removes_order_assets_and_releases_reservation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+
+            def exercise(window):
+                with patch(
+                    "app.main.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ), patch("app.main.QMessageBox.warning") as warning:
+                    window._delete_selected_order()
+
+                warning.assert_not_called()
+                with sqlite3.connect(database) as db:
+                    order_count = db.execute(
+                        "SELECT COUNT(*) FROM delivery_orders WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                    asset_count = db.execute(
+                        "SELECT COUNT(*) FROM delivery_order_assets WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                    reservation_count = db.execute(
+                        "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                self.assertEqual((order_count, asset_count, reservation_count), (0, 0, 0))
+
+            self._run_with_window(database, exercise)
+
+    def test_delete_unknown_or_sent_order_is_blocked_until_reconciled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+
+            def exercise(window):
+                with sqlite3.connect(database) as db:
+                    db.execute(
+                        "UPDATE delivery_orders SET status = ? WHERE order_id = ?",
+                        ("неизвестен результат отправки — проверь исходящие Steam", "GD-ORDER-1"),
+                    )
+                with patch("app.main.QMessageBox.warning") as warning:
+                    window._delete_selected_order()
+                warning.assert_called_once()
+                with sqlite3.connect(database) as db:
+                    order_count = db.execute(
+                        "SELECT COUNT(*) FROM delivery_orders WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                    reservation_count = db.execute(
+                        "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id = ?",
+                        ("GD-ORDER-1",),
+                    ).fetchone()[0]
+                self.assertEqual((order_count, reservation_count), (1, 1))
+
+            self._run_with_window(database, exercise)
+
+    def test_game_inventory_delivery_does_not_enter_card_only_order_flow(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            self._make_database(database)
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                try:
+                    with patch("app.main.QMessageBox.information") as info:
+                        window._explain_game_delivery_unavailable(
+                            "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
+                            [("Bot A", "cs2-asset-1")],
+                        )
+                    info.assert_called_once()
+                    self.assertEqual(window.orders.rowCount(), 0)
+                    with sqlite3.connect(database) as db:
+                        reservations = db.execute(
+                            "SELECT COUNT(*) FROM steam_asset_reservations"
+                        ).fetchone()[0]
+                    self.assertEqual(reservations, 0)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
     def test_user_cancellation_does_not_send_offer_or_change_order_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
