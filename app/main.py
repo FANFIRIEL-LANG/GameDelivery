@@ -5,7 +5,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame,
@@ -22,7 +23,7 @@ from app.platforms_panel import MarketplacePanel
 from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
 from integrations.openskin.client import configure_openskin_diagnostics
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
-from app.diagnostics import configure_logging, get_logger, log_exception
+from app.diagnostics import configure_logging, get_log_directory, get_logger, log_exception
 
 
 logger = get_logger("ui")
@@ -1282,6 +1283,9 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         toolbar.addWidget(QLabel("Локальный журнал ASF и управления процессом"))
         toolbar.addStretch()
+        open_folder = QPushButton("Открыть папку логов")
+        open_folder.clicked.connect(self._open_log_directory)
+        toolbar.addWidget(open_folder)
         refresh = QPushButton("Обновить журнал")
         refresh.clicked.connect(self._refresh_logs)
         toolbar.addWidget(refresh)
@@ -1297,6 +1301,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_logs(self):
         log_paths = (
+            ("GameDelivery", get_log_directory() / "gamedelivery.log"),
             ("ASF / управление", Path.home() / ".gamedelivery" / "asf-supervisor.log"),
             ("OpenSkin / proxy", Path.home() / ".gamedelivery" / "openskin-proxy.log"),
         )
@@ -1313,6 +1318,16 @@ class MainWindow(QMainWindow):
             self.log_view.setPlainText(content)
         except OSError as exc:
             self.log_view.setPlainText(f"Не удалось прочитать локальный журнал: {exc}")
+
+    def _open_log_directory(self):
+        directory = get_log_directory()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory))):
+                raise OSError("Не удалось открыть папку диагностических журналов")
+        except OSError as exc:
+            log_exception(logger, "open diagnostics folder", exc)
+            QMessageBox.warning(self, "Журналы GameDelivery", str(exc))
 
     def _append_log_line(self, line: str):
         self.log_view.append(line)
