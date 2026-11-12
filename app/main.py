@@ -119,7 +119,9 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self.game_inventory_panel, "Игровые предметы")
         self.inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
-        self.game_inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
+        # Game inventory snapshots are not Steam Trading Card snapshots.
+        # Keep CS2/game items out of the card-only order/send handler until C.6 delivery exists.
+        self.game_inventory_panel.trade_url_requested.connect(self._explain_game_delivery_unavailable)
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
@@ -211,6 +213,21 @@ class MainWindow(QMainWindow):
             "Проверь состав; резерв и отправка выполняются отдельными подтверждёнными действиями."
         )
 
+    def _explain_game_delivery_unavailable(self, trade_url: str, selected_assets=None):
+        """Do not route CS2/game assets into the Steam-card-only order flow."""
+        count = len(selected_assets or [])
+        QMessageBox.information(
+            self,
+            "Доставка игровых предметов ещё не подключена",
+            f"Выбрано игровых предметов: {count}.\n\n"
+            "Инвентарь игровых предметов уже загружается и отображается, "
+            "но текущая подготовка и отправка через ASF поддерживает только обычные "
+            "Steam Trading Cards (AppID 753 / context 6).\n\n"
+            "Предметы CS2 (AppID 730 / context 2) нельзя передавать через карточный "
+            "обработчик. Они не будут добавлены в заказ и не будут зарезервированы. "
+            "Для них нужен отдельный проверенный обработчик этапа C.6."
+        )
+
     def _orders_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -277,10 +294,16 @@ class MainWindow(QMainWindow):
         order_actions = QHBoxLayout()
         self.order_details_button = QPushButton("Состав заказа")
         self.order_details_button.clicked.connect(self._show_selected_order_details)
-        self.cancel_order_button = QPushButton("Отменить заказ и снять резерв")
+        self.cancel_order_button = QPushButton("Отменить заказ")
         self.cancel_order_button.clicked.connect(self._cancel_selected_order)
+        self.reconcile_order_button = QPushButton("Снять резерв после отмены обмена…")
+        self.reconcile_order_button.clicked.connect(self._reconcile_cancelled_order_reservation)
+        self.delete_order_button = QPushButton("Удалить заказ")
+        self.delete_order_button.clicked.connect(self._delete_selected_order)
         order_actions.addWidget(self.order_details_button)
         order_actions.addWidget(self.cancel_order_button)
+        order_actions.addWidget(self.reconcile_order_button)
+        order_actions.addWidget(self.delete_order_button)
         order_actions.addStretch()
         layout.addLayout(order_actions)
         self._load_order_bots()
@@ -1418,6 +1441,139 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Заказ {order_id} отменён.")
         except (OSError, sqlite3.Error, ValueError) as exc:
             QMessageBox.warning(self, "Не удалось отменить заказ", str(exc))
+
+    def _reconcile_cancelled_order_reservation(self):
+        """Release a retained reservation only after operator confirms the Steam offer is cancelled."""
+        try:
+            order_id = self._selected_order_id()
+            unknown_status = "неизвестен результат отправки — проверь исходящие Steam"
+            reconcilable_statuses = {
+                unknown_status,
+                "cancelled — результат отправки требует сверки",
+                "sent — ожидание покупателя",
+                "sent — требуется подтверждение Steam",
+            }
+            with sqlite3.connect(self._database_path) as db:
+                row = db.execute(
+                    "SELECT status, trade_offer_id FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                reservations = db.execute(
+                    "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()[0]
+            if row is None:
+                raise ValueError("Заказ не найден в базе данных.")
+            status, offer_ids = row
+            if status not in reconcilable_statuses:
+                raise ValueError(
+                    "Снять резерв этим действием можно только после отправки или при неизвестном результате. "
+                    "Для неотправленного заказа используй обычную отмену."
+                )
+            if not reservations:
+                QMessageBox.information(
+                    self, "Резерв уже отсутствует",
+                    f"У заказа {order_id} нет активных резервов."
+                )
+                return
+            answer = QMessageBox.question(
+                self,
+                "Подтвердить отмену предложения Steam",
+                f"Заказ: {order_id}\n"
+                f"ID предложения: {offer_ids or 'не получен'}\n"
+                f"Активных резервов: {reservations}\n\n"
+                "Подтверди, что ты лично проверил исходящие предложения Steam и "
+                "предложение по этому заказу отменено, отклонено или отсутствует. "
+                "После подтверждения GameDelivery освободит активы. "
+                "Это действие не отменяет предложение в Steam и не отправляет обмен.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            with sqlite3.connect(self._database_path) as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                ).fetchone()
+                if current is None or current[0] != status or current[0] not in reconcilable_statuses:
+                    raise ValueError("Статус заказа изменился. Обнови список и повтори сверку.")
+                db.execute(
+                    "DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,)
+                )
+                db.execute(
+                    "UPDATE delivery_orders SET status = ?, trade_confirmation_status = ? "
+                    "WHERE order_id = ?",
+                    ("cancelled — предложение Steam отменено оператором",
+                     "cancelled_by_operator", order_id),
+                )
+            self._load_saved_orders()
+            self._load_order_assets()
+            self.statusBar().showMessage(
+                f"Резерв заказа {order_id} освобождён после ручного подтверждения отмены предложения."
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            QMessageBox.warning(self, "Не удалось снять резерв", str(exc))
+
+    def _delete_selected_order(self):
+        """Delete a local order only when no sent/unknown Steam offer can still be active."""
+        try:
+            order_id = self._selected_order_id()
+            deletable_statuses = {
+                "imported — ожидание подготовки",
+                "reserved — не отправлен",
+                "cancelled — резерв снят",
+                "cancelled — отказ от заказа",
+                "cancelled — предложение Steam отменено оператором",
+            }
+            with sqlite3.connect(self._database_path) as db:
+                row = db.execute(
+                    "SELECT status, source_platform FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                reservation_count = db.execute(
+                    "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()[0]
+            if row is None:
+                raise ValueError("Заказ не найден в базе данных.")
+            status, platform = row
+            if status not in deletable_statuses:
+                raise ValueError(
+                    "Нельзя удалить заказ с активным или неизвестным предложением Steam. "
+                    "Сначала отмени/сверь предложение и сними резерв отдельным действием."
+                )
+            answer = QMessageBox.question(
+                self,
+                "Удалить заказ",
+                f"Удалить заказ {order_id} из GameDelivery?\n"
+                f"Источник: {'Playerok' if platform == 'playerok' else 'ручной'}\n"
+                f"Активных резервов будет освобождено: {reservation_count}\n\n"
+                "Будут удалены запись заказа и его локальный состав. "
+                "Никаких действий в Steam или Playerok выполнено не будет. "
+                "Удалённую сделку Playerok можно будет импортировать повторно.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            with sqlite3.connect(self._database_path) as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                ).fetchone()
+                if current is None or current[0] != status or current[0] not in deletable_statuses:
+                    raise ValueError("Статус заказа изменился. Обнови список и повтори удаление.")
+                # A reserved-but-never-sent order is safe to delete; release orphan rows too.
+                db.execute("DELETE FROM steam_asset_reservations WHERE order_id = ?", (order_id,))
+                db.execute("DELETE FROM delivery_order_assets WHERE order_id = ?", (order_id,))
+                db.execute("DELETE FROM delivery_orders WHERE order_id = ?", (order_id,))
+            self._delete_trade_credential_best_effort(order_id)
+            self._load_saved_orders()
+            self._load_order_assets()
+            self.statusBar().showMessage(f"Заказ {order_id} удалён из локального списка.")
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            QMessageBox.warning(self, "Не удалось удалить заказ", str(exc))
 
     def _inventory_tab(self):
         return InventoryPanel(bot_selection_model=self.bot_selection_model)
