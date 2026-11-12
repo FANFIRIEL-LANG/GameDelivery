@@ -1254,7 +1254,9 @@ class MainWindow(QMainWindow):
                     "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
                 ).fetchone()
             self.send_offer_button.setEnabled(
-                row is not None and row[0] == "reserved — не отправлен"
+                not getattr(self, "_asf_send_in_progress", False)
+                and row is not None
+                and row[0] == "reserved — не отправлен"
             )
         except (OSError, sqlite3.Error, ValueError):
             self.send_offer_button.setEnabled(False)
