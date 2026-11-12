@@ -432,13 +432,13 @@ class ASFManagementWidget(QWidget):
         if executable.suffix.casefold() not in {".exe", ".dll"}:
             self.status.setText("Поддерживаются ArchiSteamFarm.exe и ArchiSteamFarm.dll.")
             return
-        command = [str(executable), "--process-required"]
+        command = [str(executable)]
         if is_generic:
             dotnet = shutil.which("dotnet")
             if not dotnet:
                 self.status.setText("Не найден dotnet.exe. Установи .NET 10 Runtime и проверь PATH.")
                 return
-            command = [dotnet, str(executable), "--process-required"]
+            command = [dotnet, str(executable)]
         # User-approved launch profile: force the global ASF login limiter to zero.
         # Preserve every unrelated ASF.json setting and create a one-time timestamped backup.
         if not self._isolated_test_mode:
