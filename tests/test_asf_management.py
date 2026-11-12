@@ -479,7 +479,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 with patch.object(self.widget, "_ipc_port_is_open", return_value=False):
                     self.widget.start_asf()
             args, kwargs = popen.call_args
-            self.assertEqual(args[0], [str(executable), "--process-required"])
+            self.assertEqual(args[0], [str(executable)])
             self.assertEqual(kwargs["cwd"], str(home))
             self.assertTrue((home / ".gamedelivery" / "asf-supervisor.log").is_file())
             written_config = json.loads(global_config_path.read_text(encoding="utf-8"))
@@ -518,7 +518,7 @@ class ASFManagementWidgetTests(unittest.TestCase):
             args, kwargs = popen.call_args
             self.assertEqual(
                 args[0],
-                [r"C:\Program Files\dotnet\dotnet.exe", str(generic_dll), "--process-required"],
+                [r"C:\Program Files\dotnet\dotnet.exe", str(generic_dll)],
             )
             self.assertEqual(kwargs["cwd"], str(home))
             self.assertIn("GameDelivery запустил ASF", self.widget.status.text())
