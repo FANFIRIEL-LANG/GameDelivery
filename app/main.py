@@ -625,6 +625,7 @@ class MainWindow(QMainWindow):
     def _preview_selected_order_with_asf(self):
         try:
             order_id = self._selected_order_id()
+            logger.info("Trade send preflight started; order_id=%s", order_id)
             with sqlite3.connect(self._database_path) as db:
                 order = db.execute(
                     "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
@@ -748,6 +749,7 @@ class MainWindow(QMainWindow):
 
             bot_name = next(iter(bot_names))
             asset_ids = [str(asset_id) for _bot, asset_id in assets]
+            logger.info("Trade send preflight validated; order_id=%s bot=%s asset_count=%s", order_id, bot_name, len(asset_ids))
             ipc_password = self.asf_management.ipc_password.text().strip() or None
             client = self.asf_management._client(timeout=45.0)
 
@@ -792,6 +794,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
+                logger.info("Trade send cancelled by user; order_id=%s", order_id)
                 self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
                 return
 
@@ -829,6 +832,7 @@ class MainWindow(QMainWindow):
 
             try:
                 request_started = True
+                logger.info("Trade send IPC dispatch started; order_id=%s bot=%s asset_count=%s", order_id, bot_name, len(asset_ids))
                 outcome = self.asf_management._client(timeout=120.0).send_trade_offer(
                     order_id=order_id,
                     bot_name=bot_name,
@@ -867,6 +871,7 @@ class MainWindow(QMainWindow):
 
             if outcome.get("success") is True:
                 offer_ids = outcome.get("offerIds", [])
+                logger.info("Trade send confirmed by ASF; order_id=%s offer_count=%s", order_id, len(offer_ids))
                 if not offer_ids:
                     raise ASFError("ASF вернул успех без ID предложения; статус сохранён как неопределённый.")
                 confirmation_status = str(outcome.get("confirmationStatus", "unknown"))
@@ -895,6 +900,7 @@ class MainWindow(QMainWindow):
                 return
 
             if outcome.get("resultUnknown") is True:
+                logger.error("Trade send result unknown; order_id=%s", order_id)
                 status_message = "неизвестен результат отправки — проверь исходящие Steam"
                 user_message = str(outcome.get("error") or "Результат отправки не подтверждён.")
                 diagnostic_lines = []
@@ -951,6 +957,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "ASF не отправил предложение", user_message)
 
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            log_exception(logger, "trade send workflow", exc)
             if request_started and order_id:
                 try:
                     with sqlite3.connect(self._database_path) as db:
