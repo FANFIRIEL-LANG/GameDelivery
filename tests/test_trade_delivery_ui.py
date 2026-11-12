@@ -34,6 +34,11 @@ class TradeDeliveryUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        cls._ipc_test_mode_patch = patch.dict(
+            os.environ, {"GAMEDELIVERY_TEST_ASF_IPC_URL": "http://127.0.0.1:1243"}
+        )
+        cls._ipc_test_mode_patch.start()
+        cls.addClassCleanup(cls._ipc_test_mode_patch.stop)
 
     @staticmethod
     def _preview():
