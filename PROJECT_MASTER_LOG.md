@@ -4056,3 +4056,13 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Исправлена только тестовая фикстура: передан no-op callback в конструктор worker. Production код ради теста не менялся.
 - Исправление: commit `7dbcfd308e0f1fbdba9f769c002c882504442b56`, файл `tests/test_asf_worker.py`.
 - Следующий шаг: дождаться CI на новом SHA; при любом новом failure извлечь точную причину и исправить адресно. Не считать асинхронный send завершённым до зелёного Tests + Windows Build. Не создавать реальные Steam offers и не просить пользователя повторять отправку `GD-4AFAF6ED060`.
+
+### 2026-11-12 — CI подтверждает async Steam send и Windows package
+
+- На code SHA `203a9cb25a21dab31a849734d433731ef1fb8088` обе обязательные проверки завершились успешно:
+  - Tests #1619 (run `43160739638`): SUCCESS; полный unit suite — 535 tests, OK; credential migration и complete Steam trade UI flow — OK; изолированные модули — OK.
+  - Windows Build #829 (run `43160739775`): SUCCESS; compile, Windows trade-secret ACL hardening, GUI executable build, packaged executable smoke test и upload — все SUCCESS.
+- Windows artifact опубликован: `GameDelivery-Windows-x64`, artifact ID `13917279526`, размер 55,048,268 bytes, SHA-256 `8a1e221f450b8e0d51b05646391fede3684348778d1c0da01aa1f11449a6322b`, срок хранения до 2026-12-12.
+- Async ASF preview/send изменения и callback worker test теперь прошли CI. Это подтверждает сборку и автоматические тесты, но не заменяет пользовательский runtime test с реальным ASF окружением.
+- Текущий рабочий branch на момент записи: `work/local-sync`; code SHA выше. Не запускать повторный Steam offer для заказа с неизвестным исходом. Пользовательский smoke test разрешён только на новом тестовом/подготовленном заказе после установки этой сборки; сначала проверить отзывчивость UI, затем проверить один безопасный тестовый сценарий без повторной отправки существующих заказов.
+- Следующий этап: пользовательская проверка GUI responsiveness и безопасного test-order flow. Если зависание устранено, продолжить по плану; затем отдельно проверить инвентарное обновление и расширение диагностики. Не считать успешный CI доказательством отсутствия всех runtime проблем.
