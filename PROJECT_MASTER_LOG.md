@@ -4164,3 +4164,10 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Artifact `GameDelivery-ASF-Generic` не создан/не подтверждён. ASF Generic не публиковался; plugin build и smoke test не запускались. Ничего не устанавливать и не заменять в рабочем ASF. Steam credentials, bots, IPC и реальные Trade Offers не использовались.
 - Следующий шаг: устранить причину того, что GitHub создаёт failed run без jobs; перед новым push проверить YAML целиком, включая корректное завершение PowerShell block scalar и структуру jobs/steps. Затем дождаться реального job, проверить все шаги и artifact. Master Log commits исключены из push paths, поэтому его дальнейшие обновления не должны повторно запускать custom ASF build.
 - Запреты сохраняются: не создавать реальные Steam offers без отдельного явного разрешения; не повторять заказы `GD-4AFAF6ED060` и `GD-9D2DF4875BD2`; не менять production send logic, SQLite, CS2, OpenSkin, IPC port 1243, PR #4 или main.
+
+
+### 2026-11-12 — correction: push path filters не остановили запуск custom ASF workflow
+
+- После commit Master Log `cc0d762d6f27633d63d573dfb8bbbb9ab198c694` GitHub всё равно создал custom ASF workflow run `43195337733` (event push, head SHA совпадает с commit журнала), хотя в workflow заданы `push.paths`, не включающие `PROJECT_MASTER_LOG.md`.
+- Run завершился failure и GitHub Actions API вернул для него ноль jobs. Имя run отображается как путь `.github/workflows/asf-custom-generic.yml`, а не как заданное `name`. Следовательно, workflow пока не загружается/не исполняется как нормальный job; нельзя утверждать, что path filters работают. Предыдущее предположение в записи выше об исключении Master Log из запуска не подтверждено и этим run опровергнуто.
+- Текущий подтверждённый статус: ASF patch не применён в CI; ASF Generic publish, plugin build, smoke test и artifact отсутствуют. Следующий шаг — выяснить причину workflow-level failure (до job creation), валидировать YAML и trigger semantics до следующей попытки. Не создавать дополнительные commits для запуска сборки, пока не устранена причина нулевого числа jobs.
