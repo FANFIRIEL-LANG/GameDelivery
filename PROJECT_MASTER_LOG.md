@@ -4007,3 +4007,20 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Подтверждённые до текущего запуска результаты: Tests #1594 SUCCESS на `a87aa794...`; Windows Build #807 SUCCESS на `053b7bc...`. Не считать Windows gate закрытым до успешного build/smoke/artifact upload на текущем SHA.
 - Production Steam send, ASF resolver/IPC policy, SQLite, CS2 delivery, OpenSkin и ASF plugin не менялись. Реальные Steam offers не создавались. PR #4 и main не менялись.
 - Codex handoff: branch `work/local-sync`; workflow path filter now includes Master Log for push/PR; дождаться нового Windows Build на SHA этого docs/workflow update, проверить compile, ACL hardening, PyInstaller, packaged executable smoke test и artifact upload. Не просить пользователя скачивать EXE до SUCCESS.
+
+### 2026-11-12 — расследование ложного unknown-result и лишнего Steam offer message
+
+- Пользователь предоставил скриншоты фактического результата заказа `GD-4AFAF6ED060`: Steam показывает предложение от `ArchiSteamFarm-modded/6.3.11.7` и отметку «Обмен принят 12 нояб. 2026 г. в 6:58», тогда как GameDelivery показал `resultUnknown` с причиной `ASF IPC недоступен на локальном компьютере`. Повторная отправка запрещена; заказ не переотправлять.
+- Восстановлена предыдущая диагностика и проверен код на актуальной ветке:
+  - `integrations/asf/client.py` намеренно переводит любую ошибку после dispatch в `resultUnknown=true`; это безопасная защита от дублей, но конкретный transport error текст не доказывает, что Steam offer не создан.
+  - `app/main.py` выполняет `send_trade_offer()` прямо в GUI button handler, синхронно, с IPC timeout 120 секунд. Это доказанная причина зависания окна на время сетевой/ASF операции.
+  - `integrations/asf_plugin/TradeDelivery.cs` добавлял `customMessage: "GameDelivery order " + request.OrderId`, что точно соответствует видимой пользователю строке под заголовком предложения Steam.
+  - После `ArchiWebHandler.SendTradeOffer()` plugin ждал mobile confirmation с `waitIfNeeded: true`; ASF 6.3.11.7 implementation повторяет запросы подтверждений до `WebBrowser.MaxTries`, что может задерживать ответ IPC уже после создания offer.
+- Выполнены минимальные plugin changes:
+  - `customMessage` теперь `string.Empty` — идентификатор заказа больше не добавляется в сообщение Steam.
+  - mobile confirmation lookup использует `waitIfNeeded: false`: один проход без ожидания повторных запросов; если подтверждение ещё не доступно, результат остаётся pending, а не блокирует send IPC.
+  - Добавлен contract test в `tests/test_asf_plugin_contract.py` для обоих правил.
+- ASF 6.3.11.7 source проверен по `Actions.HandleTwoFactorAuthenticationConfirmations`: `waitIfNeeded=true` запускает повторные попытки и секундные задержки; false делает один проход и возвращает корректный результат для доступного/недоступного подтверждения.
+- Пока НЕ исправлено: GUI send path всё ещё синхронный. Требуется вынести IPC send call в Qt worker/thread, сохранить обновление SQLite и QMessageBox только в GUI thread, отключать кнопку отправки на время операции, а после завершения безопасно восстановить UI. Это следующий обязательный source change до новой пользовательской сборки.
+- Изменены файлы: `integrations/asf_plugin/TradeDelivery.cs`, `tests/test_asf_plugin_contract.py`. Коммиты: `57ca513592cf507ea41380b3886015cc86114e0d`, `408bcd9ba7a855979efadac474924f01a2e87861`. Branch `work/local-sync`, текущий HEAD на момент записи `408bcd9ba7a855979efadac474924f01a2e87861`.
+- Не менять DB schema, order records, Steam credentials, inventory, CS2 delivery, OpenSkin, ASF endpoint policy, PR #4 или main. Не запускать live send и не просить пользователя повторять отправку. После завершения async UI fix выполнить targeted tests и один согласованный CI; только затем готовить новую сборку.
