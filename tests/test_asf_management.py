@@ -56,14 +56,23 @@ class ASFManagementWidgetTests(unittest.TestCase):
                 "Kestrel": {"Endpoints": {"Http": {"Url": "http://127.0.0.1:1243"}}}
             }), encoding="utf-8")
             self.widget.config_path.setText(str(config_dir))
+            # Exercise the real selected-config resolver in this one test.
+            self.ipc_base_url_patch.stop()
             client = self.widget._client()
             self.assertEqual(client.base_url, "http://127.0.0.1:1243")
             self.assertTrue(client.allow_alternate_loopback_port)
 
     def setUp(self):
         self.widget = ASFManagementWidget()
+        # Widget behavior tests must not depend on persisted runner ASF paths.
+        # The selected-config resolver has its own dedicated test below.
+        self.ipc_base_url_patch = patch.object(
+            self.widget, "_ipc_base_url", return_value="http://127.0.0.1:1243"
+        )
+        self.ipc_base_url_patch.start()
 
     def tearDown(self):
+        self.ipc_base_url_patch.stop()
         if hasattr(self.widget, "_bot_status_poll_timer"):
             self.widget._bot_status_poll_timer.stop()
         self.widget.close()
