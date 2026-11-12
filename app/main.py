@@ -976,10 +976,6 @@ class MainWindow(QMainWindow):
         self._asf_send_in_progress = False
         self._load_saved_orders()
         self._update_order_action_buttons()
-        self.send_offer_button.setEnabled(
-            self.orders.currentRow() >= 0
-            and not self._asf_send_in_progress
-        )
 
     def _send_selected_order_with_asf(self):
         request_started = False
