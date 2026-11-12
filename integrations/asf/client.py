@@ -5,12 +5,17 @@ import json
 import os
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import Request, urlopen
+
+from app.diagnostics import get_logger
+
+logger = get_logger('asf.ipc')
 
 
 TEST_ASF_IPC_URL_ENV = "GAMEDELIVERY_TEST_ASF_IPC_URL"
@@ -248,22 +253,37 @@ class ASFClient:
             headers["Authentication"] = self.ipc_password
 
         request = Request(url, data=data, headers=headers, method=method.upper())
+        route = (
+            "/Api/Bot/{bot}/Inventory" if "/Inventory/" in path
+            else "/Api/Command" if path.startswith("/Api/Command")
+            else "/Api/Bot/{bot}" if path.startswith("/Api/Bot/")
+            else path.split("?", 1)[0]
+        )
+        started = time.monotonic()
+        logger.debug("ASF IPC request started; method=%s route=%s timeout_seconds=%s", method.upper(), route, self.timeout)
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
+                elapsed_ms = round((time.monotonic() - started) * 1000)
+                logger.info("ASF IPC request completed; method=%s route=%s http_status=%s elapsed_ms=%s", method.upper(), route, getattr(response, "status", 200), elapsed_ms)
                 if not raw:
                     return None
                 try:
                     return json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise ASFError("ASF вернул ответ не в формате JSON") from exc
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    logger.error("ASF IPC returned invalid JSON; route=%s elapsed_ms=%s", route, elapsed_ms)
+                    raise ASFError("ASF вернул ответ не в формате JSON") from None
         except HTTPError as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            logger.warning("ASF IPC HTTP error; route=%s http_status=%s elapsed_ms=%s", route, exc.code, elapsed_ms)
             if exc.code == 401:
                 raise ASFError("ASF IPC отклонил авторизацию; проверь IPCPassword") from None
             if exc.code == 403:
                 raise ASFError("ASF IPC временно заблокировал запросы или запретил доступ") from None
             raise ASFError(f"ASF IPC вернул HTTP {exc.code}") from None
-        except (URLError, TimeoutError, OSError):
+        except (URLError, TimeoutError, OSError) as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            logger.error("ASF IPC transport failure; route=%s exception_type=%s elapsed_ms=%s", route, type(exc).__name__, elapsed_ms)
             raise ASFError("ASF IPC недоступен на локальном компьютере") from None
 
     def get_status(self) -> Any:
