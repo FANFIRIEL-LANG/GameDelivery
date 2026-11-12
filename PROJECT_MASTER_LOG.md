@@ -4043,3 +4043,16 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - CI на этом code SHA: Tests #1610 (run `43159569793`) in progress; Windows Build #820 (run `43159569704`) in progress; ASF plugin #630 (run `43159569734`) — plugin build job SUCCESS, Windows ACL smoke pending. Не объявлять этап завершённым до итоговых результатов.
 - Следующий шаг после CI: проверить все ошибки/результаты; затем отдельно завершить перенос preview/send network operations в Qt worker thread, чтобы GUI не блокировался. После этого расширить structured diagnostics на инвентарь/CS2/OpenSkin и добавить экспорт диагностического архива с повторной очисткой секретов.
 - Не менять SQLite schema, production send idempotency, ASF endpoint policy, CS2 delivery, OpenSkin routing, PR #4 или main. Никаких реальных Steam offers не создавать; пользователь не должен повторять отправку `GD-4AFAF6ED060`.
+
+### 2026-11-12 — асинхронная отправка Steam: первая CI-проверка и исправление теста
+
+- Перенос preview/send ASF IPC из GUI thread выполнен в `app/main.py` через `QThreadPool` / `QRunnable`; Qt callback marshalled обратно в GUI thread через bound QObject slot.
+- Сохранены preflight проверки, exact asset/reservation match, compare-and-set статуса заказа, явное подтверждение пользователя, сохранение offer ID и запрет повторной отправки при неизвестном результате.
+- Дополнительно исправлен UI-state bug: завершение async операции больше не включает кнопку отправки без проверки статуса выбранного заказа.
+- CI на SHA `153a5c66d57d41e0d7adf10fd023211c2637460a`:
+  - Tests #1617 FAILED: compile, credential tests и complete trade UI flow прошли; полный набор обнаружил ровно одну ошибку в новом `tests/test_asf_worker.py` — тест создавал `_AsfCallWorker(operation)`, хотя актуальный конструктор требует `callback`. Изолированный прогон подтвердил ту же единственную ошибку; остальные изолированные модули прошли.
+  - Windows Build #827 SUCCESS.
+  - ASF Plugin #635 SUCCESS.
+- Исправлена только тестовая фикстура: передан no-op callback в конструктор worker. Production код ради теста не менялся.
+- Исправление: commit `7dbcfd308e0f1fbdba9f769c002c882504442b56`, файл `tests/test_asf_worker.py`.
+- Следующий шаг: дождаться CI на новом SHA; при любом новом failure извлечь точную причину и исправить адресно. Не считать асинхронный send завершённым до зелёного Tests + Windows Build. Не создавать реальные Steam offers и не просить пользователя повторять отправку `GD-4AFAF6ED060`.
