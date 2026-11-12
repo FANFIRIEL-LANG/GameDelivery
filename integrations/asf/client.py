@@ -84,6 +84,8 @@ def resolve_asf_ipc_base_url(
             )
         return endpoint
 
+    if config_dir is not None or executable_path is not None:
+        raise ASFError("Не найден IPC.config рядом с выбранной конфигурацией или исполняемым файлом ASF; адрес IPC не определён. Проверь выбранный путь ASF.")
     return "http://127.0.0.1:1242"
 
 
@@ -718,13 +720,24 @@ class ASFClient:
             # Preserve the structured uncertainty flag so the UI can lock this order if needed.
             return outcome
         except Exception as exception:
-            # Once the command has been dispatched, even an unexpected local parsing/validation
-            # error means the Steam-side outcome cannot be proven safe to retry.
-            if command_dispatched and not isinstance(exception, ASFError):
-                raise ASFError(
-                    "ASF получил команду отправки, но ответ нельзя однозначно обработать. "
-                    "Проверь исходящие предложения Steam; не повторяй отправку."
-                ) from None
+            # Any failure after dispatch (including timeout/connection loss reported as
+            # ASFError) is ambiguous: ASF may already have created the Steam offer.
+            if command_dispatched:
+                detail = str(exception).strip()
+                if len(detail) > 500:
+                    detail = detail[:500]
+                return {
+                    "success": False,
+                    "mode": "send",
+                    "sendEnabled": True,
+                    "resultUnknown": True,
+                    "error": (
+                        "ASF получил команду отправки, но подтверждение ответа потеряно "
+                        "или не удалось обработать. Проверь исходящие предложения Steam; "
+                        "не повторяй отправку."
+                        + (f" Причина: {detail}" if detail else "")
+                    ),
+                }
             raise
         finally:
             if secret_file_created:
