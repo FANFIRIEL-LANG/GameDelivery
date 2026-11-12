@@ -3841,3 +3841,13 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Разрешённая область изменения — только `tests/test_main_delivery_send.py`. Production `app/main.py`, торговая логика, plugin, parser/store, DB schema, CS2 и OpenSkin остаются без изменений.
 - План: минимально связать fixture с mock ASF client, затем выполнить только целевой модуль из 9 тестов. Полный suite/CI не запускать до результата focused test.
 - Codex handoff: после исправления проверить diff и выполнить `python -m unittest discover -s tests -p test_main_delivery_send.py -v`; записать фактический результат. Если локальное исполнение недоступно, не заявлять тесты пройденными и передать точную команду для выполнения в локальном окружении.
+
+
+### 2026-11-12 — исправлен ASF client mock в Steam delivery test fixture
+
+- Изменён только `tests/test_main_delivery_send.py` (commit `a76f97b88bd17135ac84f257ba1d588d1a82a845`). Fixture теперь предоставляет `asf_management._client = MagicMock()`; все 8 тестов, которым нужен ASF client, получают тот же mock из `window.asf_management._client.return_value`. Это соответствует production-вызовам `_client(timeout=45.0)` для preview и `_client(timeout=120.0)` для send.
+- Production `app/main.py` и торговая логика не менялись. Другие файлы не изменялись.
+- Изменённый файл повторно прочитан с GitHub; blob SHA `25e5f58ce2288ab40711cbf6579265f1b3607244`; содержимое совпало с отправленным. Branch HEAD после commit: `a76f97b88bd17135ac84f257ba1d588d1a82a845`.
+- **Тесты локально ещё не запускались:** доступный GitHub connector позволяет менять/читать файлы и просматривать Actions, но не исполняет Python из репозитория. Не объявлять focused tests пройденными без реального запуска.
+- Следующий шаг: проверить, создался ли автоматический Tests workflow на новом code commit. Если run есть — изучить его; если нет — не запускать полный CI вручную. Для локальной проверки точная команда: `python -m unittest discover -s tests -p test_main_delivery_send.py -v` (ожидается 9 tests).
+- Codex handoff: branch `work/local-sync`, HEAD `a76f97b88bd17135ac84f257ba1d588d1a82a845`; разрешённый изменённый файл только `tests/test_main_delivery_send.py`. Не менять production send code, plugin, parser/store, DB schema, CS2 или OpenSkin. Сначала выполнить только focused module; полный suite/Windows build — только после его успеха и отдельного согласования.
