@@ -853,8 +853,9 @@ class MainWindow(QMainWindow):
                     raise ValueError("Заказ уже обрабатывается другой операцией.")
             logger.info("Async trade IPC dispatch started; order_id=%s bot=%s asset_count=%s", order_id, bot_name, len(asset_ids))
             self.statusBar().showMessage(f"Отправка заказа {order_id} через ASF…")
+            send_client = self.asf_management._client(timeout=120.0)
             self._run_asf_call_async(
-                lambda: self.asf_management._client(timeout=120.0).send_trade_offer(
+                lambda: send_client.send_trade_offer(
                     order_id=order_id, bot_name=bot_name, trade_url=recipient, asset_ids=asset_ids
                 ),
                 lambda result, send_error: self._on_async_trade_send_complete(
