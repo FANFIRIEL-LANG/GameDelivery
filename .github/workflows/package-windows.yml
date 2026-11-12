@@ -13,6 +13,7 @@ on:
       - notifications/**
       - tests/**
       - requirements.txt
+      - PROJECT_MASTER_LOG.md
       - .github/workflows/package-windows.yml
   push:
     branches:
