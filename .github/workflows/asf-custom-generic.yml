@@ -77,7 +77,11 @@ jobs:
           git -C asf-source diff --check
           if ($LASTEXITCODE -ne 0) { throw "Patched ASF source has whitespace errors." }
           $change = git -C asf-source diff --numstat -- ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs
-          if ($LASTEXITCODE -ne 0 -or $change -notmatch '^1\s+1\s+ArchiSteamFarm/Steam/Integration/ArchiWebHandler\.cs      - name: Publish patched ASF Generic
+          if ($LASTEXITCODE -ne 0 -or $change.Trim() -notmatch '^1\s+1\s+') {
+            throw "Expected exactly one insertion and one deletion in ArchiWebHandler.cs; got: $change"
+          }
+          Write-Host "Verified: exactly one ASF signature assignment changed; all other source bytes remain unchanged."
+      - name: Publish patched ASF Generic
         shell: pwsh
         run: |
           dotnet publish asf-source/ArchiSteamFarm/ArchiSteamFarm.csproj --configuration Release --output "$PWD/dist/ASF-generic" -p:PublishTrimmed=false -p:SelfContained=false
