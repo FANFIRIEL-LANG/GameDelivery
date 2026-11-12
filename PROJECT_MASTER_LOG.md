@@ -4246,3 +4246,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - No Steam offers, bot configs, SQLite schema, IPC port, or ASF runtime files were changed.
 - Code changes are committed on `work/local-sync`; targeted test execution and the replacement Windows package/CI verification remain pending. Do not treat the current installed desktop package as containing this fix until a new artifact passes CI.
 - OpenSkin warning in the supplied log (`259/262` rows) is separate from ASF startup; the three omitted price rows are marked unknown by the existing OpenSkin handling and are not evidence of an IPC/plugin failure.
+
+
+### 2026-11-12 — ASF launch argument fix: CI and Windows package verified
+
+- GitHub Actions Windows packaging run `43275319783` completed successfully on commit `6852ba9705219625aa46c3bbee06708188bdbaec`: compile, Windows ACL test, PyInstaller build, packaged executable smoke test, and artifact upload all passed.
+- Full unit-test workflow run `43275319814` also completed successfully, including the full unit test suite.
+- New artifact: `GameDelivery-Windows-x64`, artifact ID `13970201631`, 55,047,801 bytes; SHA-256 `e557be4d4b6501f4d99ab65cc4048cce4792a1355b1fc32d0ebfa8b645c4da56`; expires 2026-12-12.
+- Downloaded package locally and verified ZIP integrity (`testzip=None`), 269 entries, and BUILD_INFO commit matches the fixed source commit.
+- This is a new GameDelivery desktop package, not the separate ASF Generic runtime ZIP. CI confirms packaging/smoke test only; live ASF relaunch and Steam delivery remain unverified.
