@@ -27,6 +27,18 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("Проверка инвентаря ASF", inventory_region)
         self.assertIn("resultUnknown: false", inventory_region)
 
+    def test_send_trade_offer_has_no_custom_message_and_does_not_wait_for_mobile_confirmation(self):
+        delivery = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
+        send_call = delivery.index("await targetBot.ArchiWebHandler.SendTradeOffer(")
+        send_region = delivery[send_call:send_call + 900]
+        self.assertIn("customMessage: string.Empty", send_region)
+        self.assertNotIn("GameDelivery order ", send_region)
+
+        confirmation_call = delivery.index("HandleTwoFactorAuthenticationConfirmations(",
+                                           delivery.index("bool confirmationPending"))
+        confirmation_region = delivery[confirmation_call:confirmation_call + 500]
+        self.assertIn("waitIfNeeded: false", confirmation_region)
+
     def test_plugin_push_workflow_targets_the_active_feature_branch(self):
         workflow = (ROOT / ".github" / "workflows" / "asf-plugin.yml").read_text(encoding="utf-8")
         self.assertIn("      - work/local-sync", workflow)
