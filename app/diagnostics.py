@@ -12,9 +12,9 @@ from threading import RLock
 _LOGGER_NAME = "gamedelivery"
 _CONFIG_LOCK = RLock()
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)\\b(IPCPassword|password|passwd|trade[_ -]?token|api[_ -]?key|authorization)\\b(\\s*[:=]\\s*)([^\\s,;]+)"),
-    re.compile(r"(?i)([?&]token=)[^&#\\s]+"),
-    re.compile(r"(?i)(Bearer\\s+)[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)\b(IPCPassword|password|passwd|trade[_ -]?token|api[_ -]?key|authorization)\b(\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)([?&]token=)[^&#\s]+"),
+    re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"),
 )
 
 
