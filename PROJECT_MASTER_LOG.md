@@ -3938,3 +3938,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - В `test_proxy_settings_ui.py` тест `test_apply_all_profiles_offers_global_steam_cm_proxy_after_successful_batch` подменяет `ASFClient`, но до этого factory всё равно вызывает resolver по глобальному `QSettings` пути. Fixture должен изолировать ASF config path / подменить endpoint resolver, чтобы тест проверял proxy batch, а не состояние локальной настройки ASF.
 - Следующая разрешённая правка: только тесты `tests/test_trade_delivery_ui.py`, `tests/test_database_migrations.py` и `tests/test_proxy_settings_ui.py`. Для MainWindow тестов использовать `GAMEDELIVERY_TEST_ASF_IPC_URL` (тестовый режим инвентарной панели); для proxy UI изолировать `QSettings` и/или стабилизировать resolver в тесте, где `ASFClient` уже замокан. Production `app/main.py`, `app/inventory_panel.py` и resolver не менять.
 - Codex handoff: base source fix commit `ea6639087dd9f58b741168c4baa65379a8a19695`; workflow runs на этом SHA: Tests `43152532881`, Windows `43152532895`. Ожидаем их результаты отдельно; пока продолжить test-only fixture corrections без live Steam send.
+
+
+### 2026-11-12 — исправлены тестовые ASF endpoint fixtures
+
+- `tests/test_asf_client.py`: commit `ea6639087dd9f58b741168c4baa65379a8a19695` заменил присваивание метода frozen `ASFClient` на `patch.object`.
+- `tests/test_trade_delivery_ui.py` (commit `9f6294450989ad09af7f9db1ac3e5a6c7023b389`) и `tests/test_database_migrations.py` (commit `9c187b211d5f15310125831cf7dad08cc47571f4`) теперь включают существующий `GAMEDELIVERY_TEST_ASF_IPC_URL` test mode в `setUpClass`, чтобы создание `MainWindow` не зависело от сохранённого на runner пути ASF и не вызывало реальный resolver. Тестовая среда изолирована; production код не изменён.
+- `tests/test_proxy_settings_ui.py` (commit `f68dce07a1be926d26d7b2ecf2e10fcb2ef3737f`) теперь явно стабилизирует `resolve_asf_ipc_base_url` в тесте batch apply, где `ASFClient` уже замокан. Проверяется именно batch proxy flow, а не глобальная пользовательская QSettings конфигурация.
+- Изменены только тестовые файлы; `integrations/asf/client.py`, `app/main.py`, `app/inventory_panel.py`, ASF plugin, DB schema, CS2 и OpenSkin не менялись. Live Steam send не запускался.
+- Следующий шаг: дождаться Tests и Windows workflow на актуальном branch HEAD; при новых failures разбирать только конкретный stack trace. Codex handoff: test commits `ea663908`, `9f629445`, `9c187b2`, `f68dce0`; рабочая ветка `work/local-sync`; сохранять fail-closed resolver и IPC 1243.
