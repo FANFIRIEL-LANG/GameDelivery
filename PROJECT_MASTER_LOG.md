@@ -4066,3 +4066,20 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Async ASF preview/send изменения и callback worker test теперь прошли CI. Это подтверждает сборку и автоматические тесты, но не заменяет пользовательский runtime test с реальным ASF окружением.
 - Текущий рабочий branch на момент записи: `work/local-sync`; code SHA выше. Не запускать повторный Steam offer для заказа с неизвестным исходом. Пользовательский smoke test разрешён только на новом тестовом/подготовленном заказе после установки этой сборки; сначала проверить отзывчивость UI, затем проверить один безопасный тестовый сценарий без повторной отправки существующих заказов.
 - Следующий этап: пользовательская проверка GUI responsiveness и безопасного test-order flow. Если зависание устранено, продолжить по плану; затем отдельно проверить инвентарное обновление и расширение диагностики. Не считать успешный CI доказательством отсутствия всех runtime проблем.
+
+### 2026-11-12 — добавлена фазовая диагностика ASF trade send после live timeout
+
+- Пользователь подтвердил скриншотом Steam, что предложение по заказу `GD-9D2DF4875BD2` было создано, хотя GameDelivery получил timeout после 120 секунд. Повторная отправка запрещена.
+- Изучен предоставленный ASF log за 08:29–08:34:
+  - ASF зарегистрировал `gamedelivery-preview` и `gamedelivery-send`;
+  - `ProcessSendCommand` разрешил ожидаемого отправителя `atdnftdk26dttu`, заказ `GD-9D2DF4875BD2`, один asset;
+  - после начальной записи нет сообщений о завершении `SendTradeOffer` или mobile confirmation;
+  - параллельно несколько ботов получили `UrlGetToStream` failures для Steam pages `/account/managedevices` и `/my/badges`. Эти ошибки являются сетевой зацепкой, но не доказывают, что они вызвали задержку конкретного trade call.
+- На GitHub повторно подтверждено: `work/local-sync` совпадает с commit `8e2dfc415b99a2e88c34a111ec9bc2512a4f06ba`. Ранее внедрённый async Qt worker устраняет блокировку GUI thread, но не устраняет ожидание ответа ASF IPC: пользовательский runtime log всё ещё показывает 120-second timeout.
+- Проверен текущий ASF plugin source: `customMessage: string.Empty` и `waitIfNeeded: false` уже присутствуют. Скриншот Steam всё ещё показывает старую строку `GameDelivery order ...`, что означает, что фактически загруженная пользователем DLL не соответствует текущему исходнику либо ASF не был перезапущен/обновлён после установки новой DLL. Это не повод менять source обратно.
+- Так как ASF log не содержит фазовых событий после начала pipeline, добавлена безопасная фазовая диагностика в `integrations/asf_plugin/TradeDelivery.cs`: начало/окончание inventory fetch, начало/окончание Steam offer dispatch, начало/окончание mobile confirmation, а также exception type/message при ошибке. Логи не включают Trade URL, token, credentials или command payload. Существующие safe order ID и asset count остаются.
+- Добавлен contract test в `tests/test_asf_plugin_contract.py`, проверяющий наличие фазовых маркеров, пустой customMessage и non-waiting mobile confirmation.
+- Изменены только `integrations/asf_plugin/TradeDelivery.cs` и `tests/test_asf_plugin_contract.py`; commits: `fc20e3fca8a694bdd452581a6ffa79992d015ca7`, `d4d63931cd7c75d68f6fca48e370c0b7d9824a6c`. Production send semantics, SQLite, app UI, ASF resolver/port 1243, CS2 и OpenSkin не менялись.
+- Следующий шаг: проверить CI на последнем commit; после успеха подготовить plugin artifact с новым build info. Пользователь устанавливает только подтверждённый артефакт и перезапускает ASF; затем один безопасный runtime test (не повторять `GD-9D2DF4875BD2`). Фазовые логи покажут точный этап задержки. Пока причина timeout внутри ASF/Steam не доказана, не увеличивать timeout, не снимать unknown-result lock и не делать повторную отправку.
+- Codex handoff: branch `work/local-sync`; source/test commits выше; исходный заказ `GD-9D2DF4875BD2` уже создал offer и не должен отправляться повторно; plugin CI ожидается; пользователь пока ничего не скачивает/не устанавливает.
+
