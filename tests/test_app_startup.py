@@ -33,6 +33,13 @@ class AppStartupSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        # MainWindow creates the inventory tab during startup. Keep this UI
+        # smoke suite isolated from persisted developer ASF paths/config.
+        cls.asf_test_endpoint_patch = patch.dict(
+            os.environ, {"GAMEDELIVERY_TEST_ASF_IPC_URL": "http://127.0.0.1:1243"},
+            clear=False,
+        )
+        cls.asf_test_endpoint_patch.start()
         cls.credential_backend = _MemoryCredentialBackend()
         cls.credential_store_patch = patch(
             "app.main.SteamTradeCredentialStore",
@@ -43,6 +50,7 @@ class AppStartupSmokeTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.credential_store_patch.stop()
+        cls.asf_test_endpoint_patch.stop()
 
     def setUp(self):
         self.credential_backend.values.clear()
