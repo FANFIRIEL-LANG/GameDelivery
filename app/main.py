@@ -22,17 +22,24 @@ from app.platforms_panel import MarketplacePanel
 from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
 from integrations.openskin.client import configure_openskin_diagnostics
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
+from app.diagnostics import configure_logging, get_logger, log_exception
+
+
+logger = get_logger("ui")
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        logger.info("MainWindow initialization started")
         self.setWindowTitle("GameDelivery — локальная панель")
         try:
             self._trade_credentials = SteamTradeCredentialStore()
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
+            logger.info("Local delivery storage initialized")
         except (OSError, sqlite3.Error, ValueError) as exc:
+            log_exception(logger, "local storage initialization", exc)
             message = (
                 "GameDelivery не может безопасно открыть локальные заказы или системное хранилище "
                 "секретов. Исходные данные не сбрасывались. Проверь доступ к базе и хранилищу "
@@ -48,6 +55,7 @@ class MainWindow(QMainWindow):
             self.resize(720, 260)
             self.setMinimumSize(560, 220)
             return
+        logger.info("MainWindow initialized successfully")
         self.resize(1120, 720)
         self.setMinimumSize(900, 600)
         root = QWidget()
@@ -1323,8 +1331,13 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    log_directory = configure_logging()
+    logger.info("GameDelivery starting; log_directory=%s", log_directory)
     app = QApplication(sys.argv)
     configure_openskin_diagnostics()
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    logger.info("Main window shown")
+    exit_code = app.exec()
+    logger.info("GameDelivery stopped; exit_code=%s", exit_code)
+    sys.exit(exit_code)
