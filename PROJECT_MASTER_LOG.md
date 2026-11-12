@@ -4215,3 +4215,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Ссылка на проверенный архив: `sandbox:/mnt/data/GameDelivery-Windows-x64.zip` (артефакт текущей сессии).
 - Следующий пользовательский шаг: скачать и распаковать `GameDelivery-Windows-x64.zip`, запустить `GameDelivery.exe`; старую установку и пользовательскую базу не удалять. При первом запуске сообщить, открылось ли приложение и есть ли ошибка. ASF-плагин/runtime — отдельный компонент и не является самим приложением.
 - CI package smoke test не подтверждает live-сценарии Steam/ASF delivery. Никакие реальные Steam offers в рамках сборки не создавались.
+
+
+### 2026-11-12 — пользователь запустил ASF вместо GameDelivery; выявлена версия требуемого .NET Runtime
+
+- Пользователь прислал ошибку запуска `ArchiSteamFarm.exe` из каталога `GameDelivery-ASF-Generic-READY`. Это архив custom ASF runtime, а не Windows desktop-приложение GameDelivery.
+- Сообщение .NET host однозначно указывает требуемый framework `Microsoft.NETCore.App 10.0.15 x64`; на ПК пользователя установлены .NET runtimes 6.0.36, 8.0.26, 10.0.5 и 10.0.14, но отсутствует 10.0.15. Поэтому запуск ASF блокируется отсутствующим patch runtime.
+- Это не ошибка GameDelivery desktop executable и не свидетельство неисправности ASF-плагина. Для запуска именно приложения следует распаковать архив `GameDelivery-Windows-x64.zip` и запускать `GameDelivery.exe`, а не `ArchiSteamFarm.exe`.
+- Если пользователь отдельно хочет запускать custom ASF Generic, требуется установить .NET Runtime 10.0.15 x64 (framework `Microsoft.NETCore.App`); не требуется переустанавливать ASF или менять рабочую папку. После установки повторить запуск `ArchiSteamFarm.exe`.
+- Текущая проверенная Windows-сборка приложения GameDelivery остаётся artifact `GameDelivery-Windows-x64`, run `43267700510`; пользовательский запуск desktop-приложения ещё не подтверждён.
