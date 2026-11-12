@@ -4104,3 +4104,18 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Архитектурный принцип: бизнес-логика GameDelivery не должна зависеть от конкретного способа запуска ASF; интеграция оформляется через управляемый runtime/lifecycle и существующий ASF IPC adapter. UI должен оставаться отделённым от runtime и delivery logic.
 - **Это зафиксировано как будущее архитектурное требование, не как выполненная функция.** На текущем этапе не начинать упаковку ASF, installer/bootstrapper или изменение lifecycle: сначала завершить текущую безопасную проверку ASF диагностики и устранить подтверждённые проблемы отправки. Не менять сейчас Steam send logic, SQLite schema, CS2 delivery, OpenSkin и endpoint policy ради будущей упаковки.
 - Следующий разрешённый шаг текущего этапа не меняется: получить результат диагностики gamedelivery-diagnose из GameDelivery, подключённого к http://127.0.0.1:1243, и сопоставить его с новыми фазовыми логами ASF. Реальные отправки для диагностики не выполнять; заказы GD-4AFAF6ED060 и GD-9D2DF4875BD2 повторно не отправлять.
+
+### 2026-11-12 — проверен исходник ASF 6.3.11.7 для разбора trade-send timeout
+
+- Изучен официальный ASF source именно tag `6.3.11.7`, файл `ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs`.
+- Подтверждено поведение `SendTradeOffer()`:
+  - метод всегда формирует стандартное сообщение `Sent by {SharedInfo.PublicIdentifier}/{SharedInfo.Version}`;
+  - `customMessage: string.Empty` убирает только дополнительный текст в скобках, но не стандартную подпись ASF. Поэтому сам факт наличия строки `Sent by ArchiSteamFarm-modded/6.3.11.7` в Steam не означает, что старая DLL добавила текст заказа;
+  - отправка POST `/tradeoffer/new/send` выполняется через `UrlPostToJsonObjectWithSession`;
+  - у цикла `SendTradeOffer` до `WebBrowser.MaxTries` попыток при серверной ошибке без ErrorText; `WebBrowser.MaxTries = 5`;
+  - `UrlPostToJsonObjectWithSession` по умолчанию также использует `maxTries = WebBrowser.MaxTries`, предварительно проверяет состояние Steam session, может ждать и выполнять refresh session, а затем вызывает `WebBrowser.UrlPostToJsonObject`;
+  - HTTP timeout ASF берётся из `ASF.GlobalConfig.ConnectionTimeout` (либо `GlobalConfig.DefaultConnectionTimeout`), а не из timeout клиента GameDelivery.
+- Это подтверждает, что один вызов ASF `SendTradeOffer` может включать дополнительные проверки/обновление сессии и несколько сетевых попыток. Такой путь способен задержать ответ дольше 120 секунд при проблемах Steam-соединения, но это **пока гипотеза о механизме задержки, а не доказанная точная причина** конкретного live timeout.
+- Важное ограничение доказательств: прежний live лог для `GD-9D2DF4875BD2` был получен до внедрения фазовых маркеров; он доказывает, что offer был создан несмотря на 120-секундный timeout, но не показывает, на каком внутреннем шаге ASF остановился. Диагностика `gamedelivery-diagnose` — read-only и не вызывает `SendTradeOffer`; повторять её не требуется.
+- Текущий исходник GameDelivery plugin перед вызовом ASF пишет `steam_offer_dispatch_started`, после возврата — `steam_offer_dispatch_completed`, а исключение — `send_pipeline_failed`. Следующий live send на новом отдельном безопасном тестовом заказе позволит сопоставить эти маркеры с фактом появления offer. Не использовать и не повторять `GD-4AFAF6ED060` и `GD-9D2DF4875BD2`.
+- На этом шаге код не менялся: не менять timeout, не сокращать ASF retry policy, не обходить session refresh, не снимать unknown-result lock и не повторять отправку автоматически. Сначала получить фазовые runtime доказательства на новом заказе; до отдельного согласования пользователя никаких новых реальных Trade Offer не создавать.
