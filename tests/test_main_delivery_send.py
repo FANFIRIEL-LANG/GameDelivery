@@ -62,7 +62,10 @@ class DeliverySendFlowTests(unittest.TestCase):
         status_bar = MagicMock()
         return SimpleNamespace(
             _database_path=path,
-            asf_management=SimpleNamespace(ipc_password=SimpleNamespace(text=lambda: "")),
+            asf_management=SimpleNamespace(
+                ipc_password=SimpleNamespace(text=lambda: ""),
+                _client=MagicMock(),
+            ),
             _selected_order_id=lambda: self.ORDER_ID,
             _validate_trade_url=lambda value: value,
             _trade_credentials=SimpleNamespace(
@@ -94,7 +97,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
             client.preview_trade_offer.return_value = self._preview(
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
@@ -144,7 +147,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
             client.preview_trade_offer.return_value = self._preview(
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
@@ -175,7 +178,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
             client.preview_trade_offer.return_value = self._preview(
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
@@ -215,7 +218,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
             client.preview_trade_offer.return_value = self._preview(
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
@@ -248,7 +251,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
             client.preview_trade_offer.return_value = self._preview(
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
@@ -276,7 +279,7 @@ class DeliverySendFlowTests(unittest.TestCase):
                     (self.ORDER_ID,),
                 )
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
 
             with patch("app.main.ASFClient", return_value=client):
                 with patch("app.main.QMessageBox.warning") as warning:
@@ -297,7 +300,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
             client.preview_trade_offer.return_value = self._preview(
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
@@ -333,7 +336,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
             window = self._fake_window(db_path)
-            client = MagicMock()
+            client = window.asf_management._client.return_value
             client.preview_trade_offer.return_value = self._preview(
                 self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID]
             )
