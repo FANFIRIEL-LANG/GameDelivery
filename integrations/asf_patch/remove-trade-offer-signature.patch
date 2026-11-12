@@ -1,0 +1,6 @@
+diff --git a/ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs b/ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs
+--- a/ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs
++++ b/ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs
+@@ -690 +690 @@
+-		string tradeOfferMessage = $"Sent by {SharedInfo.PublicIdentifier}/{SharedInfo.Version}";
++		string tradeOfferMessage = string.Empty;
