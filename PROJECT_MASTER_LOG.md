@@ -4083,3 +4083,16 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Следующий шаг: проверить CI на последнем commit; после успеха подготовить plugin artifact с новым build info. Пользователь устанавливает только подтверждённый артефакт и перезапускает ASF; затем один безопасный runtime test (не повторять `GD-9D2DF4875BD2`). Фазовые логи покажут точный этап задержки. Пока причина timeout внутри ASF/Steam не доказана, не увеличивать timeout, не снимать unknown-result lock и не делать повторную отправку.
 - Codex handoff: branch `work/local-sync`; source/test commits выше; исходный заказ `GD-9D2DF4875BD2` уже создал offer и не должен отправляться повторно; plugin CI ожидается; пользователь пока ничего не скачивает/не устанавливает.
 
+### 2026-11-12 — CI успешно проверил фазовую диагностику ASF trade send
+
+- На branch `work/local-sync` подтверждён финальный SHA `5ee97a4affb24cd5541948601cdc447fb7e57177`; branch HEAD совпадает с этим commit.
+- GitHub Actions на этом SHA:
+  - Tests #1623, run `43164465322`: **SUCCESS**.
+  - Windows Build #833, run `43164465303`: **SUCCESS**.
+- ASF plugin workflow #637, run `43164438105`, на source/test commit `d4d63931cd7c75d68f6fca48e370c0b7d9824a6c`: **SUCCESS**. Jobs `build-plugin`, `windows-storage-acl-smoke` и `generic-runtime-smoke` прошли; `win-x64-trimmed-runtime-smoke` skipped по условию workflow (не является проверкой trimmed host).
+- Опубликован plugin artifact `GameDelivery-ASFPlugin`, artifact ID `13919058406`, размер 57,737 bytes, доступен до 2026-12-12 05:54 UTC. Он содержит сборку с фазовыми логами. Ссылка на workflow: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43164438105
+- Проверены jobs: Windows build и tests завершились success; ASF Generic runtime smoke подтвердил загрузку plugin, регистрацию команды и JIT state machine без Bot/Steam credentials/реального offer.
+- Это подтверждает CI-сборку и runtime load, но не доказывает, что live timeout устранён: для этого нужны новые фазовые события из реального ASF runtime.
+- Следующий шаг: получить plugin artifact #637 и установить только его в ASF Generic 6.3.11.7, предварительно остановив ASF и заменив старую DLL; затем запустить ASF и убедиться по startup log, что загружена новая версия. Проверить фактическое исчезновение `GameDelivery order ...` из custom message можно только на новом безопасном тестовом заказе; заказ `GD-9D2DF4875BD2` повторно не отправлять. Если timeout повторится на новом тестовом заказе, фазовые логи укажут последний завершённый этап; никаких повторных попыток неизвестного заказа.
+- Codex handoff: branch `work/local-sync`; HEAD `5ee97a4affb24cd5541948601cdc447fb7e57177`; changed plugin source/test contract; Tests #1623 SUCCESS; Windows #833 SUCCESS; ASF plugin #637 SUCCESS; artifact `13919058406`. No DB/schema/CS2/OpenSkin/port policy changes.
+
