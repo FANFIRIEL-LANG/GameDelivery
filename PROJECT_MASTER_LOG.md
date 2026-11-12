@@ -51,7 +51,7 @@
 
 ### 2.1 Статус ветки и PR
 
-- Рабочая ветка: `feature/asf-bulk-account-import`.
+- Рабочая ветка на момент первоначального описания: `feature/asf-bulk-account-import` (историческая запись). Актуальная рабочая ветка, повторно подтверждённая 2026-11-12: `work/local-sync`.
 - Подтверждённый HEAD при создании журнала: `006dfce3e97da7611722234b8dfbcbd4c9698f1d` (историческая контрольная точка).
 - В этой сессии повторно подтверждён коммит плана этапа C: `1e7187e33c3ff3cab6d65185dc5b3597be0f3418`; коммит содержит только новый документ плана, код приложения не менялся.
 - PR #4: открыт, draft, не слит. Ветка назначения PR — `feature/steam-card-set-selection`, а не `main`. Не менять PR и не сливать без разрешения.
@@ -3947,3 +3947,23 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - `tests/test_proxy_settings_ui.py` (commit `f68dce07a1be926d26d7b2ecf2e10fcb2ef3737f`) теперь явно стабилизирует `resolve_asf_ipc_base_url` в тесте batch apply, где `ASFClient` уже замокан. Проверяется именно batch proxy flow, а не глобальная пользовательская QSettings конфигурация.
 - Изменены только тестовые файлы; `integrations/asf/client.py`, `app/main.py`, `app/inventory_panel.py`, ASF plugin, DB schema, CS2 и OpenSkin не менялись. Live Steam send не запускался.
 - Следующий шаг: дождаться Tests и Windows workflow на актуальном branch HEAD; при новых failures разбирать только конкретный stack trace. Codex handoff: test commits `ea663908`, `9f629445`, `9c187b2`, `f68dce0`; рабочая ветка `work/local-sync`; сохранять fail-closed resolver и IPC 1243.
+
+
+
+### 2026-11-12 — аудит GitHub Actions и актуализация контрольной точки
+
+- Перед аудитом подтверждены репозиторий `FANFIRIEL-LANG/GameDelivery`, рабочая ветка `work/local-sync` и её HEAD `95f1d94ffb540d1e0bf4e6f566cfa285ce8f41d5` (commit `docs: record ASF test fixture repairs`, parent `f68dce07a1be926d26d7b2ecf2e10fcb2ef3737f`). Текущий blob этого Master Log до записи: `cc1875337e1f09b9d4a723976ca55495e7d105d0`.
+- Исправлена устаревшая строка в §2.1: `feature/asf-bulk-account-import` помечена как историческая ветка на момент первоначального описания; текущая рабочая ветка явно указана как `work/local-sync`. PR #4 оставлен без изменений: он по-прежнему открыт Draft, head `feature/asf-bulk-account-import` (`2ecb66628e76f5057466bd280fd942366f874837`), base `feature/steam-card-set-selection`. PR #4 не является текущей рабочей веткой; не менять его base и не сливать без прямого разрешения пользователя.
+- **Tests #1588**, run `43152688603`, на точном актуальном HEAD `95f1d94...`: **FAILURE**. Полный набор: `Ran 531 tests`, `FAILED (failures=12, errors=3)`. Compile, установка зависимостей, credential storage/migration и complete Steam trade UI flow прошли; failure — в unit tests.
+- Изолированная диагностика конкретизировала красные модули:
+  - `test_app_startup.py`: 13 tests, 10 errors;
+  - `test_asf_management.py`: 41 tests, 9 failures и 3 errors;
+  - `test_cs2_inventory_panel.py`: 32 tests, 2 failures;
+  - `test_proxy_settings_ui.py`: 8 tests, 1 failure.
+  Остальные изолированные модули в этом job завершились успешно. Полный suite и изолированные прогоны — один Actions run, не запускать их повторно без исправления.
+- Подтверждённый общий источник части ошибок: после fail-closed изменения `resolve_asf_ipc_base_url()` тестовые виджеты/фикстуры передают сохранённый выбранный путь ASF без `IPC.config`; resolver закономерно возвращает `ASFError`, поэтому вызовы client factory/IPC не происходят. В частности, это явно видно в `test_asf_management.py`; в CS2 tests `get_bot_inventory`/factory не вызываются. Сами production fail-closed правила и запрет скрытого fallback на 1242 не ослаблять. Для каждого оставшегося теста проверить fixture и его реальную цель; не считать все сбои одним дефектом без адресного подтверждения.
+- Windows build #803, run `43152665925`, на родительском code/test SHA `f68dce0...`: **SUCCESS**. Это подтверждает сборку на parent commit, но не является зелёным Tests gate на HEAD `95f1d94...`. Tests #1587 на `f68dce0...` был cancelled следующим push; не считать его проверкой.
+- Windows builds #801/#802/#803 на предыдущих test commits завершились success. ASF plugin build #624, run `43152532903`, на `ea663908...`: **SUCCESS**; plugin build #623 на `bd0db55...` также success. После этих commits plugin source не менялся, поэтому новый plugin run на `95f1d94...` не запускался и не требуется только из-за docs/test-fixture commits.
+- Никаких live Steam offers не создавалось. CI не даёт разрешения на повторную отправку заказа `GD-4AFAF6ED060`; сначала требуется сверка его фактического исходящего Steam offer. Не просить пользователя скачивать/устанавливать сборку: текущий Tests gate красный, live-проверка пока заблокирована.
+- **Следующий разрешённый шаг:** продолжить только тестовую изоляцию endpoint в `tests/test_app_startup.py`, `tests/test_asf_management.py`, `tests/test_cs2_inventory_panel.py` и `tests/test_proxy_settings_ui.py`. Сначала проверить setup/fixtures и причину каждого сбоя, сохранить production resolver и IPC 1243. Минимально исправить только подтверждённые тестовые фикстуры; затем выполнить целевые модули один раз. После их зелёного результата — один согласованный Tests + Windows CI на одном и том же code SHA. Не трогать CS2 delivery implementation, OpenSkin, DB schema, Steam send logic и plugin без отдельной доказанной причины.
+- Codex handoff: branch `work/local-sync`; HEAD `95f1d94ffb540d1e0bf4e6f566cfa285ce8f41d5`; Tests #1588 `43152688603` FAILURE (531 tests; 12 failures, 3 errors); Windows #803 `43152665925` SUCCESS на parent `f68dce0...`; ASF plugin #624 `43152532903` SUCCESS на `ea663908...`. Current blocker — тестовые фикстуры не изолируют выбранный ASF endpoint после fail-closed resolver. No live Steam send; no user download; no branch/PR/main changes.
