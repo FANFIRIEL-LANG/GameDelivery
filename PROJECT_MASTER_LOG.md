@@ -4255,3 +4255,11 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - New artifact: `GameDelivery-Windows-x64`, artifact ID `13970201631`, 55,047,801 bytes; SHA-256 `e557be4d4b6501f4d99ab65cc4048cce4792a1355b1fc32d0ebfa8b645c4da56`; expires 2026-12-12.
 - Downloaded package locally and verified ZIP integrity (`testzip=None`), 269 entries, and BUILD_INFO commit matches the fixed source commit.
 - This is a new GameDelivery desktop package, not the separate ASF Generic runtime ZIP. CI confirms packaging/smoke test only; live ASF relaunch and Steam delivery remain unverified.
+
+### 2026-11-12 — ASF IPC browser route: /bots returns expected 404
+
+- Пользователь открыл в браузере `http://localhost:1243/bots` и получил HTTP 404, при этом журнал GameDelivery показывал успешный запуск ASF.
+- Проверен исходный код ветки `work/local-sync` на HEAD `925f25e05ab05766d9df7b854eebedd2eabf2664`: `integrations/asf/client.py` формирует запросы к официальным ASF IPC API-маршрутам `/Api/ASF`, `/Api/Bot/{botName}` и `/Api/Bot/{botName}/Inventory/{appId}/{contextId}`. Маршрут `/bots` приложением не используется и в клиенте ASF API не определён.
+- Вывод: HTTP 404 для `/bots` означает отсутствие такого маршрута, а не отказ TCP/IPC-подключения. Порт `1243` остаётся тем endpoint, который был подтверждён в предыдущем runtime-журнале; по одному этому скриншоту нельзя заключить, что ASF или GameDelivery неисправны.
+- Для проверки API используется `/Api/ASF`, но если в ASF задан `IPCPassword`, обычная адресная строка браузера не добавит требуемый HTTP-заголовок `Authentication`; проверять подключение следует из GameDelivery через его IPC-клиент либо отдельным запросом с этим заголовком. Не публиковать IPCPassword.
+- Код, конфигурация ASF, порт IPC, боты, SQLite и торговые операции не изменялись. Следующий шаг — если в самом GameDelivery кнопка «Обновить список ботов» не работает, диагностировать именно её результат и журнал IPC, не использовать `/bots` как проверочный URL.
