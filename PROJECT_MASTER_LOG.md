@@ -3897,3 +3897,13 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Plugin build job на SHA `85043d9...` прошёл полностью; Windows ACL и Generic runtime smoke jobs ещё выполнялись. Tests run на промежуточном SHA был отменён следующим push до полного suite; не считать результатом.
 - Разрешённое следующее изменение: только `tests/test_asf_client.py` — переписать три теста, проверяющие malformed/unknown response после dispatch, чтобы ожидать `success=False`, `resultUnknown=True` и сохранённую инструкцию не повторять отправку. Production code не менять без новой причины.
 - Codex handoff: branch `work/local-sync`; последний docs HEAD `8b397dedb9fa8839985f1b3960c2c4b052016567`; client code SHA `1cade19ef390f7d696df96044d194f2ce8343697`; tests SHA `85043d9284a9fdb4b6d785b212b361ec2a5f7919`. После правки запустить/дождаться focused Tests workflow на новом SHA и Windows build; не повторять live Steam send.
+
+
+### 2026-11-12 — обновлены ASF client tests под fail-closed unknown-result contract
+
+- После CI-анализа изменён только `tests/test_asf_client.py` (commit `bd0db55a67337d08ab3aa143b06ea996c5f9bc52`): три теста malformed/unknown response теперь проверяют структурированный результат `success=False`, `resultUnknown=True` и запрет повтора вместо ожидания исключения. Это соответствует новому контракту post-dispatch.
+- Изменения client code остаются в commit `1cade19ef390f7d696df96044d194f2ce8343697`; исходники приложения/плагина не расширялись.
+- На последнем запросе GitHub Actions для нового SHA `bd0db55a...`: Tests run `43151720178` pending, ASF plugin run `43151720181` queued, Windows build run `43151720183` in_progress. Tests run `43151692644` на docs SHA `f10085e...` выполнялся отдельно и не включает последний test commit.
+- Предыдущий Windows build на client SHA `1cade19...` выявил четыре несовместимых test assertions; это исправлено в актуальном test commit. Не считать промежуточный Windows run зелёным.
+- Следующий шаг: изучить только runs на актуальном code SHA `bd0db55a...` (и дождаться Tests/Windows/plugin результатов). Если новый focused test снова падает, использовать job log и править только подтверждённую причину. После успешного CI обязательно проверить точную судьбу исходного заказа `GD-4AFAF6ED060` по Steam исходящим предложениям; никакой повторной отправки до этого.
+- Codex handoff: branch `work/local-sync`, latest code SHA `bd0db55a67337d08ab3aa143b06ea996c5f9bc52`; current code changes: `integrations/asf/client.py`; tests: `tests/test_asf_client.py`. CI runs: Tests `43151720178`, ASF plugin `43151720181`, Windows build `43151720183`. Do not send another Steam offer or change CS2/OpenSkin.
