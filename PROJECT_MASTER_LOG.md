@@ -3823,3 +3823,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 **Следующий шаг:** минимально скорректировать только `tests/test_main_delivery_send.py` fixture/mock для актуального способа получения ASFClient; затем запустить только `python -m unittest discover -s tests -p test_main_delivery_send.py -v`. Если он пройдёт, зафиксировать результат и только потом согласовать полный CI Tests + Windows build на одном SHA. Не трогать другие тесты и production send code без новой причины.
 
 **Codex handoff:** branch `work/local-sync`; последний известный HEAD на момент анализа `e2c90433baff150f28841fb605426f3a171655ad`. Разрешённый будущий файл для минимального исправления — только `tests/test_main_delivery_send.py`. Не менять `app/main.py`, ASF plugin, trade logic, parser/store, DB schema, CS2 или OpenSkin. Не запускать полный suite до успешного точечного теста. Master Log обновлять до дальнейших действий и после изменений перечитывать для подтверждения SHA.
+
+
+### 2026-11-12 — повторная проверка CI после записи диагностики
+
+- Branch HEAD: `2d83a2f13e190498706d4d1407c3c28e7ebd9040`; Project Master Log blob: `e9960f36dafb5f93c08d019daff36d4e517a0e90`.
+- Новый run Tests #1568, ID `43148498632`, запущен на том же HEAD `2d83a2f13e190498706d4d1407c3c28e7ebd9040`; job `130951980277` завершился failure. Setup, dependencies, compile, targeted trade credential tests и trade UI flow — success; full suite: 529 tests, 7 errors; isolation снова подтвердил 7 ошибок в `test_main_delivery_send.py` с тем же `SimpleNamespace._client` AttributeError. Следовательно, запись только документации не исправила тестовый fixture (ожидаемо); код и тесты не менялись.
+- Run: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43148498632
+- Никакие отмены, rerun или изменения исходников не выполнялись.
+- Следующее действие остаётся прежним: минимальная правка только `tests/test_main_delivery_send.py`, затем один целевой запуск этого модуля. Не повторять полный CI до исправления.
