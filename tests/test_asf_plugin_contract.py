@@ -519,5 +519,22 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("resolvedSenderBot=", trade)
 
 
+    def test_send_pipeline_logs_each_external_phase_without_trade_secrets(self):
+        source = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
+        for phase in (
+            "inventory_fetch_started",
+            "inventory_fetch_completed",
+            "steam_offer_dispatch_started",
+            "steam_offer_dispatch_completed",
+            "mobile_confirmation_started",
+            "mobile_confirmation_completed",
+            "send_pipeline_failed",
+        ):
+            self.assertIn("phase=" + phase, source)
+        self.assertIn("customMessage: string.Empty", source)
+        self.assertIn("waitIfNeeded: false", source)
+
+
+
 if __name__ == "__main__":
     unittest.main()
