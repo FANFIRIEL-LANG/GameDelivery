@@ -77,7 +77,111 @@ jobs:
           git -C asf-source diff --check
           if ($LASTEXITCODE -ne 0) { throw "Patched ASF source has whitespace errors." }
           $change = git -C asf-source diff --numstat -- ArchiSteamFarm/Steam/Integration/ArchiWebHandler.cs
-          if ($LASTEXITCODE -ne 0 -or $change -notmatch '^1\s+1\s+ArchiSteamFarm/Steam/Integration/ArchiWebHandler\.cs
+          if ($LASTEXITCODE -ne 0 -or $change -notmatch '^1\s+1\s+ArchiSteamFarm/Steam/Integration/ArchiWebHandler\.cs      - name: Publish patched ASF Generic
+        shell: pwsh
+        run: |
+          dotnet publish asf-source/ArchiSteamFarm/ArchiSteamFarm.csproj --configuration Release --output "$PWD/dist/ASF-generic" -p:PublishTrimmed=false -p:SelfContained=false
+          if (!(Test-Path "dist/ASF-generic/ArchiSteamFarm.dll")) {
+            throw "Patched ASF Generic publish did not produce ArchiSteamFarm.dll."
+          }
+
+      - name: Build GameDelivery plugin against the patched ASF host
+        shell: pwsh
+        run: |
+          $asfBin = (Resolve-Path "dist/ASF-generic").Path
+          dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR="$asfBin"
+          $plugin = "integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll"
+          if (!(Test-Path $plugin)) {
+            throw "GameDelivery ASF plugin build output is missing."
+          }
+          $pluginDir = "dist/ASF-generic/plugins/GameDelivery.ASFPlugin"
+          New-Item -ItemType Directory -Path $pluginDir -Force | Out-Null
+          Copy-Item $plugin (Join-Path $pluginDir "GameDelivery.ASFPlugin.dll") -Force
+
+      - name: Smoke test plugin against patched ASF host assemblies
+        shell: pwsh
+        run: |
+          $asfBin = (Resolve-Path "dist/ASF-generic").Path
+          $plugin = (Resolve-Path "dist/ASF-generic/plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll").Path
+          dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj --configuration Release -p:ASF_BIN_DIR="$asfBin" -p:PLUGIN_DLL="$plugin"
+
+      - name: Record build provenance and package
+        shell: pwsh
+        run: |
+          @(
+            "GameDelivery custom ASF Generic"
+            "Upstream: JustArchiNET/ArchiSteamFarm tag 6.3.11.7"
+            "Patch: integrations/asf_patch/remove-trade-offer-signature.patch"
+            "Change: Steam trade-offer message is an empty string; standard ASF signature and custom suffix are both omitted."
+            "GameDelivery commit: $env:GITHUB_SHA"
+            "No Steam credentials, bots, IPC commands, or real trade offers were used during this build."
+          ) | Set-Content -LiteralPath "dist/ASF-generic/BUILD_INFO.txt" -Encoding utf8
+          Compress-Archive -Path "dist/ASF-generic/*" -DestinationPath "dist/GameDelivery-ASF-Generic.zip" -Force
+
+      - name: Upload custom ASF Generic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameDelivery-ASF-Generic
+          path: dist/GameDelivery-ASF-Generic.zip
+          if-no-files-found: error
+          retention-days: 30
+) {
+            throw "Expected exactly one insertion and one deletion in ArchiWebHandler.cs; got: $change"
+          }
+          Write-Host "Verified: exactly one ASF signature assignment changed; all other source bytes remain unchanged."
+
+      - name: Publish patched ASF Generic
+        shell: pwsh
+        run: |
+          dotnet publish asf-source/ArchiSteamFarm/ArchiSteamFarm.csproj --configuration Release --output "$PWD/dist/ASF-generic" -p:PublishTrimmed=false -p:SelfContained=false
+          if (!(Test-Path "dist/ASF-generic/ArchiSteamFarm.dll")) {
+            throw "Patched ASF Generic publish did not produce ArchiSteamFarm.dll."
+          }
+
+      - name: Build GameDelivery plugin against the patched ASF host
+        shell: pwsh
+        run: |
+          $asfBin = (Resolve-Path "dist/ASF-generic").Path
+          dotnet build integrations/asf_plugin/GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR="$asfBin"
+          $plugin = "integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll"
+          if (!(Test-Path $plugin)) {
+            throw "GameDelivery ASF plugin build output is missing."
+          }
+          $pluginDir = "dist/ASF-generic/plugins/GameDelivery.ASFPlugin"
+          New-Item -ItemType Directory -Path $pluginDir -Force | Out-Null
+          Copy-Item $plugin (Join-Path $pluginDir "GameDelivery.ASFPlugin.dll") -Force
+
+      - name: Smoke test plugin against patched ASF host assemblies
+        shell: pwsh
+        run: |
+          $asfBin = (Resolve-Path "dist/ASF-generic").Path
+          $plugin = (Resolve-Path "dist/ASF-generic/plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll").Path
+          dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj --configuration Release -p:ASF_BIN_DIR="$asfBin" -p:PLUGIN_DLL="$plugin"
+
+      - name: Record build provenance and package
+        shell: pwsh
+        run: |
+          @(
+            "GameDelivery custom ASF Generic"
+            "Upstream: JustArchiNET/ArchiSteamFarm tag 6.3.11.7"
+            "Patch: integrations/asf_patch/remove-trade-offer-signature.patch"
+            "Change: Steam trade-offer message is an empty string; standard ASF signature and custom suffix are both omitted."
+            "GameDelivery commit: $env:GITHUB_SHA"
+            "No Steam credentials, bots, IPC commands, or real trade offers were used during this build."
+          ) | Set-Content -LiteralPath "dist/ASF-generic/BUILD_INFO.txt" -Encoding utf8
+          Compress-Archive -Path "dist/ASF-generic/*" -DestinationPath "dist/GameDelivery-ASF-Generic.zip" -Force
+
+      - name: Upload custom ASF Generic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameDelivery-ASF-Generic
+          path: dist/GameDelivery-ASF-Generic.zip
+          if-no-files-found: error
+          retention-days: 30
+) {
+            throw "Expected exactly one insertion and one deletion in ArchiWebHandler.cs; got: $change"
+          }
+          Write-Host "Verified: exactly one ASF signature assignment changed; all other source bytes remain unchanged."
       - name: Publish patched ASF Generic
         shell: pwsh
         run: |
