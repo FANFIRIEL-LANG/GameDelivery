@@ -30,24 +30,25 @@ logger = get_logger("ui")
 
 
 class _AsfCallSignals(QObject):
-    finished = Signal(object, object)
+    finished = Signal(object, object, object)
 
 
 class _AsfCallWorker(QRunnable):
     """Run one blocking ASF IPC call away from the Qt GUI thread."""
 
-    def __init__(self, operation):
+    def __init__(self, operation, callback):
         super().__init__()
         self.operation = operation
+        self.callback = callback
         self.signals = _AsfCallSignals()
 
     def run(self):
         try:
             result = self.operation()
         except Exception as exc:
-            self.signals.finished.emit(None, exc)
+            self.signals.finished.emit(self, None, exc)
         else:
-            self.signals.finished.emit(result, None)
+            self.signals.finished.emit(self, result, None)
 
 
 class MainWindow(QMainWindow):
@@ -784,13 +785,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
 
     def _run_asf_call_async(self, operation, callback):
-        worker = _AsfCallWorker(operation)
-        worker.signals.finished.connect(callback)
+        worker = _AsfCallWorker(operation, callback)
         if not hasattr(self, "_asf_workers"):
             self._asf_workers = set()
         self._asf_workers.add(worker)
-        worker.signals.finished.connect(lambda _result, _error, item=worker: self._asf_workers.discard(item))
+        # A bound MainWindow QObject slot gives Qt an explicit GUI-thread receiver.
+        worker.signals.finished.connect(self._dispatch_asf_call_result)
         QThreadPool.globalInstance().start(worker)
+
+    def _dispatch_asf_call_result(self, worker, result, error):
+        self._asf_workers.discard(worker)
+        worker.callback(result, error)
 
     def _on_async_trade_preview(self, order_id, bot_name, recipient, asset_ids, assets, client, preview, error):
         if error is not None:
