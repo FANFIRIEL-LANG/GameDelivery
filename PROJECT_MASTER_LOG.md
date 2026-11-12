@@ -4183,3 +4183,13 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Это первый запуск, который дошёл до нормального job после восстановления workflow. Пока не подтверждены применение патча, publish ASF, сборка plugin, smoke test и ZIP artifact. Не устанавливать/не заменять рабочий ASF.
 - Реальные Steam credentials, bots, IPC и Trade Offers не использовались. Заказы `GD-4AFAF6ED060` и `GD-9D2DF4875BD2` не повторялись. Production send logic, SQLite, CS2, OpenSkin, IPC port 1243, PR #4 и main не менялись.
 - Следующий шаг: дождаться выполнения job `131339624731`, при ошибке читать полный лог и исправлять первопричину; при успехе проверить artifact metadata и ZIP contents, затем только согласовать отдельный безопасный runtime test.
+
+
+### 2026-11-12 — custom ASF Generic build успешно завершён; artifact скачан и проверен
+
+- GitHub Actions run `43263183198` завершился `success`: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43263183198.
+- Job `build-custom-asf` ID `131339624731`: все шаги success — checkout GameDelivery, checkout официального ASF 6.3.11.7, setup .NET 10, применение и проверка точечного патча, publish ASF Generic, build GameDelivery plugin, smoke test, packaging и upload artifact.
+- GitHub artifact `GameDelivery-ASF-Generic` найден: artifact ID `13966380038`, размер `8,591,937` bytes, SHA-256 `25da2fa8b32c0cc69f41b66f8e1cfd5387d6cd2b319a73bf52918d1f2b97b06d`, expiration `2026-12-12T16:55:05Z`.
+- Artifact скачан в рабочее окружение. GitHub artifact оказался внешним ZIP-контейнером с вложенным `GameDelivery-ASF-Generic.zip`; внешний и внутренний ZIP прошли проверку целостности. Во внутреннем архиве 137 файлов, присутствуют `ArchiSteamFarm.dll`, `plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll` и `BUILD_INFO.txt`. BUILD_INFO подтверждает upstream tag 6.3.11.7, commit исходников GameDelivery `1a6715e4aa5dd56b9ebede0a559a0eb672cd8430` и отсутствие использования credentials/bots/IPC/реальных offers во время сборки.
+- Внутренний архив не установлен и не запускался с рабочими ботами. Успешный smoke test подтверждён CI, но полное отсутствие подписи в реальном Steam offer пока не проверено. Не создавать offer без отдельного явного разрешения пользователя.
+- Следующий шаг: подготовить runtime deployment/test plan с резервной копией текущего ASF Generic, отдельной тестовой конфигурацией и без повторения ранее использованных заказов. Не заменять текущий рабочий runtime без подтверждения пользователя.
