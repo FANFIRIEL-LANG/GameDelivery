@@ -155,6 +155,10 @@ class ProxySettingsUITests(unittest.TestCase):
             patch.object(self.widget, "_ask_ipc_password", return_value=("ipc-password", True)),
             patch("app.proxy_settings.ASFClient", return_value=client),
             patch(
+                "app.proxy_settings.resolve_asf_ipc_base_url",
+                return_value="http://127.0.0.1:1243",
+            ),
+            patch(
                 "app.proxy_settings.QMessageBox.question",
                 side_effect=[
                     QMessageBox.StandardButton.Yes,
