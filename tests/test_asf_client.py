@@ -535,9 +535,15 @@ class ASFClientTests(unittest.TestCase):
 
     def test_send_trade_offer_returns_unknown_when_ipc_response_is_lost_after_dispatch(self):
         with tempfile.TemporaryDirectory() as temp:
-            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+            with (
+                patch.dict(os.environ, {"LOCALAPPDATA": temp}),
+                patch.object(
+                    ASFClient,
+                    "send_command",
+                    side_effect=ASFError("ASF IPC недоступен на локальном компьютере"),
+                ) as send_command,
+            ):
                 client = ASFClient(base_url="http://127.0.0.1:1243", allow_alternate_loopback_port=True)
-                client.send_command = MagicMock(side_effect=ASFError("ASF IPC недоступен на локальном компьютере"))
                 result = client.send_trade_offer(
                     order_id="GD-LOST-RESPONSE",
                     bot_name="card-bot",
@@ -547,7 +553,7 @@ class ASFClientTests(unittest.TestCase):
             self.assertFalse(result["success"])
             self.assertTrue(result["resultUnknown"])
             self.assertIn("не повторяй отправку", result["error"])
-            client.send_command.assert_called_once()
+            send_command.assert_called_once()
             pending = Path(temp) / "GameDelivery" / "pending_trade_requests"
             self.assertEqual(list(pending.glob("*.json")), [])
 
