@@ -17,7 +17,7 @@ class AsfWorkerThreadTests(unittest.TestCase):
             completed.set()
             return "ok"
 
-        worker = _AsfCallWorker(operation)
+        worker = _AsfCallWorker(operation, lambda _result, _error: None)
         QThreadPool.globalInstance().start(worker)
         self.assertTrue(completed.wait(3), "ASF worker did not execute in time")
         self.assertNotEqual(observed["thread_id"], caller_thread)
