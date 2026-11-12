@@ -4203,3 +4203,15 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - До получения сведений о текущем локальном расположении ASF и составе используемых сторонних плагинов ничего не устанавливать, не заменять и не удалять. Пользователю пока не требуется скачивать дополнительные плагины или выполнять проверки.
 - CI smoke test не подтверждает отсутствие подписи в реальном Steam Trade Offer. Live-проверка подписи остаётся отдельным шагом и требует отдельного явного разрешения на создание тестового offer. Реальные заказы `GD-4AFAF6ED060` и `GD-9D2DF4875BD2` не использовать и не повторять.
 - Запреты сохраняются: не менять рабочий ASF runtime, `main`, PR #4, SQLite schema, production send semantics, CS2, OpenSkin и IPC port 1243 без необходимости и отдельного согласования.
+
+
+### 2026-11-12 — получена и проверена Windows-сборка приложения GameDelivery
+
+- Уточнено недопонимание: пользователь запросил именно desktop-приложение GameDelivery для Windows, а не ASF runtime.
+- Проверен GitHub Actions run `43267700510` — workflow `.github/workflows/package-windows.yml`, название `Build GameDelivery Windows executable`, ветка `work/local-sync`, commit `e6d3314cfcd7fbc1f840dedb2580e2e30a975c41`; run завершился `success`.
+- Job `build-windows` ID `131355607527`: успешно завершились компиляция Python, проверка ACL для trade-secret, сборка Windows GUI executable, smoke test packaged executable, добавление build info/package instructions и upload.
+- Artifact `GameDelivery-Windows-x64`, ID `13966807223`, размер `55,047,778` bytes, SHA-256 `0f0b00b16d9a1653238a23523ce118c7ed4d54dc766a458b8c250efeb9730431`, срок хранения до `2026-12-12T17:18:33Z`.
+- Artifact скачан и проверен локально: ZIP целостен (`testzip=None)); внутри присутствуют `GameDelivery.exe`, `BUILD_INFO.txt`, `PACKAGE_README.txt` и упакованные Python/Qt runtime dependencies. Build commit в BUILD_INFO: `e6d3314cfcd7fbc1f840dedb2580e2e30a975c41`; package type `onedir`; Python runtime 3.12. Запуск приложения пользователем ещё не подтверждён.
+- Ссылка на проверенный архив: `sandbox:/mnt/data/GameDelivery-Windows-x64.zip` (артефакт текущей сессии).
+- Следующий пользовательский шаг: скачать и распаковать `GameDelivery-Windows-x64.zip`, запустить `GameDelivery.exe`; старую установку и пользовательскую базу не удалять. При первом запуске сообщить, открылось ли приложение и есть ли ошибка. ASF-плагин/runtime — отдельный компонент и не является самим приложением.
+- CI package smoke test не подтверждает live-сценарии Steam/ASF delivery. Никакие реальные Steam offers в рамках сборки не создавались.
