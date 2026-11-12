@@ -94,10 +94,12 @@ class CS2InventoryPanelTests(unittest.TestCase):
             "AK-47 | Redline", "Classified Rifle", "AK-47 | Redline",
             True, False, icon_url="/economy/image/raw-adapter-icon",
         )
-        with patch("app.game_inventory_panel.ASFClient", return_value=client), \
+        with patch.object(panel, "_create_asf_client", return_value=client) as client_factory, \
                 patch("app.game_inventory_panel.parse_game_inventory", return_value=parsed) as parser, \
                 patch("app.game_inventory_panel.adapt_cs2_inventory_response", return_value=(instance,)) as adapter:
             panel.fetch_inventory()
+
+        client_factory.assert_called_once_with()
 
         client.get_bot_inventory.assert_called_once_with(
             "Bot A", app_id=730, context_id=2, language="english"
@@ -114,13 +116,14 @@ class CS2InventoryPanelTests(unittest.TestCase):
 
     def test_other_games_keep_existing_refresh_path(self):
         panel = self.bare_panel(game="dota2")
-        with patch("app.game_inventory_panel.ASFClient") as client_factory, \
+        client = Mock()
+        with patch.object(panel, "_create_asf_client", return_value=client) as client_factory, \
                 patch("app.game_inventory_panel.refresh_game_inventory") as refresh:
             panel.fetch_inventory()
 
-        client_factory.assert_called_once()
-        refresh.assert_called_once_with(client_factory.return_value, panel.store, "dota2", "Bot A")
-        client_factory.return_value.get_bot_inventory.assert_not_called()
+        client_factory.assert_called_once_with()
+        refresh.assert_called_once_with(client, panel.store, "dota2", "Bot A")
+        client.get_bot_inventory.assert_not_called()
 
     def test_test_mode_refuses_non_cs2_inventory_requests(self):
         panel = self.bare_panel(game="dota2")
