@@ -3832,3 +3832,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Run: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43148498632
 - Никакие отмены, rerun или изменения исходников не выполнялись.
 - Следующее действие остаётся прежним: минимальная правка только `tests/test_main_delivery_send.py`, затем один целевой запуск этого модуля. Не повторять полный CI до исправления.
+
+
+### 2026-11-12 — согласована минимальная правка fixture для Steam delivery tests
+
+- Пользователь согласовал следующий шаг: исправить только `tests/test_main_delivery_send.py`, чтобы тестовый ASF management fixture предоставлял `_client(timeout=...)` и возвращал mock, используемый проверками preview/send.
+- Перед изменением подтверждены branch HEAD `853c93de6ae1e79d157f70f435ff27a75d1fa81a`, Master Log blob `f80e1d10d1882aa2555d95eca80572763c4b350f` и test file blob `79c6b6cc290d80ef6f7ef05aa83c9cf7a8e17cd5`.
+- Разрешённая область изменения — только `tests/test_main_delivery_send.py`. Production `app/main.py`, торговая логика, plugin, parser/store, DB schema, CS2 и OpenSkin остаются без изменений.
+- План: минимально связать fixture с mock ASF client, затем выполнить только целевой модуль из 9 тестов. Полный suite/CI не запускать до результата focused test.
+- Codex handoff: после исправления проверить diff и выполнить `python -m unittest discover -s tests -p test_main_delivery_send.py -v`; записать фактический результат. Если локальное исполнение недоступно, не заявлять тесты пройденными и передать точную команду для выполнения в локальном окружении.
