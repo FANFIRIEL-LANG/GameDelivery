@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from integrations.asf.client import ASFClient, ASFError, resolve_asf_ipc_base_url
 
@@ -51,10 +51,16 @@ class ASFClientTests(unittest.TestCase):
 
     def test_resolve_ipc_endpoint_defaults_to_1242_only_when_config_is_absent(self):
         with tempfile.TemporaryDirectory() as temporary:
-            self.assertEqual(
-                resolve_asf_ipc_base_url(Path(temporary) / "missing"),
-                "http://127.0.0.1:1242",
-            )
+            with self.assertRaisesRegex(ASFError, "IPC.config"):
+                resolve_asf_ipc_base_url(Path(temporary) / "missing")
+            self.assertEqual(resolve_asf_ipc_base_url(), "http://127.0.0.1:1242")
+
+    def test_missing_selected_ipc_config_fails_closed_instead_of_falling_back_to_1242(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            selected_config = Path(temporary) / "selected"
+            selected_config.mkdir()
+            with self.assertRaisesRegex(ASFError, "IPC.config"):
+                resolve_asf_ipc_base_url(selected_config, Path(temporary) / "ASF.dll")
 
     def test_resolve_ipc_endpoint_rejects_non_loopback_or_invalid_config(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -526,6 +532,24 @@ class ASFClientTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.full_url, "http://127.0.0.1:1242/Api/ASF/Restart")
         self.assertEqual(request.get_method(), "POST")
+
+    def test_send_trade_offer_returns_unknown_when_ipc_response_is_lost_after_dispatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                client = ASFClient(base_url="http://127.0.0.1:1243", allow_alternate_loopback_port=True)
+                client.send_command = MagicMock(side_effect=ASFError("ASF IPC недоступен на локальном компьютере"))
+                result = client.send_trade_offer(
+                    order_id="GD-LOST-RESPONSE",
+                    bot_name="card-bot",
+                    trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                    asset_ids=["123"],
+                )
+            self.assertFalse(result["success"])
+            self.assertTrue(result["resultUnknown"])
+            self.assertIn("не повторяй отправку", result["error"])
+            client.send_command.assert_called_once()
+            pending = Path(temp) / "GameDelivery" / "pending_trade_requests"
+            self.assertEqual(list(pending.glob("*.json")), [])
 
     def test_send_trade_offer_keeps_token_out_of_ipc_command_and_deletes_one_use_secret(self):
         with tempfile.TemporaryDirectory() as temp:
