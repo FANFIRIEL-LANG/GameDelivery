@@ -153,7 +153,9 @@ class DeliveryReservationServiceTests(unittest.TestCase):
         }
 
         result = self.service.reserve_order(
-            order_id=order, config_version_id=config_id, snapshots=snapshots, now=NOW
+            order_id=order, config_version_id=config_id, snapshots=snapshots, now=NOW,
+            recipient_badges=[RecipientBadge("Example Game", 0)],
+            badge_data_verified=True,
         )
 
         self.assertTrue(result.reserved)
