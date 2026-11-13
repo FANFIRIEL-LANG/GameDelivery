@@ -93,6 +93,7 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             context_id=str(context),
             refreshed_at=NOW,
             items=tuple(items),
+            asf_verified=True,
         )
 
     def test_cs2_order_is_split_into_legs_for_two_bots(self):
@@ -316,6 +317,7 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             bot_name="Bot-A", game_id="cs2", app_id=730, context_id="2",
             refreshed_at=datetime(2026, 11, 13, 10, 0, tzinfo=timezone.utc),
             items=(self.cs2_item("Bot-A", "old-asset"),),
+            asf_verified=True,
         )
         result = self.service.reserve_order(
             order_id=order, config_version_id=config_id,
