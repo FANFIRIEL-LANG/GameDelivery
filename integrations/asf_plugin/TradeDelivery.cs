@@ -288,6 +288,8 @@ internal static class TradeDelivery
             HashSet<string> expectedAssets = new(record.AssetIds, StringComparer.Ordinal);
             TradeOffer[] matches = sentOffers.Where(offer =>
                 offer.OtherSteamID64 == record.TargetSteamId64
+                && offer.ItemsToGiveReadOnly.All(asset =>
+                    asset.AppID == record.AppId && asset.ContextID == record.ContextId)
                 && offer.ItemsToGiveReadOnly.Select(asset => asset.AssetID.ToString(CultureInfo.InvariantCulture))
                     .ToHashSet(StringComparer.Ordinal).SetEquals(expectedAssets)
             ).ToArray();
