@@ -194,20 +194,29 @@ class BuyerChatCommandRegistry:
                 inventory = self.asf.get_bot_inventory(
                     leg["bot_name"], app_id=int(leg["app_id"]), context_id=int(leg["context_id"])
                 )
-                if not isinstance(inventory, dict) or inventory.get("Success") is not True:
+                if not isinstance(inventory, dict):
                     raise ValueError("ASF не подтвердил успешное получение свежего inventory")
-                root = inventory.get("Result", inventory)
+                success_key = next((key for key in inventory if str(key).casefold() == "success"), None)
+                if success_key is None or inventory[success_key] is not True:
+                    raise ValueError("ASF не подтвердил успешное получение свежего inventory")
+                result_key = next((key for key in inventory if str(key).casefold() == "result"), None)
+                root = inventory[result_key] if result_key is not None else inventory
                 bot = next((v for k, v in root.items() if str(k).casefold() == leg["bot_name"].casefold()), None) if isinstance(root, dict) else None
-                assets = bot.get("Assets") if isinstance(bot, dict) else None
+                assets_key = next((key for key in bot if str(key).casefold() == "assets"), None) if isinstance(bot, dict) else None
+                assets = bot[assets_key] if assets_key is not None else None
                 if not isinstance(assets, list):
                     raise ValueError("ASF не подтвердил полный свежий inventory")
-                indexed = {
-                    str(asset.get("assetid")): asset for asset in assets
-                    if isinstance(asset, dict) and asset.get("assetid") is not None
-                }
+                indexed = {}
+                for asset in assets:
+                    if not isinstance(asset, dict):
+                        continue
+                    id_key = next((key for key in asset if str(key).casefold() == "assetid"), None)
+                    if id_key is not None:
+                        indexed[str(asset[id_key])] = asset
                 for asset_id in asset_ids:
                     item = indexed.get(str(asset_id))
-                    tradable = item.get("tradable") if isinstance(item, dict) else None
+                    tradable_key = next((key for key in item if str(key).casefold() == "tradable"), None) if isinstance(item, dict) else None
+                    tradable = item[tradable_key] if tradable_key is not None else None
                     if tradable not in (True, 1, "1", "true", "True"):
                         raise ValueError("Зарезервированный asset отсутствует у бота или не tradable")
             except Exception as exc:
