@@ -103,14 +103,8 @@ class DeliveryReservationService:
     def _is_tradable(cls, item: Any) -> bool:
         # CS2 carries explicit restriction metadata in addition to the ASF tradable flag.
         if isinstance(item, CS2InventoryInstance):
-            return (
-                item.is_tradable is True
-                and item.restriction_type is RestrictionType.NONE
-                and item.restriction_status is RestrictionStatus.AVAILABLE
-                and item.tradable_after is None
-                and item.amount is not None
-                and item.amount > 0
-            )
+            # Reuse the CS2 view's strict restriction-aware eligibility contract.
+            return item.is_reservable and item.tradable_after is None
         # CardCopy and generic snapshot rows must explicitly prove True.
         return cls._get(item, "is_tradable") is True and cls._get(item, "trade_locked", False) is False
 
