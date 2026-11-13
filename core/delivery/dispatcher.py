@@ -67,13 +67,13 @@ class DeliveryDispatcher:
         value = message.casefold()
         if any(term in value for term in (
             "private", "privacy", "inventory is private", "профиль закрыт",
-            "инвентарь закрыт", "приватност", "приватность",
+            "инвентарь закрыт", "инвентарь получателя недоступен", "проверь приватность", "приватност", "приватность",
         )):
             return "PRIVACY_WAIT"
         if any(term in value for term in (
             "trade ban", "trade banned", "steam guard", "trade hold",
             "trade restricted", "not eligible to trade", "торговая блокировка",
-            "steam guard", "торговые ограничения", "trade hold",
+            "steam guard", "торговые ограничения", "торговый бан", "удержание обмена", "ограничение/удержание обмена", "trade hold",
         )):
             return "TRADE_RESTRICTED"
         return ""
