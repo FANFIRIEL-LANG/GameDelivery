@@ -184,7 +184,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
 
     def test_telegram_outbox_retries_api_failure_without_throwing_and_deduplicates(self):
         credentials = TelegramCredentialStore(backend=self.keyring)
-        credentials.configure(bot_token="123456:secret")
+        credentials.configure(bot_token="123456:secret", proxy_url="socks5h://proxy.example:1080", proxy_username="proxy-user", proxy_password="proxy-secret")
         calls = []
         def sender(token, payload, proxy):
             calls.append((token, payload, proxy))
@@ -202,9 +202,37 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         result = outbox.deliver_once()
         self.assertEqual(result[0]["status"], "retry")
         self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2]["url"], "socks5h://proxy.example:1080")
+        self.assertEqual(calls[0][2]["username"], "proxy-user")
         with self.db.connect() as db:
             row = db.execute("SELECT status,attempts FROM telegram_outbox WHERE outbox_id=?", (first,)).fetchone()
         self.assertEqual((row["status"], row["attempts"]), ("retry", 1))
+
+    def test_pending_delivery_events_are_moved_to_filtered_telegram_outbox(self):
+        credentials = TelegramCredentialStore(backend=self.keyring)
+        credentials.configure(bot_token="123456:secret")
+        outbox = TelegramBotOutbox(
+            self.db, credentials, lambda *args: {"ok": True},
+            event_filters={"telegram_notification": True, "operator_support_request": False},
+        )
+        with self.db.connect() as db:
+            db.execute(
+                "INSERT INTO gd_delivery_events(event_id,order_id,event_type,payload_json) VALUES(?,?,?,?)",
+                ("event:test-telegram", "order-1", "telegram_notification", json.dumps({"reason": "UNKNOWN"})),
+            )
+            db.execute(
+                "INSERT INTO gd_delivery_events(event_id,order_id,event_type,payload_json) VALUES(?,?,?,?)",
+                ("event:test-filtered", "order-1", "operator_support_request", json.dumps({"reason": "support"})),
+            )
+        self.assertEqual(outbox.enqueue_pending_delivery_events(operator_chat_id="-1001"), 1)
+        with self.db.connect() as db:
+            queued = db.execute("SELECT event_type,status FROM telegram_outbox WHERE order_id='order-1'").fetchall()
+            statuses = {row["event_id"]: row["status"] for row in db.execute(
+                "SELECT event_id,status FROM gd_delivery_events WHERE event_id LIKE 'event:test-%'"
+            ).fetchall()}
+        self.assertEqual([(row["event_type"], row["status"]) for row in queued], [("telegram_notification", "pending")])
+        self.assertEqual(statuses["event:test-telegram"], "queued")
+        self.assertEqual(statuses["event:test-filtered"], "pending")
 
     def test_telegram_operator_reply_routes_only_allowlisted_reply_to_bound_deal(self):
         credentials = TelegramCredentialStore(backend=self.keyring)
