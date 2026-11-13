@@ -4675,3 +4675,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Исправлены тестовые fixtures: FakeASF принимает обязательные app_id/context_id; CS2 InventorySnapshot использует актуальное время запуска теста, а не фиксированное время, которое устаревает.
 - UI startup regression tests дополнительно гасят информационный QMessageBox после отмены, чтобы headless runner не зависал на модальном окне.
 - Полный CI на новом commit ещё не запускался. Следующий шаг — запустить workflow Tests и проверить Windows package/ASF plugin на новом commit. Part B.2 не начинать до зелёного CI. main и PR #4 не изменялись.
+
+### 2026-11-14 — исправление зависания UI startup regression tests
+
+- Проверен GitHub Actions Tests #1779 на HEAD `7088c50c1759daca4f39a333e7fb6bcec78a5dfe`. Полный suite завершился ошибкой; изолированный `tests/test_app_startup.py` зависал на тесте отмены заказа и завершался по timeout (exit 124). Остальные изолированные test modules, которые успели выполниться, завершались успешно.
+- По коду установлена причина тестового зависания: `QTableWidget.selectRow()` выделяет строку, но не гарантирует установку current index. Production handler `_cancel_selected_order()` читает заказ через `currentRow()`; при отсутствии current row он корректно вызывает `QMessageBox.warning`, который блокирует headless/offscreen тест. Тест ошибочно имитировал выделение мышью неполным вызовом.
+- Исправлен только `tests/test_app_startup.py`: перед `selectRow()` во всех местах выбора строки теперь вызывается `setCurrentCell(row, 0)`, чтобы тест устанавливал и текущую строку, и её выделение, как при реальном выборе пользователем. Production UI и бизнес-логика не менялись.
+- Code/test commit: `9c1c3d7017c9333e0c46ea3c1cc1072f523e44f3` поверх `7088c50c1759daca4f39a333e7fb6bcec78a5dfe`. GitHub Actions после этого commit должны подтвердить исправление; до завершения workflow зелёный CI не заявляется.
+- Windows Build #976 на предыдущем HEAD был success. ASF plugin #652 был success на ещё более раннем HEAD `147b32e9`; сборка плагина на текущем HEAD не подтверждена.
+- `main` и PR #4 не изменялись. Следующий шаг — проверить результаты Actions для commit `9c1c3d7`; если Tests остаётся красным, разбирать следующий конкретный failing test по его логам, не повторяя диагностику уже исправленного случая.
