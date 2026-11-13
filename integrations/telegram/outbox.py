@@ -57,6 +57,42 @@ class TelegramCredentialStore:
         }
 
 
+def telegram_api_sender(token: str, payload: dict[str, Any], proxy: dict[str, str] | None = None) -> dict[str, Any]:
+    """Send one Telegram Bot API request; supports HTTP(S) and SOCKS5 proxies."""
+    import requests
+    from urllib.parse import quote, urlsplit, urlunsplit
+
+    if not token or any(ord(ch) < 32 for ch in token):
+        raise ValueError("Telegram bot token is invalid")
+    data = dict(payload)
+    if "chat_id" not in data:
+        raise ValueError("Telegram payload must include chat_id")
+    endpoint = "https://api.telegram.org/bot" + token + "/sendMessage"
+    proxies = None
+    if proxy and proxy.get("url"):
+        raw = proxy["url"]
+        parsed = urlsplit(raw)
+        if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+            raise ValueError("Telegram proxy must use HTTP(S) or SOCKS5")
+        if proxy.get("username"):
+            host = parsed.hostname
+            if parsed.port:
+                host += ":" + str(parsed.port)
+            auth = quote(proxy["username"], safe="") + ":" + quote(proxy.get("password", ""), safe="")
+            raw = urlunsplit((parsed.scheme, auth + "@" + host, parsed.path, parsed.query, ""))
+        proxies = {"http": raw, "https": raw}
+    try:
+        response = requests.post(endpoint, json=data, proxies=proxies, timeout=(5, 20))
+        response.raise_for_status()
+        result = response.json()
+    except Exception as exc:
+        # Do not propagate exception strings: request URLs may contain the bot token.
+        raise RuntimeError("Telegram API request failed: " + type(exc).__name__) from None
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError("Telegram API did not confirm message delivery")
+    return result
+
+
 class TelegramBotOutbox:
     """Durable non-blocking Telegram notification queue with idempotent retries."""
 
