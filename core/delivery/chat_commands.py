@@ -197,10 +197,34 @@ class BuyerChatCommandRegistry:
             attempts = [dict(row) for row in db.execute(
                 "SELECT * FROM gd_delivery_attempts WHERE order_id=?", (order_id,)
             ).fetchall()]
+            def attempt_may_have_offer(attempt: dict[str, Any]) -> bool:
+                if attempt["status"] in {"unknown", "sent_to_steam", "dispatching"}:
+                    return True
+                try:
+                    result = json.loads(attempt["result_json"] or "{}")
+                except (TypeError, ValueError):
+                    return True
+                if not isinstance(result, dict):
+                    return True
+                candidates = [
+                    result.get("trade_offer_id"), result.get("tradeOfferId"),
+                    result.get("trade_offer_ids"), result.get("offerIds"),
+                ]
+                nested = result.get("result")
+                if isinstance(nested, dict):
+                    candidates.extend([
+                        nested.get("trade_offer_id"), nested.get("tradeOfferId"),
+                        nested.get("trade_offer_ids"), nested.get("offerIds"),
+                    ])
+                return any(
+                    value not in (None, "", [], ())
+                    for value in candidates
+                )
+
             if not legs or any(
                 leg["trade_offer_id"] or leg["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DELIVERED"}
                 for leg in legs
-            ) or any(attempt["status"] in {"unknown", "sent_to_steam", "dispatching"} for attempt in attempts):
+            ) or any(attempt_may_have_offer(attempt) for attempt in attempts):
                 db.commit()
                 self.reconciliation.reconcile(order_id=order_id)
                 return ChatCommandResult(True, "!настроил приватность", "reconciliation_required", "")
