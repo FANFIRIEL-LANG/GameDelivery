@@ -239,7 +239,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             ).fetchall()}
         self.assertEqual([(row["event_type"], row["status"]) for row in queued], [("unknown", "pending")])
         self.assertEqual(statuses["event:test-telegram"], "queued")
-        self.assertEqual(statuses["event:test-filtered"], "pending")
+        self.assertEqual(statuses["event:test-filtered"], "filtered")
 
     def test_telegram_operator_reply_routes_only_allowlisted_reply_to_bound_deal(self):
         credentials = TelegramCredentialStore(backend=self.keyring)
