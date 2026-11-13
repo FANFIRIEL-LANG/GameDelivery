@@ -391,9 +391,17 @@ PropertyInfo steamConfigurationProperty = typeof(Bot).GetProperty(
     "SteamConfiguration",
     BindingFlags.Instance | BindingFlags.Public)
     ?? throw new InvalidOperationException("Pinned ASF Bot.SteamConfiguration property was not found");
-Assert(steamConfigurationProperty.PropertyType.GetProperty(
-    "HttpClientFactory", BindingFlags.Instance | BindingFlags.Public) is not null,
-    "Pinned ASF SteamConfiguration no longer exposes its HttpClientFactory");
+PropertyInfo httpClientFactoryProperty = steamConfigurationProperty.PropertyType.GetProperty(
+    "HttpClientFactory", BindingFlags.Instance | BindingFlags.Public)
+    ?? throw new InvalidOperationException("Pinned ASF SteamConfiguration no longer exposes HttpClientFactory");
+MethodInfo httpClientFactoryInvoke = httpClientFactoryProperty.PropertyType.GetMethod("Invoke")
+    ?? throw new InvalidOperationException("Pinned ASF HttpClientFactory delegate Invoke method was not found");
+ParameterInfo[] httpClientFactoryParameters = httpClientFactoryInvoke.GetParameters();
+Assert(httpClientFactoryParameters.Length == 1
+    && httpClientFactoryParameters[0].ParameterType == typeof(HttpClientPurpose),
+    "Pinned ASF HttpClientFactory no longer requires HttpClientPurpose");
+Assert(Enum.IsDefined(HttpClientPurpose.WebAPI),
+    "Pinned SteamKit2 no longer exposes HttpClientPurpose.WebAPI");
 Assert(steamConfigurationProperty.PropertyType.GetProperty(
     "WebAPIBaseAddress", BindingFlags.Instance | BindingFlags.Public) is not null,
     "Pinned ASF SteamConfiguration no longer exposes WebAPIBaseAddress");

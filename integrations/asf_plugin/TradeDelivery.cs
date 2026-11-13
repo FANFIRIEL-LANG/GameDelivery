@@ -273,10 +273,11 @@ internal static class TradeDelivery
             "IEconService/GetTradeHoldDurations/v1/");
         string query = "access_token=" + Uri.EscapeDataString(accessToken)
             + "&steamid_target=" + recipientSteamId64.ToString(CultureInfo.InvariantCulture)
-            + "&trade_offer_access_token=" + Uri.EscapeDataString(recipientTradeToken);
+            + "&trade_offer_access_token=" + Uri.EscapeDataString(recipientTradeToken)
+            + "&format=json";
         Uri requestUri = new UriBuilder(endpoint) { Query = query }.Uri;
 
-        using HttpClient client = senderBot.SteamConfiguration.HttpClientFactory();
+        using HttpClient client = senderBot.SteamConfiguration.HttpClientFactory(HttpClientPurpose.WebAPI);
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
         using HttpRequestMessage request = new(HttpMethod.Get, requestUri);
         using HttpResponseMessage response = await client.SendAsync(
