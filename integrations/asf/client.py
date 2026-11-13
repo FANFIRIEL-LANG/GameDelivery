@@ -572,6 +572,29 @@ class ASFClient:
             raise ASFError("Состав черновика ASF не совпадает с активами заказа")
         return preview
 
+    def get_order_trade_status(self, *, bot_name: str, order_id: str) -> dict[str, Any]:
+        """Recover an uncertain offer by exact order, recipient and asset manifest."""
+        bot = str(bot_name).strip()
+        order = str(order_id).strip()
+        if not bot or len(bot) > 128 or not order or len(order) > 128 or any(ord(ch) < 32 for ch in order):
+            raise ValueError("Некорректные имя ASF-бота или ID заказа")
+        response = self.send_command(f"gamedelivery-status {bot} order:{order}")
+        result = _unwrap_result(response)
+        if not isinstance(result, str):
+            raise ASFError("ASF не вернул структурированный статус заказа")
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            raise ASFError("ASF вернул некорректный статус заказа") from None
+        if not isinstance(payload, dict) or payload.get("mode") != "trade-status":
+            raise ASFError("ASF вернул ответ неподдерживаемого формата для заказа")
+        if payload.get("success") is True:
+            if payload.get("orderId") != order or str(payload.get("botName", "")).casefold() != bot.casefold():
+                raise ASFError("ASF вернул статус другого заказа или бота")
+            if not re.fullmatch(r"[1-9][0-9]*", str(payload.get("tradeOfferId", ""))):
+                raise ASFError("ASF не вернул канонический TradeOfferID")
+        return payload
+
     def get_trade_offer_status(self, *, bot_name: str, trade_offer_id: str) -> dict[str, Any]:
         """Read one outgoing offer's live Steam state through gamedelivery-status."""
         bot = str(bot_name).strip()
