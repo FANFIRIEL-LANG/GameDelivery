@@ -239,7 +239,7 @@ class BuyerChatCommandRegistry:
                     item = indexed.get(str(asset_id))
                     tradable_key = next((key for key in item if str(key).casefold() == "tradable"), None) if isinstance(item, dict) else None
                     tradable = item[tradable_key] if tradable_key is not None else None
-                    if tradable not in (True, 1, "1", "true", "True"):
+                    if tradable is not True:
                         raise ValueError("Зарезервированный asset отсутствует у бота или не tradable")
             except Exception as exc:
                 db.commit()
