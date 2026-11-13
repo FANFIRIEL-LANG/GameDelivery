@@ -17,7 +17,7 @@ from games.cs2.inventory_view import (
     RestrictionStatus,
     RestrictionType,
 )
-from games.steam_cards.selection import CardCopy
+from games.steam_cards.selection import CardCopy\nfrom games.steam_cards.recipient_badge import RecipientBadge
 
 
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
