@@ -12,7 +12,7 @@ from games.cs2.inventory_view import (
     RestrictionStatus,
     RestrictionType,
 )
-from games.steam_cards.owned_selection import select_owned_complete_sets
+from games.steam_cards.owned_selection import select_owned_complete_sets\nfrom games.steam_cards.recipient_badge import RecipientBadge, evaluate_recipient_badge_capacity
 from games.steam_cards.selection import CardCopy
 
 
@@ -231,22 +231,23 @@ class DeliveryReservationService:
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
         return f"{prefix}:{digest}"
 
-    def _record_insufficient(
-        self, order_id: str, chat_id: str | None, config_version_id: str, reason: str
+    def _record_failure(
+        self, order_id: str, chat_id: str | None, config_version_id: str,
+        reason: str, status: str,
     ) -> tuple[str, ...]:
         event_ids = []
         payload = json.dumps({
             "reason": reason,
             "chat_id": chat_id,
             "config_version_id": config_version_id,
-            "status": "insufficient_stock",
+            "status": status,
         }, ensure_ascii=False, sort_keys=True)
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
-                "UPDATE gd_orders SET status='insufficient_stock', "
+                "UPDATE gd_orders SET status=?, "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
-                (order_id,),
+                (status, order_id),
             )
             for event_type in ("buyer_notification", "telegram_notification"):
                 event_id = self._stable_id("event", order_id + ":" + event_type)
@@ -265,6 +266,8 @@ class DeliveryReservationService:
         config_version_id: str,
         snapshots: Mapping[str, InventorySnapshot],
         now: datetime | None = None,
+        recipient_badges: tuple[RecipientBadge, ...] | list[RecipientBadge] = (),
+        badge_data_verified: bool = False,
     ) -> OrderReservationResult:
         order = order_id.strip()
         config_id = config_version_id.strip()
@@ -319,20 +322,44 @@ class DeliveryReservationService:
             selected: tuple[tuple[str, str, int, str], ...] = ()
             selected_selector: Mapping[str, Any] | None = None
             best_available = 0
-            for selector in selector_options:
-                candidates = self._select_assets(selector, quantity, snapshots, bot_pool, current_time)
-                if len(candidates) > best_available:
-                    best_available = len(candidates)
-                if len(candidates) >= quantity:
-                    selected = candidates
-                    selected_selector = selector
-                    break
-            if selected_selector is None:
+            failure_status = "insufficient_stock"
+            card_selector = any(self._card_selector(option) for option in selector_options)
+            badge_failure = None
+            if card_selector:
+                game_name = next(
+                    str(option.get("game_name") or option.get("name") or "").strip()
+                    for option in selector_options if self._card_selector(option)
+                )
+                badge_capacity = evaluate_recipient_badge_capacity(
+                    game_name, quantity, recipient_badges,
+                    badge_data_verified=badge_data_verified,
+                )
+                if not badge_capacity.can_proceed:
+                    failure_status = "preflight_blocked"
+                    badge_failure = (
+                        "Проверка значка получателя заблокировала заказ: "
+                        + badge_capacity.reason
+                    )
+            if badge_failure:
+                reason = badge_failure
+                connection.rollback()
+            else:
+                for selector in selector_options:
+                    candidates = self._select_assets(selector, quantity, snapshots, bot_pool, current_time)
+                    if len(candidates) > best_available:
+                        best_available = len(candidates)
+                    if len(candidates) >= quantity:
+                        selected = candidates
+                        selected_selector = selector
+                        break
+            if not badge_failure and selected_selector is None:
                 reason = (
                     f"Недостаточно свежих tradable предметов: требуется {quantity}, "
                     f"доступно не более {best_available}."
                 )
                 connection.rollback()
+            if selected_selector is None:
+                pass
             else:
                 selectors_raw = selected_selector
                 line_id = f"{order}:line:1"
@@ -397,5 +424,7 @@ class DeliveryReservationService:
                     # The transaction was rolled back on a reservation conflict.
                     reason = reason if "reason" in locals() else "Конфликт глобального резерва."
 
-        event_ids = self._record_insufficient(order, order_row["chat_id"], config_id, reason)
-        return OrderReservationResult(order, "insufficient_stock", (), (), event_ids, reason)
+        event_ids = self._record_failure(
+            order, order_row["chat_id"], config_id, reason, failure_status
+        )
+        return OrderReservationResult(order, failure_status, (), (), event_ids, reason)
