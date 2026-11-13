@@ -228,5 +228,42 @@ class PlayerokDealSyncTests(unittest.TestCase):
         self.assertEqual(adapter.mutation_calls, [])
 
 
+    def test_new_paid_deal_waiting_for_listing_setup_uses_new_config_when_available(self):
+        adapter = FakePlayerok(
+            baseline=[deal("existing", "listing-needs-setup", "PAID")],
+            active=[deal("new-pa-id", "listing-needs-setup", "PAID")],
+        )
+        self.syncer.sync(adapter)
+        self.syncer.sync(adapter)
+        new_deal_id = self.normalized_deal_id("new-pa-id")
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT listing_id,config_version_id FROM gd_deals WHERE deal_id=?",
+                (new_deal_id,),
+            ).fetchone()
+            self.assertIsNone(db.execute(
+                "SELECT order_id FROM gd_orders WHERE deal_id=?", (new_deal_id,)
+            ).fetchone())
+        config = self.ledger.create_listing_config_version(
+            listing_id=row["listing_id"],
+            source_platform="playerok",
+            external_listing_id="listing-needs-setup",
+            delivery_quantity_per_deal=1,
+            item_selectors={"game_id": "cs2", "app_id": 730, "context_id": 2},
+            bot_pool=["Bot-A"],
+            title="Now configured",
+        )
+        self.syncer.sync(adapter)
+        with self.database.connect() as db:
+            updated = db.execute(
+                "SELECT config_version_id FROM gd_deals WHERE deal_id=?", (new_deal_id,)
+            ).fetchone()
+            order = db.execute(
+                "SELECT total_quantity,status FROM gd_orders WHERE deal_id=?", (new_deal_id,)
+            ).fetchone()
+        self.assertEqual(updated["config_version_id"], config["config_version_id"])
+        self.assertEqual(tuple(order), (1, "pending"))
+
+
 if __name__ == "__main__":
     unittest.main()

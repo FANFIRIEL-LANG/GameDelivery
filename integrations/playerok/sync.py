@@ -149,8 +149,10 @@ class PlayerokDealSyncService:
                  platform_status,payload_json,playerok_account_id,is_historical)
             VALUES(?,'playerok',?,?,?,?,?,?,?,?)
             ON CONFLICT(deal_id) DO UPDATE SET
-                chat_id=excluded.chat_id,platform_status=excluded.platform_status,
-                payload_json=excluded.payload_json,playerok_account_id=excluded.playerok_account_id,
+                chat_id=excluded.chat_id,listing_id=excluded.listing_id,
+                config_version_id=excluded.config_version_id,
+                platform_status=excluded.platform_status,payload_json=excluded.payload_json,
+                playerok_account_id=excluded.playerok_account_id,
                 is_historical=CASE WHEN gd_deals.is_historical=1 THEN 1 ELSE excluded.is_historical END
         """, (
             normalized_id, external_id, str(deal.get("chat_id") or "").strip() or None,
