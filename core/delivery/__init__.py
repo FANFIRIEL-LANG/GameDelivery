@@ -1,6 +1,7 @@
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.reconciliation import DeliveryReconciliation
+from core.delivery.chat_commands import BuyerChatCommandRegistry, ChatCommandResult
 from core.delivery.reservation_service import (
     DeliveryReservationService,
     InventorySnapshot,
@@ -25,6 +26,8 @@ __all__ = [
     "DeliveryLedger",
     "DeliveryDispatcher",
     "DeliveryReconciliation",
+    "BuyerChatCommandRegistry",
+    "ChatCommandResult",
     "DeliveryReservationService",
     "InventorySnapshot",
     "OrderReservationResult",
