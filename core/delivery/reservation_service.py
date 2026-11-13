@@ -7,11 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from core.database.db import Database
-from games.cs2.inventory_view import (
-    CS2InventoryInstance,
-    RestrictionStatus,
-    RestrictionType,
-)
+from games.cs2.inventory_view import CS2InventoryInstance
 from games.steam_cards.owned_selection import select_owned_complete_sets
 from games.steam_cards.recipient_badge import RecipientBadge, evaluate_recipient_badge_capacity
 from games.steam_cards.selection import CardCopy
