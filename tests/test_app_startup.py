@@ -171,6 +171,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.order_assets.item(0).setSelected(True)
                     window._prepare_delivery_order()
                     order_id = window.orders.item(0, 0).text()
+                    window.orders.setCurrentCell(0, 0)
                     window.orders.selectRow(0)
                     preview.return_value = {
                         "success": True,
@@ -341,6 +342,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                 window = MainWindow()
                 try:
                     window._load_saved_orders()
+                    window.orders.setCurrentCell(0, 0)
                     window.orders.selectRow(0)
                     window._cancel_selected_order()
                     with sqlite3.connect(database) as db:
@@ -393,6 +395,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                         row for row in range(window.orders.rowCount())
                         if window.orders.item(row, 0).text() == "GD-ONE"
                     )
+                    window.orders.setCurrentCell(target_row, 0)
                     window.orders.selectRow(target_row)
                     window._cancel_selected_order()
                     self.assertEqual(reservations.list_for_order("GD-ONE"), [])
@@ -559,6 +562,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                         status,
                         ("неизвестен результат отправки — проверь исходящие Steam", "unknown"),
                     )
+                    window.orders.setCurrentCell(0, 0)
                     window.orders.selectRow(0)
                     self.assertFalse(window.send_offer_button.isEnabled())
                 finally:
