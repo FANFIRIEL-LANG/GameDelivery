@@ -268,12 +268,12 @@ class TelegramBotOutbox:
                 },
                 idempotency_key="delivery-event:" + row["event_id"],
             )
+            with self.database.connect() as db:
+                db.execute(
+                    "UPDATE gd_delivery_events SET status=? WHERE event_id=? AND status='pending'",
+                    ("queued" if outbox_id is not None else "filtered", row["event_id"]),
+                )
             if outbox_id is not None:
-                with self.database.connect() as db:
-                    db.execute(
-                        "UPDATE gd_delivery_events SET status='queued' WHERE event_id=? AND status='pending'",
-                        (row["event_id"],),
-                    )
                 queued += 1
         return queued
 
