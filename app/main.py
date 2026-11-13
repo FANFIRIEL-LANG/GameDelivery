@@ -756,7 +756,15 @@ class MainWindow(QMainWindow):
             existing_order_id = None
             selected_row = self.orders.currentRow()
             if selected_row >= 0 and self.orders.item(selected_row, 0):
-                candidate_id = self.orders.item(selected_row, 0).text().strip()
+                selected_context = self._order_context(selected_row)
+                if selected_context.get("kind") == "ledger":
+                    raise ValueError(
+                        "Выбран нормализованный заказ. Для него используй действие "
+                        "«Подготовить выдачу по ConfigVersion»."
+                    )
+                # The visible first column may contain Playerok's external deal ID.
+                # Always use the internal local order_id stored in the row context.
+                candidate_id = str(selected_context["order_id"])
                 with connect_sqlite(self._database_path) as db:
                     candidate = db.execute(
                         "SELECT source_platform, status FROM delivery_orders WHERE order_id = ?",
