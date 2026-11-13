@@ -4608,3 +4608,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Вторая причина: ожидаемый mapping теста не включал buyer_id, который намеренно возвращается адаптером отдельно для identity-bound deal processing. Добавлено ожидаемое поле.
 - Code/test commit: 8221854809f55f5a7a6954ad026715e3ae6a7b9f. Изменены integrations/playerok/client.py и tests/test_playerok_read_only_sales.py.
 - Локальные тесты не запускались. Следующий GitHub Actions запуск должен подтвердить исправление; main и PR #4 не изменялись.
+
+
+### 2026-11-13 — Блок 4: повторная привязка PAID deal к новой ConfigVersion после настройки объявления
+
+- При дополнительной проверке сценария «новая PAID сделка пришла до настройки объявления» выявлено, что повторный upsert находил новую ConfigVersion, но не обновлял gd_deals.config_version_id.
+- Исправлено: повторная синхронизация обновляет ссылку gd_deals на актуальную ConfigVersion и listing ID; исторический флаг остаётся sticky и никогда не сбрасывается. Когда объявление настроено и сделка всё ещё PAID/non-historical, создаётся нормализованный pending gd_order.
+- Добавлен тест test_new_paid_deal_waiting_for_listing_setup_uses_new_config_when_available.
+- Code/test commit: ee2d08b5423ccc1abd0170aeab5def7225aa3f12.
+- GitHub Actions для предыдущего checkpoint 8221854 были запущены; новый commit инициировал следующий Tests/Windows Bundle workflow. Результат нового checkpoint ещё не подтверждён. main и PR #4 не изменялись.
