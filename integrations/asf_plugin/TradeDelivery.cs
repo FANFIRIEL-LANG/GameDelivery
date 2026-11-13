@@ -158,6 +158,13 @@ internal static class TradeDelivery
 
     public static async Task<string> ProcessTradeStatusCommand(string botName, string rawTradeOfferId)
     {
+        if (rawTradeOfferId?.StartsWith("order:", StringComparison.Ordinal) == true)
+        {
+            return await ProcessOrderTradeStatusCommand(
+                botName,
+                rawTradeOfferId.Substring("order:".Length)).ConfigureAwait(false);
+        }
+
         if (string.IsNullOrWhiteSpace(botName)
             || botName.Length > 128
             || string.IsNullOrWhiteSpace(rawTradeOfferId)
@@ -241,6 +248,92 @@ internal static class TradeDelivery
         {
             return TradeStatusFailure(
                 "Не удалось проверить исходящее предложение через ASF: "
+                + exception.GetType().Name + ": " + SafeMessage(exception.Message));
+        }
+    }
+
+    private static async Task<string> ProcessOrderTradeStatusCommand(string botName, string orderId)
+    {
+        if (string.IsNullOrWhiteSpace(botName) || botName.Length > 128
+            || string.IsNullOrWhiteSpace(orderId) || orderId.Length > 128
+            || orderId.Any(char.IsControl))
+        {
+            return TradeStatusFailure("Укажи имя бота и корректный ID заказа.");
+        }
+
+        Bot? targetBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
+            string.Equals(candidate.BotName, botName, StringComparison.OrdinalIgnoreCase));
+        if (targetBot is null || !targetBot.IsConnectedAndLoggedOn)
+        {
+            return TradeStatusFailure("Выбранный ASF-бот не найден или не подключён к Steam.");
+        }
+
+        try
+        {
+            Dictionary<string, SendRecord> records = LoadSendRecords();
+            if (!records.TryGetValue(orderId, out SendRecord? record)
+                || !string.Equals(record.BotName, targetBot.BotName, StringComparison.OrdinalIgnoreCase))
+            {
+                return TradeStatusFailure("В sent_offers.json нет записи этого заказа для выбранного бота.");
+            }
+
+            HashSet<TradeOffer>? sentOffers = await targetBot.ArchiWebHandler.GetTradeOffers(
+                activeOffers: null, receivedOffers: false, sentOffers: true,
+                withDescriptions: true).ConfigureAwait(false);
+            if (sentOffers is null)
+            {
+                return TradeStatusFailure("ASF не смог получить список исходящих предложений; результат остаётся неизвестным.");
+            }
+
+            HashSet<string> expectedAssets = new(record.AssetIds, StringComparer.Ordinal);
+            TradeOffer[] matches = sentOffers.Where(offer =>
+                offer.OtherSteamID64 == record.TargetSteamId64
+                && offer.ItemsToGiveReadOnly.Select(asset => asset.AssetID.ToString(CultureInfo.InvariantCulture))
+                    .ToHashSet(StringComparer.Ordinal).SetEquals(expectedAssets)
+            ).ToArray();
+
+            if (matches.Length != 1)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    mode = "trade-status",
+                    found = false,
+                    orderId,
+                    botName = targetBot.BotName,
+                    status = matches.Length == 0 ? "not_found_in_asf_response" : "ambiguous",
+                    error = matches.Length == 0
+                        ? "Не найдено однозначного исходящего предложения с точным получателем и составом активов."
+                        : "Найдено несколько исходящих предложений с таким получателем и составом активов."
+                }, JsonOptions);
+            }
+
+            TradeOffer offer = matches[0];
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                mode = "trade-status",
+                found = true,
+                orderId,
+                tradeOfferId = offer.TradeOfferID.ToString(CultureInfo.InvariantCulture),
+                botName = targetBot.BotName,
+                recipientSteamId64 = offer.OtherSteamID64.ToString(CultureInfo.InvariantCulture),
+                status = GetTradeOfferStatusName(offer.State),
+                itemsToGive = offer.ItemsToGiveReadOnly.Select(asset => new
+                {
+                    appId = asset.AppID,
+                    contextId = asset.ContextID,
+                    assetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
+                    amount = asset.Amount,
+                    tradable = asset.Tradable,
+                    name = asset.Description?.Name
+                }).ToArray()
+            }, JsonOptions);
+        }
+        catch (Exception exception)
+        {
+            return TradeStatusFailure(
+                "Не удалось восстановить предложение по заказу через ASF: "
                 + exception.GetType().Name + ": " + SafeMessage(exception.Message));
         }
     }
