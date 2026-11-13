@@ -12,7 +12,8 @@ from games.cs2.inventory_view import (
     RestrictionStatus,
     RestrictionType,
 )
-from games.steam_cards.owned_selection import select_owned_complete_sets\nfrom games.steam_cards.recipient_badge import RecipientBadge, evaluate_recipient_badge_capacity
+from games.steam_cards.owned_selection import select_owned_complete_sets
+from games.steam_cards.recipient_badge import RecipientBadge, evaluate_recipient_badge_capacity
 from games.steam_cards.selection import CardCopy
 
 
