@@ -52,7 +52,7 @@ class PlayerokListingConfigService:
                              "auto_messages": dict(auto_messages or {})}
             bots = []
             quantity = 1
-        return self.ledger.create_listing_config_version(
+        result = self.ledger.create_listing_config_version(
             listing_id=self._listing_key(external_id),
             source_platform="playerok",
             external_listing_id=external_id,
@@ -61,3 +61,13 @@ class PlayerokListingConfigService:
             bot_pool=bots,
             title=str(title or "").strip(),
         )
+        # Persist the canonical listing URL as metadata, not as mutable config.
+        with self.database.connect() as db:
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_listings)")}
+            if "external_url" not in columns:
+                db.execute("ALTER TABLE gd_listings ADD COLUMN external_url TEXT NOT NULL DEFAULT ''")
+            db.execute(
+                "UPDATE gd_listings SET external_url=?,title=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE listing_id=?",
+                (str(url or "").strip(), str(title or "").strip(), result["listing_id"]),
+            )
+        return result
