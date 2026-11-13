@@ -4558,3 +4558,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Тест теперь отдельно подтверждает, что UNKNOWN metadata при ASF tradable=True допускается, тогда как false tradability и явная trade protection/restricted отклоняются.
 - Изменены core/delivery/reservation_service.py и tests/test_delivery_reservation_service.py. Изменения вносятся только в work/local-sync; main и PR #4 не изменялись.
 - Локальные тесты в этой сессии не запускались. Новые GitHub Actions после push должны подтвердить исправления; успешность не заявляется заранее.
+
+
+### 2026-11-13 — повторная проверка Tests #1744 и корректировка проверки распределения
+
+- На коммите fd1ec74065ebd75df7025ed7448ebd0a4ddd5cc1 запуск Tests #1744 завершился failure; Windows Bundle #942 завершился success.
+- В логе full suite был один оставшийся assertion failure: test_cs2_order_is_split_into_legs_for_two_bots ожидал конкретный asset Bot-B/2001, тогда как допустимый отбор выбрал Bot-B/2002. Остальные проверки модуля test_delivery_reservation_service.py прошли, включая скорректированную проверку UNKNOWN restriction metadata.
+- Исправлена хрупкая проверка: теперь она подтверждает наличие обеих legs (Bot-A и Bot-B), ровно три уникальных зарезервированных предмета и принадлежность каждого предмета свежим кандидатам инвентаря; не фиксирует произвольный tie-break asset внутри Bot-B.
+- Изменения теста отправлены отдельным code/test commit e224dbf1a4bff2bbb0d6c335b4c91444d0f451ea в work/local-sync.
+- Локальные тесты не запускались. Новые GitHub Actions должны подтвердить итог; их результат не заявляется заранее. main и PR #4 не изменялись.
