@@ -190,6 +190,13 @@ class BuyerChatCommandRegistry:
                 return ChatCommandResult(True, "!настроил приватность", "blocked_ambiguous", "")
             leg = privacy_legs[0]
             asset_ids = json.loads(leg["asset_ids_json"])
+            reserved_rows = db.execute("""
+                SELECT asset_id FROM gd_resource_reservations
+                WHERE order_line_id=? AND bot_name=? COLLATE NOCASE AND state='active'
+            """, (leg["order_line_id"], leg["bot_name"])).fetchall()
+            if {str(row["asset_id"]) for row in reserved_rows} != {str(value) for value in asset_ids}:
+                db.commit()
+                return ChatCommandResult(True, "!настроил приватность", "reservation_mismatch", "")
             try:
                 inventory = self.asf.get_bot_inventory(
                     leg["bot_name"], app_id=int(leg["app_id"]), context_id=int(leg["context_id"])
