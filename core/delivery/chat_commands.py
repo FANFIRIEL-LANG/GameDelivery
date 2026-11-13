@@ -66,6 +66,11 @@ class BuyerChatCommandRegistry:
             normalized[key] = template[:2000]
         return normalized
 
+    def set_custom_commands(self, commands: dict[str, str]) -> None:
+        """Replace custom command templates from application settings."""
+        self.templates = dict(self.DEFAULT_TEMPLATES)
+        self.templates.update(self._normalize_custom(commands))
+
     def _ensure_events(self) -> None:
         with self.database.connect() as db:
             db.execute("""
