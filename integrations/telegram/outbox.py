@@ -200,6 +200,47 @@ class TelegramBotOutbox:
                 results.append({"outbox_id": row["outbox_id"], "status": "retry"})
         return results
 
+    def enqueue_pending_delivery_events(self, *, operator_chat_id: str, limit: int = 50) -> int:
+        """Transfer pending delivery/operator events into Telegram's durable outbox."""
+        if limit < 1 or limit > 500:
+            raise ValueError("limit должен быть от 1 до 500")
+        with self.database.connect() as db:
+            rows = [dict(row) for row in db.execute("""
+                SELECT event_id,order_id,event_type,payload_json
+                FROM gd_delivery_events
+                WHERE status='pending'
+                  AND event_type NOT LIKE 'buyer_%'
+                ORDER BY created_at LIMIT ?
+            """, (limit,)).fetchall()]
+        queued = 0
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, ValueError):
+                payload = {"details": "invalid event payload"}
+            outbox_id = self.enqueue(
+                event_type=row["event_type"],
+                chat_id=str(operator_chat_id),
+                order_id=row["order_id"],
+                payload={
+                    "chat_id": str(operator_chat_id),
+                    "text": json.dumps({
+                        "event": row["event_type"], "order_id": row["order_id"],
+                        "details": payload,
+                    }, ensure_ascii=False),
+                    "reply_markup": None,
+                },
+                idempotency_key="delivery-event:" + row["event_id"],
+            )
+            if outbox_id is not None:
+                with self.database.connect() as db:
+                    db.execute(
+                        "UPDATE gd_delivery_events SET status='queued' WHERE event_id=? AND status='pending'",
+                        (row["event_id"],),
+                    )
+                queued += 1
+        return queued
+
     def bind_operator_message(self, *, telegram_message_id: str, order_id: str) -> None:
         with self.database.connect() as db:
             row = db.execute("""
@@ -216,6 +257,46 @@ class TelegramBotOutbox:
                 ON CONFLICT(telegram_message_id) DO UPDATE SET
                     order_id=excluded.order_id,deal_id=excluded.deal_id,chat_id=excluded.chat_id
             """, (str(telegram_message_id), row["order_id"], row["deal_id"], row["chat_id"]))
+
+
+class BuyerPlatformMessageOutbox:
+    """Durable queue boundary for replies that must be sent to the marketplace buyer."""
+
+    def __init__(self, database):
+        self.database = database
+        with self.database.connect() as db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS gd_buyer_message_outbox (
+                    message_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    deal_id TEXT NOT NULL REFERENCES gd_deals(deal_id) ON DELETE RESTRICT,
+                    chat_id TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )
+            """)
+
+    def enqueue(self, deal_id: str, chat_id: str, message: str) -> str:
+        text = str(message).strip()
+        if not text or len(text) > 4000:
+            raise ValueError("Сообщение покупателю должно содержать от 1 до 4000 символов")
+        with self.database.connect() as db:
+            deal = db.execute(
+                "SELECT chat_id FROM gd_deals WHERE deal_id=?", (deal_id,)
+            ).fetchone()
+            if deal is None or str(deal["chat_id"] or "") != str(chat_id):
+                raise ValueError("Связка deal_id/chat_id не подтверждена")
+            import hashlib
+            key = hashlib.sha256((deal_id + "|" + str(chat_id) + "|" + text).encode()).hexdigest()
+            message_id = "buyer-msg:" + key[:32]
+            db.execute("""
+                INSERT OR IGNORE INTO gd_buyer_message_outbox
+                    (message_id,idempotency_key,deal_id,chat_id,message_text)
+                VALUES (?,?,?,?,?)
+            """, (message_id, key, deal_id, str(chat_id), text))
+        return message_id
 
 
 class TelegramOperatorReplyRouter:
