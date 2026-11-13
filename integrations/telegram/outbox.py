@@ -132,9 +132,13 @@ class TelegramBotOutbox:
                     order_id TEXT NOT NULL REFERENCES gd_orders(order_id) ON DELETE RESTRICT,
                     deal_id TEXT NOT NULL REFERENCES gd_deals(deal_id) ON DELETE RESTRICT,
                     chat_id TEXT NOT NULL,
+                    operator_chat_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 )
             """)
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(telegram_operator_messages)").fetchall()}
+            if "operator_chat_id" not in columns:
+                db.execute("ALTER TABLE telegram_operator_messages ADD COLUMN operator_chat_id TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE INDEX IF NOT EXISTS idx_telegram_outbox_pending ON telegram_outbox(status,next_attempt_at)")
 
     def enqueue(
@@ -188,9 +192,17 @@ class TelegramBotOutbox:
                         WHERE outbox_id=?
                     """, (str(message_id) if message_id is not None else None, row["outbox_id"]))
                 if message_id is not None and row.get("order_id"):
-                    self.bind_operator_message(
-                        telegram_message_id=str(message_id), order_id=str(row["order_id"])
-                    )
+                    try:
+                        self.bind_operator_message(
+                            telegram_message_id=str(message_id), order_id=str(row["order_id"]),
+                            operator_chat_id=str(row["chat_id"]),
+                        )
+                    except Exception:
+                        # Telegram delivery is already confirmed; do not resend a duplicate
+                        # merely because local reply routing metadata could not be stored.
+                        results.append({"outbox_id": row["outbox_id"], "status": "sent", "message_id": message_id,
+                                        "reply_binding": "failed"})
+                        continue
                 results.append({"outbox_id": row["outbox_id"], "status": "sent", "message_id": message_id})
             except Exception as exc:
                 # Telegram is an auxiliary channel: record failure and continue the delivery pipeline.
@@ -265,7 +277,8 @@ class TelegramBotOutbox:
                 queued += 1
         return queued
 
-    def bind_operator_message(self, *, telegram_message_id: str, order_id: str) -> None:
+    def bind_operator_message(self, *, telegram_message_id: str, order_id: str,
+                              operator_chat_id: str = "") -> None:
         with self.database.connect() as db:
             row = db.execute("""
                 SELECT o.order_id,o.deal_id,d.chat_id
@@ -276,11 +289,13 @@ class TelegramBotOutbox:
                 raise KeyError("Заказ не имеет однозначной привязки к сделке и чату")
             db.execute("""
                 INSERT INTO telegram_operator_messages
-                    (telegram_message_id,order_id,deal_id,chat_id)
-                VALUES (?,?,?,?)
+                    (telegram_message_id,order_id,deal_id,chat_id,operator_chat_id)
+                VALUES (?,?,?,?,?)
                 ON CONFLICT(telegram_message_id) DO UPDATE SET
-                    order_id=excluded.order_id,deal_id=excluded.deal_id,chat_id=excluded.chat_id
-            """, (str(telegram_message_id), row["order_id"], row["deal_id"], row["chat_id"]))
+                    order_id=excluded.order_id,deal_id=excluded.deal_id,chat_id=excluded.chat_id,
+                    operator_chat_id=excluded.operator_chat_id
+            """, (str(telegram_message_id), row["order_id"], row["deal_id"], row["chat_id"],
+                  str(operator_chat_id)))
 
 
 class BuyerPlatformMessageOutbox:
@@ -345,13 +360,14 @@ class TelegramOperatorReplyRouter:
             return False
         with self.database.connect() as db:
             rows = db.execute("""
-                SELECT m.order_id,m.deal_id,m.chat_id,d.chat_id AS current_chat
+                SELECT m.order_id,m.deal_id,m.chat_id,m.operator_chat_id,d.chat_id AS current_chat
                 FROM telegram_operator_messages m
                 JOIN gd_orders o ON o.order_id=m.order_id AND o.deal_id=m.deal_id
                 JOIN gd_deals d ON d.deal_id=m.deal_id
                 WHERE m.telegram_message_id=?
             """, (str(reply_to_message_id),)).fetchall()
-        if len(rows) != 1 or rows[0]["chat_id"] != rows[0]["current_chat"]:
+        if (len(rows) != 1 or rows[0]["chat_id"] != rows[0]["current_chat"]
+                or rows[0]["operator_chat_id"] != str(operator_chat_id)):
             return False
         row = rows[0]
         self.buyer_message_enqueue(row["deal_id"], row["chat_id"], str(text).strip())
