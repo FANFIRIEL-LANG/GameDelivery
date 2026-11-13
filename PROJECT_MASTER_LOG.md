@@ -4599,3 +4599,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Code/test commits: a4010ef3d1583f91191e82472d1f26f28eb07636 (основная реализация) и e1c49016df6d1161a08f370861cdee1fc9bfb385 (защитные проверки, auto-restore baseline и тесты).
 - Локальные unit tests и реальные Playerok mutation в этой сессии не запускались. GitHub Actions должны проверить новый checkpoint; успешность заранее не заявляется. При подключении к настоящему Playerok первые найденные сделки будут помечены historical; реальные статусы меняются только после внутреннего DELIVERED, при подтверждённом текущем Playerok PAID.
 - Ограничение интеграции на этой стадии: новые сделки создают нормализованный pending order только при наличии конфигурации объявления; автоматический подбор/резервирование Steam активов и запуск выдачи остаются ответственностью существующего delivery pipeline, а не Playerok status worker. Playerok status worker отвечает за переход сделки после DELIVERED и контроль CONFIRMED.
+
+
+### 2026-11-13 — Actions #1750: fail-closed pageInfo и синхронизация тестового контракта
+
+- GitHub Actions Tests #1750 на e1c49016df6d1161a08f370861cdee1fc9bfb385 завершился failure по двум тестам в tests/test_playerok_read_only_sales.py; остальные тестовые модули, включая tests/test_playerok_sync.py, прошли изолированный запуск.
+- Первая причина: ветка fetch_sales() для отсутствующего pageInfo осталась permissive в опубликованном blob. Исправлено: отсутствие pageInfo теперь RuntimeError, поэтому baseline не может быть помечен завершённым на неполном/неожиданном ответе.
+- Вторая причина: ожидаемый mapping теста не включал buyer_id, который намеренно возвращается адаптером отдельно для identity-bound deal processing. Добавлено ожидаемое поле.
+- Code/test commit: 8221854809f55f5a7a6954ad026715e3ae6a7b9f. Изменены integrations/playerok/client.py и tests/test_playerok_read_only_sales.py.
+- Локальные тесты не запускались. Следующий GitHub Actions запуск должен подтвердить исправление; main и PR #4 не изменялись.
