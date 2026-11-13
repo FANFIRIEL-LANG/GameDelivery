@@ -220,7 +220,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         credentials.configure(bot_token="123456:secret")
         outbox = TelegramBotOutbox(
             self.db, credentials, lambda *args: {"ok": True},
-            event_filters={"telegram_notification": True, "operator_support_request": False},
+            event_filters={"unknown": True, "support_request": False},
         )
         with self.db.connect() as db:
             db.execute(
@@ -237,7 +237,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             statuses = {row["event_id"]: row["status"] for row in db.execute(
                 "SELECT event_id,status FROM gd_delivery_events WHERE event_id LIKE 'event:test-%'"
             ).fetchall()}
-        self.assertEqual([(row["event_type"], row["status"]) for row in queued], [("telegram_notification", "pending")])
+        self.assertEqual([(row["event_type"], row["status"]) for row in queued], [("unknown", "pending")])
         self.assertEqual(statuses["event:test-telegram"], "queued")
         self.assertEqual(statuses["event:test-filtered"], "pending")
 
