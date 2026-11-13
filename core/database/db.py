@@ -3,6 +3,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from core.database.connection import connect_sqlite
+from core.database.ledger_migrations import apply_delivery_ledger_migrations, ensure_pre_migration_backup
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -34,12 +37,10 @@ class Database:
             self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.path), timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_sqlite(self.path)
 
     def initialize(self) -> None:
+        ensure_pre_migration_backup(self.path)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            apply_delivery_ledger_migrations(connection)

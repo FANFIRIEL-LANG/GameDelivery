@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from games.steam_cards.selection import CardCopy
+from core.database.connection import connect_sqlite
 
 
 class InventorySnapshotStore:
@@ -21,10 +22,7 @@ class InventorySnapshotStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_sqlite(self.database_path)
 
     def _initialize(self) -> None:
         with self._connect() as connection:

@@ -23,6 +23,8 @@ from app.platforms_panel import MarketplacePanel
 from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
 from integrations.openskin.client import configure_openskin_diagnostics
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
+from core.database.connection import connect_sqlite
+from core.database.ledger_migrations import ensure_pre_migration_backup, migrate_delivery_ledger
 from app.diagnostics import configure_logging, get_log_directory, get_logger, log_exception
 
 
@@ -316,7 +318,8 @@ class MainWindow(QMainWindow):
 
     def _ensure_delivery_order_schema(self):
         """Create or migrate local orders while preserving existing rows."""
-        with sqlite3.connect(self._database_path) as db:
+        ensure_pre_migration_backup(self._database_path)
+        with connect_sqlite(self._database_path) as db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS delivery_orders (
                     order_id TEXT PRIMARY KEY,
@@ -367,9 +370,12 @@ class MainWindow(QMainWindow):
                 )
             """)
 
+        # Add the normalized ledger without renaming or deleting legacy tables.
+        migrate_delivery_ledger(self._database_path)
+
         # Migrate existing plaintext Steam tokens to the OS credential vault.
         # Keep the original DB value until the vault confirms the token was saved.
-        with sqlite3.connect(self._database_path) as db:
+        with connect_sqlite(self._database_path) as db:
             db.execute("PRAGMA secure_delete = ON")
             legacy_urls = db.execute(
                 "SELECT order_id, recipient_trade_url FROM delivery_orders "
@@ -386,7 +392,7 @@ class MainWindow(QMainWindow):
 
     def _recover_interrupted_delivery_orders(self) -> int:
         """Fail closed for interrupted sends and remove their saved Steam trade tokens."""
-        with sqlite3.connect(self._database_path) as db:
+        with connect_sqlite(self._database_path) as db:
             db.execute("BEGIN IMMEDIATE")
             interrupted_order_ids = [
                 row[0]
@@ -428,7 +434,7 @@ class MainWindow(QMainWindow):
         imported_now = False
         try:
             self._ensure_delivery_order_schema()
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 existing = db.execute(
                     "SELECT order_id FROM delivery_orders WHERE source_platform = ? AND source_order_id = ?",
                     (platform, external_id),
@@ -499,7 +505,7 @@ class MainWindow(QMainWindow):
             if status["stale"] or not status["updated_at"]:
                 self.order_assets.addItem("Нет подтверждённого снимка — сначала обнови инвентарь через ASF.")
                 return
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 rows = db.execute(
                     "SELECT asset_id, game_name, card_name, is_trading_card, is_foil, is_tradable "
                     "FROM steam_inventory_snapshot WHERE bot_name = ? ORDER BY game_name, card_name, asset_id",
@@ -576,7 +582,7 @@ class MainWindow(QMainWindow):
                         f"Снимок инвентаря бота {bot_name} устарел или не подтверждён. "
                         "Обнови инвентарь через ASF перед резервированием."
                     )
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 for bot_name, asset_id in selected:
                     row = db.execute(
                         "SELECT is_trading_card, is_foil, is_tradable "
@@ -598,7 +604,7 @@ class MainWindow(QMainWindow):
             selected_row = self.orders.currentRow()
             if selected_row >= 0 and self.orders.item(selected_row, 0):
                 candidate_id = self.orders.item(selected_row, 0).text().strip()
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     candidate = db.execute(
                         "SELECT source_platform, status FROM delivery_orders WHERE order_id = ?",
                         (candidate_id,),
@@ -624,7 +630,7 @@ class MainWindow(QMainWindow):
             try:
                 safe_recipient = self._trade_credentials.store_trade_url(order_id, recipient)
                 credential_stored = True
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     db.execute("BEGIN IMMEDIATE")
                     if existing_order_id:
                         current = db.execute(
@@ -672,7 +678,7 @@ class MainWindow(QMainWindow):
         try:
             order_id = self._selected_order_id()
             logger.info("Trade send preflight started; order_id=%s", order_id)
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 order = db.execute(
                     "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
@@ -758,7 +764,7 @@ class MainWindow(QMainWindow):
         self.preview_offer_button.setEnabled(False)
         try:
             order_id = self._selected_order_id()
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 order = db.execute(
                     "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
@@ -857,7 +863,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
                 self._finish_async_send_ui()
                 return
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute("SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)).fetchone()
                 current_assets = db.execute(
@@ -904,7 +910,7 @@ class MainWindow(QMainWindow):
                     "неизвестен результат отправки — проверь исходящие Steam"
                     if unknown else "reserved — не отправлен"
                 )
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                         (new_status, order_id, "sending — запрос ASF"),
@@ -927,7 +933,7 @@ class MainWindow(QMainWindow):
                 confirmation = str(outcome.get("confirmationStatus", "unknown"))
                 status = "sent — требуется подтверждение Steam" if confirmation == "pending" else "sent — ожидание покупателя"
                 offer_text = ", ".join(str(value) for value in offer_ids)
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, trade_confirmation_status = ? "
                         "WHERE order_id = ? AND status = ?",
@@ -947,7 +953,7 @@ class MainWindow(QMainWindow):
                     key=int,
                 ) if isinstance(offer_ids, list) else []
                 offer_text = ", ".join(valid_ids)
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     if offer_text:
                         db.execute(
                             "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, trade_confirmation_status = 'unknown' "
@@ -968,7 +974,7 @@ class MainWindow(QMainWindow):
                     + "\n\nПроверь исходящие предложения Steam; повторная отправка запрещена.",
                 )
             else:
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                         ("reserved — не отправлен", order_id, "sending — запрос ASF"),
@@ -979,7 +985,7 @@ class MainWindow(QMainWindow):
                 )
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
             log_exception(logger, "async trade send result handling", exc)
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 db.execute(
                     "UPDATE delivery_orders SET status = ?, trade_confirmation_status = 'unknown' "
                     "WHERE order_id = ? AND status = ?",
@@ -1005,7 +1011,7 @@ class MainWindow(QMainWindow):
         order_id = None
         try:
             order_id = self._selected_order_id()
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 order = db.execute(
                     "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
@@ -1096,7 +1102,7 @@ class MainWindow(QMainWindow):
                 return
 
             # Compare-and-set prevents a second UI click from sending the same order concurrently.
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?",
@@ -1138,7 +1144,7 @@ class MainWindow(QMainWindow):
                 )
             except (OSError, ValueError) as exc:
                 # Local validation or one-use-secret file errors occur before command dispatch.
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                         ("reserved — не отправлен", order_id, "sending — запрос ASF"),
@@ -1152,7 +1158,7 @@ class MainWindow(QMainWindow):
                 return
             except ASFError as exc:
                 # The IPC request might have reached ASF; never reset and blindly retry.
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                         ("неизвестен результат отправки — проверь исходящие Steam", order_id, "sending — запрос ASF"),
@@ -1178,7 +1184,7 @@ class MainWindow(QMainWindow):
                     else "sent — ожидание покупателя"
                 )
                 offer_id_text = ", ".join(str(value) for value in offer_ids)
-                with sqlite3.connect(self._database_path) as db:
+                with connect_sqlite(self._database_path) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, "
                         "trade_confirmation_status = ? WHERE order_id = ? AND status = ?",
@@ -1227,7 +1233,7 @@ class MainWindow(QMainWindow):
                 user_message = str(outcome.get("error") or "ASF отклонил отправку до создания предложения.")
                 offer_id_text = ""
 
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 if outcome.get("resultUnknown") is True and offer_id_text:
                     db.execute(
                         "UPDATE delivery_orders SET status = ?, trade_offer_id = ?, "
@@ -1257,7 +1263,7 @@ class MainWindow(QMainWindow):
             log_exception(logger, "trade send workflow", exc)
             if request_started and order_id:
                 try:
-                    with sqlite3.connect(self._database_path) as db:
+                    with connect_sqlite(self._database_path) as db:
                         db.execute(
                             "UPDATE delivery_orders SET status = ? WHERE order_id = ? AND status = ?",
                             ("неизвестен результат отправки — проверь исходящие Steam", order_id, "sending — запрос ASF"),
@@ -1274,7 +1280,7 @@ class MainWindow(QMainWindow):
             return
         try:
             order_id = self._selected_order_id()
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 row = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
                 ).fetchone()
@@ -1292,7 +1298,7 @@ class MainWindow(QMainWindow):
         self.orders.setRowCount(0)
         try:
             self._ensure_delivery_order_schema()
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 rows = db.execute(
                     "SELECT order_id, asset_count, status, created_at, source_platform, "
                     "source_title, source_buyer, trade_offer_id FROM delivery_orders ORDER BY created_at DESC"
@@ -1336,7 +1342,7 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         order_id = self.orders.item(row, 0).text()
-        with sqlite3.connect(self._database_path) as db:
+        with connect_sqlite(self._database_path) as db:
             order = db.execute(
                 "SELECT recipient_trade_url, status, source_platform, source_order_id, "
                 "source_title, source_buyer, source_status, source_amount, source_url "
@@ -1375,7 +1381,7 @@ class MainWindow(QMainWindow):
     def _cancel_selected_order(self):
         try:
             order_id = self._selected_order_id()
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 row = db.execute(
                     "SELECT status, source_platform FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
@@ -1420,7 +1426,7 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
@@ -1453,7 +1459,7 @@ class MainWindow(QMainWindow):
                 "sent — ожидание покупателя",
                 "sent — требуется подтверждение Steam",
             }
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 row = db.execute(
                     "SELECT status, trade_offer_id FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
@@ -1491,7 +1497,7 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
@@ -1526,7 +1532,7 @@ class MainWindow(QMainWindow):
                 "cancelled — отказ от заказа",
                 "cancelled — предложение Steam отменено оператором",
             }
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 row = db.execute(
                     "SELECT status, source_platform FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
@@ -1557,7 +1563,7 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            with sqlite3.connect(self._database_path) as db:
+            with connect_sqlite(self._database_path) as db:
                 db.execute("BEGIN IMMEDIATE")
                 current = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)

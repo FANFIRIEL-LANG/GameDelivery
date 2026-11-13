@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from integrations.asf.client import ASFError
+from core.database.connection import connect_sqlite
 
 
 @dataclass(frozen=True)
@@ -213,9 +214,7 @@ class GameInventoryStore:
             """)
 
     def _connect(self):
-        db = sqlite3.connect(self.database_path, timeout=10)
-        db.execute("PRAGMA busy_timeout = 10000")
-        return db
+        return connect_sqlite(self.database_path)
 
     def replace(self, game_id: str, bot_name: str, items: list[InventoryItem]) -> dict[str, object]:
         import json

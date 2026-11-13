@@ -10,6 +10,7 @@ import sqlite3
 
 from games.cs2.pricing import PRICE_THRESHOLD_USD, CachedPrice, PriceState
 from integrations.openskin.client import PricePosition
+from core.database.connection import connect_sqlite
 
 
 @dataclass(frozen=True)
@@ -84,8 +85,7 @@ class PriceCacheStore:
 
     @contextmanager
     def _connect(self):
-        db = sqlite3.connect(self.database_path, timeout=10)
-        db.execute("PRAGMA busy_timeout = 10000")
+        db = connect_sqlite(self.database_path)
         try:
             yield db
             db.commit()

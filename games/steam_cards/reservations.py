@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
+from core.database.connection import connect_sqlite
+
 
 class AssetReservationStore:
     """Transactional local reservations keyed by bot and asset ID; no trade sending."""
@@ -25,10 +27,7 @@ class AssetReservationStore:
             """)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+        return connect_sqlite(self.database_path)
 
     def reserve(self, order_id: str, assets: Iterable[tuple[str, str]]) -> dict[str, object]:
         order = order_id.strip()
