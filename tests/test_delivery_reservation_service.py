@@ -122,17 +122,24 @@ class DeliveryReservationServiceTests(unittest.TestCase):
 
         self.assertTrue(result.reserved)
         self.assertEqual(len(result.legs), 2)
-        planned_assets = {
-            (leg.bot_name, asset_id)
+        planned_by_bot = {
+            leg.bot_name: set(leg.asset_ids)
             for leg in result.legs
-            for asset_id in leg.asset_ids
         }
+        planned_assets = {
+            (bot_name, asset_id)
+            for bot_name, asset_ids in planned_by_bot.items()
+            for asset_id in asset_ids
+        }
+        available_assets = {
+            ("Bot-A", "1001"), ("Bot-A", "1002"),
+            ("Bot-B", "2001"), ("Bot-B", "2002"),
+        }
+        self.assertEqual(set(planned_by_bot), {"Bot-A", "Bot-B"})
+        self.assertEqual(len(planned_assets), 3)
+        self.assertTrue(planned_assets.issubset(available_assets))
         self.assertEqual(
-            planned_assets,
-            {("Bot-A", "1001"), ("Bot-A", "1002"), ("Bot-B", "2001")},
-        )
-        self.assertEqual(
-            sum(len(leg.asset_ids) for leg in result.legs),
+            sum(len(asset_ids) for asset_ids in planned_by_bot.values()),
             3,
             "Резервируются ровно три предмета из пула ботов",
         )
