@@ -235,7 +235,7 @@ class TelegramBotOutbox:
             except (TypeError, ValueError):
                 payload = {"details": "invalid event payload"}
             raw_category = str(
-                payload.get("reason") or payload.get("status")
+                payload.get("status") or payload.get("reason")
                 or payload.get("steam_status") or row["event_type"]
             ).casefold()
             category_aliases = {
