@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import hashlib
 from typing import Any, Callable
 
@@ -98,7 +97,7 @@ class TelegramBotOutbox:
 
     def __init__(
         self, database, credentials: TelegramCredentialStore,
-        sender: Callable[[str, dict[str, Any], dict[str, str] | None], Any],
+        sender: Callable[[str, dict[str, Any], dict[str, str] | None], Any] = telegram_api_sender,
         *, event_filters: dict[str, bool] | None = None,
     ):
         self.database = database
