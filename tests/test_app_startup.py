@@ -342,8 +342,22 @@ class AppStartupSmokeTests(unittest.TestCase):
                 window = MainWindow()
                 try:
                     window._load_saved_orders()
-                    window.orders.setCurrentCell(0, 0)
-                    window.orders.selectRow(0)
+                    legacy_row = next(
+                        row_index
+                        for row_index in range(window.orders.rowCount())
+                        if (
+                            isinstance(
+                                window.orders.item(row_index, 0).data(Qt.ItemDataRole.UserRole),
+                                dict,
+                            )
+                            and window.orders.item(row_index, 0).data(Qt.ItemDataRole.UserRole).get("kind")
+                            == "legacy"
+                            and window.orders.item(row_index, 0).data(Qt.ItemDataRole.UserRole).get("order_id")
+                            == "GD-TEST"
+                        )
+                    )
+                    window.orders.setCurrentCell(legacy_row, 0)
+                    window.orders.selectRow(legacy_row)
                     window._cancel_selected_order()
                     with sqlite3.connect(database) as db:
                         status = db.execute(
