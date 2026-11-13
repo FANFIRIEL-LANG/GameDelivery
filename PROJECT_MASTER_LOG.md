@@ -4684,3 +4684,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Code/test commit: `9c1c3d7017c9333e0c46ea3c1cc1072f523e44f3` поверх `7088c50c1759daca4f39a333e7fb6bcec78a5dfe`. GitHub Actions после этого commit должны подтвердить исправление; до завершения workflow зелёный CI не заявляется.
 - Windows Build #976 на предыдущем HEAD был success. ASF plugin #652 был success на ещё более раннем HEAD `147b32e9`; сборка плагина на текущем HEAD не подтверждена.
 - `main` и PR #4 не изменялись. Следующий шаг — проверить результаты Actions для commit `9c1c3d7`; если Tests остаётся красным, разбирать следующий конкретный failing test по его логам, не повторяя диагностику уже исправленного случая.
+
+
+### 2026-11-14 — уточнение причины зависания legacy cancellation test
+
+- Повторный разбор Tests #1781 (run `43515815223`) показал, что предыдущая гипотеза была неполной: `setCurrentCell()` корректно устанавливал current row, но тест всё равно выбирал строку с индексом 0.
+- При старте приложения `migrate_delivery_ledger()` переносит legacy `delivery_orders` в нормализованный ledger. В тестовой БД поэтому отображаются каноническая и legacy-записи одного исторического заказа. Из-за одинакового времени создания первой могла оказаться каноническая строка; тест, проверяющий legacy-обработчик, случайно запускал ledger cancellation с историческим legacy status. Полученный `ValueError` показывал немокированный модальный `QMessageBox.warning`, что и вызывало timeout 124.
+- Исправлен только тест `test_cancel_order_releases_only_its_reservations`: теперь он находит строку по `UserRole.kind == "legacy"` и точному `order_id == "GD-TEST"`, затем устанавливает current cell и выделяет именно её. Production cancellation logic не менялась.
+- Test commit: `2051da30d5162ffac54e9ebdc49b2eae3aaf3799`. Проверки Actions для этого коммита ожидаются; до их завершения CI не считается зелёным.
+- Windows Build #978 на предыдущем HEAD `90cf74b` — success. Tests #1781 на `90cf74b` — failure из-за описанного тестового выбора строки. `main` и PR #4 не изменялись.
