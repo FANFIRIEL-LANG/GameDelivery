@@ -10,7 +10,8 @@ internal static class CommandArgumentParser
     {
         "gamedelivery-diagnose",
         "gamedelivery-preview",
-        "gamedelivery-send"
+        "gamedelivery-send",
+        "gamedelivery-status"
     };
 
     public static bool TryNormalize(

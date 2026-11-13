@@ -1,11 +1,12 @@
 # GameDelivery ASF plugin — preview and guarded trade delivery
 
-The plugin exposes three commands through ASF's custom command handler:
+The plugin exposes four commands through ASF's custom command handler:
 
 - `gamedelivery-diagnose <BotName>` keeps the legacy check for plugin registration, runtime ASF/SteamKit assemblies, method signatures, connection state, and the bot's read-only inventory.
 - `gamedelivery-diagnose <BotName> <AppID...> [--recipient <SteamID64>]` reads badge metadata for the selected ASF session and, when a recipient is supplied, verifies the recipient's public profile identity before reading their badge and inventory.
 - `gamedelivery-preview` re-checks a proposed order against the current ASF inventory and **never sends**.
 - `gamedelivery-send` is used only after GameDelivery's order screen repeats the live preview, shows the exact selected assets, and receives explicit operator confirmation.
+- `gamedelivery-status <BotName> <TradeOfferID>` reads one exact outgoing offer through the selected bot's ASF `ArchiWebHandler`; a not-found response is inconclusive and must not be treated as cancellation.
 
 The command handler is compatible with ASF 6.3.11.7: the command prefix is optional in the ASF console and IPC, and used when sending commands through Steam chat. At startup version 1.0.2 logs whether ASF's active plugin collection includes this exact `IBotCommand2` handler. Recognized callbacks log only command name and argument count, never the encoded payload or trade token.
 
@@ -44,8 +45,9 @@ GameDelivery calls local, authenticated `POST /Api/Command` with `gamedelivery-p
 
 - requires ASF Owner access;
 - resolves the requested bot in the running ASF instance and requires it to be online;
-- fetches the current inventory through ASF's Actions API;
-- verifies every requested asset exists, is tradable, and is a normal (non-foil) Steam Trading Card in Steam Community inventory (AppID 753/context 6). Foil cards and all other Steam Community items are rejected. Game inventories such as CS2 (AppID 730/context 2) are outside this trade path;
+- accepts only Steam Community inventory (AppID 753/context 6) or CS2 inventory (AppID 730/context 2);
+- fetches the exact requested inventory through ASF's Actions API;
+- verifies every requested asset belongs to that exact AppID/context, has a description, and has `Tradable == true`; Steam Community assets must additionally be normal (non-foil) Trading Cards, while CS2 items use the separate 730/2 path;
 - returns a preview bound to the order, recipient, and exact ordered asset list;
 - returns `sendEnabled: false`.
 
@@ -55,10 +57,12 @@ Only the GameDelivery order screen calls `gamedelivery-send` after an explicit c
 
 - The plugin accepts commands only from ASF Owner.
 - The target must be an individual Steam account and must not be the sending bot itself.
-- The plugin re-fetches the live inventory immediately before creating the offer and rejects missing, untradable, duplicate, foil, non-card, or assets outside Steam Community inventory (AppID 753/context 6).
+- The plugin re-fetches the live inventory immediately before creating the offer and rejects missing, untradable, duplicate, mismatched-AppID/context, or undescribed assets. The 753/6 path additionally rejects foil and non-card items; the 730/2 path is CS2-specific.
+- Before creating the offer, ASF must successfully read the recipient inventory in the same AppID/context and return a zero-day combined trade-hold result. Private/unavailable inventory, a positive hold, or an unknown hold result blocks sending. Other Steam trading bans/restrictions without a reliable read-only ASF signal may still be reported only by Steam when `SendTradeOffer` is attempted; the plugin does not claim to pre-certify every account restriction.
 - The one-use command payload contains a random nonce, not the recipient trade token. GameDelivery stores the token in a one-use JSON file under the current user's LocalAppData; the plugin verifies the file's order, bot, recipient, nonce, and exact asset list and then deletes the file.
 - The plugin writes a persistent record keyed by order ID with a fingerprint of the order, recipient, bot, and assets. Reusing the order with a different payload is refused. Repeated calls for a recorded offer do not create a second offer. If the outcome is unknown, the plugin blocks an automatic retry and instructs the operator to inspect Steam's outgoing offers.
-- The result contains the offer ID(s) and whether an ASF/mobile confirmation remains pending. This does **not** mean the recipient has accepted the offer.
+- The result contains the offer ID(s) and whether an ASF/mobile confirmation remains pending. This does **not** mean the recipient has accepted the offer. Use `gamedelivery-status <BotName> <TradeOfferID>` to read the current outgoing offer state and exact `items_to_give` manifest through ASF.
+- `SendTradeOffer` is called with an empty `customMessage`, so GameDelivery adds no extra suffix. ASF 6.3.11.7 itself still adds its fixed `Sent by ArchiSteamFarm...` identifier; the plugin argument cannot remove that ASF-owned signature.
 - The plugin does not automatically accept arbitrary incoming offers.
 
 The plugin's idempotency record is stored under `%LOCALAPPDATA%\GameDelivery\ASFPlugin\sent_offers.json`. One-use secrets are stored temporarily under `%LOCALAPPDATA%\GameDelivery\pending_trade_requests`. Keep the Windows account and its LocalAppData protected. The trade token is not put in the ASF command payload or the GameDelivery journal.

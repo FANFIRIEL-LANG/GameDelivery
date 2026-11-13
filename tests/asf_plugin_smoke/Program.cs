@@ -1,4 +1,6 @@
 using ArchiSteamFarm.Plugins.Interfaces;
+using ArchiSteamFarm.Steam;
+using SteamKit2;
 using GameDelivery.ASFPlugin;
 using System;
 using System.Composition;
@@ -73,6 +75,16 @@ Assert(
         out tokens),
     "preview payload command was not recognized");
 Assert(tokens.Length == 2 && tokens[1] == "eyJvcmRlcklkIjoiMSJ9", "preview payload was modified");
+
+Assert(
+    TryNormalizeFromBuiltPlugin(
+        "gamedelivery-status Bot 1234567890",
+        ["gamedelivery-status", "Bot", "1234567890"],
+        "!",
+        out tokens),
+    "trade status command was not recognized");
+Assert(tokens.SequenceEqual(["gamedelivery-status", "Bot", "1234567890"]),
+    "trade status command arguments changed");
 
 Assert(
     !TryNormalizeFromBuiltPlugin("status gamedelivery-diagnose", ["status", "gamedelivery-diagnose"], "!", out _),
@@ -290,6 +302,93 @@ Assert(
 Assert(
     !InvokeSelfTradeGuard(76561197960265729UL, 76561197960265730UL),
     "SteamID64 guard rejected a different recipient");
+
+static object? InvokeTradeDeliveryHelper(string methodName, params object?[] arguments)
+{
+    Type tradeType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.TradeDelivery",
+        throwOnError: true)!;
+    MethodInfo method = tradeType.GetMethod(
+        methodName,
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException($"Built plugin helper {methodName} was not found");
+
+    try
+    {
+        return method.Invoke(null, arguments);
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            $"Built plugin helper {methodName} failed.",
+            exception.InnerException ?? exception);
+    }
+}
+
+Assert((bool)InvokeTradeDeliveryHelper("IsSupportedInventoryContext", 753U, 6UL)!,
+    "Steam Community 753/6 was not accepted");
+Assert((bool)InvokeTradeDeliveryHelper("IsSupportedInventoryContext", 730U, 2UL)!,
+    "CS2 730/2 was not accepted");
+Assert(!(bool)InvokeTradeDeliveryHelper("IsSupportedInventoryContext", 730U, 6UL)!,
+    "unsupported mixed CS2 inventory context was accepted");
+Assert(!(bool)InvokeTradeDeliveryHelper("IsSupportedInventoryContext", 753U, 2UL)!,
+    "unsupported mixed Steam Community inventory context was accepted");
+Assert((bool)InvokeTradeDeliveryHelper(
+    "IsAssetEligible", 753U, 6UL, true, true, true, 753U, 6UL)!,
+    "tradable normal Steam Trading Card was rejected");
+Assert(!(bool)InvokeTradeDeliveryHelper(
+    "IsAssetEligible", 753U, 6UL, false, true, true, 753U, 6UL)!,
+    "non-tradable Steam Trading Card was accepted");
+Assert(!(bool)InvokeTradeDeliveryHelper(
+    "IsAssetEligible", 753U, 6UL, true, true, false, 753U, 6UL)!,
+    "non-card Steam Community item was accepted as a normal Trading Card");
+Assert((bool)InvokeTradeDeliveryHelper(
+    "IsAssetEligible", 730U, 2UL, true, true, false, 730U, 2UL)!,
+    "tradable CS2 inventory item was rejected");
+Assert(!(bool)InvokeTradeDeliveryHelper(
+    "IsAssetEligible", 730U, 2UL, false, true, false, 730U, 2UL)!,
+    "non-tradable CS2 inventory item was accepted");
+Assert(!(bool)InvokeTradeDeliveryHelper(
+    "IsAssetEligible", 753U, 6UL, true, true, true, 730U, 2UL)!,
+    "asset from the wrong AppID/context was accepted for CS2");
+
+foreach (string expectedState in new[]
+{
+    "Active",
+    "Accepted",
+    "Declined",
+    "Canceled",
+    "Expired",
+    "InEscrow",
+    "CreatedNeedsConfirmation",
+    "Countered",
+    "CanceledBySecondFactor",
+    "InvalidItems"
+})
+{
+    if (!Enum.TryParse(expectedState, ignoreCase: false, out ETradeOfferState state))
+    {
+        throw new InvalidOperationException($"Pinned SteamKit2 does not expose trade state {expectedState}");
+    }
+
+    string actualState = (string)InvokeTradeDeliveryHelper("GetTradeOfferStatusName", state)!;
+    Assert(actualState == expectedState, $"Trade-offer state mapping changed: {expectedState} -> {actualState}");
+}
+
+Type archiWebHandlerType = typeof(Bot).GetProperty("ArchiWebHandler")?.PropertyType
+    ?? throw new InvalidOperationException("Pinned ASF Bot.ArchiWebHandler property was not found");
+Assert(archiWebHandlerType.GetMethod("GetTradeOffers", BindingFlags.Instance | BindingFlags.Public) is not null,
+    "Pinned ASF no longer exposes Bot.ArchiWebHandler.GetTradeOffers");
+Assert(archiWebHandlerType.GetMethod("GetInventoryAsync", BindingFlags.Instance | BindingFlags.Public) is not null,
+    "Pinned ASF no longer exposes recipient inventory enumeration through Bot.ArchiWebHandler");
+MethodInfo? tradeHoldMethod = archiWebHandlerType.GetMethod(
+    "GetCombinedTradeHoldDurationAgainstUser",
+    BindingFlags.Instance | BindingFlags.NonPublic,
+    binder: null,
+    types: [typeof(ulong), typeof(string)],
+    modifiers: null);
+Assert(tradeHoldMethod is not null && tradeHoldMethod.ReturnType == typeof(Task<byte?>),
+    "Pinned ASF trade-hold preflight contract changed");
 
 static object? GetProperty(object value, string name) =>
     value.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)

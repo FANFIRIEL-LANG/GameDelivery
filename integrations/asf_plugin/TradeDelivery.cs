@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -22,6 +23,8 @@ namespace GameDelivery.ASFPlugin;
 internal static class TradeDelivery
 {
     private const int MaxItems = 255;
+    private const uint Cs2AppId = 730;
+    private const ulong Cs2ContextId = 2;
     private static readonly SemaphoreSlim SendSemaphore = new(1, 1);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -118,10 +121,239 @@ internal static class TradeDelivery
     internal static bool IsSameSteamAccount(ulong botSteamId64, ulong recipientSteamId64)
         => botSteamId64 == recipientSteamId64;
 
+    internal static bool IsSupportedInventoryContext(uint appId, ulong contextId)
+        => (appId == Asset.SteamAppID && contextId == Asset.SteamCommunityContextID)
+            || (appId == Cs2AppId && contextId == Cs2ContextId);
+
+    internal static bool IsAssetEligible(
+        uint assetAppId,
+        ulong assetContextId,
+        bool tradable,
+        bool hasDescription,
+        bool isNormalTradingCard,
+        uint requestedAppId,
+        ulong requestedContextId)
+    {
+        if (!IsSupportedInventoryContext(requestedAppId, requestedContextId)
+            || assetAppId != requestedAppId
+            || assetContextId != requestedContextId
+            || !tradable
+            || !hasDescription)
+        {
+            return false;
+        }
+
+        return requestedAppId == Cs2AppId && requestedContextId == Cs2ContextId
+            || isNormalTradingCard;
+    }
+
+    internal static string GetTradeOfferStatusName(ETradeOfferState state) => state.ToString();
+
     internal static bool IsNormalTradingCard(Asset asset)
     {
         string itemType = asset.Description?.Type.ToString() ?? "";
         return string.Equals(itemType, "TradingCard", StringComparison.OrdinalIgnoreCase);
+    }
+
+
+    public static async Task<string> ProcessTradeStatusCommand(string botName, string rawTradeOfferId)
+    {
+        if (string.IsNullOrWhiteSpace(botName)
+            || botName.Length > 128
+            || string.IsNullOrWhiteSpace(rawTradeOfferId)
+            || !ulong.TryParse(rawTradeOfferId, NumberStyles.None, CultureInfo.InvariantCulture, out ulong tradeOfferId)
+            || tradeOfferId == 0
+            || !string.Equals(rawTradeOfferId, tradeOfferId.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+        {
+            return TradeStatusFailure("Укажи имя бота и канонический положительный TradeOfferID.");
+        }
+
+        Bot? targetBot = Bot.BotsReadOnly?.Values.FirstOrDefault(candidate =>
+            string.Equals(candidate.BotName, botName, StringComparison.OrdinalIgnoreCase));
+        if (targetBot is null)
+        {
+            return TradeStatusFailure("Выбранный ASF-бот не найден.");
+        }
+
+        if (!targetBot.IsConnectedAndLoggedOn)
+        {
+            return TradeStatusFailure("Выбранный ASF-бот не подключён к Steam; статус предложения не проверен.");
+        }
+
+        try
+        {
+            HashSet<TradeOffer>? sentOffers = await targetBot.ArchiWebHandler.GetTradeOffers(
+                activeOffers: null,
+                receivedOffers: false,
+                sentOffers: true,
+                withDescriptions: true).ConfigureAwait(false);
+
+            if (sentOffers is null)
+            {
+                return TradeStatusFailure("ASF не смог получить список исходящих предложений. Состояние остаётся неизвестным.");
+            }
+
+            TradeOffer[] matches = sentOffers
+                .Where(offer => offer.TradeOfferID == tradeOfferId)
+                .ToArray();
+
+            if (matches.Length == 0)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    mode = "trade-status",
+                    found = false,
+                    tradeOfferId = rawTradeOfferId,
+                    botName = targetBot.BotName,
+                    status = "not_found_in_asf_response",
+                    error = "ASF не вернул это исходящее предложение. Это не доказывает, что предложение отменено или отклонено."
+                }, JsonOptions);
+            }
+
+            if (matches.Length != 1)
+            {
+                return TradeStatusFailure("ASF вернул неоднозначный результат для указанного TradeOfferID.");
+            }
+
+            TradeOffer offer = matches[0];
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                mode = "trade-status",
+                found = true,
+                tradeOfferId = offer.TradeOfferID.ToString(CultureInfo.InvariantCulture),
+                botName = targetBot.BotName,
+                recipientSteamId64 = offer.OtherSteamID64.ToString(CultureInfo.InvariantCulture),
+                status = GetTradeOfferStatusName(offer.State),
+                itemsToGive = offer.ItemsToGiveReadOnly.Select(asset => new
+                {
+                    appId = asset.AppID,
+                    contextId = asset.ContextID,
+                    assetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
+                    amount = asset.Amount,
+                    tradable = asset.Tradable,
+                    name = asset.Description?.Name
+                }).ToArray()
+            }, JsonOptions);
+        }
+        catch (Exception exception)
+        {
+            return TradeStatusFailure(
+                "Не удалось проверить исходящее предложение через ASF: "
+                + exception.GetType().Name + ": " + SafeMessage(exception.Message));
+        }
+    }
+
+    internal static string TradeStatusFailure(string message) => JsonSerializer.Serialize(new
+    {
+        success = false,
+        mode = "trade-status",
+        found = false,
+        status = "unknown",
+        error = message
+    }, JsonOptions);
+
+    private static async Task<byte?> GetRecipientTradeHoldDurationAsync(
+        Bot senderBot,
+        ulong recipientSteamId64,
+        string recipientTradeToken)
+    {
+        Type handlerType = senderBot.ArchiWebHandler.GetType();
+        MethodInfo? method = handlerType.GetMethod(
+            "GetCombinedTradeHoldDurationAgainstUser",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(ulong), typeof(string)],
+            modifiers: null);
+
+        if (method is null || method.ReturnType != typeof(Task<byte?>))
+        {
+            throw new MissingMethodException(
+                handlerType.FullName,
+                "GetCombinedTradeHoldDurationAgainstUser(ulong, string)");
+        }
+
+        object? invocation = method.Invoke(senderBot.ArchiWebHandler, [recipientSteamId64, recipientTradeToken]);
+        if (invocation is not Task<byte?> holdTask)
+        {
+            throw new InvalidOperationException("ASF returned an unexpected trade-hold preflight result.");
+        }
+
+        return await holdTask.ConfigureAwait(false);
+    }
+
+    private static async Task<(bool InventoryAccessible, byte? TradeHoldDays, string? Error)> PreflightRecipientAsync(
+        Bot senderBot,
+        ulong recipientSteamId64,
+        uint appId,
+        ulong contextId,
+        string recipientTradeToken)
+    {
+        try
+        {
+            await using IAsyncEnumerator<Asset> enumerator = senderBot.ArchiWebHandler.GetInventoryAsync(
+                recipientSteamId64,
+                appId,
+                contextId,
+                language: "english").GetAsyncEnumerator();
+
+            // A successful first page (including a successfully returned empty inventory)
+            // confirms that this Steam inventory is readable by the sender's ASF session.
+            _ = await enumerator.MoveNextAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            return (
+                false,
+                null,
+                "Инвентарь получателя недоступен через ASF в выбранном игровом контексте "
+                + appId.ToString(CultureInfo.InvariantCulture) + "/" + contextId.ToString(CultureInfo.InvariantCulture)
+                + ". Проверь приватность профиля/игры/инвентаря. "
+                + exception.GetType().Name + ": " + SafeMessage(exception.Message, recipientTradeToken));
+        }
+
+        byte? tradeHoldDays;
+        try
+        {
+            // ASF 6.3.11.7 exposes this read-only hold check internally. It uses ASF's
+            // authenticated session/access token and recipient trade URL token, not a Steam Web API key.
+            tradeHoldDays = await GetRecipientTradeHoldDurationAsync(
+                senderBot,
+                recipientSteamId64,
+                recipientTradeToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            Exception cause = exception is TargetInvocationException { InnerException: not null } invocation
+                ? invocation.InnerException
+                : exception;
+            return (
+                true,
+                null,
+                "ASF не смог проверить trade hold получателя; отправка заблокирована до достоверной проверки. "
+                + cause.GetType().Name + ": " + SafeMessage(cause.Message, recipientTradeToken));
+        }
+
+        if (!tradeHoldDays.HasValue)
+        {
+            return (
+                true,
+                null,
+                "ASF не вернул достоверный результат проверки trade hold получателя. Отправка заблокирована.");
+        }
+
+        if (tradeHoldDays.Value > 0)
+        {
+            return (
+                true,
+                tradeHoldDays,
+                "У получателя обнаружено ограничение/удержание обмена минимум на "
+                + tradeHoldDays.Value.ToString(CultureInfo.InvariantCulture)
+                + " дн. Предложение не создавалось.");
+        }
+
+        return (true, tradeHoldDays, null);
     }
 
     public static async Task<string> ProcessSendCommand(
@@ -153,6 +385,7 @@ internal static class TradeDelivery
             || request.TargetSteamId64 == 0
             || request.AssetIds is null
             || request.AssetIds.Count is < 1 or > MaxItems
+            || !IsSupportedInventoryContext(request.AppId, request.ContextId)
             || !Regex.IsMatch(request.CredentialNonce ?? "", "^[a-f0-9]{64}$", RegexOptions.CultureInvariant))
         {
             return Failure("В запросе отправки отсутствуют обязательные поля или они некорректны.");
@@ -202,6 +435,8 @@ internal static class TradeDelivery
             || !string.Equals(secret.OrderId, request.OrderId, StringComparison.Ordinal)
             || !string.Equals(secret.BotName, request.BotName, StringComparison.OrdinalIgnoreCase)
             || secret.TargetSteamId64 != request.TargetSteamId64
+            || secret.AppId != request.AppId
+            || secret.ContextId != request.ContextId
             || secret.AssetIds is null
             || !secret.AssetIds.SequenceEqual(request.AssetIds, StringComparer.Ordinal)
             || string.IsNullOrWhiteSpace(secret.TradeToken)
@@ -233,7 +468,11 @@ internal static class TradeDelivery
 
             if (records.TryGetValue(request.OrderId, out SendRecord? existing))
             {
-                if (!string.Equals(existing.Fingerprint, fingerprint, StringComparison.Ordinal))
+                bool fingerprintMatches = string.Equals(existing.Fingerprint, fingerprint, StringComparison.Ordinal)
+                    || (request.AppId == Asset.SteamAppID
+                        && request.ContextId == Asset.SteamCommunityContextID
+                        && string.Equals(existing.Fingerprint, ComputeLegacyFingerprint(request), StringComparison.Ordinal));
+                if (!fingerprintMatches || existing.AppId != request.AppId || existing.ContextId != request.ContextId)
                 {
                     return Failure(
                         "ID заказа уже связан с другой отправкой. Проверь исходящие предложения Steam.",
@@ -285,8 +524,8 @@ internal static class TradeDelivery
             try
             {
                 (inventory, inventoryMessage) = await targetBot.Actions.GetInventory(
-                    Asset.SteamAppID,
-                    Asset.SteamCommunityContextID,
+                    request.AppId,
+                    request.ContextId,
                     language: "english").ConfigureAwait(false);
                 targetBot.ArchiLogger.LogGenericInfo(
                     "GameDelivery send phase: phase=inventory_fetch_completed; orderId="
@@ -324,16 +563,43 @@ internal static class TradeDelivery
             foreach (string rawAssetId in request.AssetIds)
             {
                 ulong assetId = ulong.Parse(rawAssetId, NumberStyles.None, CultureInfo.InvariantCulture);
-                if (!byAssetId.TryGetValue(assetId, out Asset? asset)
-                    || asset.AppID != Asset.SteamAppID
-                    || asset.ContextID != Asset.SteamCommunityContextID
-                    || !asset.Tradable
-                    || !IsNormalTradingCard(asset))
+                if (!byAssetId.TryGetValue(assetId, out Asset? asset))
                 {
-                    return Failure("Актив " + rawAssetId + " отсутствует в Steam Community inventory (753/6), не является обычной Trading Card или сейчас не передаваем.");
+                    return Failure("Актив " + rawAssetId + " отсутствует в актуальном инвентаре выбранного бота.");
+                }
+
+                if (!IsAssetEligible(
+                    asset.AppID,
+                    asset.ContextID,
+                    asset.Tradable,
+                    asset.Description is not null,
+                    IsNormalTradingCard(asset),
+                    request.AppId,
+                    request.ContextId))
+                {
+                    return Failure(
+                        "Актив " + rawAssetId + " не соответствует выбранной игре/контексту, "
+                        + "не имеет подтверждённого описания, не передаваем или не является обычной Steam Trading Card.");
                 }
 
                 selectedAssets.Add(asset);
+            }
+
+            (bool recipientInventoryAccessible, byte? recipientTradeHoldDays, string? recipientPreflightError) =
+                await PreflightRecipientAsync(
+                    targetBot,
+                    request.TargetSteamId64,
+                    request.AppId,
+                    request.ContextId,
+                    secret.TradeToken).ConfigureAwait(false);
+            targetBot.ArchiLogger.LogGenericInfo(
+                "GameDelivery send phase: phase=recipient_preflight_completed; orderId="
+                + SafeMessage(request.OrderId)
+                + "; inventoryAccessible=" + recipientInventoryAccessible.ToString(CultureInfo.InvariantCulture)
+                + "; reportedTradeHoldDays=" + (recipientTradeHoldDays?.ToString(CultureInfo.InvariantCulture) ?? "unknown") + ".");
+            if (recipientPreflightError is not null)
+            {
+                return Failure(recipientPreflightError);
             }
 
             SendRecord record = new()
@@ -342,6 +608,8 @@ internal static class TradeDelivery
                 Fingerprint = fingerprint,
                 BotName = targetBot.BotName,
                 TargetSteamId64 = request.TargetSteamId64,
+                AppId = request.AppId,
+                ContextId = request.ContextId,
                 AssetIds = request.AssetIds.ToList(),
                 State = "sending",
                 UpdatedAtUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)
@@ -370,6 +638,7 @@ internal static class TradeDelivery
                         request.TargetSteamId64,
                         itemsToGive: selectedAssets,
                         token: secret.TradeToken,
+                        // ASF always adds its own fixed "Sent by ..." identifier. Empty suppresses only our optional custom suffix.
                         customMessage: string.Empty,
                         forcedSingleOffer: true,
                         itemsPerTrade: (ushort)selectedAssets.Count).ConfigureAwait(false);
@@ -480,6 +749,18 @@ internal static class TradeDelivery
             request.OrderId,
             request.BotName.Trim().ToLowerInvariant(),
             request.TargetSteamId64.ToString(CultureInfo.InvariantCulture),
+            request.AppId.ToString(CultureInfo.InvariantCulture),
+            request.ContextId.ToString(CultureInfo.InvariantCulture),
+            string.Join(",", request.AssetIds.OrderBy(value => value, StringComparer.Ordinal)));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    private static string ComputeLegacyFingerprint(SendRequest request)
+    {
+        string canonical = string.Join("\n",
+            request.OrderId,
+            request.BotName.Trim().ToLowerInvariant(),
+            request.TargetSteamId64.ToString(CultureInfo.InvariantCulture),
             string.Join(",", request.AssetIds.OrderBy(value => value, StringComparer.Ordinal)));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
@@ -558,6 +839,8 @@ internal static class TradeDelivery
             orderId = record.OrderId,
             botName = record.BotName,
             targetSteamId64 = record.TargetSteamId64,
+            appId = record.AppId,
+            contextId = record.ContextId,
             assetCount = record.AssetIds.Count,
             assets = record.AssetIds.Select(id => new { assetId = id }).ToList(),
             offerIds = record.OfferIds,
@@ -588,6 +871,8 @@ internal static class TradeDelivery
         orderId = record.OrderId,
         botName = record.BotName,
         targetSteamId64 = record.TargetSteamId64,
+        appId = record.AppId,
+        contextId = record.ContextId,
         assetCount = record.AssetIds.Count,
         assets = record.AssetIds.Select(id => new { assetId = id }).ToList(),
         offerIds = record.OfferIds
@@ -640,6 +925,8 @@ internal static class TradeDelivery
         public string OrderId { get; set; } = "";
         public string BotName { get; set; } = "";
         public ulong TargetSteamId64 { get; set; }
+        public uint AppId { get; set; } = Asset.SteamAppID;
+        public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
         public string CredentialNonce { get; set; } = "";
     }
@@ -652,6 +939,8 @@ internal static class TradeDelivery
         public string OrderId { get; set; } = "";
         public string BotName { get; set; } = "";
         public ulong TargetSteamId64 { get; set; }
+        public uint AppId { get; set; } = Asset.SteamAppID;
+        public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
         public string TradeToken { get; set; } = "";
     }
@@ -664,6 +953,8 @@ internal static class TradeDelivery
         public string Fingerprint { get; set; } = "";
         public string BotName { get; set; } = "";
         public ulong TargetSteamId64 { get; set; }
+        public uint AppId { get; set; } = Asset.SteamAppID;
+        public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
         public List<string> OfferIds { get; set; } = [];
         public string State { get; set; } = "sending";

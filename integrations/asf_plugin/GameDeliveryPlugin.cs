@@ -28,6 +28,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
     private const string PreviewCommandName = "gamedelivery-preview";
     private const string SendCommandName = "gamedelivery-send";
     private const string DiagnosticCommandName = "gamedelivery-diagnose";
+    private const string TradeStatusCommandName = "gamedelivery-status";
     private const int MaxItemsPerPreview = 255;
     private const int MaxDiagnosticAppIds = 20;
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -200,7 +201,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             bool isPreview = string.Equals(recognizedCommand, PreviewCommandName, StringComparison.OrdinalIgnoreCase);
             isSend = string.Equals(recognizedCommand, SendCommandName, StringComparison.OrdinalIgnoreCase);
             bool isDiagnostic = string.Equals(recognizedCommand, DiagnosticCommandName, StringComparison.OrdinalIgnoreCase);
-            if (!isPreview && !isSend && !isDiagnostic)
+            bool isTradeStatus = string.Equals(recognizedCommand, TradeStatusCommandName, StringComparison.OrdinalIgnoreCase);
+            if (!isPreview && !isSend && !isDiagnostic && !isTradeStatus)
             {
                 return null;
             }
@@ -252,6 +254,19 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                     recipientSteamId64).ConfigureAwait(false);
             }
 
+            if (isTradeStatus)
+            {
+                if (commandArgs.Length != 3)
+                {
+                    return TradeDelivery.TradeStatusFailure(
+                        "Использование: gamedelivery-status <BotName> <TradeOfferID>.");
+                }
+
+                return await TradeDelivery.ProcessTradeStatusCommand(
+                    commandArgs[1],
+                    commandArgs[2]).ConfigureAwait(false);
+            }
+
             if (commandArgs.Length != 2 || commandArgs[1].Length > 16000)
             {
                 return Failure("Некорректный запрос GameDelivery.");
@@ -288,6 +303,11 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 return Failure("В запросе черновика отсутствуют обязательные поля.");
             }
 
+            if (!TradeDelivery.IsSupportedInventoryContext(request.AppId, request.ContextId))
+            {
+                return Failure("Поддерживаются только Steam Community 753/6 и CS2 730/2.");
+            }
+
             if (request.AssetIds.Any(string.IsNullOrWhiteSpace)
                 || request.AssetIds.Distinct(StringComparer.Ordinal).Count() != request.AssetIds.Count)
             {
@@ -321,8 +341,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             }
 
             (HashSet<Asset>? inventory, string inventoryMessage) = await targetBot.Actions.GetInventory(
-                Asset.SteamAppID,
-                Asset.SteamCommunityContextID,
+                request.AppId,
+                request.ContextId,
                 language: "english").ConfigureAwait(false);
 
             if (inventory is null)
@@ -344,19 +364,18 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                     return Failure("Актив " + rawAssetId + " не найден в актуальном инвентаре выбранного бота.");
                 }
 
-                if (asset.AppID != Asset.SteamAppID || asset.ContextID != Asset.SteamCommunityContextID)
+                if (!TradeDelivery.IsAssetEligible(
+                    asset.AppID,
+                    asset.ContextID,
+                    asset.Tradable,
+                    asset.Description is not null,
+                    TradeDelivery.IsNormalTradingCard(asset),
+                    request.AppId,
+                    request.ContextId))
                 {
-                    return Failure("Актив " + rawAssetId + " относится к неподдерживаемому контексту.");
-                }
-
-                if (!asset.Tradable)
-                {
-                    return Failure("Актив " + rawAssetId + " сейчас нельзя передать.");
-                }
-
-                if (!TradeDelivery.IsNormalTradingCard(asset))
-                {
-                    return Failure("Актив " + rawAssetId + " не является обычной Steam Trading Card.");
+                    return Failure(
+                        "Актив " + rawAssetId + " не соответствует выбранной игре/контексту, "
+                        + "не имеет подтверждённого описания, не передаваем или не является обычной Steam Trading Card.");
                 }
 
                 previewAssets.Add(new PreviewAsset
@@ -377,6 +396,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 OrderId = request.OrderId.Trim(),
                 BotName = targetBot.BotName,
                 TargetSteamId64 = request.TargetSteamId64,
+                AppId = request.AppId,
+                ContextId = request.ContextId,
                 AssetCount = previewAssets.Count,
                 Assets = previewAssets,
                 Message = "ASF подтвердил состав черновика. Торговое предложение не создавалось и не отправлялось."
@@ -1003,6 +1024,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         public string OrderId { get; set; } = "";
         public string BotName { get; set; } = "";
         public ulong TargetSteamId64 { get; set; }
+        public uint AppId { get; set; } = Asset.SteamAppID;
+        public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
     }
 
@@ -1014,6 +1037,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         public string OrderId { get; set; } = "";
         public string BotName { get; set; } = "";
         public ulong TargetSteamId64 { get; set; }
+        public uint AppId { get; set; } = Asset.SteamAppID;
+        public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public int AssetCount { get; set; }
         public List<PreviewAsset> Assets { get; set; } = [];
         public string Message { get; set; } = "";
