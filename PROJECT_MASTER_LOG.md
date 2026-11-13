@@ -4616,4 +4616,5 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Исправлено: повторная синхронизация обновляет ссылку gd_deals на актуальную ConfigVersion и listing ID; исторический флаг остаётся sticky и никогда не сбрасывается. Когда объявление настроено и сделка всё ещё PAID/non-historical, создаётся нормализованный pending gd_order.
 - Добавлен тест test_new_paid_deal_waiting_for_listing_setup_uses_new_config_when_available.
 - Code/test commit: ee2d08b5423ccc1abd0170aeab5def7225aa3f12.
-- GitHub Actions для предыдущего checkpoint 8221854 были запущены; новый commit инициировал следующий Tests/Windows Bundle workflow. Результат нового checkpoint ещё не подтверждён. main и PR #4 не изменялись.
+- GitHub Actions для code commit ee2d08b5423ccc1abd0170aeab5def7225aa3f12 завершились успешно: Tests #1754 (run 43461182924, conclusion=success) и Windows Bundle #952 (run 43461182903, conclusion=success). Оба запуска относятся к событию push в work/local-sync и проверяют один и тот же SHA ee2d08b. Сборка Windows Bundle прошла; это подтверждение CI-сборки, не пользовательской live-проверки Playerok/Steam.
+- Документирующий commit журнала на work/local-sync: 35214ed6038c1805dd32200459410f88cd7bd0c1; он является текущим HEAD ветки на момент этой записи и имеет родителем ee2d08b. main и PR #4 не изменялись.
