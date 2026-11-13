@@ -222,8 +222,28 @@ class TelegramBotOutbox:
                 payload = json.loads(row["payload_json"])
             except (TypeError, ValueError):
                 payload = {"details": "invalid event payload"}
+            raw_category = str(
+                payload.get("reason") or payload.get("status")
+                or payload.get("steam_status") or row["event_type"]
+            ).casefold()
+            category_aliases = {
+                "insufficient_stock": "insufficient_stock",
+                "privacy_wait": "privacy_wait",
+                "trade_restricted": "trade_restricted",
+                "declined": "declined",
+                "canceled": "declined",
+                "cancelled": "declined",
+                "expired": "declined",
+                "unknown": "unknown",
+                "operator_support_request": "support_request",
+                "new_order": "new_order",
+            }
+            category = category_aliases.get(raw_category, (
+                "support_request" if row["event_type"] == "operator_support_request"
+                else row["event_type"]
+            ))
             outbox_id = self.enqueue(
-                event_type=row["event_type"],
+                event_type=category,
                 chat_id=str(operator_chat_id),
                 order_id=row["order_id"],
                 payload={
