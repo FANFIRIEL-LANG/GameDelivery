@@ -245,7 +245,12 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         credentials = TelegramCredentialStore(backend=self.keyring)
         credentials.configure(bot_token="123456:secret")
         outbox = TelegramBotOutbox(self.db, credentials, lambda *args: {"ok": True, "result": {"message_id": 555}})
-        outbox.bind_operator_message(telegram_message_id="555", order_id="order-1")
+        outbox.enqueue(
+            event_type="operator_trade_notice", chat_id="-1001", order_id="order-1",
+            payload={"chat_id": "-1001", "text": "Заказ order-1"},
+            idempotency_key="operator-notice:order-1",
+        )
+        outbox.deliver_once()
         buyer_outbox = BuyerPlatformMessageOutbox(self.db)
         router = TelegramOperatorReplyRouter(
             self.db, allowed_user_ids={"1001"}, allowed_chat_ids={"-1001"},
