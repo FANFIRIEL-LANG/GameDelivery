@@ -132,6 +132,9 @@ class DeliveryReservationService:
         }
         for selector_key, item_key in aliases.items():
             expected = selectors.get(selector_key)
+            generic_types = {"item", "cs2_item", "steam_item", "steam_card_set", "trading_card_set", "card_set"}
+            if selector_key == "item_type" and cls._normal(expected) in generic_types:
+                continue
             if expected not in (None, "") and cls._normal(cls._get(item, item_key, "")) != cls._normal(expected):
                 return False
         expected_game = selectors.get("game_id")
@@ -299,22 +302,39 @@ class DeliveryReservationService:
             if config is None:
                 raise KeyError(f"ConfigVersion {config_id} не найден")
             selectors_raw = json.loads(config["item_selectors_json"])
-            if not isinstance(selectors_raw, dict):
-                raise ValueError("Планировщик ожидает один объект item selector")
+            if isinstance(selectors_raw, dict):
+                selector_options = [selectors_raw]
+            elif isinstance(selectors_raw, list) and selectors_raw and all(
+                isinstance(value, dict) for value in selectors_raw
+            ):
+                selector_options = selectors_raw
+            else:
+                raise ValueError("item_selectors должен быть объектом или непустым списком объектов")
             quantity = config["delivery_quantity_per_deal"]
             if quantity is None or quantity < 1:
                 raise ValueError("ConfigVersion не содержит точного delivery_quantity_per_deal")
             bot_pool = tuple(json.loads(config["bot_pool_json"]))
             if not bot_pool:
                 raise ValueError("ConfigVersion не содержит разрешённого пула ботов")
-            selected = self._select_assets(selectors_raw, quantity, snapshots, bot_pool, current_time)
-            if len(selected) < quantity:
+            selected: tuple[tuple[str, str, int, str], ...] = ()
+            selected_selector: Mapping[str, Any] | None = None
+            best_available = 0
+            for selector in selector_options:
+                candidates = self._select_assets(selector, quantity, snapshots, bot_pool, current_time)
+                if len(candidates) > best_available:
+                    best_available = len(candidates)
+                if len(candidates) >= quantity:
+                    selected = candidates
+                    selected_selector = selector
+                    break
+            if selected_selector is None:
                 reason = (
                     f"Недостаточно свежих tradable предметов: требуется {quantity}, "
-                    f"доступно {len(selected)}."
+                    f"доступно не более {best_available}."
                 )
                 connection.rollback()
             else:
+                selectors_raw = selected_selector
                 line_id = f"{order}:line:1"
                 if connection.execute(
                     "SELECT 1 FROM gd_order_lines WHERE order_id=?", (order,)
