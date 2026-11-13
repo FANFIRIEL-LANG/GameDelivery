@@ -128,12 +128,30 @@ class PlayerokDealSyncService:
             raise ValueError("Playerok deal_id обязателен")
         listing_id, config_id, config = self._listing_config(db, deal)
         old = db.execute(
-            "SELECT deal_id,is_historical FROM gd_deals WHERE source_platform='playerok' AND external_deal_id=?",
+            "SELECT deal_id,is_historical,listing_id,config_version_id FROM gd_deals "
+            "WHERE source_platform='playerok' AND external_deal_id=?",
             (external_id,),
         ).fetchone()
         created = old is None
         normalized_id = str(old["deal_id"]) if old else self._stable("playerok-deal", external_id)
         historical_value = int(historical or (bool(old["is_historical"]) if old else False))
+        # Freeze the ConfigVersion once an order exists: listing edits are only
+        # applicable to future purchases. Deals awaiting setup may adopt a new version.
+        if old is not None:
+            existing_order = db.execute(
+                "SELECT 1 FROM gd_orders WHERE deal_id=? LIMIT 1", (normalized_id,)
+            ).fetchone()
+            if existing_order is not None:
+                listing_id = str(old["listing_id"])
+                config_id = str(old["config_version_id"])
+                frozen_config = db.execute(
+                    "SELECT config_version_id,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
+                    "FROM gd_config_versions WHERE config_version_id=?",
+                    (config_id,),
+                ).fetchone()
+                if frozen_config is None:
+                    raise RuntimeError("ConfigVersion сохранённой сделки не найден")
+                config = dict(frozen_config)
         payload = {
             "buyer": str(deal.get("buyer") or ""),
             "buyer_id": str(deal.get("buyer_id") or ""),
@@ -247,6 +265,9 @@ class PlayerokDealSyncService:
                 self._set_outbox(key, "unknown", error_type=type(exc).__name__)
                 continue
             live_status = self._status(live)
+            if live_status == "PAID":
+                # Persist the observed platform state while normal sync remains read-only.
+                self._set_outbox(key, row["state"], platform_status=live_status)
             with self.database.connect() as db:
                 db.execute(
                     "UPDATE gd_deals SET platform_status=?,chat_id=? WHERE deal_id=?",

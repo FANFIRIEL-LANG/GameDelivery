@@ -336,7 +336,8 @@ class AppStartupSmokeTests(unittest.TestCase):
                     "INSERT INTO delivery_order_assets VALUES ('GD-TEST', 'Bot A', '123')"
                 )
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
-                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                 patch("app.main.QMessageBox.information"):
                 window = MainWindow()
                 try:
                     window._load_saved_orders()
@@ -383,7 +384,8 @@ class AppStartupSmokeTests(unittest.TestCase):
                     )
                 """)
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database), \
-                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+                 patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                 patch("app.main.QMessageBox.information"):
                 window = MainWindow()
                 try:
                     window._load_saved_orders()

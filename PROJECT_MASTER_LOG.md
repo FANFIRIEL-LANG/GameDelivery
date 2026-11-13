@@ -4666,3 +4666,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Проверен workflow package: шаги PyInstaller и --self-test следуют после падавшего test_asf_client.py; --self-test задаёт QT_QPA_PLATFORM=offscreen, поэтому новый fallback не должен инициализировать WebEngine на smoke этапе. Сам Windows PyInstaller/self-test в локальном контейнере не запускался.
 - Локально выполнен точный SQLite connection lifecycle smoke (2 проверки: commit + close, exception + close): PASS. Полный набор и Qt browser tests локально запустить не удалось: runtime не содержит checkout репозитория и PySide6, а попытка получить git clone завершилась DNS/network failure. Не заявлять полный локальный прогон как успешный; окончательная проверка полного набора остаётся за GitHub Actions.
 - Исправления объединены в один commit поверх a90b44e; промежуточные fix-only commits этой попытки схлопнуты. main и PR #4 не изменялись. Следующий этап проекта не начинался.
+
+### 2026-11-14 — исправление регрессий GitHub Actions после CI repair
+
+- Проверен HEAD 147b32e971898be91857e9149866fadbd2a3f9f5 ветки work/local-sync. По GitHub Actions на этом коммите: Windows executable #975 и ASF plugin #652 — success; Tests #1778 — failure.
+- Получены логи job Tests #1778. Найдены четыре группы причин: модальный QMessageBox в UI startup-тесте (изолированный тест завершался timeout 124), устаревшая сигнатура FakeASF в тесте privacy retry (production dispatcher передаёт app_id/context_id), фиксированное время CS2 fixture, которое стало старше допустимых 5 минут, и реальные ошибки Playerok snapshot/status handling.
+- Исправлено в integrations/playerok/sync.py: если по сделке уже создан канонический заказ, повторная синхронизация сохраняет её исходный config_version_id и связанные параметры; новые версии объявления применяются только к будущим сделкам. Для ожидающего outbox при наблюдаемом статусе Playerok PAID теперь сохраняется last_platform_status=PAID, при этом обычная синхронизация остаётся read-only.
+- Исправлены тестовые fixtures: FakeASF принимает обязательные app_id/context_id; CS2 InventorySnapshot использует актуальное время запуска теста, а не фиксированное время, которое устаревает.
+- UI startup regression tests дополнительно гасят информационный QMessageBox после отмены, чтобы headless runner не зависал на модальном окне.
+- Полный CI на новом commit ещё не запускался. Следующий шаг — запустить workflow Tests и проверить Windows package/ASF plugin на новом commit. Part B.2 не начинать до зелёного CI. main и PR #4 не изменялись.

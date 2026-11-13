@@ -35,7 +35,7 @@ class FakeASF:
         self.status_calls = []
     def get_bot_inventory(self, bot_name, *, app_id, context_id):
         return self.inventory[bot_name]
-    def send_trade_offer(self, *, order_id, bot_name, trade_url, asset_ids):
+    def send_trade_offer(self, *, order_id, bot_name, trade_url, asset_ids, app_id=None, context_id=None):
         self.sent.append((order_id, bot_name, trade_url, tuple(asset_ids)))
         return {"success": True, "mode": "sent", "sendEnabled": True,
                 "orderId": order_id, "botName": bot_name,

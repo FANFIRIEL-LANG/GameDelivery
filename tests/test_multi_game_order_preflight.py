@@ -19,7 +19,7 @@ from games.steam_cards.selection import CardCopy
 from integrations.playerok.sync import PlayerokDealSyncService
 
 
-NOW = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 
 
 class DeliveryOrderPipelineTests(unittest.TestCase):
