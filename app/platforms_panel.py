@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 from integrations.marketplaces import MarketplaceRegistry
 from integrations.playerok.client import PlayerokAdapter
+from app.playerok_browser import PlayerokBrowserPanel
 
 
 class _MarketplaceTask(QThread):
@@ -35,7 +36,7 @@ class MarketplacePanel(QWidget):
     connection_status_changed = Signal(str)
     order_import_requested = Signal(object)
 
-    def __init__(self, parent=None, *, sync_operation: Callable[[PlayerokAdapter], dict[str, Any]] | None = None):
+    def __init__(self, parent=None, *, sync_operation: Callable[[PlayerokAdapter], dict[str, Any]] | None = None, database=None):
         super().__init__(parent)
         self.registry = MarketplaceRegistry()
         self.registry.register(PlayerokAdapter())
@@ -139,6 +140,10 @@ class MarketplacePanel(QWidget):
         self.orders_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         root.addWidget(QLabel("Сделки Playerok (полная синхронизация):"))
         root.addWidget(self.orders_table, 1)
+
+        self.browser_panel = PlayerokBrowserPanel(database=database, parent=self)
+        root.addWidget(self.browser_panel, 2)
+        self.orders_table.cellClicked.connect(self._open_selected_playerok_resource)
 
         if self.playerok.has_saved_session():
             self.profile_label.setText("Найдена сохранённая сессия — выполняю проверку")
@@ -347,3 +352,19 @@ class MarketplacePanel(QWidget):
                 elif column == 1 and order.get("chat_url"):
                     cell.setToolTip(str(order["chat_url"]))
                 self.orders_table.setItem(row, column, cell)
+
+
+    def _open_selected_playerok_resource(self, row: int, column: int) -> None:
+        item = self.orders_table.item(row, 0)
+        order = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(order, dict):
+            return
+        try:
+            if column == 1 and order.get("chat_id"):
+                self.browser_panel.open_chat(str(order["chat_id"]))
+            elif column == 0:
+                deal_id = order.get("deal_id") or order.get("external_deal_id") or order.get("order_id")
+                if deal_id:
+                    self.browser_panel.open_deal(str(deal_id))
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
