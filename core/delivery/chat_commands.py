@@ -121,7 +121,15 @@ class BuyerChatCommandRegistry:
         raw = str(text or "").strip()
         if not raw:
             return ChatCommandResult(False)
-        command = raw.split(maxsplit=1)[0].casefold()
+        lowered = raw.casefold()
+        command = next(
+            (candidate for candidate in sorted(
+                self.BUILT_INS | set(self.templates), key=len, reverse=True
+            ) if lowered == candidate or lowered.startswith(candidate + " ")),
+            "",
+        )
+        if not command:
+            return ChatCommandResult(False, lowered.split(maxsplit=1)[0])
         context = self._order_context(chat_id=str(chat_id), deal_id=str(deal_id))
         if context is None:
             return ChatCommandResult(False, command, "unmatched", "")
@@ -186,7 +194,9 @@ class BuyerChatCommandRegistry:
                 inventory = self.asf.get_bot_inventory(
                     leg["bot_name"], app_id=int(leg["app_id"]), context_id=int(leg["context_id"])
                 )
-                root = inventory.get("Result", inventory) if isinstance(inventory, dict) else {}
+                if not isinstance(inventory, dict) or inventory.get("Success") is not True:
+                    raise ValueError("ASF не подтвердил успешное получение свежего inventory")
+                root = inventory.get("Result", inventory)
                 bot = next((v for k, v in root.items() if str(k).casefold() == leg["bot_name"].casefold()), None) if isinstance(root, dict) else None
                 assets = bot.get("Assets") if isinstance(bot, dict) else None
                 if not isinstance(assets, list):
