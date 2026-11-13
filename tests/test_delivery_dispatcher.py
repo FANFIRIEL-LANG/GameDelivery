@@ -127,6 +127,9 @@ class DeliveryDispatchTests(unittest.TestCase):
         result = self.dispatch("order-1", leg)
         self.assertEqual(result["status"], "UNKNOWN")
         self.assertEqual(len(self.asf.sent), 1)
+        retry = self.dispatch("order-1", leg)
+        self.assertFalse(retry["dispatched"])
+        self.assertEqual(len(self.asf.sent), 1, "UNKNOWN must prohibit automatic resend")
 
         self.sent_offers.write_text(json.dumps({
             "order-1": {
