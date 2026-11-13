@@ -187,6 +187,10 @@ class TelegramBotOutbox:
                             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                         WHERE outbox_id=?
                     """, (str(message_id) if message_id is not None else None, row["outbox_id"]))
+                if message_id is not None and row.get("order_id"):
+                    self.bind_operator_message(
+                        telegram_message_id=str(message_id), order_id=str(row["order_id"])
+                    )
                 results.append({"outbox_id": row["outbox_id"], "status": "sent", "message_id": message_id})
             except Exception as exc:
                 # Telegram is an auxiliary channel: record failure and continue the delivery pipeline.
