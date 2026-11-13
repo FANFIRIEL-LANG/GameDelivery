@@ -102,8 +102,20 @@ class DeliveryReservationService:
     def _is_tradable(cls, item: Any) -> bool:
         # CS2 carries explicit restriction metadata in addition to the ASF tradable flag.
         if isinstance(item, CS2InventoryInstance):
-            # Reuse the CS2 view's strict restriction-aware eligibility contract.
-            return item.is_reservable and item.tradable_after is None
+            # ASF's tradable flag is authoritative for the current inventory snapshot.
+            # Steam does not always expose the optional restriction fields separately:
+            # UNKNOWN metadata is not itself a block when tradable=True is explicit.
+            if item.is_tradable is not True or item.amount is None or item.amount <= 0:
+                return False
+            if item.tradable_after is not None:
+                return False
+            restriction_type = getattr(item.restriction_type, "value", item.restriction_type)
+            restriction_status = getattr(item.restriction_status, "value", item.restriction_status)
+            if restriction_type not in (None, "", "none", "unknown"):
+                return False
+            if restriction_status == "restricted":
+                return False
+            return True
         # CardCopy and generic snapshot rows must explicitly prove True.
         return cls._get(item, "is_tradable") is True and cls._get(item, "trade_locked", False) is False
 
