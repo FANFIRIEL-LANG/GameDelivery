@@ -1992,7 +1992,8 @@ class MainWindow(QMainWindow):
                     continue
                 if platform == "playerok":
                     display_id = str(row["external_deal_id"] or row["order_id"])
-                    source = "Playerok"
+                    buyer = str(row["source_buyer"] or "").strip()
+                    source = f"Playerok · {buyer}" if buyer else "Playerok"
                     product = str(row["source_title"] or "Заказ Playerok")
                     price = str(row["source_amount"] or "—")
                 else:
