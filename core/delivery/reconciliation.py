@@ -72,6 +72,16 @@ class DeliveryReconciliation:
             order = leg["order_id"]
             offer_id = leg.get("trade_offer_id")
             if leg["status"] == "UNKNOWN":
+                if not offer_id:
+                    recover = getattr(self.asf, "get_order_trade_status", None)
+                    if callable(recover):
+                        try:
+                            recovered = recover(bot_name=leg["bot_name"], order_id=order)
+                            if recovered.get("success") is True and recovered.get("found") is True:
+                                offer_id = str(recovered.get("tradeOfferId") or "")
+                        except Exception:
+                            # Fall back to the plugin's durable sent_offers.json manifest.
+                            pass
                 offer_id = offer_id or self._find_offer(
                     order, leg["bot_name"], json.loads(leg["asset_ids_json"])
                 )
