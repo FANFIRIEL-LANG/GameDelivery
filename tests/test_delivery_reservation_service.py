@@ -221,6 +221,29 @@ class DeliveryReservationServiceTests(unittest.TestCase):
                 "AND bot_name='Bot-A' AND asset_id='same-asset'"
             ).fetchone()[0], 1)
 
+    def test_live_cs2_skin_with_true_asf_tradable_and_unknown_restrictions_is_reserved(self):
+        order, config_id = self.create_order(
+            quantity=1,
+            selectors={
+                "game_id": "cs2", "app_id": 730, "context_id": 2,
+                "market_hash_name": "AK-47 | Redline",
+            },
+            bot_pool=["Bot-A"],
+            prefix="unknown-restriction",
+        )
+        item = self.cs2_item(
+            "Bot-A", "live-skin",
+            restriction=RestrictionType.UNKNOWN,
+            restriction_status=RestrictionStatus.UNKNOWN,
+        )
+        result = self.service.reserve_order(
+            order_id=order, config_version_id=config_id,
+            snapshots={"Bot-A": self.snapshot("Bot-A", "cs2", 730, 2, [item])},
+            now=NOW,
+        )
+        self.assertTrue(result.reserved)
+        self.assertEqual(result.reserved_assets, (("Bot-A", "live-skin"),))
+
     def test_false_unknown_and_trade_locked_cs2_assets_are_rejected(self):
         order, config_id = self.create_order(
             quantity=2,
