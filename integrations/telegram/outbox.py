@@ -95,6 +95,11 @@ def telegram_api_sender(token: str, payload: dict[str, Any], proxy: dict[str, st
 class TelegramBotOutbox:
     """Durable non-blocking Telegram notification queue with idempotent retries."""
 
+    EVENT_CATEGORIES = (
+        "new_order", "insufficient_stock", "privacy_wait",
+        "trade_restricted", "declined", "unknown", "support_request",
+    )
+
     def __init__(
         self, database, credentials: TelegramCredentialStore,
         sender: Callable[[str, dict[str, Any], dict[str, str] | None], Any] = telegram_api_sender,
