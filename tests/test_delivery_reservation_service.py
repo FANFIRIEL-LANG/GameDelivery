@@ -302,6 +302,28 @@ class DeliveryReservationServiceTests(unittest.TestCase):
                 (order,),
             ).fetchone()[0], 2)
 
+    def test_stale_asf_snapshot_is_not_eligible(self):
+        order, config_id = self.create_order(
+            quantity=1,
+            selectors={
+                "game_id": "cs2", "app_id": 730, "context_id": 2,
+                "market_hash_name": "AK-47 | Redline",
+            },
+            bot_pool=["Bot-A"],
+            prefix="stale",
+        )
+        stale = InventorySnapshot(
+            bot_name="Bot-A", game_id="cs2", app_id=730, context_id="2",
+            refreshed_at=datetime(2026, 11, 13, 10, 0, tzinfo=timezone.utc),
+            items=(self.cs2_item("Bot-A", "old-asset"),),
+        )
+        result = self.service.reserve_order(
+            order_id=order, config_version_id=config_id,
+            snapshots={"Bot-A": stale}, now=NOW,
+        )
+        self.assertEqual(result.status, "insufficient_stock")
+        self.assertEqual(result.reserved_assets, ())
+
 
 if __name__ == "__main__":
     unittest.main()
