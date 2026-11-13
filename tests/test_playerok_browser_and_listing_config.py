@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 
 from core.database.db import Database
@@ -9,9 +11,15 @@ from integrations.playerok.listing_config import PlayerokListingConfigService
 from app.playerok_browser import (
     PlayerokBrowserController, PlayerokBrowserPanel, WEBENGINE_AVAILABLE,
 )
+from PySide6.QtWidgets import QApplication
+
 
 
 class PlayerokListingConfigTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qt_app = QApplication.instance() or QApplication([])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.tmp.name) / "playerok.sqlite3")
@@ -70,4 +78,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
     def test_headless_panel_constructs_without_webengine(self):
         # CI may have WebEngine installed or omitted; both are valid.
         self.assertIsInstance(WEBENGINE_AVAILABLE, bool)
-        self.assertTrue(callable(PlayerokBrowserPanel))
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        self.assertIsNone(panel.web)
+        self.assertIn("headless", panel.browser_status.text())
+        panel.close()
