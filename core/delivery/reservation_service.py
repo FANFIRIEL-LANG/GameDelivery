@@ -111,7 +111,7 @@ class DeliveryReservationService:
                 return False
             restriction_type = getattr(item.restriction_type, "value", item.restriction_type)
             restriction_status = getattr(item.restriction_status, "value", item.restriction_status)
-            if restriction_type not in (None, "", "none", "unknown"):
+            if restriction_type not in (None, "", "none", "unknown", "market_purchase_cooldown"):
                 return False
             if restriction_status == "restricted":
                 return False
