@@ -4455,3 +4455,21 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
   - Tests #1672: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43424170445
   - Build GameDelivery Windows executable #870: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43424170413
 - Эта запись фиксирует приёмку Блока 1; она не утверждает, что отправка CS2 уже проверена реальным Steam offer. Никаких новых Steam offers в рамках CI не создавалось.
+
+
+### 2026-11-13 — Блок 2, часть 1: нормализованный SQLite ledger и миграция
+
+- Перед изменениями проверен GitHub HEAD ветки `work/local-sync`: `fce4a9c17236efed38d02edb07a3c45429b52335`; его родитель — `6e40246285cac94788c58e9bd5affbf0e4b80757`, коммит закрытия Блока 1. Коммит реализации ledger уже находился в ветке на момент начала этой сессии; повторно создавать те же файлы/коммит не потребовалось.
+- Подтверждено содержимое коммита `fce4a9c17236efed38d02edb07a3c45429b52335` (`feat(delivery): add normalized SQLite ledger and safe migration`):
+  - добавлены `core/database/connection.py`, `db.py` и `ledger_migrations.py`; общий коннектор включает и проверяет `PRAGMA foreign_keys=ON` на каждом открываемом им соединении;
+  - добавлена аддитивная миграция с версионированием, транзакцией, проверкой FK и резервной копией старой БД с редактированием секретных полей; исторические таблицы сохраняются;
+  - добавлены таблицы Listing, ConfigVersion, Deal, Order, OrderLine, DeliveryLeg, DeliveryAttempt и ResourceReservation (физические таблицы имеют префикс `gd_`);
+  - ConfigVersion защищён SQLite-триггерами от UPDATE/DELETE и хранит количество на сделку, JSON-селекторы и пул ботов;
+  - DeliveryLeg хранит bot, app/context, точный JSON-список asset IDs, offer ID и статус; DeliveryAttempt имеет уникальные составные ключи `order_id:leg_id:retry_generation`;
+  - активный ресурс глобально уникален по `(bot_name COLLATE NOCASE, asset_id)`;
+  - добавлены неизменяемые dataclass-модели в `core/delivery/models.py` и API ledger в `core/delivery/ledger.py`.
+- В `tests/test_delivery_ledger.py` добавлены пять targeted tests: перенос старых orders/delivery orders/assets/reservations без удаления legacy-таблиц; включённые foreign keys; неизменяемость снимка ConfigVersion и новая версия при изменении настроек; уникальность idempotency key; глобальная уникальность активного resource reservation.
+- Этот срез — только фундамент схемы/моделей/миграции (Блок 2, часть 1), не реализация полного lifecycle listing allocations, атомарного paid-event handoff, ручного release/reconciliation или delivery handlers. Эти пункты остаются в своих последующих частях плана.
+- В текущей сессии локальный запуск Python-тестов не выполнялся; наличие тестов подтверждено чтением GitHub-файла. Результат GitHub Actions Tests не объявляется и оставлен для проверки пользователем. Пользователь отдельно попросил не ожидать завершения Actions.
+- ASF/Steam runtime, пользовательская БД и реальные trade offers в этой работе не запускались. Инварианты Steam-интеграции, ASF Generic 6.3.11.7/.NET 10, отсутствие Steam Web API key и правила хранения buyer trade tokens остаются обязательными.
+- Следующий шаг: пользователь проверяет Tests workflow для code commit `fce4a9c17236efed38d02edb07a3c45429b52335`; продолжение — только после его подтверждения. PR #4 и `main` не изменялись.
