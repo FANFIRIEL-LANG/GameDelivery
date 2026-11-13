@@ -169,6 +169,21 @@ class BuyerChatCommandRegistry:
 
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            current = db.execute("""
+                SELECT o.status AS order_status,d.chat_id,d.payload_json
+                FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id
+                WHERE o.order_id=? AND d.deal_id=?
+            """, (order_id, deal_id)).fetchone()
+            current_payload = self._payload(current) if current is not None else {}
+            current_buyer = str(
+                current_payload.get("buyer_steam_id64") or current_payload.get("buyer_id") or ""
+            )
+            if (current is None or current["chat_id"] != context["chat_id"]
+                    or current["order_status"] != "PRIVACY_WAIT"
+                    or not identity_verified or str(buyer_identity or "") != current_buyer):
+                db.commit()
+                return ChatCommandResult(True, "!настроил приватность", "stale_or_identity_ignored", "")
+            payload = current_payload
             legs = [dict(row) for row in db.execute("""
                 SELECT l.* FROM gd_delivery_legs l
                 JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
