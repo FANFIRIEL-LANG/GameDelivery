@@ -12,7 +12,8 @@ from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.reconciliation import DeliveryReconciliation
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from integrations.telegram.outbox import (
-    TelegramBotOutbox, TelegramCredentialStore, TelegramOperatorReplyRouter,
+    BuyerPlatformMessageOutbox, TelegramBotOutbox, TelegramCredentialStore,
+    TelegramOperatorReplyRouter,
 )
 
 
@@ -210,10 +211,10 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         credentials.configure(bot_token="123456:secret")
         outbox = TelegramBotOutbox(self.db, credentials, lambda *args: {"ok": True, "result": {"message_id": 555}})
         outbox.bind_operator_message(telegram_message_id="555", order_id="order-1")
-        sent = []
+        buyer_outbox = BuyerPlatformMessageOutbox(self.db)
         router = TelegramOperatorReplyRouter(
             self.db, allowed_user_ids={"1001"}, allowed_chat_ids={"-1001"},
-            buyer_message_enqueue=lambda deal, chat, message: sent.append((deal, chat, message)),
+            buyer_message_enqueue=buyer_outbox.enqueue,
         )
         self.assertFalse(router.handle_reply(
             from_user_id="2002", operator_chat_id="-1001",
@@ -223,7 +224,14 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             from_user_id="1001", operator_chat_id="-1001",
             reply_to_message_id="555", text="Чек получен",
         ))
-        self.assertEqual(sent, [("deal-1", "buyer-chat-1", "Чек получен")])
+        with self.db.connect() as db:
+            queued = db.execute(
+                "SELECT deal_id,chat_id,message_text,status FROM gd_buyer_message_outbox"
+            ).fetchone()
+        self.assertEqual(
+            (queued["deal_id"], queued["chat_id"], queued["message_text"], queued["status"]),
+            ("deal-1", "buyer-chat-1", "Чек получен", "pending"),
+        )
 
 
 if __name__ == "__main__":
