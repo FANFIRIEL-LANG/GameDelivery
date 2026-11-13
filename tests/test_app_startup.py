@@ -449,7 +449,10 @@ class AppStartupSmokeTests(unittest.TestCase):
                 try:
                     window._import_marketplace_order(source_order)
                     self.assertEqual(window.orders.rowCount(), 1)
-                    local_order_id = window.orders.item(0, 0).text()
+                    imported_context = window.orders.item(0, 0).data(Qt.ItemDataRole.UserRole)
+                    self.assertIsInstance(imported_context, dict)
+                    local_order_id = str(imported_context["order_id"])
+                    self.assertEqual(window.orders.item(0, 0).text(), "deal-123")
                     self.assertEqual(window.orders.item(0, 1).text(), "Playerok · buyer-a")
                     self.assertEqual(window.orders.item(0, 2).text(), "Steam Card Set")
                     window._import_marketplace_order(source_order)
