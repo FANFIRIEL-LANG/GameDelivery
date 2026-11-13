@@ -213,7 +213,7 @@ class DeliveryReservationService:
                 seen.add(key)
                 candidates.append((snapshot.bot_name, asset_id, app_id, context_id))
         candidates.sort(key=lambda row: (row[0].casefold(), row[1]))
-        return tuple(candidates[:quantity]) if len(candidates) >= quantity else ()
+        return tuple(candidates)
 
     @staticmethod
     def _stable_id(prefix: str, value: str) -> str:
