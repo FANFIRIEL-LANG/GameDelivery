@@ -46,6 +46,7 @@ class InventorySnapshotStore:
                         icon_url_large TEXT NOT NULL DEFAULT '',
                         market_hash_name TEXT NOT NULL DEFAULT '',
                         item_quality TEXT NOT NULL DEFAULT '',
+                        game_app_id INTEGER,
                         PRIMARY KEY (bot_name, asset_id)
                     )
                 """)
@@ -84,6 +85,9 @@ class InventorySnapshotStore:
                     connection.execute(
                         f"ALTER TABLE steam_inventory_snapshot ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
                     )
+
+            if "game_app_id" not in snapshot_columns:
+                connection.execute("ALTER TABLE steam_inventory_snapshot ADD COLUMN game_app_id INTEGER")
 
             meta_columns = {
                 row["name"] for row in connection.execute(
@@ -128,6 +132,7 @@ class InventorySnapshotStore:
                     asset_id, game_name, card_name,
                     card.is_trading_card, card.is_foil, card.is_tradable,
                     card.icon_url, card.icon_url_large, card.market_hash_name, card.item_quality,
+                    card.game_app_id,
                 ),
             )
         return normalized
@@ -145,14 +150,15 @@ class InventorySnapshotStore:
             connection.executemany("""
                 INSERT INTO steam_inventory_snapshot
                     (bot_name, asset_id, game_name, card_name, is_trading_card, is_foil, is_tradable,
-                     icon_url, icon_url_large, market_hash_name, item_quality)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     icon_url, icon_url_large, market_hash_name, item_quality, game_app_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     bot, c.asset_id, c.game_name, c.card_name,
                     int(c.is_trading_card), int(c.is_foil),
                     None if c.is_tradable is None else int(c.is_tradable),
                     c.icon_url, c.icon_url_large, c.market_hash_name, c.item_quality,
+                    c.game_app_id,
                 )
                 for c in normalized.values()
             ])
@@ -176,7 +182,7 @@ class InventorySnapshotStore:
         with self._connect() as connection:
             rows = connection.execute("""
                 SELECT asset_id, game_name, card_name, is_trading_card, is_foil, is_tradable,
-                       icon_url, icon_url_large, market_hash_name, item_quality
+                       icon_url, icon_url_large, market_hash_name, item_quality, game_app_id
                 FROM steam_inventory_snapshot WHERE bot_name = ?
                 ORDER BY game_name, card_name, asset_id
             """, (bot,)).fetchall()
@@ -186,6 +192,7 @@ class InventorySnapshotStore:
             is_tradable=None if row["is_tradable"] is None else bool(row["is_tradable"]),
             icon_url=row["icon_url"], icon_url_large=row["icon_url_large"],
             market_hash_name=row["market_hash_name"], item_quality=row["item_quality"],
+            game_app_id=int(row["game_app_id"]) if row["game_app_id"] is not None else None,
         ) for row in rows]
 
     def load_all(self) -> dict[str, list[CardCopy]]:

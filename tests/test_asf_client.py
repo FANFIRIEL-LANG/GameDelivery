@@ -812,5 +812,132 @@ class ASFClientTests(unittest.TestCase):
             secret_path_holder["path"].unlink()
 
 
+    def test_cs2_trade_offer_forwards_exact_730_2_context_to_plugin_and_secret(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def fake_send_command(command):
+                encoded = command.split(" ", 1)[1]
+                payload_bytes = base64.urlsafe_b64decode(encoded + "=" * ((4 - len(encoded) % 4) % 4))
+                payload = json.loads(payload_bytes.decode("utf-8"))
+                self.assertEqual(payload["AppId"], 730)
+                self.assertEqual(payload["ContextId"], 2)
+                secret_path = (
+                    Path(temp) / "GameDelivery" / "pending_trade_requests"
+                    / (payload["CredentialNonce"] + ".json")
+                )
+                secret = json.loads(secret_path.read_text(encoding="utf-8"))
+                self.assertEqual((secret["AppId"], secret["ContextId"]), (730, 2))
+                return {
+                    "Success": True,
+                    "Result": json.dumps({
+                        "success": True, "mode": "sent", "sendEnabled": True,
+                        "orderId": "GD-CS2", "botName": "cs2-bot",
+                        "targetSteamId64": 76561197960278073,
+                        "appId": 730, "contextId": 2, "assetCount": 1,
+                        "assets": [{"assetId": "123"}], "offerIds": ["456789"],
+                        "confirmationStatus": "handled", "tradeAccepted": False,
+                    }),
+                }
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                with patch.object(ASFClient, "send_command", side_effect=fake_send_command):
+                    result = ASFClient().send_trade_offer(
+                        order_id="GD-CS2",
+                        bot_name="cs2-bot",
+                        trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=secret",
+                        asset_ids=["123"], app_id=730, context_id=2,
+                    )
+            self.assertTrue(result["success"])
+            self.assertEqual((result["appId"], result["contextId"]), (730, 2))
+            self.assertEqual(
+                list((Path(temp) / "GameDelivery" / "pending_trade_requests").glob("*.json")),
+                [],
+            )
+
+    def test_preview_trade_offer_forwards_exact_cs2_context(self):
+        preview = {
+            "success": True, "mode": "preview-only", "sendEnabled": False,
+            "orderId": "GD-CS2", "botName": "cs2-bot",
+            "targetSteamId64": 76561197960278073,
+            "appId": 730, "contextId": 2, "assetCount": 1,
+            "assets": [{"assetId": "123"}],
+        }
+        with patch.object(
+            ASFClient, "request",
+            return_value={"Success": True, "Result": json.dumps(preview)},
+        ) as request:
+            ASFClient().preview_trade_offer(
+                order_id="GD-CS2", bot_name="cs2-bot",
+                trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=secret",
+                asset_ids=["123"], app_id=730, context_id=2,
+            )
+        encoded = request.call_args.kwargs["body"]["Command"].split(" ", 1)[1]
+        payload_bytes = base64.urlsafe_b64decode(encoded + "=" * ((4 - len(encoded) % 4) % 4))
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        self.assertEqual((payload["AppId"], payload["ContextId"]), (730, 2))
+
+
+    def test_recipient_card_diagnostics_uses_only_read_only_asf_command(self):
+        expected = {
+            "mode": "diagnostic-read-only",
+            "sendEnabled": False,
+            "tradeOfferCreated": False,
+            "recipientSteamId64": 76561197960278073,
+            "recipientIdentity": {"verified": True},
+            "badgeChecks": [],
+            "inventory": {"cards": []},
+            "comparisons": [],
+        }
+        with patch.object(
+            ASFClient, "send_command",
+            return_value={"Success": True, "Result": json.dumps(expected)},
+        ) as send_command:
+            result = ASFClient().get_recipient_card_diagnostics(
+                bot_name="Bot-A",
+                recipient_steam_id64=76561197960278073,
+                app_ids=[570, 730],
+            )
+        self.assertEqual(result, expected)
+        send_command.assert_called_once_with(
+            "gamedelivery-diagnose Bot-A 570 730 --recipient 76561197960278073"
+        )
+
+    def test_recipient_card_diagnostics_rejects_invalid_arguments_before_ipc(self):
+        invalid = [
+            {"bot_name": "Bot A", "recipient_steam_id64": 76561197960278073, "app_ids": [570]},
+            {"bot_name": "Bot-A", "recipient_steam_id64": 123, "app_ids": [570]},
+            {"bot_name": "Bot-A", "recipient_steam_id64": 76561197960278073, "app_ids": []},
+            {"bot_name": "Bot-A", "recipient_steam_id64": 76561197960278073, "app_ids": [570, 570]},
+        ]
+        with patch.object(ASFClient, "send_command") as send_command:
+            for arguments in invalid:
+                with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                    ASFClient().get_recipient_card_diagnostics(**arguments)
+            with self.assertRaisesRegex(ValueError, "20 AppID"):
+                ASFClient().get_recipient_card_diagnostics(
+                    bot_name="Bot-A",
+                    recipient_steam_id64=76561197960278073,
+                    app_ids=list(range(1, 22)),
+                )
+            send_command.assert_not_called()
+
+    def test_recipient_card_diagnostics_rejects_malformed_or_non_read_only_response(self):
+        with patch.object(ASFClient, "send_command", return_value={"Success": True, "Result": "not-json"}):
+            with self.assertRaisesRegex(ASFError, "JSON"):
+                ASFClient().get_recipient_card_diagnostics(
+                    bot_name="Bot-A", recipient_steam_id64=76561197960278073, app_ids=[570]
+                )
+        unsafe = {
+            "mode": "diagnostic-read-only",
+            "sendEnabled": True,
+            "tradeOfferCreated": False,
+            "recipientSteamId64": 76561197960278073,
+        }
+        with patch.object(ASFClient, "send_command", return_value={"Success": True, "Result": json.dumps(unsafe)}):
+            with self.assertRaisesRegex(ASFError, "не отправлял обмен"):
+                ASFClient().get_recipient_card_diagnostics(
+                    bot_name="Bot-A", recipient_steam_id64=76561197960278073, app_ids=[570]
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

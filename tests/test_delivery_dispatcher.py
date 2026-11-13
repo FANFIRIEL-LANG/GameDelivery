@@ -34,8 +34,8 @@ class FakeASF:
         self.sent = []
         self.inventory_refreshes = []
 
-    def send_trade_offer(self, *, order_id, bot_name, trade_url, asset_ids):
-        self.sent.append((order_id, bot_name, trade_url, tuple(asset_ids)))
+    def send_trade_offer(self, *, order_id, bot_name, trade_url, asset_ids, app_id=753, context_id=6):
+        self.sent.append((order_id, bot_name, trade_url, tuple(asset_ids), app_id, context_id))
         if bot_name in self.send_error:
             raise self.send_error[bot_name]
         return self.send_result[bot_name]
@@ -127,6 +127,7 @@ class DeliveryDispatchTests(unittest.TestCase):
         result = self.dispatch("order-1", leg)
         self.assertEqual(result["status"], "UNKNOWN")
         self.assertEqual(len(self.asf.sent), 1)
+        self.assertEqual(self.asf.sent[0][-2:], (730, 2))
         retry = self.dispatch("order-1", leg)
         self.assertFalse(retry["dispatched"])
         self.assertEqual(len(self.asf.sent), 1, "UNKNOWN must prohibit automatic resend")
@@ -150,6 +151,24 @@ class DeliveryDispatchTests(unittest.TestCase):
             order = db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()
         self.assertEqual((row["status"], row["trade_offer_id"]), ("ACCEPTED", "90001"))
         self.assertEqual(order["status"], "DELIVERED")
+
+    def test_startup_recovery_converts_interrupted_dispatch_to_unknown_before_polling(self):
+        leg = self.create_order()[0]
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_delivery_legs SET status='DISPATCHING' WHERE leg_id=?", (leg,)
+            )
+        recovered = DeliveryReconciliation.recover_interrupted_dispatches(self.db)
+        self.assertEqual(recovered, 1)
+        with self.db.connect() as db:
+            status = db.execute(
+                "SELECT status FROM gd_delivery_legs WHERE leg_id=?", (leg,)
+            ).fetchone()[0]
+        self.assertEqual(status, "UNKNOWN")
+        # Normal reconciliation may only read/recover; it must never create a new offer.
+        result = self.reconciler.reconcile(order_id="order-1")
+        self.assertEqual(result[0]["status"], "UNKNOWN")
+        self.assertEqual(self.asf.sent, [])
 
     def test_multi_bot_order_delivers_only_after_both_offers_are_accepted(self):
         legs = self.create_order(bots=("Bot-A", "Bot-B"))

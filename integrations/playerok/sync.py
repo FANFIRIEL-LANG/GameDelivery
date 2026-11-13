@@ -197,7 +197,9 @@ class PlayerokDealSyncService:
         return {
             "baseline": True, "baseline_deals": len(deals), "deals": deals,
             "new_deals": 0, "historical_deals": len(deals),
-            "status_updates": self.process_status_outbox(adapter, account_user_id),
+            "status_updates": self.process_status_outbox(
+                adapter, account_user_id, allow_status_mutation=allow_status_mutation
+            ),
         }
 
     def _upsert_incremental(self, deals: list[dict[str, Any]], account_user_id: str) -> int:
@@ -225,7 +227,9 @@ class PlayerokDealSyncService:
                 WHERE idempotency_key=?
             """, (state,error_type[:80],platform_status,platform_status,state,state,key))
 
-    def process_status_outbox(self, adapter: Any, account_user_id: str) -> int:
+    def process_status_outbox(
+        self, adapter: Any, account_user_id: str, *, allow_status_mutation: bool = False
+    ) -> int:
         with self.database.connect() as db:
             rows = [dict(row) for row in db.execute("""
                 SELECT * FROM playerok_status_outbox
@@ -263,6 +267,10 @@ class PlayerokDealSyncService:
                 self._set_outbox(key, "blocked", error_type="UnexpectedDealStatus", platform_status=live_status)
                 changed_count += 1
                 continue
+            # Normal application sync is read-only. The embedded Playerok browser
+            # introduced in Part B owns the "Выполнил заказ" UI action.
+            if not allow_status_mutation:
+                continue
             with self.database.connect() as db:
                 claimed = db.execute("""
                     UPDATE playerok_status_outbox
@@ -288,7 +296,7 @@ class PlayerokDealSyncService:
                 self._set_outbox(key, "unknown", error_type="MutationNotConfirmed", platform_status=result_status)
         return changed_count
 
-    def sync(self, adapter: Any) -> dict[str, Any]:
+    def sync(self, adapter: Any, *, allow_status_mutation: bool = False) -> dict[str, Any]:
         account_user_id = str(getattr(adapter, "account_user_id", "") or "").strip()
         if not account_user_id:
             raise ValueError("Сначала проверь подключённую сессию Playerok.")
@@ -302,7 +310,9 @@ class PlayerokDealSyncService:
 
         deals = adapter.fetch_sales(statuses=self.ACTIVE_STATUSES)
         new_count = self._upsert_incremental(deals, account_user_id)
-        outbox_updates = self.process_status_outbox(adapter, account_user_id)
+        outbox_updates = self.process_status_outbox(
+            adapter, account_user_id, allow_status_mutation=allow_status_mutation
+        )
         return {
             "baseline": False, "baseline_deals": 0, "deals": deals,
             "new_deals": new_count, "historical_deals": 0,

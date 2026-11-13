@@ -37,12 +37,14 @@ class InventorySnapshotTests(unittest.TestCase):
                 icon_url_large="https://community.cloudflare.steamstatic.com/economy/image/large",
                 market_hash_name="AK-47 | Redline (Field-Tested)",
                 item_quality="FT",
+                game_app_id=730,
             )], bot_name="bot-a")
             loaded = store.load("bot-a")[0]
             self.assertEqual(loaded.icon_url, "https://community.cloudflare.steamstatic.com/economy/image/icon")
             self.assertEqual(loaded.icon_url_large, "https://community.cloudflare.steamstatic.com/economy/image/large")
             self.assertEqual(loaded.market_hash_name, "AK-47 | Redline (Field-Tested)")
             self.assertEqual(loaded.item_quality, "FT")
+            self.assertEqual(loaded.game_app_id, 730)
 
     def test_reopen_reads_saved_snapshot_without_fetching(self):
         with tempfile.TemporaryDirectory() as directory:

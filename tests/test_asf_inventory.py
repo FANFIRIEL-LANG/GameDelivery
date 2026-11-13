@@ -43,7 +43,7 @@ class ASFInventoryTests(unittest.TestCase):
                         {"assetid": "102", "classid": "12", "instanceid": "0"},
                     ],
                     "Descriptions": [
-                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tradable": 1, "icon_url": "test-card-icon", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
+                        {"classid": "10", "instanceid": "0", "name": "Card A", "type": "Steam Trading Card", "tradable": 1, "market_fee_app": "570", "icon_url": "test-card-icon", "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "11", "instanceid": "0", "name": "Card B", "type": "Foil Trading Card", "tradable": 1, "tags": [{"category": "Game", "localized_tag_name": "Tagged Game"}]},
                         {"classid": "12", "instanceid": "0", "name": "Background", "type": "Profile Background"},
                     ],
@@ -56,6 +56,7 @@ class ASFInventoryTests(unittest.TestCase):
                          ("100", "Card A", True, False))
         self.assertEqual(cards[0].game_name, "Tagged Game")
         self.assertTrue(cards[0].is_tradable)
+        self.assertEqual(cards[0].game_app_id, 570)
         self.assertEqual(cards[0].icon_url, "https://community.cloudflare.steamstatic.com/economy/image/test-card-icon")
         self.assertEqual((cards[1].asset_id, cards[1].card_name, cards[1].is_trading_card, cards[1].is_foil),
                          ("101", "Card B", True, True))

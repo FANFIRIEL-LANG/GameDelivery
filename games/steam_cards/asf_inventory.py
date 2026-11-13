@@ -151,6 +151,34 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
 
         market_key = _key(description, "market_hash_name")
         market_hash_name = str(description.get(market_key, "") or "").strip() if market_key else ""
+
+        def optional_game_app_id() -> int | None:
+            # ASF exposes the game's real AppID through RealAppID; Steam's
+            # inventory description commonly serializes the same value as market_fee_app.
+            values = []
+            for mapping in (description, asset):
+                if not isinstance(mapping, dict):
+                    continue
+                for field in ("realappid", "real_app_id", "market_fee_app"):
+                    field_key = _key(mapping, field)
+                    if field_key is None:
+                        continue
+                    raw = str(mapping[field_key]).strip()
+                    if raw:
+                        if not raw.isdigit() or int(raw) <= 0:
+                            raise ASFError(
+                                f"ASF вернул некорректный AppID игры у карточки {item_name or asset_id}"
+                            )
+                        values.append(int(raw))
+            if not values:
+                return None
+            if len(set(values)) != 1:
+                raise ASFError(
+                    f"ASF вернул конфликтующие AppID игры у карточки {item_name or asset_id}"
+                )
+            return values[0]
+
+        game_app_id = optional_game_app_id()
         item_quality = ""
         if isinstance(tags, list):
             for tag in tags:
@@ -183,5 +211,6 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
             icon_url_large=image_url("icon_url_large"),
             market_hash_name=market_hash_name,
             item_quality=item_quality,
+            game_app_id=game_app_id,
         ))
     return cards

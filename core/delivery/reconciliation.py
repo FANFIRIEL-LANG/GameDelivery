@@ -26,6 +26,15 @@ class DeliveryReconciliation:
             sent_offers_path = Path(local) / "GameDelivery" / "ASFPlugin" / "sent_offers.json"
         self.sent_offers_path = Path(sent_offers_path)
 
+    @staticmethod
+    def recover_interrupted_dispatches(database: Database) -> int:
+        """Run once during application startup, before any new dispatch begins."""
+        with database.connect() as db:
+            return db.execute(
+                "UPDATE gd_delivery_legs SET status='UNKNOWN', "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status='DISPATCHING'"
+            ).rowcount
+
     def _sent_records(self) -> dict[str, Any]:
         try:
             payload = json.loads(self.sent_offers_path.read_text(encoding="utf-8"))

@@ -1,16 +1,18 @@
 import os
 import sys
 import sqlite3
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QUrl, QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import Qt, QUrl, QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame,
-    QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox, QCompleter,
+    QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox, QCompleter, QHeaderView,
 )
 from games.steam_cards.snapshot import InventorySnapshotStore
 from games.steam_cards.reservations import AssetReservationStore
@@ -25,6 +27,14 @@ from integrations.openskin.client import configure_openskin_diagnostics
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from core.database.connection import connect_sqlite
 from core.database.db import Database
+from core.delivery.dispatcher import DeliveryDispatcher
+from core.delivery.ledger import DeliveryLedger
+from core.delivery.order_pipeline import DeliveryOrderPipeline
+from core.delivery.reconciliation import DeliveryReconciliation
+from core.delivery.reservation_service import InventorySnapshot
+from games.inventory import GameInventoryStore
+from games.catalog import GAME_CATALOG
+from games.steam_cards.recipient_diagnostics import normalize_recipient_card_diagnostics
 from integrations.playerok.sync import PlayerokDealSyncService
 from core.database.ledger_migrations import ensure_pre_migration_backup, migrate_delivery_ledger
 from app.diagnostics import configure_logging, get_log_directory, get_logger, log_exception
@@ -65,6 +75,7 @@ class MainWindow(QMainWindow):
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
             self.playerok_sync = PlayerokDealSyncService(Database(self._database_path))
+            self.delivery_pipeline = DeliveryOrderPipeline(Database(self._database_path))
             logger.info("Local delivery storage initialized")
         except (OSError, sqlite3.Error, ValueError) as exc:
             log_exception(logger, "local storage initialization", exc)
@@ -124,9 +135,9 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self.game_inventory_panel, "Игровые предметы")
         self.inventory_panel.trade_url_requested.connect(self._open_order_with_trade_url)
-        # Game inventory snapshots are not Steam Trading Card snapshots.
-        # Keep CS2/game items out of the card-only order/send handler until C.6 delivery exists.
-        self.game_inventory_panel.trade_url_requested.connect(self._explain_game_delivery_unavailable)
+        # CS2 730/2 enters the canonical DeliveryOrderPipeline. Steam Cards
+        # require verified recipient badge and buyer-inventory data before preparation.
+        self.game_inventory_panel.trade_url_requested.connect(self._open_game_order_with_trade_url)
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
@@ -134,6 +145,17 @@ class MainWindow(QMainWindow):
         self.asf_management.inventory_snapshot_updated.connect(self.inventory_panel.select_bot_snapshot)
         self.asf_management.log_line.connect(self._append_log_line)
         self.tabs.addTab(self.asf_management, "ASF-боты")
+        try:
+            DeliveryReconciliation.recover_interrupted_dispatches(
+                Database(self._database_path)
+            )
+        except (OSError, sqlite3.Error, ValueError, ASFError) as exc:
+            logger.warning("Interrupted DeliveryLeg recovery deferred: %s", type(exc).__name__)
+        self._delivery_reconcile_running = False
+        self._delivery_reconcile_timer = QTimer(self)
+        self._delivery_reconcile_timer.setInterval(15_000)
+        self._delivery_reconcile_timer.timeout.connect(self._schedule_delivery_reconciliation)
+        self._delivery_reconcile_timer.start()
         layout.addWidget(self.tabs)
         self.setCentralWidget(root)
         self.setStyleSheet("""
@@ -218,6 +240,96 @@ class MainWindow(QMainWindow):
             "Проверь состав; резерв и отправка выполняются отдельными подтверждёнными действиями."
         )
 
+    def _open_game_order_with_trade_url(self, trade_url: str, selected_assets=None):
+        """Create a canonical CS2 730/2 manual order from exact selected inventory assets."""
+        try:
+            recipient = self._validate_trade_url(trade_url)
+            selected = tuple(sorted({
+                (str(bot).strip(), str(asset).strip())
+                for bot, asset in (selected_assets or [])
+                if str(bot).strip() and str(asset).strip()
+            }))
+            if not selected:
+                raise ValueError("Выбери хотя бы один CS2 предмет.")
+            panel = self.game_inventory_panel
+            instances_by_key = {
+                (item.bot_name.casefold(), item.asset_id): item
+                for item in panel.cs2_all_instances
+            }
+            for bot, asset_id in selected:
+                item = instances_by_key.get((bot.casefold(), asset_id))
+                if item is None or item.appid != 730 or item.context_id != 2:
+                    raise ValueError(f"Предмет {bot}/{asset_id} отсутствует в CS2 730/2 snapshot.")
+                if item.is_tradable is not True or item.amount is None or item.amount < 1:
+                    raise ValueError(
+                        f"Передаваемость/количество {bot}/{asset_id} не подтверждены свежим ASF ответом."
+                    )
+            bots = sorted({bot for bot, _asset in selected}, key=str.casefold)
+            with connect_sqlite(self._database_path) as db:
+                meta_rows = db.execute(
+                    "SELECT bot_name,updated_at FROM game_inventory_snapshot_meta WHERE game_id='cs2'"
+                ).fetchall()
+            refreshed_by_bot = {str(row["bot_name"]).casefold(): str(row["updated_at"]) for row in meta_rows}
+            snapshots = {}
+            for bot in bots:
+                stamp = refreshed_by_bot.get(bot.casefold())
+                if not stamp:
+                    raise ValueError(f"Для {bot} нет подтверждённой даты ASF-снимка CS2.")
+                refreshed_at = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                items = tuple(item for item in panel.cs2_all_instances if item.bot_name.casefold() == bot.casefold())
+                snapshots[bot] = InventorySnapshot(
+                    bot_name=bot, game_id="cs2", app_id=730, context_id="2",
+                    refreshed_at=refreshed_at, items=items, asf_verified=True,
+                )
+
+            order_id = f"GD-{uuid4().hex[:12].upper()}"
+            selector = {
+                "game_id": "cs2",
+                "app_id": 730,
+                "context_id": 2,
+                "item_type": "cs2_item",
+                "asset_keys": [f"{bot.casefold()}::{asset}" for bot, asset in selected],
+            }
+            canonical_ledger = DeliveryLedger(Database(self._database_path))
+            config = canonical_ledger.create_listing_config_version(
+                listing_id="manual-listing:" + order_id,
+                source_platform="manual",
+                external_listing_id=None,
+                delivery_quantity_per_deal=len(selected),
+                item_selectors=selector,
+                bot_pool=bots,
+                title="Ручная отправка",
+            )
+            deal_id = "manual-deal:" + order_id
+            canonical_ledger.create_deal(
+                deal_id=deal_id,
+                source_platform="manual",
+                external_deal_id=order_id,
+                chat_id=None,
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                platform_status="manual",
+                payload={"title": "Ручная отправка", "item_type": "cs2_item"},
+            )
+            canonical_ledger.create_order(order_id=order_id, deal_id=deal_id, total_quantity=len(selected))
+            result = self.delivery_pipeline.prepare_cs2_order(order_id=order_id, snapshots=snapshots)
+            if result.status != "reserved":
+                raise ValueError(result.message)
+            self.order_recipient.setText(recipient)
+            self._load_saved_orders()
+            for row in range(self.orders.rowCount()):
+                context = self.orders.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                if isinstance(context, dict) and context.get("order_id") == order_id:
+                    self.orders.selectRow(row)
+                    break
+            self.statusBar().showMessage(
+                f"CS2-заказ {order_id} зарезервирован ({len(result.reserved_assets)} предметов). "
+                "Проверяю все DeliveryLeg через ASF перед подтверждением отправки."
+            )
+            self._start_send_ledger_order_async()
+        except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.warning(self, "Не удалось подготовить CS2-заказ", str(exc))
+
     def _explain_game_delivery_unavailable(self, trade_url: str, selected_assets=None):
         """Do not route CS2/game assets into the Steam-card-only order flow."""
         count = len(selected_assets or [])
@@ -237,9 +349,9 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         note = QLabel(
-            "Playerok-заказы можно импортировать с вкладки «Площадки». Выбери импортированный заказ, "
-            "введи trade URL покупателя и отметь активы ASF. Если заказ не выбран, создастся ручной черновик. "
-            "Резервирование локальное; отправка доступна отдельной кнопкой после проверки состава через ASF и явного подтверждения."
+            "Заказы Playerok и ручные отправки отображаются из единого списка. Для нормализованного заказа "
+            "подготовка выполняется по ConfigVersion и свежим снимкам ASF; Steam offers отправляются только "
+            "после preview всех legs и явного подтверждения. Старый ручной поток сохранён для совместимости."
         )
         note.setObjectName("muted")
         note.setWordWrap(True)
@@ -288,8 +400,11 @@ class MainWindow(QMainWindow):
         self._ensure_delivery_order_schema()
         self._recover_interrupted_delivery_orders()
         self.orders = QTableWidget(0, 5)
-        self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Товар / активы", "Статус", "Обновлено"])
-        self.orders.horizontalHeader().setStretchLastSection(True)
+        self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Товар", "Цена", "Дата заказа"])
+        self.orders.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.orders.horizontalHeader().setStretchLastSection(False)
+        self.orders.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.orders.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.orders.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.orders.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.orders.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -299,6 +414,8 @@ class MainWindow(QMainWindow):
         order_actions = QHBoxLayout()
         self.order_details_button = QPushButton("Состав заказа")
         self.order_details_button.clicked.connect(self._show_selected_order_details)
+        self.prepare_ledger_order_button = QPushButton("Подготовить выдачу по ConfigVersion")
+        self.prepare_ledger_order_button.clicked.connect(self._prepare_ledger_order)
         self.cancel_order_button = QPushButton("Отменить заказ")
         self.cancel_order_button.clicked.connect(self._cancel_selected_order)
         self.reconcile_order_button = QPushButton("Снять резерв после отмены обмена…")
@@ -306,6 +423,7 @@ class MainWindow(QMainWindow):
         self.delete_order_button = QPushButton("Удалить заказ")
         self.delete_order_button.clicked.connect(self._delete_selected_order)
         order_actions.addWidget(self.order_details_button)
+        order_actions.addWidget(self.prepare_ledger_order_button)
         order_actions.addWidget(self.cancel_order_button)
         order_actions.addWidget(self.reconcile_order_button)
         order_actions.addWidget(self.delete_order_button)
@@ -445,11 +563,22 @@ class MainWindow(QMainWindow):
         try:
             self._ensure_delivery_order_schema()
             with connect_sqlite(self._database_path) as db:
+                canonical = db.execute(
+                    "SELECT o.order_id FROM gd_deals d JOIN gd_orders o ON o.deal_id=d.deal_id "
+                    "WHERE d.source_platform='playerok' AND d.external_deal_id=?",
+                    (external_id,),
+                ).fetchone()
+                if canonical:
+                    local_order_id = str(canonical["order_id"])
+                else:
+                    canonical = None
                 existing = db.execute(
                     "SELECT order_id FROM delivery_orders WHERE source_platform = ? AND COALESCE(source_deal_id, source_order_id) = ?",
                     (platform, external_id),
                 ).fetchone()
-                if existing:
+                if canonical:
+                    pass
+                elif existing:
                     local_order_id = existing[0]
                     db.execute(
                         "UPDATE delivery_orders SET source_order_id=?, source_deal_id=?, source_chat_id=?, "
@@ -474,9 +603,19 @@ class MainWindow(QMainWindow):
             self._load_saved_orders()
             self.tabs.setCurrentIndex(0)
             for row in range(self.orders.rowCount()):
-                if self.orders.item(row, 0).text() == local_order_id:
+                context = self.orders.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                if isinstance(context, dict) and (
+                    context.get("order_id") == local_order_id
+                    or context.get("external_deal_id") == external_id
+                ):
                     self.orders.selectRow(row)
                     break
+            if canonical:
+                self.statusBar().showMessage(
+                    f"Сделка Playerok {external_id} уже связана с каноническим заказом "
+                    f"{local_order_id}; отдельный legacy-дубль не создавался."
+                )
+                return
             if imported_now:
                 self.statusBar().showMessage(
                     f"Сделка Playerok {external_id} добавлена как {local_order_id}. "
@@ -770,6 +909,14 @@ class MainWindow(QMainWindow):
 
     def _start_send_selected_order_async(self):
         """Validate locally, then perform preview and send IPC calls off the GUI thread."""
+        try:
+            context_reader = getattr(self, "_order_context", None)
+            if callable(context_reader) and context_reader().get("kind") == "ledger":
+                self._start_send_ledger_order_async()
+                return
+        except ValueError as exc:
+            QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
+            return
         if getattr(self, "_asf_send_in_progress", False):
             return
         self._asf_send_in_progress = True
@@ -1288,22 +1435,504 @@ class MainWindow(QMainWindow):
         finally:
             self._load_saved_orders()
 
+    def _order_context(self, row=None):
+        row = self.orders.currentRow() if row is None else row
+        if row < 0:
+            raise ValueError("Сначала выбери заказ в таблице.")
+        item = self.orders.item(row, 0)
+        if item is None:
+            raise ValueError("Не удалось определить выбранный заказ.")
+        context = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(context, dict) and context.get("order_id"):
+            return dict(context)
+        # Compatibility with older rows/tests that stored only the legacy order ID.
+        return {"kind": "legacy", "order_id": item.text().strip()}
+
+    def _prepare_ledger_order(self):
+        try:
+            context = self._order_context()
+            if context.get("kind") != "ledger":
+                raise ValueError("Выбранный заказ не использует нормализованный ledger.")
+            order_id = str(context["order_id"])
+            config = self.delivery_pipeline._config_for_order(order_id)
+            if self.delivery_pipeline._is_card_config(config):
+                self._prepare_steam_card_order_async(order_id, config)
+                return
+            if not self.delivery_pipeline._is_cs2_config(config):
+                raise ValueError("Для этой ConfigVersion пока нет подключённого delivery handler.")
+            bot_pool = [
+                str(bot).strip() for bot in config["bot_pool"]
+                if isinstance(bot, str) and bot.strip()
+            ]
+            with connect_sqlite(self._database_path) as db:
+                rows = db.execute(
+                    "SELECT bot_name,updated_at FROM game_inventory_snapshot_meta WHERE game_id='cs2'"
+                ).fetchall()
+            timestamps = {str(row["bot_name"]).casefold(): str(row["updated_at"]) for row in rows}
+            all_instances = tuple(getattr(self.game_inventory_panel, "cs2_all_instances", ()))
+            snapshots = {}
+            for bot in bot_pool:
+                timestamp = timestamps.get(bot.casefold())
+                if not timestamp:
+                    snapshots[bot] = InventorySnapshot(
+                        bot, "cs2", 730, "2", datetime.min.replace(tzinfo=timezone.utc), (), False
+                    )
+                    continue
+                refreshed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                items = tuple(item for item in all_instances if item.bot_name.casefold() == bot.casefold())
+                snapshots[bot] = InventorySnapshot(
+                    bot, "cs2", 730, "2", refreshed_at, items, True
+                )
+            result = self.delivery_pipeline.prepare_cs2_order(
+                order_id=order_id, snapshots=snapshots
+            )
+            if result.status != "reserved":
+                raise ValueError(result.message)
+            self._load_saved_orders()
+            for row in range(self.orders.rowCount()):
+                row_context = self.orders.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                if isinstance(row_context, dict) and row_context.get("order_id") == order_id:
+                    self.orders.selectRow(row)
+                    break
+            QMessageBox.information(
+                self, "Выдача подготовлена",
+                f"Заказ {order_id}: резерв подтверждён. DeliveryLeg: {len(result.legs)}, "
+                f"CS2 assets: {len(result.reserved_assets)}. Для отправки введи trade URL покупателя "
+                "и нажми «Отправить предложение Steam…»."
+            )
+        except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            QMessageBox.warning(self, "Не удалось подготовить выдачу", str(exc))
+
+    def _prepare_steam_card_order_async(self, order_id, config):
+        """Verify buyer badges/inventory through the ASF plugin, then allocate full sets."""
+        if getattr(self, "_delivery_prepare_running", False):
+            return
+        trade_url = self._validate_trade_url(self.order_recipient.text())
+        query = parse_qs(urlparse(trade_url).query, keep_blank_values=True)
+        partners = query.get("partner", [])
+        if len(partners) != 1 or not partners[0].isdigit():
+            raise ValueError("Steam Trade URL должна содержать один корректный partner.")
+        partner = int(partners[0])
+        if not 1 <= partner <= 4294967295:
+            raise ValueError("Steam partner находится вне допустимого диапазона.")
+        recipient_steam_id64 = 76561197960265728 + partner
+        bot_pool = [
+            str(bot).strip() for bot in config["bot_pool"]
+            if isinstance(bot, str) and bot.strip()
+        ]
+        if not bot_pool:
+            raise ValueError("ConfigVersion не содержит разрешённого пула ASF-ботов.")
+        bot_pool = sorted({bot.casefold(): bot for bot in bot_pool}.values(), key=str.casefold)
+        client = self.asf_management._client(timeout=120.0)
+        self._delivery_prepare_running = True
+        if hasattr(self, "prepare_ledger_order_button"):
+            self.prepare_ledger_order_button.setEnabled(False)
+        self.statusBar().showMessage(
+            f"Проверяю профиль, значки и инвентарь покупателя через ASF для заказа {order_id}…"
+        )
+
+        def prepare():
+            store = InventorySnapshotStore(self._database_path)
+            now = datetime.now(timezone.utc)
+            inventories = {}
+            app_ids_by_name: dict[str, int] = {}
+            game_names_by_app_id: dict[int, str] = {}
+            catalog_by_name = {
+                game.name.strip().casefold(): game.app_id
+                for game in GAME_CATALOG if game.module_id != "steam_cards"
+            }
+            for bot in bot_pool:
+                status = store.status(bot)
+                if status.get("stale") or not status.get("updated_at"):
+                    raise ValueError(
+                        f"Снимок карточек ASF-бота {bot} устарел, неполон или отсутствует. "
+                        "Обнови снимок этого бота через ASF перед автоматическим подбором."
+                    )
+                refreshed = datetime.fromisoformat(
+                    str(status["updated_at"]).replace("Z", "+00:00")
+                )
+                if refreshed.tzinfo is None:
+                    refreshed = refreshed.replace(tzinfo=timezone.utc)
+                age = now - refreshed.astimezone(timezone.utc)
+                if age < timedelta(0) or age > timedelta(minutes=5):
+                    raise ValueError(
+                        f"Снимок карточек ASF-бота {bot} старше 5 минут. "
+                        "Обнови все боты из ConfigVersion перед подбором."
+                    )
+                cards = store.load(bot)
+                if len(cards) != int(status.get("item_count", -1)):
+                    raise ValueError(
+                        f"Снимок карточек ASF-бота {bot} не совпадает с метаданными; обнови его."
+                    )
+                inventories[bot] = cards
+                for card in cards:
+                    if not card.is_trading_card:
+                        continue
+                    game_name = str(card.game_name or "").strip()
+                    app_id = card.game_app_id
+                    if app_id is None:
+                        app_id = catalog_by_name.get(game_name.casefold())
+                    if app_id is None:
+                        raise ValueError(
+                            f"ASF не сохранил RealAppID для карточек игры «{game_name}». "
+                            "Обнови инвентарь после установки актуального парсера."
+                        )
+                    if isinstance(app_id, bool) or not isinstance(app_id, int) or app_id <= 0:
+                        raise ValueError(f"Для игры «{game_name}» получен некорректный AppID.")
+                    previous_name = game_names_by_app_id.get(app_id)
+                    previous_app = app_ids_by_name.get(game_name.casefold())
+                    if previous_name and previous_name.casefold() != game_name.casefold():
+                        raise ValueError(f"AppID {app_id} связан с несколькими названиями игр.")
+                    if previous_app is not None and previous_app != app_id:
+                        raise ValueError(f"Для игры «{game_name}» получены конфликтующие AppID.")
+                    game_names_by_app_id[app_id] = game_name
+                    app_ids_by_name[game_name.casefold()] = app_id
+
+            if not game_names_by_app_id:
+                # Empty normal-card stock is a proven zero candidate set after
+                # complete, fresh snapshots; let the canonical preflight emit
+                # the exact shortage and durable buyer/operator events.
+                preflight = self.delivery_pipeline.prepare_steam_card_order(
+                    order_id=order_id,
+                    inventories=inventories,
+                    recipient_badges=(),
+                    badge_data_verified=True,
+                    buyer_complete_sets_by_app_id={},
+                    buyer_inventory_verified=True,
+                    seller_inventory_verified=True,
+                    card_hashes_by_app_id={},
+                    card_definitions_verified=True,
+                )
+                return {"preflight": preflight, "diagnostic_bot": None, "app_count": 0}
+
+            app_ids = sorted(game_names_by_app_id)
+            if len(app_ids) > 20:
+                raise ValueError(
+                    "Для одного read-only запуска ASF можно проверить максимум 20 AppID. "
+                    "Сократи разрешённый пул карточных игр."
+                )
+            diagnostic_bot = bot_pool[0]
+            diagnostic = client.get_recipient_card_diagnostics(
+                bot_name=diagnostic_bot,
+                recipient_steam_id64=recipient_steam_id64,
+                app_ids=app_ids,
+            )
+            buyer = normalize_recipient_card_diagnostics(
+                diagnostic,
+                recipient_steam_id64=recipient_steam_id64,
+                game_names_by_app_id=game_names_by_app_id,
+            )
+            preflight = self.delivery_pipeline.prepare_steam_card_order(
+                order_id=order_id,
+                inventories=inventories,
+                recipient_badges=buyer.recipient_badges,
+                badge_data_verified=True,
+                buyer_complete_sets_by_app_id=buyer.buyer_complete_sets_by_app_id,
+                buyer_inventory_verified=True,
+                seller_inventory_verified=True,
+                card_hashes_by_app_id=buyer.card_hashes_by_app_id,
+                card_definitions_verified=True,
+            )
+            return {
+                "preflight": preflight,
+                "diagnostic_bot": diagnostic_bot,
+                "app_count": len(app_ids),
+            }
+
+        self._run_asf_call_async(
+            prepare,
+            lambda result, error: self._on_steam_card_order_prepared(
+                order_id, result, error
+            ),
+        )
+
+    def _on_steam_card_order_prepared(self, order_id, result, error):
+        self._delivery_prepare_running = False
+        self._update_order_action_buttons()
+        if error is not None:
+            log_exception(logger, "Steam card recipient preflight", error)
+            QMessageBox.warning(
+                self, "Автоподбор Steam Cards не выполнен",
+                f"{error}\n\nРезервы и Steam offers не создавались.",
+            )
+            return
+        preflight = result["preflight"]
+        if not preflight.ready_for_manual_review:
+            self._load_saved_orders()
+            with connect_sqlite(self._database_path) as db:
+                events = {
+                    str(row["event_type"])
+                    for row in db.execute(
+                        "SELECT event_type FROM gd_delivery_events WHERE order_id=?",
+                        (order_id,),
+                    ).fetchall()
+                }
+            extra = ""
+            if "buyer_notification" in events and "telegram_notification" in events:
+                extra = (
+                    "\n\nВ очередь уведомлений записаны сообщение покупателю и событие Telegram. "
+                    "Фактическая отправка сообщений будет подключена через встроенный браузер в Части Б."
+                )
+            QMessageBox.warning(
+                self, "Подходящих полных наборов недостаточно",
+                f"{preflight.message}{extra}\n\nSteam offers не создавались, частичный заказ не резервировался.",
+            )
+            return
+
+        self._load_saved_orders()
+        for row in range(self.orders.rowCount()):
+            row_context = self.orders.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if isinstance(row_context, dict) and row_context.get("order_id") == order_id:
+                self.orders.selectRow(row)
+                break
+        allocation_text = "\n".join(
+            f"AppID {allocation.app_id}: {allocation.sets} полных наборов"
+            + (" · значок доводится до 5 уровня" if allocation.completes_badge else "")
+            for allocation in preflight.allocations
+        )
+        bots = sorted({bot for bot, _asset in preflight.reserved_assets}, key=str.casefold)
+        QMessageBox.information(
+            self, "Steam Cards автоматически подобраны",
+            f"Заказ: {order_id}\n"
+            f"Запрошено полных наборов: {preflight.requested_sets}\n"
+            f"Зарезервировано физических карточек: {len(preflight.reserved_assets)}\n"
+            f"Боты: {', '.join(bots)}\n\n{allocation_text}\n\n"
+            "Каждый полный набор собран из обычных (не foil) карточек. "
+            "Все DeliveryLeg подготовлены. Для отправки введи/проверь Steam Trade URL "
+            "и нажми «Отправить предложение Steam…»; перед первым offer ASF повторно проверит каждую leg.",
+        )
+
+    def _schedule_delivery_reconciliation(self):
+        if getattr(self, "_delivery_reconcile_running", False):
+            return
+        try:
+            with connect_sqlite(self._database_path) as db:
+                pending = db.execute(
+                    "SELECT 1 FROM gd_delivery_legs WHERE status IN ('UNKNOWN','SENT_TO_STEAM') LIMIT 1"
+                ).fetchone()
+            if pending is None:
+                return
+            client = self.asf_management._client(timeout=45.0)
+            reconciler = DeliveryReconciliation(Database(self._database_path), client)
+            self._delivery_reconcile_running = True
+            self._run_asf_call_async(
+                lambda: reconciler.reconcile(),
+                self._on_delivery_reconciliation_complete,
+            )
+        except (OSError, sqlite3.Error, ValueError, ASFError) as exc:
+            logger.warning("Delivery reconciliation could not start: %s", type(exc).__name__)
+
+    def _on_delivery_reconciliation_complete(self, result, error):
+        self._delivery_reconcile_running = False
+        if error is not None:
+            logger.warning("Delivery reconciliation failed: %s", type(error).__name__)
+            return
+        if result:
+            self._load_saved_orders()
+            accepted = sum(1 for row in result if row.get("status") == "ACCEPTED")
+            self.statusBar().showMessage(
+                f"Сверка Steam завершена: проверено legs {len(result)}, новых Accepted: {accepted}."
+            )
+
+    def _preview_ledger_order(self, client, order_id, trade_url, legs):
+        previews = []
+        for leg in legs:
+            asset_ids = json.loads(leg["asset_ids_json"])
+            preview = client.preview_trade_offer(
+                order_id=order_id, bot_name=leg["bot_name"],
+                trade_url=trade_url, asset_ids=asset_ids,
+                app_id=int(leg["app_id"]), context_id=int(leg["context_id"]),
+            )
+            if (
+                not isinstance(preview, dict)
+                or preview.get("success") is not True
+                or preview.get("mode") != "preview-only"
+                or preview.get("sendEnabled") is not False
+                or preview.get("orderId") != order_id
+                or str(preview.get("botName", "")).casefold() != str(leg["bot_name"]).casefold()
+                or preview.get("appId") != int(leg["app_id"])
+                or preview.get("contextId") != int(leg["context_id"])
+                or preview.get("assetCount") != len(asset_ids)
+                or [str(item.get("assetId", "")) for item in preview.get("assets", [])
+                    if isinstance(item, dict)] != asset_ids
+            ):
+                raise ASFError(
+                    f"ASF не подтвердил точное совпадение состава DeliveryLeg {leg['leg_id']}; "
+                    "ни один offer не отправлен."
+                )
+            previews.append({
+                "leg_id": leg["leg_id"],
+                "bot_name": leg["bot_name"],
+                "app_id": leg["app_id"],
+                "context_id": leg["context_id"],
+                "asset_ids": asset_ids,
+                "steam_id64": preview.get("targetSteamId64"),
+            })
+        return previews
+
+    def _start_send_ledger_order_async(self):
+        if getattr(self, "_asf_send_in_progress", False):
+            return
+        order_id = self._selected_order_id()
+        try:
+            trade_url = self._validate_trade_url(self.order_recipient.text())
+            with connect_sqlite(self._database_path) as db:
+                order = db.execute(
+                    "SELECT status FROM gd_orders WHERE order_id=?", (order_id,)
+                ).fetchone()
+                legs = [dict(row) for row in db.execute(
+                    "SELECT l.* FROM gd_delivery_legs l JOIN gd_order_lines ol "
+                    "ON ol.order_line_id=l.order_line_id WHERE ol.order_id=? ORDER BY l.bot_name,l.leg_id",
+                    (order_id,),
+                ).fetchall()]
+            if order is None or order["status"] != "reserved":
+                raise ValueError("Канонический заказ должен иметь статус reserved.")
+            if not legs or any(leg["status"] != "reserved" for leg in legs):
+                raise ValueError("Каждая обязательная DeliveryLeg должна быть зарезервирована; повторная отправка запрещена.")
+            client = self.asf_management._client(timeout=60.0)
+            self._asf_send_in_progress = True
+            self.send_offer_button.setEnabled(False)
+            self.statusBar().showMessage(f"Проверяю все DeliveryLeg заказа {order_id} через ASF…")
+            self._run_asf_call_async(
+                lambda: self._preview_ledger_order(client, order_id, trade_url, legs),
+                lambda result, error: self._on_ledger_previews_ready(
+                    order_id, trade_url, legs, client, result, error
+                ),
+            )
+        except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            self._finish_async_send_ui()
+            QMessageBox.warning(self, "Проверка заказа не выполнена", str(exc))
+
+    def _on_ledger_previews_ready(self, order_id, trade_url, legs, client, previews, error):
+        if error is not None:
+            self._finish_async_send_ui()
+            QMessageBox.warning(
+                self, "ASF заблокировал отправку",
+                f"{error}\n\nНи один Steam offer не отправлялся.",
+            )
+            return
+        lines = [
+            f"Канонический заказ: {order_id}",
+            f"Получатель SteamID64: {previews[0].get('steam_id64') if previews else '—'}",
+            "",
+            "Все DeliveryLeg прошли preview:",
+        ]
+        for item in previews:
+            lines.append(
+                f"{item['bot_name']} · AppID {item['app_id']}/{item['context_id']} · "
+                f"assets: {', '.join(item['asset_ids'])}"
+            )
+        lines.extend(["", "Сейчас будут отправлены все перечисленные offers. Продолжить?"])
+        answer = QMessageBox.question(
+            self, "Подтвердить отправку всех Steam offers", "\n".join(lines),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self._finish_async_send_ui()
+            self.statusBar().showMessage(f"Отправка заказа {order_id} отменена; резервы сохранены.")
+            return
+        try:
+            safe_url = self._trade_credentials.store_trade_url(order_id, trade_url)
+            dispatcher = DeliveryDispatcher(
+                Database(self._database_path), client, self._trade_credentials
+            )
+            self._run_asf_call_async(
+                lambda: [
+                    dispatcher.dispatch_leg(
+                        order_id=order_id,
+                        leg_id=leg["leg_id"],
+                        stored_trade_url=safe_url,
+                    )
+                    for leg in legs
+                ],
+                lambda result, dispatch_error: self._on_ledger_dispatch_complete(
+                    order_id, result, dispatch_error
+                ),
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self._finish_async_send_ui()
+            QMessageBox.warning(self, "Отправка не начата", str(exc))
+
+    def _on_ledger_dispatch_complete(self, order_id, results, error):
+        self._finish_async_send_ui()
+        if error is not None:
+            log_exception(logger, "canonical delivery dispatch", error)
+            QMessageBox.warning(
+                self, "Ошибка отправки",
+                f"{error}\n\nСверь исходящие Steam. При UNKNOWN автоматический повтор запрещён.",
+            )
+            return
+        sent = sum(1 for item in results if item.get("dispatched"))
+        unknown = sum(1 for item in results if item.get("status") == "UNKNOWN")
+        self._load_saved_orders()
+        QMessageBox.information(
+            self, "Результат отправки",
+            f"Заказ: {order_id}\nСоздано offers: {sent}\nНеизвестный результат: {unknown}\n\n"
+            "Принятие покупателем будет отслеживаться отдельно. DELIVERED появится только после "
+            "Accepted по всем обязательным DeliveryLeg.",
+        )
+        self._schedule_delivery_reconciliation()
+
     def _update_order_action_buttons(self):
         if not hasattr(self, "send_offer_button") or not hasattr(self, "orders"):
             return
         try:
-            order_id = self._selected_order_id()
+            context = self._order_context()
+            if context.get("kind") == "ledger":
+                with connect_sqlite(self._database_path) as db:
+                    order = db.execute(
+                        "SELECT status FROM gd_orders WHERE order_id=?", (context["order_id"],)
+                    ).fetchone()
+                    counts = db.execute(
+                        "SELECT COUNT(*) AS total, SUM(CASE WHEN l.status='reserved' THEN 1 ELSE 0 END) AS reserved "
+                        "FROM gd_delivery_legs l JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                        "WHERE ol.order_id=?", (context["order_id"],)
+                    ).fetchone()
+                busy = getattr(self, "_asf_send_in_progress", False)
+                status = order["status"] if order else ""
+                self.send_offer_button.setEnabled(
+                    not busy and status == "reserved" and counts["total"] > 0
+                    and counts["total"] == (counts["reserved"] or 0)
+                )
+                if hasattr(self, "prepare_ledger_order_button"):
+                    self.prepare_ledger_order_button.setEnabled(
+                        status in {"pending", "insufficient_stock", "preflight_blocked"}
+                        and counts["total"] == 0
+                    )
+                if hasattr(self, "cancel_order_button"):
+                    self.cancel_order_button.setEnabled(
+                        status in {"pending", "insufficient_stock", "preflight_blocked", "reserved"}
+                        and (
+                            counts["total"] == 0
+                            or counts["total"] == (counts["reserved"] or 0)
+                        )
+                    )
+                for name in ("prepare_order_button", "reconcile_order_button", "delete_order_button"):
+                    widget = getattr(self, name, None)
+                    if widget is not None:
+                        widget.setEnabled(False)
+                return
             with connect_sqlite(self._database_path) as db:
                 row = db.execute(
-                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (context["order_id"],)
                 ).fetchone()
             self.send_offer_button.setEnabled(
                 not getattr(self, "_asf_send_in_progress", False)
                 and row is not None
                 and row[0] == "reserved — не отправлен"
             )
-        except (OSError, sqlite3.Error, ValueError):
+            if hasattr(self, "prepare_ledger_order_button"):
+                self.prepare_ledger_order_button.setEnabled(False)
+            for name in ("prepare_order_button", "cancel_order_button",
+                         "reconcile_order_button", "delete_order_button"):
+                widget = getattr(self, name, None)
+                if widget is not None:
+                    widget.setEnabled(True)
+        except (OSError, sqlite3.Error, ValueError, KeyError):
             self.send_offer_button.setEnabled(False)
+            if hasattr(self, "prepare_ledger_order_button"):
+                self.prepare_ledger_order_button.setEnabled(False)
 
     def _load_saved_orders(self):
         if not hasattr(self, "orders"):
@@ -1311,39 +1940,92 @@ class MainWindow(QMainWindow):
         self.orders.setRowCount(0)
         try:
             self._ensure_delivery_order_schema()
+            entries = []
             with connect_sqlite(self._database_path) as db:
-                rows = db.execute(
-                    "SELECT order_id, asset_count, status, created_at, source_platform, "
-                    "source_title, source_buyer, trade_offer_id FROM delivery_orders ORDER BY created_at DESC"
+                legacy_rows = db.execute(
+                    "SELECT order_id,asset_count,status,created_at,source_platform,source_title,source_buyer,"
+                    "trade_offer_id,source_amount,COALESCE(source_deal_id,source_order_id) AS external_deal_id "
+                    "FROM delivery_orders ORDER BY created_at DESC"
                 ).fetchall()
-            for order_id, count, status, created, platform, title, buyer, trade_offer_id in rows:
+                canonical_rows = db.execute(
+                    "SELECT o.order_id,o.status,o.created_at,d.source_platform,d.external_deal_id,"
+                    "d.payload_json,l.title,d.deal_id,d.chat_id "
+                    "FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id "
+                    "LEFT JOIN gd_listings l ON l.listing_id=d.listing_id "
+                    "ORDER BY o.created_at DESC"
+                ).fetchall()
+            canonical_external = {
+                str(row["external_deal_id"])
+                for row in canonical_rows
+                if row["source_platform"] == "playerok" and row["external_deal_id"]
+            }
+            for row in canonical_rows:
+                platform = str(row["source_platform"] or "")
+                external_id = str(row["external_deal_id"] or "")
+                try:
+                    payload = json.loads(row["payload_json"] or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                display_id = external_id if platform == "playerok" and external_id else row["order_id"]
+                source = (
+                    "Playerok" if platform == "playerok"
+                    else "Ручная отправка" if platform == "manual"
+                    else platform
+                )
+                product = str(row["title"] or payload.get("title") or "Ручная отправка")
+                price = str(payload.get("amount") or "—")
+                entries.append((
+                    str(row["created_at"] or ""), display_id, source, product, price,
+                    {"kind": "ledger", "order_id": str(row["order_id"]),
+                     "deal_id": str(row["deal_id"]), "external_deal_id": external_id,
+                     "status": str(row["status"] or "")},
+                    f"Внутренний order_id: {row['order_id']}\nСтатус: {row['status']}\n"
+                    f"Deal ID: {external_id or '—'}\nChat ID: {row['chat_id'] or '—'}",
+                ))
+            for row in legacy_rows:
+                platform = str(row["source_platform"] or "manual")
+                if platform == "playerok" and row["external_deal_id"] in canonical_external:
+                    continue
                 if platform == "playerok":
-                    source = "Playerok" + (f" · {buyer}" if buyer else "")
-                    items = title or "Заказ Playerok"
-                    if count:
-                        items += f" · {count} активов"
+                    display_id = str(row["external_deal_id"] or row["order_id"])
+                    source = "Playerok"
+                    product = str(row["source_title"] or "Заказ Playerok")
+                    price = str(row["source_amount"] or "—")
                 else:
-                    source = "Ручной заказ"
-                    items = f"{count} активов"
-                if trade_offer_id:
-                    items += f" · offer {trade_offer_id}"
-                row = self.orders.rowCount()
-                self.orders.insertRow(row)
-                for col, value in enumerate((order_id, source, items, status, created)):
-                    self.orders.setItem(row, col, QTableWidgetItem(str(value)))
-        except sqlite3.Error as exc:
+                    display_id = str(row["order_id"])
+                    source = "Ручная отправка"
+                    product = "Ручная отправка"
+                    price = "—"
+                entries.append((
+                    str(row["created_at"] or ""), display_id, source, product, price,
+                    {"kind": "legacy", "order_id": str(row["order_id"]),
+                     "status": str(row["status"] or "")},
+                    f"Внутренний order_id: {row['order_id']}\nСтатус: {row['status']}\n"
+                    f"Покупатель: {row['source_buyer'] or '—'}\nOffer ID: {row['trade_offer_id'] or '—'}",
+                ))
+            entries.sort(key=lambda item: item[0], reverse=True)
+            for created, display_id, source, product, price, context, tooltip in entries:
+                row_index = self.orders.rowCount()
+                self.orders.insertRow(row_index)
+                cells = (display_id, source, product, price, created)
+                for column, value in enumerate(cells):
+                    cell = QTableWidgetItem(str(value))
+                    cell.setToolTip(tooltip)
+                    if column == 0:
+                        cell.setData(Qt.ItemDataRole.UserRole, context)
+                    self.orders.setItem(row_index, column, cell)
+        except (OSError, sqlite3.Error, ValueError) as exc:
             self.statusBar().showMessage(f"Не удалось загрузить сохранённые заказы: {exc}")
         finally:
             self._update_order_action_buttons()
 
+    def _selected_order_context(self):
+        return self._order_context()
+
     def _selected_order_id(self):
-        row = self.orders.currentRow()
-        if row < 0:
-            raise ValueError("Сначала выбери заказ в таблице.")
-        item = self.orders.item(row, 0)
-        if item is None or not item.text().strip():
-            raise ValueError("Не удалось определить выбранный заказ.")
-        return item.text().strip()
+        return str(self._selected_order_context()["order_id"])
 
     def _show_selected_order_details(self):
         try:
@@ -1354,7 +2036,66 @@ class MainWindow(QMainWindow):
     def _show_order_details(self, row, _column=0):
         if row < 0:
             return
-        order_id = self.orders.item(row, 0).text()
+        context = self._order_context(row)
+        order_id = str(context["order_id"])
+        if context.get("kind") == "ledger":
+            with connect_sqlite(self._database_path) as db:
+                order = db.execute(
+                    "SELECT o.status,o.total_quantity,o.created_at,d.source_platform,d.external_deal_id,"
+                    "d.chat_id,d.platform_status,d.payload_json,l.title "
+                    "FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id "
+                    "LEFT JOIN gd_listings l ON l.listing_id=d.listing_id WHERE o.order_id=?",
+                    (order_id,),
+                ).fetchone()
+                lines = db.execute(
+                    "SELECT order_line_id,item_type,item_name,quantity,item_selector_json "
+                    "FROM gd_order_lines WHERE order_id=? ORDER BY line_number", (order_id,)
+                ).fetchall()
+                legs = db.execute(
+                    "SELECT l.leg_id,l.bot_name,l.app_id,l.context_id,l.asset_ids_json,l.trade_offer_id,l.status "
+                    "FROM gd_delivery_legs l JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                    "WHERE ol.order_id=? ORDER BY l.bot_name,l.leg_id", (order_id,)
+                ).fetchall()
+            if order is None:
+                raise ValueError("Нормализованный заказ не найден.")
+            try:
+                payload = json.loads(order["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            details = [
+                f"Заказ GameDelivery: {order_id}",
+                f"Внешний Deal ID: {order['external_deal_id'] or '—'}",
+                f"Chat ID: {order['chat_id'] or '—'}",
+                f"Источник: {order['source_platform']}",
+                f"Товар: {order['title'] or payload.get('title') or 'Ручная отправка'}",
+                f"Цена: {payload.get('amount') or '—'}",
+                f"Дата заказа: {order['created_at']}",
+                f"Внутренний статус: {order['status']}",
+                f"Статус площадки: {order['platform_status']}",
+                "",
+                "OrderLine:",
+            ]
+            details.extend(
+                f"• {line['item_name']} · {line['quantity']} · {line['item_type']}"
+                for line in lines
+            )
+            details.extend(["", "DeliveryLeg:"])
+            for leg in legs:
+                assets = ", ".join(json.loads(leg["asset_ids_json"] or "[]"))
+                details.append(
+                    f"• {leg['bot_name']} · {leg['app_id']}/{leg['context_id']} · "
+                    f"{leg['status']} · offer {leg['trade_offer_id'] or '—'} · {assets}"
+                )
+            if not legs:
+                details.append("DeliveryLeg ещё не созданы.")
+            details.extend([
+                "",
+                "Trade token, cookies и полная Steam Trade URL в журнал не выводятся.",
+            ])
+            QMessageBox.information(self, "Состав заказа", "\n".join(details))
+            return
         with connect_sqlite(self._database_path) as db:
             order = db.execute(
                 "SELECT recipient_trade_url, status, source_platform, "
@@ -1397,6 +2138,31 @@ class MainWindow(QMainWindow):
 
     def _cancel_selected_order(self):
         try:
+            context = self._order_context()
+            if context.get("kind") == "ledger":
+                order_id = str(context["order_id"])
+                with connect_sqlite(self._database_path) as db:
+                    order = db.execute(
+                        "SELECT status FROM gd_orders WHERE order_id=?", (order_id,)
+                    ).fetchone()
+                if order is None:
+                    raise ValueError("Канонический заказ не найден.")
+                if QMessageBox.question(
+                    self, "Отменить канонический заказ",
+                    f"Отменить {order_id} и освободить резервы? "
+                    "Это разрешено только до начала любой попытки ASF.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                ) != QMessageBox.StandardButton.Yes:
+                    return
+                result = self.delivery_pipeline.cancel_order(order_id)
+                self._load_saved_orders()
+                QMessageBox.information(
+                    self, "Заказ отменён",
+                    f"{order_id}: активные резервы освобождены. "
+                    "Запись остаётся в ledger для аудита.",
+                )
+                return
             order_id = self._selected_order_id()
             with connect_sqlite(self._database_path) as db:
                 row = db.execute(

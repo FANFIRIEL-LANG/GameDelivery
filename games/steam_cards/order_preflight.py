@@ -113,6 +113,7 @@ class SteamCardOrderPreflight:
         seller_inventory_verified: bool,
         card_hashes_by_app_id: Mapping[int, Iterable[str]],
         card_definitions_verified: bool,
+        game_app_ids_by_name: Mapping[str, int] | None = None,
     ) -> MultiGameOrderPreflight:
         """Plan and reserve an exact multi-game order; never sends a trade."""
         order = order_id.strip()
@@ -173,6 +174,18 @@ class SteamCardOrderPreflight:
             for game in GAME_CATALOG
             if game.module_id != "steam_cards"
         }
+        app_ids = set(catalog_by_name.values())
+        for raw_name, raw_app_id in (game_app_ids_by_name or {}).items():
+            game_key = str(raw_name).strip().casefold()
+            if not game_key or isinstance(raw_app_id, bool) or not isinstance(raw_app_id, int) or raw_app_id <= 0:
+                return blocked("ASF не подтвердил корректную пару GameName/AppID")
+            existing_app_id = catalog_by_name.get(game_key)
+            if existing_app_id is not None and existing_app_id != raw_app_id:
+                return blocked(f"AppID для игры {raw_name} конфликтует с каталогом")
+            if raw_app_id in app_ids and existing_app_id != raw_app_id:
+                return blocked(f"AppID {raw_app_id} связан с несколькими играми")
+            catalog_by_name[game_key] = raw_app_id
+            app_ids.add(raw_app_id)
         badges = tuple(recipient_badges)
         game_names: dict[str, str] = {}
         for cards in inventory_lists.values():

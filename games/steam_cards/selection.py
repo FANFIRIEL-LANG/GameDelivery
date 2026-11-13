@@ -20,6 +20,8 @@ class CardCopy:
     icon_url_large: str = ""
     market_hash_name: str = ""
     item_quality: str = ""
+    # Real game AppID from ASF's card description (market_fee_app/RealAppID).
+    game_app_id: int | None = None
 
 
 @dataclass(frozen=True)

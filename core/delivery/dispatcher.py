@@ -139,6 +139,8 @@ class DeliveryDispatcher:
                 bot_name=row["bot_name"],
                 trade_url=trade_url,
                 asset_ids=json.loads(row["asset_ids_json"]),
+                app_id=int(row["app_id"]),
+                context_id=int(row["context_id"]),
             )
         except Exception as exc:
             # Once send_trade_offer has crossed its command boundary it returns resultUnknown.

@@ -470,6 +470,8 @@ class ASFClient:
         bot_name: str,
         trade_url: str,
         asset_ids: Iterable[str],
+        app_id: int = 753,
+        context_id: int = 6,
     ) -> dict[str, Any]:
         """Ask the installed GameDelivery ASF plugin to validate a no-send trade draft.
 
@@ -480,6 +482,8 @@ class ASFClient:
         bot = bot_name.strip()
         if not order or not bot:
             raise ValueError("Нужны ID заказа и имя бота ASF")
+        if (app_id, context_id) not in {(753, 6), (730, 2)}:
+            raise ValueError("Поддерживаются только Steam Cards 753/6 и CS2 730/2")
 
         parsed = urlsplit(trade_url.strip())
         params = parse_qs(parsed.query, keep_blank_values=True)
@@ -519,6 +523,8 @@ class ASFClient:
             "OrderId": order,
             "BotName": bot,
             "TargetSteamId64": steam_id64,
+            "AppId": app_id,
+            "ContextId": context_id,
             "AssetIds": normalized_ids,
         }
         encoded_payload = base64.urlsafe_b64encode(
@@ -557,6 +563,8 @@ class ASFClient:
             or not isinstance(preview_bot, str)
             or preview_bot.casefold() != bot.casefold()
             or preview.get("targetSteamId64") != steam_id64
+            or preview.get("appId") != app_id
+            or preview.get("contextId") != context_id
         ):
             raise ASFError("ASF вернул некорректное подтверждение черновика обмена")
 
@@ -620,6 +628,57 @@ class ASFClient:
             raise ASFError("ASF вернул статус другого trade offer или бота")
         return payload
 
+    def get_recipient_card_diagnostics(
+        self,
+        *,
+        bot_name: str,
+        recipient_steam_id64: int,
+        app_ids: Iterable[int],
+    ) -> dict[str, Any]:
+        """Read recipient identity, normal badge metadata and inventory through ASF only."""
+        bot = str(bot_name).strip()
+        if not bot or any(char.isspace() or ord(char) < 32 for char in bot):
+            raise ValueError("Имя ASF-бота для диагностической команды должно быть одним токеном")
+        if (
+            isinstance(recipient_steam_id64, bool)
+            or not isinstance(recipient_steam_id64, int)
+            or not 76561197960265728 <= recipient_steam_id64 <= 76561202255233023
+        ):
+            raise ValueError("Получатель должен быть индивидуальным SteamID64")
+        normalized_app_ids: list[int] = []
+        seen: set[int] = set()
+        for value in app_ids:
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > 4294967295:
+                raise ValueError("Каждый AppID должен быть положительным uint32")
+            if value in seen:
+                raise ValueError("Список AppID содержит повтор")
+            seen.add(value)
+            normalized_app_ids.append(value)
+        if not normalized_app_ids:
+            raise ValueError("Нужен хотя бы один AppID для проверки карточек")
+        if len(normalized_app_ids) > 20:
+            raise ValueError("За один запуск ASF разрешает проверить не более 20 AppID")
+        command = (
+            "gamedelivery-diagnose " + bot + " "
+            + " ".join(str(value) for value in normalized_app_ids)
+            + " --recipient " + str(recipient_steam_id64)
+        )
+        raw = _unwrap_result(self.send_command(command))
+        if not isinstance(raw, str):
+            raise ASFError("ASF не вернул JSON read-only диагностики получателя")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ASFError("ASF вернул некорректный JSON диагностики получателя") from None
+        if not isinstance(payload, dict) or payload.get("mode") != "diagnostic-read-only":
+            raise ASFError("ASF вернул ответ неподдерживаемого режима диагностики получателя")
+        if payload.get("sendEnabled") is not False or payload.get("tradeOfferCreated") is not False:
+            raise ASFError("ASF не подтвердил, что диагностический запрос не отправлял обмен")
+        returned_id = payload.get("recipientSteamId64")
+        if returned_id is not None and returned_id != recipient_steam_id64:
+            raise ASFError("ASF вернул диагностику другого SteamID64")
+        return payload
+
     def get_bots(self) -> dict[str, Any]:
         """Return live bot objects from ASF's documented bot endpoint.
 
@@ -647,14 +706,18 @@ class ASFClient:
         bot_name: str,
         trade_url: str,
         asset_ids: Iterable[str],
+        app_id: int = 753,
+        context_id: int = 6,
     ) -> dict[str, Any]:
-        """Send one reviewed Steam Community inventory offer via ASF; keep the trade token in a one-use local file."""
+        """Send one reviewed Steam inventory offer via ASF; keep the trade token in a one-use local file."""
         order = order_id.strip()
         bot = bot_name.strip()
         if not order or len(order) > 128 or any(ord(ch) < 32 for ch in order):
             raise ValueError("Некорректный ID заказа для отправки")
         if not bot:
             raise ValueError("Нужно имя ASF-бота")
+        if (app_id, context_id) not in {(753, 6), (730, 2)}:
+            raise ValueError("Поддерживаются только Steam Cards 753/6 и CS2 730/2")
 
         parsed_url = urlsplit(trade_url.strip())
         params = parse_qs(parsed_url.query, keep_blank_values=True)
@@ -703,6 +766,8 @@ class ASFClient:
             "OrderId": order,
             "BotName": bot,
             "TargetSteamId64": target_steam_id64,
+            "AppId": app_id,
+            "ContextId": context_id,
             "AssetIds": normalized_ids,
             "TradeToken": tokens[0],
         }
@@ -710,6 +775,8 @@ class ASFClient:
             "OrderId": order,
             "BotName": bot,
             "TargetSteamId64": target_steam_id64,
+            "AppId": app_id,
+            "ContextId": context_id,
             "AssetIds": normalized_ids,
             "CredentialNonce": nonce,
         }
@@ -743,6 +810,8 @@ class ASFClient:
                     or outcome.get("orderId") != order
                     or str(outcome.get("botName", "")).casefold() != bot.casefold()
                     or outcome.get("targetSteamId64") != target_steam_id64
+                    or outcome.get("appId") != app_id
+                    or outcome.get("contextId") != context_id
                     or outcome.get("assetCount") != len(normalized_ids)
                     or not isinstance(outcome.get("offerIds"), list)
                     or not outcome["offerIds"]
@@ -771,6 +840,8 @@ class ASFClient:
                     or outcome.get("orderId") != order
                     or str(outcome.get("botName", "")).casefold() != bot.casefold()
                     or outcome.get("targetSteamId64") != target_steam_id64
+                    or outcome.get("appId") != app_id
+                    or outcome.get("contextId") != context_id
                     or outcome.get("assetCount") != len(normalized_ids)
                     or not isinstance(offer_ids, list)
                     or any(

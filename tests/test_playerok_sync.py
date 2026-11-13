@@ -152,7 +152,7 @@ class PlayerokDealSyncTests(unittest.TestCase):
                 "Повторный переход в DELIVERED не создаёт вторую Playerok мутацию",
             )
 
-        self.syncer.sync(adapter)
+        self.syncer.sync(adapter, allow_status_mutation=True)
         self.assertEqual(adapter.mutation_calls, [("new-deal", "SENT")])
         with self.database.connect() as db:
             state = db.execute(
@@ -186,7 +186,7 @@ class PlayerokDealSyncTests(unittest.TestCase):
             order = db.execute("SELECT order_id FROM gd_orders WHERE deal_id=?", (normalized_id,)).fetchone()
             db.execute("UPDATE gd_orders SET status='DELIVERED' WHERE order_id=?", (order["order_id"],))
         adapter.raise_after_mutation = True
-        self.syncer.sync(adapter)
+        self.syncer.sync(adapter, allow_status_mutation=True)
         with self.database.connect() as db:
             state = db.execute(
                 "SELECT state,attempt_count,last_error_type FROM playerok_status_outbox WHERE order_id=?",
@@ -263,6 +263,71 @@ class PlayerokDealSyncTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(updated["config_version_id"], config["config_version_id"])
         self.assertEqual(tuple(order), (1, "pending"))
+
+
+    def test_normal_sync_keeps_playerok_paid_until_embedded_browser_action_is_enabled(self):
+        self.configure_listing()
+        adapter = FakePlayerok(
+            baseline=[deal("old-browser", "listing-live", "PAID")],
+            active=[deal("new-browser", "listing-live", "PAID")],
+        )
+        self.syncer.sync(adapter)
+        self.syncer.sync(adapter)
+        normalized_id = self.normalized_deal_id("new-browser")
+        with self.database.connect() as db:
+            order = db.execute(
+                "SELECT order_id FROM gd_orders WHERE deal_id=?", (normalized_id,)
+            ).fetchone()
+            db.execute(
+                "UPDATE gd_orders SET status='DELIVERED' WHERE order_id=?", (order["order_id"],)
+            )
+        self.syncer.sync(adapter)
+        self.assertEqual(adapter.mutation_calls, [])
+        with self.database.connect() as db:
+            state = db.execute(
+                "SELECT state,last_platform_status FROM playerok_status_outbox WHERE order_id=?",
+                (order["order_id"],),
+            ).fetchone()
+        self.assertEqual(tuple(state), ("pending", "PAID"))
+
+    def test_listing_config_changes_do_not_mutate_existing_paid_order_snapshot(self):
+        first_config = self.configure_listing("listing-versioned")
+        adapter = FakePlayerok(
+            baseline=[deal("history", "listing-versioned", "PAID")],
+            active=[deal("new-versioned", "listing-versioned", "PAID")],
+        )
+        self.syncer.sync(adapter)
+        self.syncer.sync(adapter)
+        normalized_id = self.normalized_deal_id("new-versioned")
+        with self.database.connect() as db:
+            before = db.execute(
+                "SELECT config_version_id FROM gd_deals WHERE deal_id=?", (normalized_id,)
+            ).fetchone()[0]
+            order_before = db.execute(
+                "SELECT total_quantity FROM gd_orders WHERE deal_id=?", (normalized_id,)
+            ).fetchone()[0]
+        self.assertEqual(before, first_config["config_version_id"])
+        self.assertEqual(order_before, 2)
+        next_config = self.ledger.create_listing_config_version(
+            listing_id=first_config["listing_id"],
+            source_platform="playerok",
+            external_listing_id="listing-versioned",
+            delivery_quantity_per_deal=3,
+            item_selectors={"game_id": "cs2", "app_id": 730, "context_id": 2},
+            bot_pool=["Bot-A", "Bot-B"],
+            title="Future version",
+        )
+        self.syncer.sync(adapter)
+        with self.database.connect() as db:
+            after = db.execute(
+                "SELECT config_version_id FROM gd_deals WHERE deal_id=?", (normalized_id,)
+            ).fetchone()[0]
+            order_after = db.execute(
+                "SELECT total_quantity FROM gd_orders WHERE deal_id=?", (normalized_id,)
+            ).fetchone()[0]
+        self.assertEqual(after, first_config["config_version_id"])
+        self.assertNotEqual(after, next_config["config_version_id"])
+        self.assertEqual(order_after, 2)
 
 
 if __name__ == "__main__":
