@@ -4442,3 +4442,16 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Приоритет работ от пользователя подтверждён: сначала исправить reservation lifecycle в существующем карточном пути (включая ручной контроль и orphan recovery); затем полноценно завершить CS2 delivery; после этого подключать Playerok как единый источник заказов для CS2 и Steam Cards, сохранив всю уже разработанную карточную бизнес-логику; последующие возможности строить поверх этого.
 - На момент этой записи production code и SQLite schema не изменялись; миграции и пользовательская БД не запускались; ASF runtime и Steam offers не затрагивались; live проверки не выполнялись. Это архитектурная фиксация, не заявление об исправлении текущей сборки.
 - Следующий implementation step: адресно переработать существующий card reservation flow и тесты (не запускать CS2/Playerok раньше времени): убрать статусный запрет для ручного release; добавить статус-проверку ASF и явный force override; добавить список orphaned reservations; сделать reserve+order atomic; после release требовать fresh inventory; заменить текущие тесты, которые закрепляют блокирующее поведение. Проверить временной SQLite DB и targeted unit/UI tests, затем обновить Master Log.
+### 2026-11-13 — Блок 1 сквозного delivery pipeline принят; ASF plugin + CS2 support verified
+
+- Пользователь подтвердил приёмку Блока 1 на ветке work/local-sync, commit 8644c4678b3f79861bdacac6517bb21f4aff61a7.
+- В ASF plugin добавлена поддержка точного CS2 inventory context AppID=730/ContextID=2 для gamedelivery-preview и gamedelivery-send. Контекст ограничен только парами 753/6 и 730/2; каждый asset сверяется с live inventory выбранного ASF-бота и требует Tradable == true. Для 753/6 дополнительно сохраняется card-only фильтр обычных Steam Trading Cards. Защита от самообмена сохранена.
+- В SendTradeOffer передаётся пустой customMessage; это убирает только дополнительный текст GameDelivery. Фиксированная служебная подпись ASF остаётся частью ASF 6.3.11.7.
+- Добавлена read-only команда gamedelivery-status <BotName> <TradeOfferID> для проверки точного исходящего предложения через ASF ArchiWebHandler.GetTradeOffers, включая Steam state и manifest передаваемых assets. Отсутствие offer в ответе ASF не трактуется как доказательство отмены.
+- Pre-flight до отправки проверяет доступность inventory получателя через ASF и escrow/trade-hold через OAuth access token самого подключённого ASF-бота и ASF-configured HTTP client; Steam Web API key не используется. Положительный, неполный или неизвестный hold result блокирует отправку. Pre-flight не заявляет о возможности заранее обнаружить все виды Steam account restrictions, не представленные этим сигналом.
+- Точные GitHub Actions runs на commit 8644c4678b3f79861bdacac6517bb21f4aff61a7 завершились успешно:
+  - ASF plugin #641: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43424170372
+  - Build custom ASF Generic #11: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43424170524
+  - Tests #1672: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43424170445
+  - Build GameDelivery Windows executable #870: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/43424170413
+- Эта запись фиксирует приёмку Блока 1; она не утверждает, что отправка CS2 уже проверена реальным Steam offer. Никаких новых Steam offers в рамках CI не создавалось.
