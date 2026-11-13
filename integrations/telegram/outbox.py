@@ -200,7 +200,7 @@ class TelegramBotOutbox:
                             last_error=?,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+60 seconds'),
                             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                         WHERE outbox_id=?
-                    """, (type(exc).__name__ + ": " + str(exc)[:300], row["outbox_id"]))
+                    """, (type(exc).__name__, row["outbox_id"]))
                 results.append({"outbox_id": row["outbox_id"], "status": "retry"})
         return results
 
