@@ -599,5 +599,46 @@ class AppStartupSmokeTests(unittest.TestCase):
             self.app.processEvents()
 
 
+    def test_playerok_import_persists_deal_chat_and_listing_ids_separately(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            with patch.object(
+                MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
+            ), patch("app.main.QMessageBox.information"), patch("app.main.QMessageBox.warning"):
+                window = MainWindow()
+                try:
+                    order = {
+                        "platform": "playerok",
+                        "deal_id": "deal-uuid-1",
+                        "order_id": "deal-uuid-1",
+                        "chat_id": "chat-uuid-2",
+                        "listing_id": "listing-uuid-3",
+                        "chat_url": "https://playerok.com/chats/chat-uuid-2",
+                        "deal_url": "https://playerok.com/deal/deal-uuid-1",
+                        "url": "https://playerok.com/deal/deal-uuid-1",
+                        "title": "Configured item",
+                        "buyer": "buyer",
+                        "status": "PAID",
+                        "amount": "25",
+                    }
+                    window._import_marketplace_order(order)
+                    window._import_marketplace_order({**order, "status": "SENT"})
+                    with sqlite3.connect(database) as db:
+                        rows = db.execute("""
+                            SELECT source_order_id,source_deal_id,source_chat_id,
+                                   source_listing_id,source_chat_url,source_status
+                            FROM delivery_orders WHERE source_platform='playerok'
+                        """).fetchall()
+                    self.assertEqual(rows, [(
+                        "deal-uuid-1", "deal-uuid-1", "chat-uuid-2",
+                        "listing-uuid-3", "https://playerok.com/chats/chat-uuid-2", "SENT",
+                    )])
+                    self.assertEqual(window.orders.rowCount(), 1)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+
 if __name__ == "__main__":
     unittest.main()

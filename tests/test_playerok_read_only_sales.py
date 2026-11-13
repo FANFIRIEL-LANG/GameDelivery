@@ -149,6 +149,14 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
 
         def fake_request(url, *, method="GET", payload=None, token=None, bearer=False):
             requests.append(payload)
+            if payload["operationName"] == "Deal":
+                return {"data": {"deal": {
+                    "id": "deal-123", "status": "PAID", "createdAt": "",
+                    "item": {"id": "listing-1", "name": "Game item"},
+                    "user": {"id": "buyer-1", "username": "buyer"},
+                    "chat": {"id": "chat-1"},
+                    "transaction": {"value": 12},
+                }}}, None
             return {"data": {"updateDeal": {
                 "id": "deal-123", "status": "SENT", "createdAt": "",
                 "item": {"id": "listing-1", "name": "Game item"},
@@ -160,13 +168,23 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
         adapter = PlayerokAdapter(keyring_backend=MemoryKeyring(), request_func=fake_request)
         result = adapter.update_deal_status("deal-123", "SENT")
         self.assertEqual(result["status"], "SENT")
-        self.assertEqual(requests[0]["operationName"], "UpdateDeal")
+        self.assertEqual(requests[0]["operationName"], "Deal")
+        self.assertEqual(requests[1]["operationName"], "UpdateDeal")
         self.assertEqual(
-            requests[0]["variables"]["input"],
+            requests[1]["variables"]["input"],
             {"id": "deal-123", "status": "SENT"},
         )
         with self.assertRaises(ValueError):
             adapter.update_deal_status("deal-123", "CONFIRMED")
+
+
+    def test_missing_page_info_fails_closed_instead_of_completing_baseline(self):
+        def fake_request(url, *, method="GET", payload=None, token=None, bearer=False):
+            return {"data": {"deals": {"edges": []}}}, None
+
+        adapter = PlayerokAdapter(keyring_backend=MemoryKeyring(), request_func=fake_request)
+        with self.assertRaisesRegex(RuntimeError, "pageInfo"):
+            adapter.fetch_sales(statuses=None)
 
 
 if __name__ == "__main__":

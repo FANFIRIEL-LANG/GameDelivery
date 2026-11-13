@@ -137,12 +137,16 @@ class MarketplacePanel(QWidget):
         self.orders_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.orders_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.orders_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
-        root.addWidget(QLabel("Активные продажи Playerok (только чтение):"))
+        root.addWidget(QLabel("Сделки Playerok (полная синхронизация):"))
         root.addWidget(self.orders_table, 1)
 
         if self.playerok.has_saved_session():
-            self.profile_label.setText("Найдена сохранённая сессия — проверь вход")
-            self.status_label.setText("Сессия найдена в системном хранилище. Проверь её перед загрузкой заказов.")
+            self.profile_label.setText("Найдена сохранённая сессия — выполняю проверку")
+            self._start_task(
+                "restore",
+                self.playerok.restore_session,
+                "Проверяю сохранённую сессию Playerok перед baseline-синхронизацией…",
+            )
         self._update_button_state()
 
     def _set_busy(self, busy: bool) -> None:

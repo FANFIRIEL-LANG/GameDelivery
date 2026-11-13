@@ -143,6 +143,14 @@ class PlayerokDealSyncTests(unittest.TestCase):
         self.assertEqual(queued["state"], "pending")
         self.assertEqual(queued["idempotency_key"], "playerok-send:" + order["order_id"])
         self.assertEqual(queued["external_deal_id"], "new-deal")
+        with self.database.connect() as db:
+            db.execute("UPDATE gd_orders SET status='PROCESSING' WHERE order_id=?", (order["order_id"],))
+            db.execute("UPDATE gd_orders SET status='DELIVERED' WHERE order_id=?", (order["order_id"],))
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM playerok_status_outbox WHERE order_id=?", (order["order_id"],)).fetchone()[0],
+                1,
+                "Повторный переход в DELIVERED не создаёт вторую Playerok мутацию",
+            )
 
         self.syncer.sync(adapter)
         self.assertEqual(adapter.mutation_calls, [("new-deal", "SENT")])

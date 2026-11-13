@@ -358,6 +358,7 @@ class PlayerokAdapter(MarketplaceAdapter):
 
         self._session_token = None
         self._session_persisted = False
+        self._account_user_id = None
         self._pending_second_factor_session = None
         keyring_error = False
         try:
@@ -594,6 +595,13 @@ class PlayerokAdapter(MarketplaceAdapter):
         token = self._saved_token()
         if not token:
             raise ValueError("Сначала войди в аккаунт Playerok.")
+        # Re-read immediately before mutation to close the status-change race.
+        current = self.fetch_deal(external_id)
+        current_status = self._deal_status({"status": current.get("status")})
+        if current_status in {"SENT", "CONFIRMED", "CONFIRMED_AUTOMATICALLY"}:
+            return current
+        if current_status != "PAID":
+            raise ValueError("Playerok переводит в SENT только сделку со статусом PAID.")
 
         mutation = """
         mutation UpdateDeal($input: UpdateItemDealInput!) {
