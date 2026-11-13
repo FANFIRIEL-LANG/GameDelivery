@@ -78,7 +78,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
     def test_headless_panel_constructs_without_webengine(self):
         # CI may have WebEngine installed or omitted; both are valid.
         self.assertIsInstance(WEBENGINE_AVAILABLE, bool)
-        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        panel = PlayerokBrowserPanel(database=self.db)
         self.assertIsNone(panel.web)
         self.assertIn("headless", panel.browser_status.text())
         panel.close()

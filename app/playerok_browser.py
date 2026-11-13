@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, parse_qs
@@ -83,7 +84,12 @@ class PlayerokBrowserPanel(QWidget):
 
         split = QSplitter()
         self.browser_status = QLabel()
-        use_webengine = WEBENGINE_AVAILABLE if enable_webengine is None else (WEBENGINE_AVAILABLE and enable_webengine)
+        headless_platform = os.environ.get("QT_QPA_PLATFORM", "").strip().lower() in {"offscreen", "minimal", "minimalegl"}
+        use_webengine = (
+            WEBENGINE_AVAILABLE and not headless_platform
+            if enable_webengine is None
+            else (WEBENGINE_AVAILABLE and enable_webengine)
+        )
         if use_webengine:
             self.web = QWebEngineView()
             profile_dir = Path.home() / ".gamedelivery" / "playerok-web-profile"

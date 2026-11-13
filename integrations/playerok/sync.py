@@ -178,7 +178,9 @@ class PlayerokDealSyncService:
             """, (order_id, normalized_id, quantity))
         return normalized_id, created
 
-    def _baseline(self, adapter: Any, account_user_id: str) -> dict[str, Any]:
+    def _baseline(
+        self, adapter: Any, account_user_id: str, *, allow_status_mutation: bool = False
+    ) -> dict[str, Any]:
         # Do not commit a partial scan as a completed baseline.
         deals = adapter.fetch_sales(statuses=None)
         with self.database.connect() as db:
@@ -306,7 +308,7 @@ class PlayerokDealSyncService:
                 (account_user_id,),
             ).fetchone()
         if state is None or state["baseline_completed"] != 1:
-            return self._baseline(adapter, account_user_id)
+            return self._baseline(adapter, account_user_id, allow_status_mutation=allow_status_mutation)
 
         deals = adapter.fetch_sales(statuses=self.ACTIVE_STATUSES)
         new_count = self._upsert_incremental(deals, account_user_id)
