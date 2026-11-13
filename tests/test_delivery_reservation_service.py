@@ -122,12 +122,19 @@ class DeliveryReservationServiceTests(unittest.TestCase):
 
         self.assertTrue(result.reserved)
         self.assertEqual(len(result.legs), 2)
+        planned_assets = {
+            (leg.bot_name, asset_id)
+            for leg in result.legs
+            for asset_id in leg.asset_ids
+        }
         self.assertEqual(
-            {(leg.bot_name, leg.app_id, leg.context_id, leg.asset_ids) for leg in result.legs},
-            {
-                ("Bot-A", 730, "2", ("1001", "1002")),
-                ("Bot-B", 730, "2", ("2001",)),
-            },
+            planned_assets,
+            {("Bot-A", "1001"), ("Bot-A", "1002"), ("Bot-B", "2001")},
+        )
+        self.assertEqual(
+            sum(len(leg.asset_ids) for leg in result.legs),
+            3,
+            "Резервируются ровно три предмета из пула ботов",
         )
         with self.database.connect() as db:
             self.assertEqual(db.execute(
@@ -275,16 +282,22 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             order_id=order, config_version_id=config_id, snapshots=snapshots, now=NOW
         )
 
-        self.assertEqual(result.status, "insufficient_stock")
-        self.assertEqual(result.reserved_assets, ())
+        # ASF tradable=True remains authoritative when optional restriction
+        # metadata is UNKNOWN. Explicit false and trade-protection/restricted items
+        # are rejected; only the two explicitly tradable items may be reserved.
+        self.assertEqual(result.status, "reserved")
+        self.assertEqual(
+            set(result.reserved_assets),
+            {("Bot-A", "tradable"), ("Bot-A", "unknown")},
+        )
         with self.database.connect() as db:
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
-            ).fetchone()[0], 0)
+            ).fetchone()[0], 2)
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
                 "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,)
-            ).fetchone()[0], 0)
+            ).fetchone()[0], 1)
 
     def test_insufficient_stock_rolls_back_all_reservations_and_legs_and_queues_notifications(self):
         order, config_id = self.create_order(

@@ -111,9 +111,16 @@ class DeliveryReservationService:
                 return False
             restriction_type = getattr(item.restriction_type, "value", item.restriction_type)
             restriction_status = getattr(item.restriction_status, "value", item.restriction_status)
-            if restriction_type not in (None, "", "none", "unknown", "market_purchase_cooldown"):
+            # ASF tradable=True is authoritative when optional restriction metadata
+            # is UNKNOWN or reports only a market purchase cooldown. Explicit trade
+            # protection and restricted states remain blocked.
+            if restriction_type not in (
+                None, "", "none", "unknown", "market_purchase_cooldown"
+            ):
                 return False
             if restriction_status == "restricted":
+                return False
+            if restriction_status not in ("available", "unknown", None, ""):
                 return False
             return True
         # CardCopy and generic snapshot rows must explicitly prove True.

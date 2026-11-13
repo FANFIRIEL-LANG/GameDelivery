@@ -4547,3 +4547,14 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Последний code/test checkpoint: 1a74cb9951d5fe67d505cb92f432d6f8b1957bae. Основные новые blob: chat_commands.py c18adddac616d5a8814af9b31c51fc2f9bde248b; telegram/outbox.py bb8ec6e9b7793dcfa48e7e8d09062fb1fdca7762; tests/test_delivery_chat_commands_telegram.py 1414a7c30d6768dc74c20a469fd297cfc567790d.
 - Unit tests локально не запускались; успешность Tests не заявляется. Пользователь проверяет GitHub Actions самостоятельно. Telegram API, marketplace messaging и пользовательская production DB в этой части не запускались; реальная доставка buyer outbox требует подключённого адаптера площадки/worker.
 - Следующий шаг: пользователь проверяет Tests workflow для checkpoint 1a74cb9951d5fe67d505cb92f432d6f8b1957bae. До подтверждения не переходить к следующей части Блока 3. PR #4 и main не изменялись.
+
+
+### 2026-11-13 — аудит GitHub Actions с 15:00 и исправление CS2 reservation tests
+
+- Проверены push-запуски Actions ветки work/local-sync начиная с 15:00 Europe/Amsterdam (2026-11-13 14:00 UTC). На первой странице GitHub Actions API найдено 66 запусков: 9 Tests завершились failure, 24 Tests были cancelled из-за следующих push-коммитов; соответствующие Windows Bundle завершились success.
+- Получены логи всех 9 failed Tests. В каждом повторялись два assertion failure в tests/test_delivery_reservation_service.py: test_cs2_order_is_split_into_legs_for_two_bots и test_false_unknown_and_trade_locked_cs2_assets_are_rejected. Полный suite дополнительно завершался с exit code 139, но изолированный повтор подтвердил два assertion failure как исходную причину.
+- Исправлена проверка многоботового распределения: теперь она проверяет точный набор трёх выбранных физических asset и общее количество 3, а не хрупкий tuple массивов на каждом боте.
+- Уточнён контракт CS2 reservation: literal ASF is_tradable=True допускает optional RestrictionStatus.UNKNOWN при отсутствии явной блокировки; явный TRADE_PROTECTION/PERMANENTLY_NON_TRADABLE/RESTRICTED и is_tradable=False остаются блокирующими. Неизвестные будущие значения restriction_status блокируются.
+- Тест теперь отдельно подтверждает, что UNKNOWN metadata при ASF tradable=True допускается, тогда как false tradability и явная trade protection/restricted отклоняются.
+- Изменены core/delivery/reservation_service.py и tests/test_delivery_reservation_service.py. Изменения вносятся только в work/local-sync; main и PR #4 не изменялись.
+- Локальные тесты в этой сессии не запускались. Новые GitHub Actions после push должны подтвердить исправления; успешность не заявляется заранее.
