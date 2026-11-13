@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -148,7 +147,7 @@ class DeliveryReservationService:
         bot_pool: tuple[str, ...],
         now: datetime,
     ) -> tuple[tuple[str, str, int, str], ...]:
-        """Return (bot, asset, app, context), or an empty tuple if stock is insufficient."""
+        """Return all matching (bot, asset, app, context) candidates; caller enforces quantity."""
         allowed = {self._normal(bot): bot for bot in bot_pool}
         fresh: dict[str, InventorySnapshot] = {}
         for key, snapshot in snapshots.items():
@@ -204,6 +203,15 @@ class DeliveryReservationService:
                 asset_id = str(self._get(item, "asset_id", "")).strip()
                 owner = str(self._get(item, "bot_name", snapshot.bot_name)).strip()
                 if not asset_id or self._normal(owner) != self._normal(snapshot.bot_name):
+                    continue
+                item_game = self._get(item, "game_id", snapshot.game_id)
+                item_app = self._get(item, "appid", app_id)
+                item_context = str(self._get(item, "context_id", context_id))
+                if (
+                    self._normal(item_game) != self._normal(snapshot.game_id)
+                    or item_app != app_id
+                    or item_context != context_id
+                ):
                     continue
                 key = (self._normal(owner), asset_id)
                 if key in seen or not self._is_tradable(item):
