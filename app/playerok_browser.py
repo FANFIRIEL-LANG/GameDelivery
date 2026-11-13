@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtWidgets import (
@@ -117,6 +117,9 @@ class PlayerokBrowserPanel(QWidget):
         self.listing_url.setPlaceholderText("URL объявления")
         for field in (self.listing_id, self.listing_title, self.listing_url):
             form.addWidget(field)
+        capture = QPushButton("Взять URL и данные из открытой страницы")
+        capture.clicked.connect(self._capture_current_listing)
+        form.addWidget(capture)
         self.mode = QComboBox()
         self.mode.addItem("Коллекционные карточки Steam (753/6)", "steam_cards")
         self.mode.addItem("Предметы CS2 (730/2)", "cs2_items")
@@ -158,6 +161,22 @@ class PlayerokBrowserPanel(QWidget):
 
     def open_chat(self, chat_id: str) -> str:
         return self.controller.open_chat(chat_id)
+
+    def _capture_current_listing(self):
+        current = self.address.text().strip()
+        parsed = urlsplit(current)
+        if parsed.scheme != "https" or parsed.hostname not in {"playerok.com", "www.playerok.com"}:
+            self.browser_status.setText("Открой объявление Playerok во встроенном браузере.")
+            return
+        self.listing_url.setText(current)
+        query_id = parse_qs(parsed.query).get("id", [""])[0]
+        segments = [part for part in parsed.path.split("/") if part]
+        candidate = query_id or (segments[-1] if len(segments) >= 2 and segments[-2].lower() in {"product", "products", "listing", "listings"} else "")
+        if candidate:
+            self.listing_id.setText(candidate)
+        if self.web is not None and self.web.title():
+            self.listing_title.setText(self.web.title())
+        self.browser_status.setText("URL страницы скопирован. Проверь listing_id и название перед сохранением.")
 
     def _mode_changed(self, *_):
         mode = self.mode.currentData()
