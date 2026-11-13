@@ -1969,8 +1969,10 @@ class MainWindow(QMainWindow):
                 if not isinstance(payload, dict):
                     payload = {}
                 display_id = external_id if platform == "playerok" and external_id else row["order_id"]
+                buyer = str(payload.get("source_buyer") or payload.get("buyer") or "").strip()
                 source = (
-                    "Playerok" if platform == "playerok"
+                    f"Playerok · {buyer}" if platform == "playerok" and buyer
+                    else "Playerok" if platform == "playerok"
                     else "Ручная отправка" if platform == "manual"
                     else platform
                 )

@@ -4693,3 +4693,12 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Исправлен только тест `test_cancel_order_releases_only_its_reservations`: теперь он находит строку по `UserRole.kind == "legacy"` и точному `order_id == "GD-TEST"`, затем устанавливает current cell и выделяет именно её. Production cancellation logic не менялась.
 - Test commit: `2051da30d5162ffac54e9ebdc49b2eae3aaf3799`. Проверки Actions для этого коммита ожидаются; до их завершения CI не считается зелёным.
 - Windows Build #978 на предыдущем HEAD `90cf74b` — success. Tests #1781 на `90cf74b` — failure из-за описанного тестового выбора строки. `main` и PR #4 не изменялись.
+
+
+### 2026-11-14 — исправление подписи покупателя в каноническом заказе Playerok
+
+- Проверен GitHub Actions Tests #1783 на HEAD `4613cb691a3bda1e37486c38bc3e2e5c0cab947b`: 588 тестов выполняются примерно за 5,46 секунды, зависания нет; единственное падение — `test_playerok_order_imports_once_and_prepares_under_same_local_id`, где UI показывает `Playerok` вместо ожидаемого `Playerok · buyer-a`.
+- Причина: миграция ledger сохраняет имя покупателя в `payload_json.source_buyer`, но `_load_saved_orders()` при построении строки канонического заказа не использовал это поле.
+- Исправлен `app/main.py`: подпись канонического заказа Playerok теперь берёт покупателя из `payload.source_buyer` (с совместимым fallback на `payload.buyer`) и показывает `Playerok · имя`; если имя отсутствует, остаётся `Playerok`. Тестовое ожидание не ослаблялось.
+- Исправление и эта запись журнала отправлены одним коммитом в `work/local-sync`. Локальный прогон в контейнере не выполнен: ранее подтверждена недоступность GitHub DNS и отсутствие PySide6; результат GitHub Actions для нового коммита должен подтвердить исправление.
+- Windows Build #980 на предыдущем HEAD `4613cb6` — success; Tests #1783 — failure только на описанной подписи покупателя. `main` и PR #4 не изменялись.
