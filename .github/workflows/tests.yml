@@ -5,7 +5,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # Queue newer runs instead of cancelling an in-flight test gate.
+  cancel-in-progress: false
 
 jobs:
   test:
