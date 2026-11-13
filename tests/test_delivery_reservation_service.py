@@ -136,12 +136,13 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             ("Bot-B", "2001"), ("Bot-B", "2002"),
         }
         self.assertEqual(set(planned_by_bot), {"Bot-A", "Bot-B"})
-        self.assertEqual(len(planned_assets), 3)
+        self.assertEqual(len(available_assets), 4, "В снимках есть четыре подходящих кандидата")
+        self.assertEqual(len(planned_assets), 3, "Заказ требует ровно три предмета")
         self.assertTrue(planned_assets.issubset(available_assets))
         self.assertEqual(
             sum(len(asset_ids) for asset_ids in planned_by_bot.values()),
             3,
-            "Резервируются ровно три предмета из пула ботов",
+            "Резервируются ровно три предмета, а лишний кандидат остаётся свободным",
         )
         with self.database.connect() as db:
             self.assertEqual(db.execute(

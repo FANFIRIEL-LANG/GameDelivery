@@ -362,7 +362,14 @@ class DeliveryReservationService:
                     if len(candidates) > best_available:
                         best_available = len(candidates)
                     if len(candidates) >= quantity:
-                        selected = candidates
+                        # A normal inventory order requests an exact number of
+                        # physical items. Card-set selection already returns all
+                        # cards belonging to the requested number of complete sets.
+                        selected = (
+                            candidates
+                            if self._card_selector(selector)
+                            else candidates[:quantity]
+                        )
                         selected_selector = selector
                         break
             if not badge_failure and selected_selector is None:
