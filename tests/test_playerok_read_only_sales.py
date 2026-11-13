@@ -88,6 +88,7 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
             "listing_id": "listing-1",
             "title": "Game item",
             "buyer": "buyer_name",
+            "buyer_id": "buyer-1",
             "status": "PAID",
             "amount": "125.5",
             "created_at": "2026-10-27T00:00:00Z",

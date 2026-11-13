@@ -529,8 +529,7 @@ class PlayerokAdapter(MarketplaceAdapter):
 
             page_info = connection.get("pageInfo")
             if page_info is None:
-                has_next = False
-                end_cursor = None
+                raise RuntimeError("Playerok не вернул pageInfo; baseline не может считаться полным.")
             elif isinstance(page_info, dict):
                 has_next = page_info.get("hasNextPage") is True
                 end_cursor = page_info.get("endCursor")
