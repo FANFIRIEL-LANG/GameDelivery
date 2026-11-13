@@ -131,6 +131,17 @@ class TelegramBotOutbox:
                 )
             """)
             db.execute("""
+                CREATE TABLE IF NOT EXISTS gd_delivery_events (
+                    event_id TEXT PRIMARY KEY,
+                    order_id TEXT NOT NULL REFERENCES gd_orders(order_id) ON DELETE RESTRICT,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    UNIQUE(order_id,event_type)
+                )
+            """)
+            db.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_operator_messages (
                     telegram_message_id TEXT PRIMARY KEY,
                     order_id TEXT NOT NULL REFERENCES gd_orders(order_id) ON DELETE RESTRICT,
