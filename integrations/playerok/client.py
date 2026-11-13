@@ -81,6 +81,7 @@ class PlayerokAdapter(MarketplaceAdapter):
         # request_func is a test seam; production uses urllib.request directly.
         self._request_func = request_func
         self._session_token: str | None = None
+        self._account_user_id: str | None = None
         self._session_persisted = False
         self._keyring_read_failed = False
         self._pending_second_factor_session: Any | None = None
@@ -221,10 +222,11 @@ class PlayerokAdapter(MarketplaceAdapter):
         payload = self._raise_api_errors(_unwrap_envelope(payload))
         if not isinstance(payload, dict):
             raise RuntimeError("Playerok вернул профиль в неожиданном формате.")
+        self._account_user_id = str(payload.get("id") or "").strip() or None
         return {
             "connected": True,
             "username": self._username(payload),
-            "user_id": str(payload.get("id") or ""),
+            "user_id": self._account_user_id or "",
             "session_saved": session_saved,
         }
 
@@ -382,10 +384,80 @@ class PlayerokAdapter(MarketplaceAdapter):
             "message": " ".join(messages),
         }
 
-    def fetch_orders(self) -> list[dict[str, Any]]:
+    @property
+    def account_user_id(self) -> str | None:
+        """Playerok seller account ID from the last successful profile check."""
+        return self._account_user_id
+
+    @staticmethod
+    def _deal_status(deal: dict[str, Any]) -> str:
+        status = deal.get("status")
+        if isinstance(status, dict):
+            status = status.get("value")
+        return str(status or "UNKNOWN").strip().upper()
+
+    @classmethod
+    def _map_deal(cls, deal: Any) -> dict[str, Any]:
+        if not isinstance(deal, dict):
+            raise RuntimeError("Playerok вернул сделку в неожиданном формате.")
+        item = deal.get("item") if isinstance(deal.get("item"), dict) else {}
+        buyer = deal.get("user") if isinstance(deal.get("user"), dict) else {}
+        chat = deal.get("chat") if isinstance(deal.get("chat"), dict) else {}
+        transaction = (
+            deal.get("transaction")
+            if isinstance(deal.get("transaction"), dict)
+            else {}
+        )
+        deal_id = str(deal.get("id") or "").strip()
+        listing_id = str(item.get("id") or "").strip()
+        chat_id = str(chat.get("id") or "").strip()
+        if not deal_id or not listing_id:
+            raise RuntimeError("Playerok не вернул отдельные deal ID и listing ID.")
+        deal_url = "https://playerok.com/deal/" + deal_id
+        chat_url = "https://playerok.com/chats/" + chat_id if chat_id else ""
+        return {
+            "platform": "playerok",
+            "deal_id": deal_id,
+            "order_id": deal_id,
+            "chat_id": chat_id,
+            "listing_id": listing_id,
+            "title": str(item.get("name") or "Товар Playerok"),
+            "buyer": str(buyer.get("username") or buyer.get("name") or "—"),
+            "buyer_id": str(buyer.get("id") or ""),
+            "status": cls._deal_status(deal),
+            "amount": str(transaction.get("value") or "—"),
+            "created_at": str(deal.get("createdAt") or ""),
+            "deal_url": deal_url,
+            "chat_url": chat_url,
+            "url": deal_url,
+        }
+
+    def fetch_sales(
+        self,
+        *,
+        statuses: tuple[str, ...] | list[str] | None = None,
+        first: int = 50,
+        max_pages: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """Fetch every seller deal using cursor pagination.
+
+        statuses=None requests the complete historical sales list. Chat unread
+        counters are intentionally not used as deal discovery signals.
+        """
         token = self._saved_token()
         if not token:
             raise ValueError("Сначала войди в аккаунт Playerok.")
+        if isinstance(first, bool) or not isinstance(first, int) or first < 1:
+            raise ValueError("first должен быть положительным числом")
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
+            raise ValueError("max_pages должен быть положительным числом")
+        normalized_statuses = None
+        if statuses is not None:
+            normalized_statuses = tuple(dict.fromkeys(
+                str(value).strip().upper() for value in statuses if str(value).strip()
+            ))
+            if not normalized_statuses:
+                raise ValueError("statuses не должен быть пустым списком")
 
         query = """
         query Deals($pagination: Pagination, $filter: ItemDealFilter!, $sort: Sort) {
@@ -397,6 +469,7 @@ class PlayerokAdapter(MarketplaceAdapter):
                 createdAt
                 item { id name }
                 user { id username }
+                chat { id }
                 transaction { value }
               }
             }
@@ -405,50 +478,147 @@ class PlayerokAdapter(MarketplaceAdapter):
           }
         }
         """
+        result: list[dict[str, Any]] = []
+        seen_deals: dict[str, dict[str, Any]] = {}
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        page_count = 0
+
+        while True:
+            page_count += 1
+            if page_count > max_pages:
+                raise RuntimeError("Playerok превысил защитный лимит страниц сделок.")
+            deal_filter: dict[str, Any] = {"direction": "OUT"}
+            if normalized_statuses is not None:
+                deal_filter["status"] = list(normalized_statuses)
+            pagination: dict[str, Any] = {"first": first}
+            if cursor is not None:
+                pagination["after"] = cursor
+            payload, _ = self._request(
+                _GRAPHQL,
+                method="POST",
+                token=token,
+                payload={
+                    "operationName": "Deals",
+                    "query": query,
+                    "variables": {
+                        "filter": deal_filter,
+                        "sort": None,
+                        "pagination": pagination,
+                    },
+                },
+            )
+            payload = self._raise_api_errors(payload)
+            data = payload.get("data") if isinstance(payload, dict) else None
+            connection = data.get("deals") if isinstance(data, dict) else None
+            if not isinstance(connection, dict) or not isinstance(connection.get("edges"), list):
+                raise RuntimeError("Playerok вернул список сделок в неожиданном формате.")
+
+            for edge in connection["edges"]:
+                if not isinstance(edge, dict) or not isinstance(edge.get("node"), dict):
+                    raise RuntimeError("Playerok вернул некорректную запись в списке сделок.")
+                mapped = self._map_deal(edge["node"])
+                previous = seen_deals.get(mapped["deal_id"])
+                if previous is not None:
+                    if previous != mapped:
+                        raise RuntimeError("Playerok вернул конфликтующие записи одной сделки.")
+                    continue
+                seen_deals[mapped["deal_id"]] = mapped
+                result.append(mapped)
+
+            page_info = connection.get("pageInfo")
+            if page_info is None:
+                has_next = False
+                end_cursor = None
+            elif isinstance(page_info, dict):
+                has_next = page_info.get("hasNextPage") is True
+                end_cursor = page_info.get("endCursor")
+            else:
+                raise RuntimeError("Playerok вернул некорректный pageInfo.")
+            if not has_next:
+                break
+            if not isinstance(end_cursor, str) or not end_cursor.strip():
+                raise RuntimeError("Playerok сообщил о следующей странице без endCursor.")
+            if end_cursor in seen_cursors or end_cursor == cursor:
+                raise RuntimeError("Playerok повторил курсор пагинации; импорт остановлен.")
+            seen_cursors.add(end_cursor)
+            cursor = end_cursor
+
+        return result
+
+    def fetch_orders(self) -> list[dict[str, Any]]:
+        """Compatibility wrapper used by the marketplace table."""
+        return self.fetch_sales(statuses=("PAID", "SENT"))
+
+    def fetch_deal(self, deal_id: str) -> dict[str, Any]:
+        token = self._saved_token()
+        external_id = str(deal_id or "").strip()
+        if not token:
+            raise ValueError("Сначала войди в аккаунт Playerok.")
+        if not external_id:
+            raise ValueError("deal_id обязателен.")
+        query = """
+        query Deal($id: UUID!) {
+          deal(id: $id) {
+            id status createdAt item { id name } user { id username }
+            chat { id } transaction { value }
+          }
+        }
+        """
         payload, _ = self._request(
             _GRAPHQL,
             method="POST",
             token=token,
             payload={
-                "operationName": "Deals",
+                "operationName": "Deal",
                 "query": query,
-                "variables": {
-                    "filter": {"direction": "OUT", "status": ["PAID", "SENT"]},
-                    "sort": None,
-                    "pagination": {"first": 50},
-                },
+                "variables": {"id": external_id},
             },
         )
         payload = self._raise_api_errors(payload)
         data = payload.get("data") if isinstance(payload, dict) else None
-        connection = data.get("deals") if isinstance(data, dict) else None
-        edges = connection.get("edges") if isinstance(connection, dict) else None
-        if not isinstance(edges, list):
-            raise RuntimeError("Playerok вернул список сделок в неожиданном формате.")
+        deal = data.get("deal") if isinstance(data, dict) else None
+        mapped = self._map_deal(deal)
+        if mapped["deal_id"] != external_id:
+            raise RuntimeError("Playerok вернул не ту сделку при проверке статуса.")
+        return mapped
 
-        result = []
-        for edge in edges:
-            deal = edge.get("node") if isinstance(edge, dict) else None
-            if not isinstance(deal, dict):
-                continue
-            item = deal.get("item") if isinstance(deal.get("item"), dict) else {}
-            buyer = deal.get("user") if isinstance(deal.get("user"), dict) else {}
-            transaction = (
-                deal.get("transaction")
-                if isinstance(deal.get("transaction"), dict)
-                else {}
-            )
-            status = deal.get("status")
-            status = status.get("value", status) if isinstance(status, dict) else status
-            created = deal.get("createdAt") or ""
-            result.append({
-                "platform": "playerok",
-                "order_id": str(deal.get("id") or ""),
-                "title": str(item.get("name") or "Товар Playerok"),
-                "buyer": str(buyer.get("username") or buyer.get("name") or "—"),
-                "status": str(status or "—"),
-                "amount": str(transaction.get("value") or "—"),
-                "created_at": str(created),
-                "url": "https://playerok.com/deal/" + str(deal.get("id") or ""),
-            })
-        return result
+    def update_deal_status(self, deal_id: str, status: str) -> dict[str, Any]:
+        """The only enabled seller-side status action is PAID -> SENT."""
+        external_id = str(deal_id or "").strip()
+        target = str(status or "").strip().upper()
+        if not external_id:
+            raise ValueError("deal_id обязателен.")
+        if target != "SENT":
+            raise ValueError("GameDelivery разрешает только перевод сделки в SENT.")
+        token = self._saved_token()
+        if not token:
+            raise ValueError("Сначала войди в аккаунт Playerok.")
+
+        mutation = """
+        mutation UpdateDeal($input: UpdateItemDealInput!) {
+          updateDeal(input: $input) {
+            id status createdAt item { id name } user { id username }
+            chat { id } transaction { value }
+          }
+        }
+        """
+        payload, _ = self._request(
+            _GRAPHQL,
+            method="POST",
+            token=token,
+            payload={
+                "operationName": "UpdateDeal",
+                "query": mutation,
+                "variables": {"input": {"id": external_id, "status": "SENT"}},
+            },
+        )
+        payload = self._raise_api_errors(payload)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        deal = data.get("updateDeal") if isinstance(data, dict) else None
+        mapped = self._map_deal(deal)
+        if mapped["deal_id"] != external_id:
+            raise RuntimeError("Playerok вернул другую сделку после смены статуса.")
+        if mapped["status"] not in {"SENT", "CONFIRMED", "CONFIRMED_AUTOMATICALLY"}:
+            raise RuntimeError("Playerok не подтвердил перевод сделки в SENT.")
+        return mapped

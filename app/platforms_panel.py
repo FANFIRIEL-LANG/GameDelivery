@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, Signal, Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QMessageBox,
@@ -35,11 +35,16 @@ class MarketplacePanel(QWidget):
     connection_status_changed = Signal(str)
     order_import_requested = Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, sync_operation: Callable[[PlayerokAdapter], dict[str, Any]] | None = None):
         super().__init__(parent)
         self.registry = MarketplaceRegistry()
         self.registry.register(PlayerokAdapter())
         self.playerok = self.registry.get("playerok")
+        self.sync_operation = sync_operation
+        self._pending_initial_sync = False
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(30_000)
+        self._sync_timer.timeout.connect(self._fetch_orders)
         self._worker: _MarketplaceTask | None = None
         self._connected = False
 
@@ -107,7 +112,7 @@ class MarketplacePanel(QWidget):
         form.addLayout(session_actions)
 
         order_actions = QHBoxLayout()
-        self.fetch_orders_button = QPushButton("Загрузить активные заказы")
+        self.fetch_orders_button = QPushButton("Синхронизировать сделки")
         self.fetch_orders_button.clicked.connect(self._fetch_orders)
         self.import_order_button = QPushButton("Добавить выбранный заказ в GameDelivery")
         self.import_order_button.clicked.connect(self._import_selected_order)
@@ -121,17 +126,17 @@ class MarketplacePanel(QWidget):
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
 
-        self.orders_table = QTableWidget(0, 6)
+        self.orders_table = QTableWidget(0, 8)
         self.orders_table.setHorizontalHeaderLabels([
-            "ID сделки", "Товар", "Покупатель", "Статус", "Сумма", "Создано"
+            "Deal ID", "Chat ID", "Listing ID", "Товар", "Покупатель", "Статус", "Сумма", "Создано"
         ])
         self.orders_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.orders_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.orders_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.orders_table.itemSelectionChanged.connect(self._update_button_state)
-        self.orders_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.orders_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.orders_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.orders_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.orders_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.orders_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         root.addWidget(QLabel("Активные продажи Playerok (только чтение):"))
         root.addWidget(self.orders_table, 1)
 
@@ -183,6 +188,9 @@ class MarketplacePanel(QWidget):
         if worker is not None:
             worker.deleteLater()
         self._update_button_state()
+        if self._pending_initial_sync and self._connected:
+            self._pending_initial_sync = False
+            self._fetch_orders()
 
     def _request_code(self) -> None:
         email = self.email_input.text().strip()
@@ -226,11 +234,19 @@ class MarketplacePanel(QWidget):
             return
         self._start_task("disconnect", self.playerok.disconnect, "Завершаю сессию…")
 
+    def _sync_playerok(self) -> dict[str, Any]:
+        if self.sync_operation is not None:
+            return self.sync_operation(self.playerok)
+        deals = self.playerok.fetch_orders()
+        return {"baseline": False, "deals": deals, "new_deals": 0, "status_updates": 0}
+
     def _fetch_orders(self) -> None:
+        if not self._connected:
+            return
         self._start_task(
-            "orders",
-            self.playerok.fetch_orders,
-            "Загружаю активные продажи Playerok…",
+            "sync",
+            self._sync_playerok,
+            "Синхронизирую сделки Playerok и проверяю статусы завершённых заказов…",
         )
 
     def _import_selected_order(self) -> None:
@@ -263,6 +279,8 @@ class MarketplacePanel(QWidget):
         elif action in {"confirm_code", "confirm_2fa", "restore"} and payload.get("connected"):
             self._connected = True
             username = payload.get("username") or "Аккаунт Playerok"
+            self._pending_initial_sync = True
+            self._sync_timer.start()
             self.profile_label.setText(f"Подключено: {username}")
             if payload.get("session_saved"):
                 self.status_label.setText("Вход выполнен. Сессия сохранена в системном хранилище.")
@@ -275,14 +293,30 @@ class MarketplacePanel(QWidget):
             self._update_button_state()
         elif action == "disconnect":
             self._connected = False
+            self._pending_initial_sync = False
+            self._sync_timer.stop()
             self.profile_label.setText("Аккаунт не подключён")
             self.status_label.setText(payload.get("message", "Сессия удалена."))
             self.orders_table.setRowCount(0)
             self.connection_status_changed.emit("Playerok: не подключён")
             self._update_button_state()
-        elif action == "orders":
-            self._show_orders(payload)
-            self.status_label.setText(f"Загружено активных сделок: {len(payload)}.")
+        elif action in {"orders", "sync"}:
+            if action == "sync" and isinstance(payload, dict):
+                deals = payload.get("deals", [])
+                self._show_orders(deals if isinstance(deals, list) else [])
+                if payload.get("baseline"):
+                    self.status_label.setText(
+                        f"Первый baseline завершён: {payload.get('historical_deals', 0)} существовавших сделок "
+                        "сохранено как исторические. Автовыдача для них не запускалась."
+                    )
+                else:
+                    self.status_label.setText(
+                        f"Сделки синхронизированы: {len(deals)}. Новых: {payload.get('new_deals', 0)}. "
+                        f"Обновлено статусов Playerok: {payload.get('status_updates', 0)}."
+                    )
+            else:
+                self._show_orders(payload)
+                self.status_label.setText(f"Загружено активных сделок: {len(payload)}.")
         self._update_button_state()
 
     def _show_orders(self, orders: list[dict[str, Any]]) -> None:
@@ -291,7 +325,9 @@ class MarketplacePanel(QWidget):
             row = self.orders_table.rowCount()
             self.orders_table.insertRow(row)
             values = (
-                order.get("order_id", ""),
+                order.get("deal_id") or order.get("order_id", ""),
+                order.get("chat_id", ""),
+                order.get("listing_id", ""),
                 order.get("title", ""),
                 order.get("buyer", ""),
                 order.get("status", ""),
@@ -302,6 +338,8 @@ class MarketplacePanel(QWidget):
                 cell = QTableWidgetItem(str(value))
                 if column == 0:
                     cell.setData(Qt.ItemDataRole.UserRole, dict(order))
-                    if order.get("url"):
-                        cell.setToolTip(str(order["url"]))
+                    if order.get("deal_url") or order.get("url"):
+                        cell.setToolTip(str(order.get("deal_url") or order["url"]))
+                elif column == 1 and order.get("chat_url"):
+                    cell.setToolTip(str(order["chat_url"]))
                 self.orders_table.setItem(row, column, cell)

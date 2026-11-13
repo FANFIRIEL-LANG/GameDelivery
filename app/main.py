@@ -24,6 +24,8 @@ from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
 from integrations.openskin.client import configure_openskin_diagnostics
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from core.database.connection import connect_sqlite
+from core.database.db import Database
+from integrations.playerok.sync import PlayerokDealSyncService
 from core.database.ledger_migrations import ensure_pre_migration_backup, migrate_delivery_ledger
 from app.diagnostics import configure_logging, get_log_directory, get_logger, log_exception
 
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
             self._trade_credentials = SteamTradeCredentialStore()
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
+            self.playerok_sync = PlayerokDealSyncService(Database(self._database_path))
             logger.info("Local delivery storage initialized")
         except (OSError, sqlite3.Error, ValueError) as exc:
             log_exception(logger, "local storage initialization", exc)
@@ -107,7 +110,7 @@ class MainWindow(QMainWindow):
         if not os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip():
             self.bot_selection_model.set_accounts(configured_bot_names())
         self.tabs.addTab(self._orders_tab(), "Заказы")
-        self.marketplace_panel = MarketplacePanel()
+        self.marketplace_panel = MarketplacePanel(sync_operation=self.playerok_sync.sync)
         self.marketplace_panel.connection_status_changed.connect(self.platform_status.setText)
         self.marketplace_panel.order_import_requested.connect(self._import_marketplace_order)
         self.tabs.addTab(self.marketplace_panel, "Площадки")
@@ -344,6 +347,10 @@ class MainWindow(QMainWindow):
             migrations = {
                 "source_platform": "TEXT NOT NULL DEFAULT 'manual'",
                 "source_order_id": "TEXT",
+                "source_deal_id": "TEXT",
+                "source_chat_id": "TEXT",
+                "source_listing_id": "TEXT",
+                "source_chat_url": "TEXT NOT NULL DEFAULT ''",
                 "source_title": "TEXT NOT NULL DEFAULT ''",
                 "source_buyer": "TEXT NOT NULL DEFAULT ''",
                 "source_status": "TEXT NOT NULL DEFAULT ''",
@@ -421,7 +428,10 @@ class MainWindow(QMainWindow):
 
     def _import_marketplace_order(self, marketplace_order):
         platform = str(marketplace_order.get("platform") or "").strip().lower()
-        external_id = str(marketplace_order.get("order_id") or "").strip()
+        external_id = str(marketplace_order.get("deal_id") or marketplace_order.get("order_id") or "").strip()
+        chat_id = str(marketplace_order.get("chat_id") or "").strip()
+        listing_id = str(marketplace_order.get("listing_id") or "").strip()
+        chat_url = str(marketplace_order.get("chat_url") or "").strip()
         title = str(marketplace_order.get("title") or "Заказ с торговой площадки").strip()
         buyer = str(marketplace_order.get("buyer") or "").strip()
         source_status = str(marketplace_order.get("status") or "").strip()
@@ -436,26 +446,29 @@ class MainWindow(QMainWindow):
             self._ensure_delivery_order_schema()
             with connect_sqlite(self._database_path) as db:
                 existing = db.execute(
-                    "SELECT order_id FROM delivery_orders WHERE source_platform = ? AND source_order_id = ?",
+                    "SELECT order_id FROM delivery_orders WHERE source_platform = ? AND COALESCE(source_deal_id, source_order_id) = ?",
                     (platform, external_id),
                 ).fetchone()
                 if existing:
                     local_order_id = existing[0]
                     db.execute(
-                        "UPDATE delivery_orders SET source_status = ?, source_amount = ?, source_url = ? "
-                        "WHERE order_id = ?",
-                        (source_status, source_amount, source_url, local_order_id),
+                        "UPDATE delivery_orders SET source_order_id=?, source_deal_id=?, source_chat_id=?, "
+                        "source_listing_id=?, source_chat_url=?, source_status=?, source_amount=?, source_url=? "
+                        "WHERE order_id=?",
+                        (external_id, external_id, chat_id or None, listing_id or None, chat_url,
+                         source_status, source_amount, source_url, local_order_id),
                     )
                 else:
                     db.execute("""
                         INSERT INTO delivery_orders
                             (order_id, recipient_trade_url, status, asset_count,
-                             source_platform, source_order_id, source_title, source_buyer,
+                             source_platform, source_order_id, source_deal_id, source_chat_id,
+                             source_listing_id, source_chat_url, source_title, source_buyer,
                              source_status, source_amount, source_url)
-                        VALUES (?, '', 'imported — ожидание подготовки', 0, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, '', 'imported — ожидание подготовки', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        local_order_id, platform, external_id, title, buyer,
-                        source_status, source_amount, source_url,
+                        local_order_id, platform, external_id, external_id, chat_id or None,
+                        listing_id or None, chat_url, title, buyer, source_status, source_amount, source_url,
                     ))
                     imported_now = True
             self._load_saved_orders()
@@ -1344,7 +1357,8 @@ class MainWindow(QMainWindow):
         order_id = self.orders.item(row, 0).text()
         with connect_sqlite(self._database_path) as db:
             order = db.execute(
-                "SELECT recipient_trade_url, status, source_platform, source_order_id, "
+                "SELECT recipient_trade_url, status, source_platform, "
+                "COALESCE(source_deal_id,source_order_id), source_chat_id, source_listing_id, source_chat_url, "
                 "source_title, source_buyer, source_status, source_amount, source_url "
                 "FROM delivery_orders WHERE order_id = ?",
                 (order_id,),
@@ -1360,12 +1374,15 @@ class MainWindow(QMainWindow):
         if order[2] == "playerok":
             lines.extend([
                 f"Источник: Playerok",
-                f"ID сделки Playerok: {order[3] or '—'}",
-                f"Товар: {order[4] or '—'}",
-                f"Покупатель Playerok: {order[5] or '—'}",
-                f"Статус на площадке при последнем обновлении: {order[6] or '—'}",
-                f"Сумма на площадке при последнем обновлении: {order[7] or '—'}",
-                f"Ссылка на сделку: {order[8] or '—'}",
+                f"Deal ID Playerok: {order[3] or '—'}",
+                f"Chat ID Playerok: {order[4] or '—'}",
+                f"Listing ID Playerok: {order[5] or '—'}",
+                f"Ссылка на чат: {order[6] or '—'}",
+                f"Товар: {order[7] or '—'}",
+                f"Покупатель Playerok: {order[8] or '—'}",
+                f"Статус на площадке при последнем обновлении: {order[9] or '—'}",
+                f"Сумма на площадке при последнем обновлении: {order[10] or '—'}",
+                f"Ссылка на сделку: {order[11] or '—'}",
             ])
         lines.extend([
             f"Steam trade URL: {order[0] or 'не указан'}",

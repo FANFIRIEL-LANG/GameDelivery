@@ -48,8 +48,9 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
                                 "id": "deal-123",
                                 "status": "PAID",
                                 "createdAt": "2026-10-27T00:00:00Z",
-                                "item": {"id": "item-1", "name": "Game item"},
+                                "item": {"id": "listing-1", "name": "Game item"},
                                 "user": {"id": "buyer-1", "username": "buyer_name"},
+                                "chat": {"id": "chat-123", "unreadMessagesCounter": 8},
                                 "transaction": {"value": 125.5},
                             }
                         }],
@@ -77,16 +78,95 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
             {"direction": "OUT", "status": ["PAID", "SENT"]},
         )
         self.assertIn("deals(pagination: $pagination, filter: $filter, sort: $sort)", payload["query"])
+        self.assertIn("chat { id }", payload["query"])
+        self.assertNotIn("unreadMessagesCounter", payload["query"])
         self.assertEqual(orders, [{
             "platform": "playerok",
+            "deal_id": "deal-123",
             "order_id": "deal-123",
+            "chat_id": "chat-123",
+            "listing_id": "listing-1",
             "title": "Game item",
             "buyer": "buyer_name",
             "status": "PAID",
             "amount": "125.5",
             "created_at": "2026-10-27T00:00:00Z",
+            "deal_url": "https://playerok.com/deal/deal-123",
+            "chat_url": "https://playerok.com/chats/chat-123",
             "url": "https://playerok.com/deal/deal-123",
         }])
+
+
+    def test_sales_fetches_every_cursor_page_and_never_uses_unread_counts(self):
+        requests = []
+        pages = [
+            {
+                "data": {"deals": {
+                    "edges": [{"node": {
+                        "id": "deal-1", "status": "PAID", "createdAt": "2026-11-01",
+                        "item": {"id": "listing-1", "name": "One"},
+                        "user": {"id": "buyer-1", "username": "buyer"},
+                        "chat": {"id": "chat-1", "unreadMessagesCounter": 99},
+                        "transaction": {"value": 10},
+                    }}],
+                    "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                }}
+            },
+            {
+                "data": {"deals": {
+                    "edges": [{"node": {
+                        "id": "deal-2", "status": "SENT", "createdAt": "2026-11-02",
+                        "item": {"id": "listing-2", "name": "Two"},
+                        "user": {"id": "buyer-2", "username": "buyer2"},
+                        "chat": {"id": "chat-2", "unreadMessagesCounter": 1},
+                        "transaction": {"value": 20},
+                    }}],
+                    "pageInfo": {"hasNextPage": False, "endCursor": "cursor-2"},
+                }}
+            },
+        ]
+
+        def fake_request(url, *, method="GET", payload=None, token=None, bearer=False):
+            requests.append(payload)
+            return pages[len(requests) - 1], None
+
+        adapter = PlayerokAdapter(keyring_backend=MemoryKeyring(), request_func=fake_request)
+        deals = adapter.fetch_sales(statuses=None, first=1)
+
+        self.assertEqual([deal["deal_id"] for deal in deals], ["deal-1", "deal-2"])
+        self.assertEqual([deal["listing_id"] for deal in deals], ["listing-1", "listing-2"])
+        self.assertEqual([deal["chat_id"] for deal in deals], ["chat-1", "chat-2"])
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0]["variables"]["pagination"], {"first": 1})
+        self.assertEqual(
+            requests[1]["variables"]["pagination"],
+            {"first": 1, "after": "cursor-1"},
+        )
+        self.assertEqual(requests[0]["variables"]["filter"], {"direction": "OUT"})
+
+    def test_update_deal_status_only_allows_sent_and_uses_update_deal_input(self):
+        requests = []
+
+        def fake_request(url, *, method="GET", payload=None, token=None, bearer=False):
+            requests.append(payload)
+            return {"data": {"updateDeal": {
+                "id": "deal-123", "status": "SENT", "createdAt": "",
+                "item": {"id": "listing-1", "name": "Game item"},
+                "user": {"id": "buyer-1", "username": "buyer"},
+                "chat": {"id": "chat-1"},
+                "transaction": {"value": 12},
+            }}}, None
+
+        adapter = PlayerokAdapter(keyring_backend=MemoryKeyring(), request_func=fake_request)
+        result = adapter.update_deal_status("deal-123", "SENT")
+        self.assertEqual(result["status"], "SENT")
+        self.assertEqual(requests[0]["operationName"], "UpdateDeal")
+        self.assertEqual(
+            requests[0]["variables"]["input"],
+            {"id": "deal-123", "status": "SENT"},
+        )
+        with self.assertRaises(ValueError):
+            adapter.update_deal_status("deal-123", "CONFIRMED")
 
 
 if __name__ == "__main__":

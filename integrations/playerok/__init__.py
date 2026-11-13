@@ -1,8 +1,5 @@
-"""Playerok marketplace connector.
-
-The connector uses the isolated adapter in client.py and stores its session
-through the OS keyring rather than in the application database.
-"""
+"""Playerok connector and durable deal synchronization."""
 from integrations.playerok.client import PlayerokAdapter
+from integrations.playerok.sync import PlayerokDealSyncService
 
-__all__ = ["PlayerokAdapter"]
+__all__ = ["PlayerokAdapter", "PlayerokDealSyncService"]
