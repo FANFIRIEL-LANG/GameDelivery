@@ -99,6 +99,13 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             order_id="order-1", leg_id="leg-1", retry_generation=0,
             status="privacy_wait", result={"error": "private"},
         )
+        with self.db.connect() as db:
+            db.execute("""
+                INSERT INTO gd_resource_reservations
+                    (reservation_id,owner_type,order_line_id,game_id,app_id,context_id,
+                     bot_name,asset_id,units,state)
+                VALUES ('reservation-1','order','line-1','cs2',730,'2','Bot-A','asset-1',1,'active')
+            """)
 
     def _commands(self, custom=None):
         return BuyerChatCommandRegistry(
