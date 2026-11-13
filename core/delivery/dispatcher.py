@@ -104,7 +104,9 @@ class DeliveryDispatcher:
             ).fetchone()
             if row is None:
                 raise KeyError("DeliveryLeg не найден в указанном заказе")
-            if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED"}:
+            if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "DELIVERED"}:
+                return {"dispatched": False, "status": row["order_status"], "reason": "order is locked"}
+            if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED", "PRIVACY_WAIT", "TRADE_RESTRICTED"}:
                 return {"dispatched": False, "status": row["status"], "reason": "leg is already locked"}
             if row["status"] not in {"reserved", "planned"}:
                 return {"dispatched": False, "status": row["status"], "reason": "leg is not dispatchable"}
