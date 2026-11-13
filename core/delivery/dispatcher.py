@@ -144,8 +144,11 @@ class DeliveryDispatcher:
             # Once send_trade_offer has crossed its command boundary it returns resultUnknown.
             # A raised transport/timeout error here is conservatively treated as unknown too.
             self._set_state(order, leg, "UNKNOWN", "UNKNOWN", attempt["attempt_id"],
-                            {"error_type": type(exc).__name__, "error": str(exc)[:500]})
-            return {"dispatched": False, "status": "UNKNOWN", "error": str(exc)}
+                            {"error_type": type(exc).__name__})
+            self._event(order, "telegram_notification", {
+                "reason": "UNKNOWN", "leg_id": leg, "error_type": type(exc).__name__,
+            })
+            return {"dispatched": False, "status": "UNKNOWN", "error_type": type(exc).__name__}
 
         if result.get("success") is True:
             offer_ids = result.get("offerIds")
@@ -184,8 +187,12 @@ class DeliveryDispatcher:
             return {"dispatched": False, "status": "TRADE_RESTRICTED"}
 
         if result.get("resultUnknown") is True:
-            self._set_state(order, leg, "UNKNOWN", "UNKNOWN", attempt["attempt_id"], result)
-            return {"dispatched": False, "status": "UNKNOWN", "result": result}
+            self._set_state(order, leg, "UNKNOWN", "UNKNOWN", attempt["attempt_id"],
+                            {"error_type": "ASFResultUnknown"})
+            self._event(order, "telegram_notification", {
+                "reason": "UNKNOWN", "leg_id": leg,
+            })
+            return {"dispatched": False, "status": "UNKNOWN"}
 
         self._set_state(order, leg, "FAILED", "FAILED", attempt["attempt_id"], result)
         return {"dispatched": False, "status": "FAILED", "result": result}
