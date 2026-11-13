@@ -4523,3 +4523,27 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Последний code/test checkpoint этой части: e3edddad53d08a2a49004fe0d7789b66195b0b2b. Ветка включает новые dispatcher.py, reconciliation.py, обновлённые ASF client/plugin, CS2 reservation rule и тесты.
 - Python unit tests и ASF plugin build локально в этой сессии не запускались. Это не заявление об успешных тестах или сборке; пользователь проверяет GitHub Actions самостоятельно. Реальный ASF runtime, пользовательская SQLite БД и Steam offers не запускались.
 - Следующий шаг: пользователь проверяет workflow Tests и plugin build на текущем code/test checkpoint. До подтверждения не переходить к следующей части Блока 3. PR #4 и main не изменялись.
+
+
+### 2026-11-13 — Блок 3, часть 2: команды покупателя и Telegram outbox/operator routing
+
+- Исходная контрольная точка — принятый пользователем HEAD 715660a01d0f6aa5ee6c6783fe127a4c8eb32f9c. Изменения внесены только в work/local-sync; main и PR #4 не изменялись.
+- Добавлен core/delivery/chat_commands.py с расширяемым BuyerChatCommandRegistry и командами !настроил приватность, !статус, !помощь, !поддержка, !неполучил и !инвентарь. Пользовательские команды/шаблоны можно передавать из настроек при создании реестра и обновлять через set_custom_commands(); защищённые встроенные команды переопределить нельзя.
+- Информационные команды не меняют статус заказа и не запускают выдачу. !поддержка и !неполучил создают order-bound operator_support_request event. Ответ !статус строится по текущему заказу; !помощь и !инвентарь возвращают инструкции.
+- Для !настроил приватность добавлена fail-closed защита:
+  - требуется точное совпадение deal_id + chat_id и identity_verified=True с buyer identity из payload сделки;
+  - статус PRIVACY_WAIT повторно проверяется под SQLite BEGIN IMMEDIATE; все другие статусы считаются устаревшими;
+  - если DeliveryLeg содержит trade_offer_id, статус UNKNOWN/SENT_TO_STEAM или журнал попыток указывает на dispatching/созданный offer, повтор блокируется и вызывается Reconciliation;
+  - до повторной отправки проверяются активные ResourceReservation для точной пары bot_name/asset_id и выполняется новый успешный ASF inventory request для нужного app/context; каждый зарезервированный asset обязан присутствовать у исходного бота с literal tradable=True;
+  - повторная попытка использует max(retry_generation)+1 и новый уникальный idempotency_key; перед dispatch заказ переводится в PROCESSING, что блокирует повторные команды в промежутке.
+- Добавлен integrations/telegram/outbox.py:
+  - durable SQLite telegram_outbox с уникальным idempotency_key, pending/retry/sent статусами, счётчиком попыток и отложенным retry; обработка outbox выполняется отдельно от выдачи, поэтому отказ Telegram API не прерывает delivery pipeline;
+  - HTTP/HTTPS и SOCKS5/SOCKS5h proxy transport через requests[socks]; Telegram bot token, proxy URL, username и password хранятся только в системном keyring. Секреты не записываются в SQLite, а ошибки Telegram хранят только тип исключения без текста/URL;
+  - event filters поддерживают категории new_order, insufficient_stock, privacy_wait, trade_restricted, declined, unknown и support_request. Pending delivery events переводятся в outbox с идемпотентной привязкой к event_id; отключённые фильтром события помечаются filtered;
+  - отправленные операторские уведомления автоматически связываются с order_id → deal_id → buyer chat_id и точным Telegram operator_chat_id.
+- Добавлен TelegramOperatorReplyRouter: ответ принимается только от user_id и chat_id из allowlist, только как reply на сохранённое уведомление и только при совпадении исходного operator_chat_id и неизменной связки заказа/сделки/чата. Ответ ставится в отдельную SQLite очередь BuyerPlatformMessageOutbox для последующей отправки покупателю на площадке.
+- Добавлены integrations/telegram/__init__.py и экспорты BuyerChatCommandRegistry/ChatCommandResult; requirements.txt дополнен requests[socks]>=2.31,<3.
+- Добавлен tests/test_delivery_chat_commands_telegram.py (8 тестов): успешный privacy retry с generation+1 и свежей ASF проверкой; stale/foreign identity/chat и UNKNOWN → Reconciliation без resend; read-only status/support alert; custom templates; idempotent Telegram outbox и retry при API failure с SOCKS5 proxy credentials; event filters; allowlisted operator reply, автоматически связанный с уведомлением и помещённый в buyer outbox.
+- Последний code/test checkpoint: 1a74cb9951d5fe67d505cb92f432d6f8b1957bae. Основные новые blob: chat_commands.py c18adddac616d5a8814af9b31c51fc2f9bde248b; telegram/outbox.py bb8ec6e9b7793dcfa48e7e8d09062fb1fdca7762; tests/test_delivery_chat_commands_telegram.py 1414a7c30d6768dc74c20a469fd297cfc567790d.
+- Unit tests локально не запускались; успешность Tests не заявляется. Пользователь проверяет GitHub Actions самостоятельно. Telegram API, marketplace messaging и пользовательская production DB в этой части не запускались; реальная доставка buyer outbox требует подключённого адаптера площадки/worker.
+- Следующий шаг: пользователь проверяет Tests workflow для checkpoint 1a74cb9951d5fe67d505cb92f432d6f8b1957bae. До подтверждения не переходить к следующей части Блока 3. PR #4 и main не изменялись.
