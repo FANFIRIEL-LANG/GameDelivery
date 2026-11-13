@@ -61,7 +61,7 @@ class PlayerokBrowserController:
 class PlayerokBrowserPanel(QWidget):
     listing_config_saved = Signal(object)
 
-    def __init__(self, *, database=None, parent=None):
+    def __init__(self, *, database=None, parent=None, enable_webengine: bool | None = None):
         super().__init__(parent)
         self.database = database
         self.controller = PlayerokBrowserController(self.navigate)
@@ -83,7 +83,8 @@ class PlayerokBrowserPanel(QWidget):
 
         split = QSplitter()
         self.browser_status = QLabel()
-        if WEBENGINE_AVAILABLE:
+        use_webengine = WEBENGINE_AVAILABLE if enable_webengine is None else (WEBENGINE_AVAILABLE and enable_webengine)
+        if use_webengine:
             self.web = QWebEngineView()
             profile_dir = Path.home() / ".gamedelivery" / "playerok-web-profile"
             profile_dir.mkdir(parents=True, exist_ok=True)
