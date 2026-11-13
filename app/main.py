@@ -121,7 +121,7 @@ class MainWindow(QMainWindow):
         if not os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip():
             self.bot_selection_model.set_accounts(configured_bot_names())
         self.tabs.addTab(self._orders_tab(), "Заказы")
-        self.marketplace_panel = MarketplacePanel(sync_operation=self.playerok_sync.sync)
+        self.marketplace_panel = MarketplacePanel(sync_operation=self.playerok_sync.sync, database=Database(self._database_path))
         self.marketplace_panel.connection_status_changed.connect(self.platform_status.setText)
         self.marketplace_panel.order_import_requested.connect(self._import_marketplace_order)
         self.tabs.addTab(self.marketplace_panel, "Площадки")
