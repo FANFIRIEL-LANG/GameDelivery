@@ -219,6 +219,19 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                     : Failure("Команда доступна только ASF Owner.");
             }
 
+            if (isTradeStatus)
+            {
+                if (commandArgs.Length != 3)
+                {
+                    return TradeDelivery.TradeStatusFailure(
+                        "Использование: gamedelivery-status <BotName> <TradeOfferID>.");
+                }
+
+                return await TradeDelivery.ProcessTradeStatusCommand(
+                    commandArgs[1],
+                    commandArgs[2]).ConfigureAwait(false);
+            }
+
             if (isDiagnostic)
             {
                 if (commandArgs.Length < 2 || string.IsNullOrWhiteSpace(commandArgs[1]))
@@ -252,19 +265,6 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                     diagnosticBot,
                     diagnosticAppIds,
                     recipientSteamId64).ConfigureAwait(false);
-            }
-
-            if (isTradeStatus)
-            {
-                if (commandArgs.Length != 3)
-                {
-                    return TradeDelivery.TradeStatusFailure(
-                        "Использование: gamedelivery-status <BotName> <TradeOfferID>.");
-                }
-
-                return await TradeDelivery.ProcessTradeStatusCommand(
-                    commandArgs[1],
-                    commandArgs[2]).ConfigureAwait(false);
             }
 
             if (commandArgs.Length != 2 || commandArgs[1].Length > 16000)

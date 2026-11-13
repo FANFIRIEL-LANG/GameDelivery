@@ -5,7 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Reflection;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -259,28 +259,65 @@ internal static class TradeDelivery
         ulong recipientSteamId64,
         string recipientTradeToken)
     {
-        Type handlerType = senderBot.ArchiWebHandler.GetType();
-        MethodInfo? method = handlerType.GetMethod(
-            "GetCombinedTradeHoldDurationAgainstUser",
-            BindingFlags.Instance | BindingFlags.NonPublic,
-            binder: null,
-            types: [typeof(ulong), typeof(string)],
-            modifiers: null);
-
-        if (method is null || method.ReturnType != typeof(Task<byte?>))
+        // ASF 6.3.11.7 does not expose its pre-offer combined-hold helper publicly.
+        // Use the connected Bot's public OAuth token and ASF-configured HttpClientFactory
+        // to call the same IEconService endpoint. No Steam Web API key is used.
+        string? accessToken = senderBot.AccessToken;
+        if (string.IsNullOrWhiteSpace(accessToken))
         {
-            throw new MissingMethodException(
-                handlerType.FullName,
-                "GetCombinedTradeHoldDurationAgainstUser(ulong, string)");
+            return null;
         }
 
-        object? invocation = method.Invoke(senderBot.ArchiWebHandler, [recipientSteamId64, recipientTradeToken]);
-        if (invocation is not Task<byte?> holdTask)
+        Uri endpoint = new(
+            senderBot.SteamConfiguration.WebAPIBaseAddress,
+            "IEconService/GetTradeHoldDurations/v1/");
+        string query = "access_token=" + Uri.EscapeDataString(accessToken)
+            + "&steamid_target=" + recipientSteamId64.ToString(CultureInfo.InvariantCulture)
+            + "&trade_offer_access_token=" + Uri.EscapeDataString(recipientTradeToken);
+        Uri requestUri = new UriBuilder(endpoint) { Query = query }.Uri;
+
+        using HttpClient client = senderBot.SteamConfiguration.HttpClientFactory();
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        using HttpRequestMessage request = new(HttpMethod.Get, requestUri);
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            timeout.Token).ConfigureAwait(false);
+
+        if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException("ASF returned an unexpected trade-hold preflight result.");
+            return null;
         }
 
-        return await holdTask.ConfigureAwait(false);
+        await using Stream responseStream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+        using JsonDocument document = await JsonDocument.ParseAsync(
+            responseStream,
+            cancellationToken: timeout.Token).ConfigureAwait(false);
+
+        if (!document.RootElement.TryGetProperty("response", out JsonElement responseData)
+            || !responseData.TryGetProperty("both_escrow", out JsonElement bothEscrow)
+            || !bothEscrow.TryGetProperty("escrow_end_duration_seconds", out JsonElement secondsElement))
+        {
+            return null;
+        }
+
+        uint seconds;
+        if (secondsElement.ValueKind == JsonValueKind.Number && secondsElement.TryGetUInt32(out uint numericSeconds))
+        {
+            seconds = numericSeconds;
+        }
+        else if (secondsElement.ValueKind == JsonValueKind.String
+            && uint.TryParse(secondsElement.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out uint stringSeconds))
+        {
+            seconds = stringSeconds;
+        }
+        else
+        {
+            return null;
+        }
+
+        uint days = seconds == 0 ? 0 : seconds / 86400;
+        return (byte)Math.Min(days, byte.MaxValue);
     }
 
     private static async Task<(bool InventoryAccessible, byte? TradeHoldDays, string? Error)> PreflightRecipientAsync(
@@ -325,14 +362,12 @@ internal static class TradeDelivery
         }
         catch (Exception exception)
         {
-            Exception cause = exception is TargetInvocationException { InnerException: not null } invocation
-                ? invocation.InnerException
-                : exception;
+            // Do not echo request URLs or OAuth/trade tokens in logs or IPC responses.
             return (
                 true,
                 null,
-                "ASF не смог проверить trade hold получателя; отправка заблокирована до достоверной проверки. "
-                + cause.GetType().Name + ": " + SafeMessage(cause.Message, recipientTradeToken));
+                "ASF не смог достоверно проверить trade hold получателя; отправка заблокирована до успешной проверки ("
+                + exception.GetType().Name + ").");
         }
 
         if (!tradeHoldDays.HasValue)

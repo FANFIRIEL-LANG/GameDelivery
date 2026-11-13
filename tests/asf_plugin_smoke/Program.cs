@@ -381,14 +381,22 @@ Assert(archiWebHandlerType.GetMethod("GetTradeOffers", BindingFlags.Instance | B
     "Pinned ASF no longer exposes Bot.ArchiWebHandler.GetTradeOffers");
 Assert(archiWebHandlerType.GetMethod("GetInventoryAsync", BindingFlags.Instance | BindingFlags.Public) is not null,
     "Pinned ASF no longer exposes recipient inventory enumeration through Bot.ArchiWebHandler");
-MethodInfo? tradeHoldMethod = archiWebHandlerType.GetMethod(
-    "GetCombinedTradeHoldDurationAgainstUser",
-    BindingFlags.Instance | BindingFlags.NonPublic,
-    binder: null,
-    types: [typeof(ulong), typeof(string)],
-    modifiers: null);
-Assert(tradeHoldMethod is not null && tradeHoldMethod.ReturnType == typeof(Task<byte?>),
-    "Pinned ASF trade-hold preflight contract changed");
+PropertyInfo accessTokenProperty = typeof(Bot).GetProperty(
+    "AccessToken",
+    BindingFlags.Instance | BindingFlags.Public)
+    ?? throw new InvalidOperationException("Pinned ASF Bot.AccessToken public property was not found");
+Assert(accessTokenProperty.PropertyType == typeof(string),
+    "Pinned ASF Bot.AccessToken public property type changed");
+PropertyInfo steamConfigurationProperty = typeof(Bot).GetProperty(
+    "SteamConfiguration",
+    BindingFlags.Instance | BindingFlags.Public)
+    ?? throw new InvalidOperationException("Pinned ASF Bot.SteamConfiguration property was not found");
+Assert(steamConfigurationProperty.PropertyType.GetProperty(
+    "HttpClientFactory", BindingFlags.Instance | BindingFlags.Public) is not null,
+    "Pinned ASF SteamConfiguration no longer exposes its HttpClientFactory");
+Assert(steamConfigurationProperty.PropertyType.GetProperty(
+    "WebAPIBaseAddress", BindingFlags.Instance | BindingFlags.Public) is not null,
+    "Pinned ASF SteamConfiguration no longer exposes WebAPIBaseAddress");
 
 static object? GetProperty(object value, string name) =>
     value.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
