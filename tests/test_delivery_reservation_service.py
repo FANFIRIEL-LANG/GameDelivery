@@ -99,7 +99,7 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             quantity=3,
             selectors={
                 "game_id": "cs2", "app_id": 730, "context_id": 2,
-                "item_type": "cs2_item", "market_hash_name": "AK-47 | Redline",
+                "market_hash_name": "AK-47 | Redline",
             },
             bot_pool=["Bot-A", "Bot-B"],
         )
@@ -175,15 +175,26 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             bot_pool=["Bot-A"],
             prefix="parallel",
         )
-        second, _ = self.create_order(
-            quantity=1,
-            selectors={
-                "game_id": "cs2", "app_id": 730, "context_id": 2,
-                "market_hash_name": "AK-47 | Redline",
-            },
-            bot_pool=["Bot-A"],
-            prefix="parallel",
+        with self.database.connect() as db:
+            listing_id = db.execute(
+                "SELECT listing_id FROM gd_config_versions WHERE config_version_id=?",
+                (config_id,),
+            ).fetchone()[0]
+        self.ledger.create_deal(
+            deal_id="parallel-second-deal",
+            source_platform="playerok",
+            external_deal_id="parallel-second-external",
+            chat_id="parallel-second-chat",
+            listing_id=listing_id,
+            config_version_id=config_id,
+            platform_status="PAID",
         )
+        self.ledger.create_order(
+            order_id="parallel-second-order",
+            deal_id="parallel-second-deal",
+            total_quantity=1,
+        )
+        second = "parallel-second-order"
         snapshots = {
             "Bot-A": self.snapshot("Bot-A", "cs2", 730, 2, [
                 self.cs2_item("Bot-A", "same-asset"),
