@@ -4330,3 +4330,14 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Никакие исходники приложения, тесты, workflow YAML, ASF, SQLite, Steam offers, PR #4 или `main` не изменялись. Никакие workflow reruns не запускались.
 - Следующий безопасный шаг: read-only получить список запусков Tests workflow вокруг времени run `43285879628` и установить, был ли другой запуск с той же concurrency-группой; если связанный запуск уже недоступен через интеграцию, не выдавать предположение за доказанный факт. Отдельно решить, требуется ли исправление Qt shutdown, не смешивая его с причиной GitHub `cancelled`.
 - Codex handoff: branch `work/local-sync`; base/code SHA `55562451a24a1c11d60bdb73f28c6e0b07828d04`; разрешена только read-only проверка истории запусков/concurrency и локализация Qt shutdown. Не менять production code, тесты или workflow без подтверждённой причины и согласованного минимального изменения.
+
+
+### 2026-11-13 — устранена автоматическая отмена выполняющихся Tests runs
+
+- По результату read-only расследования внесено минимальное CI-изменение в `.github/workflows/tests.yml`: `concurrency.cancel-in-progress` изменён с `true` на `false`. Новые запуски той же concurrency-группы теперь должны ждать завершения текущего, а не отменять его.
+- Изменение не затрагивает тестовый код, Qt lifecycle, приложение, торговую логику или сборку; существующий механизм полного suite + изолированных модулей сохранён без изменений.
+- Commit с изменением workflow: `76b61ac3f819f1ff75829658cc8e23c85f473eb8`; workflow blob SHA `5669908c8aa6c170bb7eeada8108a0871bbef388`. Файл после записи повторно прочитан из `work/local-sync`, blob SHA совпал.
+- Изменение отправлено непосредственно в рабочую ветку `work/local-sync`; push-triggered Tests workflow должен стартовать автоматически. На момент записи итог CI ещё не получен. Не считать Tests gate успешным до фактического conclusion `success`.
+- Qt shutdown exit 139 остаётся известным отдельным поведением. Текущий workflow продолжает считать shutdown-only 139 допустимым только при подтверждённых `Ran N tests` и `OK`, а затем изолирует все test modules. Не скрывать assertion failures и не считать cancellation причиной Qt crash.
+- Следующий шаг: получить фактический Tests run, созданный commit `76b61ac3f819f1ff75829658cc8e23c85f473eb8`, проверить job conclusion и полный log; если он завершится success — сверить Windows package artifact на том же конечном code SHA. Если Tests завершится failure, исправлять только доказанную причину.
+- Codex handoff: branch `work/local-sync`; base SHA перед изменением workflow — `d154ed3d21616be48a6c99f1296bf28ad4f86c4c`; resulting commit — `76b61ac3f819f1ff75829658cc8e23c85f473eb8`. Разрешённая область — только CI workflow cancellation policy. Не менять production code, тесты, ASF, SQLite, Steam trade logic, CS2 или PR #4.
