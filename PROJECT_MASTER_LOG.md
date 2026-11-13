@@ -4473,3 +4473,27 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - В текущей сессии локальный запуск Python-тестов не выполнялся; наличие тестов подтверждено чтением GitHub-файла. Результат GitHub Actions Tests не объявляется и оставлен для проверки пользователем. Пользователь отдельно попросил не ожидать завершения Actions.
 - ASF/Steam runtime, пользовательская БД и реальные trade offers в этой работе не запускались. Инварианты Steam-интеграции, ASF Generic 6.3.11.7/.NET 10, отсутствие Steam Web API key и правила хранения buyer trade tokens остаются обязательными.
 - Следующий шаг: пользователь проверяет Tests workflow для code commit `fce4a9c17236efed38d02edb07a3c45429b52335`; продолжение — только после его подтверждения. PR #4 и `main` не изменялись.
+
+
+### 2026-11-13 — Блок 2, часть 2: атомарное планирование и резервирование по общему пулу ботов
+
+- Подтверждён исходный HEAD после принятой пользователем Части 1: `f1051bacd3939743db7c73f3a52675a48e683b00`. Все изменения этой части выполнялись только в `work/local-sync`; `main` и PR #4 не затрагивались.
+- Добавлен `core/delivery/reservation_service.py` и экспорт сервиса из `core/delivery/__init__.py`:
+  - `DeliveryReservationService` принимает только `InventorySnapshot` с явным `asf_verified=True`, timezone-aware временем успешного обновления и возрастом не более 5 минут по умолчанию. Отсутствующий, неподтверждённый, будущий или устаревший snapshot исключается из подбора.
+  - Источники ограничиваются bot pool из неизменяемого `ConfigVersion`; чужие боты, несовпадающие game/app/context и ресурсы, не прошедшие точный selector, не рассматриваются. Поддерживаются один selector или список альтернатив.
+  - Для CS2 используется `CS2InventoryInstance` из `games/cs2/inventory_view.py` и его строгий `is_reservable` contract: ASF `is_tradable=True`, известное отсутствие restriction, доступный статус, положительный amount; `tradable_after`, trade protection и UNKNOWN блокируют резерв.
+  - Для Steam Cards используется общая существующая доменная логика `games/steam_cards/order_preflight.py`: проверка подтверждённых данных значка через `evaluate_recipient_badge_capacity` и точный подбор полных обычных наборов с сохранением владельца через `select_owned_complete_sets`. Для карточного пути требуется `badge_data_verified=True`; unverified/foil/недостаточная badge capacity блокирует preflight. Старый `AssetReservationStore` повторно не вызывается, чтобы не создавать параллельный legacy reservation вне общей транзакции.
+  - CS2 730/2 и Steam Cards 753/6 формируют отдельную `DeliveryLeg` на каждого бота с точными app/context и списком asset IDs.
+  - В одной транзакции `BEGIN IMMEDIATE` создаются OrderLine, все DeliveryLeg и все ResourceReservation; глобальная уникальность активного `(bot_name COLLATE NOCASE, asset_id)` повторно проверяется в ledger. При конфликте транзакция целиком откатывается.
+  - Если полного состава нет, не создаются OrderLine/DeliveryLeg/ResourceReservation, заказ получает `insufficient_stock`, а в `gd_delivery_events` ставятся два pending события: `buyer_notification` и `telegram_notification`. Отдельная причина блокировки badge preflight получает статус `preflight_blocked`.
+- Добавлены шесть targeted tests в `tests/test_delivery_reservation_service.py`:
+  1. CS2 заказ 730/2 разбивается между двумя ботами на точные DeliveryLeg;
+  2. Steam Card set 753/6 собирается из карточек двух ботов с сохранением проверки значка и разбивается на две legs;
+  3. два параллельных заказа не могут зарезервировать один и тот же физический ключ;
+  4. tradable=false, restriction UNKNOWN и trade-protected assets исключаются;
+  5. нехватка одного предмета приводит к полному отсутствию legs/reservations и создаёт оба уведомительных события;
+  6. устаревший ASF snapshot не используется.
+- Важное fail-closed ограничение: текущий `adapt_cs2_inventory_response` оставляет restriction metadata UNKNOWN, если она не была достоверно классифицирована upstream. Такие экземпляры намеренно не резервируются только на основании UI-проекции; перед реальным CS2 резервированием источник обязан передать подтверждённый `RestrictionType.NONE` и `RestrictionStatus.AVAILABLE`. Неизвестный trade-lock не трактуется как отсутствие блокировки.
+- Последний code/test checkpoint перед записью журнала: `4bf8a7f669a7b1c7e47ed0e7a60f72a0c85e367f` (включает тесты); последняя версия сервиса: `cec7548abcae0f0a9e49eb5ded0512dca7f976d2`. Тесты локально в этой сессии не запускались; пользователь проверяет GitHub Actions Tests самостоятельно, ожидание Actions в цикле не выполнялось.
+- Сервис остаётся pre-trade: ASF IPC и Steam offers не вызываются; пользовательская БД не открывалась. Работа не реализует listing stock allocation/handoff, send/reconcile или UI-потребителей notification events — это последующие части плана.
+- Следующий шаг: пользователь проверяет Tests workflow для code/test checkpoint `4bf8a7f669a7b1c7e47ed0e7a60f72a0c85e367f`. PR #4 остаётся без изменений; `main` не менялся.
