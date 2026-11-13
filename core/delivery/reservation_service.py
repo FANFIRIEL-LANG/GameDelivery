@@ -23,6 +23,7 @@ class InventorySnapshot:
     context_id: str
     refreshed_at: datetime
     items: tuple[Any, ...]
+    asf_verified: bool
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,8 @@ class DeliveryReservationService:
         return value.astimezone(timezone.utc)
 
     def _snapshot_is_fresh(self, snapshot: InventorySnapshot, now: datetime) -> bool:
+        if snapshot.asf_verified is not True:
+            return False
         refreshed = self._aware(snapshot.refreshed_at)
         return refreshed <= now and now - refreshed <= self.max_snapshot_age
 
