@@ -608,6 +608,7 @@ class MainWindow(QMainWindow):
                     context.get("order_id") == local_order_id
                     or context.get("external_deal_id") == external_id
                 ):
+                    self.orders.setCurrentCell(row, 0)
                     self.orders.selectRow(row)
                     break
             if canonical:
