@@ -168,6 +168,9 @@ class DeliveryDispatcher:
                 "message": "Откройте настройки приватности Steam и сделайте инвентарь доступным для просмотра. "
                            "После изменения напишите: !настроил приватность",
             })
+            self._event(order, "telegram_notification", {
+                "reason": "PRIVACY_WAIT", "leg_id": leg, "chat_id": row["chat_id"],
+            })
             return {"dispatched": False, "status": "PRIVACY_WAIT"}
         if classified == "TRADE_RESTRICTED":
             self._set_state(order, leg, "TRADE_RESTRICTED", "TRADE_RESTRICTED", attempt["attempt_id"],
