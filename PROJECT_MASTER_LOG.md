@@ -4497,3 +4497,29 @@ ASF proxy form и OpenSkin proxy form уже используют одинако
 - Последний code/test checkpoint перед записью журнала: `4bf8a7f669a7b1c7e47ed0e7a60f72a0c85e367f` (включает тесты); последняя версия сервиса: `cec7548abcae0f0a9e49eb5ded0512dca7f976d2`. Тесты локально в этой сессии не запускались; пользователь проверяет GitHub Actions Tests самостоятельно, ожидание Actions в цикле не выполнялось.
 - Сервис остаётся pre-trade: ASF IPC и Steam offers не вызываются; пользовательская БД не открывалась. Работа не реализует listing stock allocation/handoff, send/reconcile или UI-потребителей notification events — это последующие части плана.
 - Следующий шаг: пользователь проверяет Tests workflow для code/test checkpoint `4bf8a7f669a7b1c7e47ed0e7a60f72a0c85e367f`. PR #4 остаётся без изменений; `main` не менялся.
+
+
+### 2026-11-13 — Блок 3, часть 1: диспетчер DeliveryLeg и сверка Steam offers
+
+- Исходная контрольная точка этой части — принятый пользователем HEAD 9d5cee9194a92d0b59eff0b9c94c3d1b089ae1cd. Все изменения сделаны только в work/local-sync; main и PR #4 не изменялись.
+- Уточнено и исправлено правило резерва CS2 730/2 в core/delivery/reservation_service.py:
+  - свежий подтверждённый ASF snapshot с is_tradable=True, положительным amount и отсутствующим tradable_after теперь допускается, даже если дополнительные restriction-поля имеют UNKNOWN;
+  - явный restriction_status=RESTRICTED, TRADE_PROTECTION, PERMANENTLY_NON_TRADABLE, is_tradable=False, неизвестный amount и активный tradable_after по-прежнему блокируют резерв;
+  - MARKET_PURCHASE_COOLDOWN сам по себе не считается запретом Steam trade при подтверждённом ASF tradable=True; явный RESTRICTED статус всё равно блокирует.
+- Добавлен core/delivery/dispatcher.py:
+  - перед внешним вызовом создаётся DeliveryAttempt через существующий ledger с уникальным idempotency_key = order_id:leg_id:retry_generation; существующий ключ никогда не приводит к повторной отправке;
+  - токен загружается только через SteamTradeCredentialStore.load_trade_url(); затем существующий ASFClient.send_trade_offer() создаёт защищённый одноразовый файл для ASF-плагина и удаляет его. Токен не записывается в SQLite;
+  - дополнительное сообщение к трейду остаётся пустым: ASF plugin вызывает SendTradeOffer(... customMessage: string.Empty ...). Фиксированная служебная подпись ASF 6.3.11.7 этим не отключается;
+  - успешный offer ID связывается с DeliveryLeg; timeout/transport/неопределённый ответ переводит leg и Order в UNKNOWN, блокирует повторную отправку и блокирует отправку остальных legs заказа до сверки;
+  - ошибка приватности переводит заказ в PRIVACY_WAIT, не освобождая резерв, и создаёт событие покупателю с инструкцией написать !настроил приватность;
+  - trade hold / Steam Guard / trade ban классифицируются в TRADE_RESTRICTED, удерживают резерв и создают события покупателю и Telegram; сообщение покупателю задаётся параметром сервиса.
+- Добавлен core/delivery/reconciliation.py:
+  - для UNKNOWN leg сначала запрашивается восстановление через gamedelivery-status <BotName> order:<OrderId>, затем используется локальный sent_offers.json как резервный источник. Найденный ID сохраняется в leg; отправка повторно не вызывается;
+  - ASF plugin расширен поиском исходящего предложения по точному order record, recipient SteamID64, AppID/ContextID и полному набору asset IDs; неоднозначное совпадение не принимается;
+  - добавлены методы ASFClient.get_order_trade_status() и get_trade_offer_status() для структурированного вызова плагина;
+  - Accepted фиксирует leg как ACCEPTED и переводит Order в DELIVERED только при Accepted у всех DeliveryLeg заказа;
+  - Declined / Canceled / Expired фиксируют leg как DECLINED, запрашивают инвентарь соответствующего бота через ASF и создают Telegram notification event. Слепой автоповтор не выполняется.
+- Добавлен tests/test_delivery_dispatcher.py с проверками: transport timeout → UNKNOWN и recovery offer ID без дубля; многоботовый заказ из двух legs становится DELIVERED только после Accepted обоих; PRIVACY_WAIT и инструкция покупателю; TRADE_RESTRICTED и buyer/Telegram events без повтора; Declined вызывает ASF inventory refresh и Telegram event. В tests/test_delivery_reservation_service.py добавлен отдельный тест резервирования CS2 предмета с tradable=True и UNKNOWN restriction metadata.
+- Последний code/test checkpoint этой части: e3edddad53d08a2a49004fe0d7789b66195b0b2b. Ветка включает новые dispatcher.py, reconciliation.py, обновлённые ASF client/plugin, CS2 reservation rule и тесты.
+- Python unit tests и ASF plugin build локально в этой сессии не запускались. Это не заявление об успешных тестах или сборке; пользователь проверяет GitHub Actions самостоятельно. Реальный ASF runtime, пользовательская SQLite БД и Steam offers не запускались.
+- Следующий шаг: пользователь проверяет workflow Tests и plugin build на текущем code/test checkpoint. До подтверждения не переходить к следующей части Блока 3. PR #4 и main не изменялись.
