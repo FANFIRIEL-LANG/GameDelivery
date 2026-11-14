@@ -484,6 +484,7 @@ class PlayerokAdapter(MarketplaceAdapter):
         seen_cursors: set[str] = set()
         cursor: str | None = None
         page_count = 0
+        expected_total_count: int | None = None
 
         while True:
             page_count += 1
@@ -528,13 +529,24 @@ class PlayerokAdapter(MarketplaceAdapter):
                 result.append(mapped)
 
             page_info = connection.get("pageInfo")
-            if page_info is None:
-                raise RuntimeError("Playerok не вернул pageInfo; baseline не может считаться полным.")
-            elif isinstance(page_info, dict):
-                has_next = page_info.get("hasNextPage") is True
-                end_cursor = page_info.get("endCursor")
-            else:
+            if not isinstance(page_info, dict):
                 raise RuntimeError("Playerok вернул некорректный pageInfo.")
+            if type(page_info.get("hasNextPage")) is not bool:
+                raise RuntimeError("Playerok вернул некорректный pageInfo.hasNextPage.")
+            has_next = page_info["hasNextPage"]
+            end_cursor = page_info.get("endCursor")
+            if end_cursor is not None and not isinstance(end_cursor, str):
+                raise RuntimeError("Playerok вернул некорректный pageInfo.endCursor.")
+
+            if "totalCount" in connection:
+                total_count = connection["totalCount"]
+                if type(total_count) is not int or total_count < 0:
+                    raise RuntimeError("Playerok вернул некорректный totalCount.")
+                if expected_total_count is None:
+                    expected_total_count = total_count
+                elif total_count != expected_total_count:
+                    raise RuntimeError("Playerok изменил totalCount во время обхода сделок.")
+
             if not has_next:
                 break
             if not isinstance(end_cursor, str) or not end_cursor.strip():
@@ -544,6 +556,10 @@ class PlayerokAdapter(MarketplaceAdapter):
             seen_cursors.add(end_cursor)
             cursor = end_cursor
 
+        if expected_total_count is not None and expected_total_count != len(seen_deals):
+            raise RuntimeError(
+                "Playerok вернул totalCount, не совпадающий с числом уникальных сделок."
+            )
         return result
 
     def fetch_orders(self) -> list[dict[str, Any]]:

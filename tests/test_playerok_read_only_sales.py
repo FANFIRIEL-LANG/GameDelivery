@@ -3,6 +3,9 @@ import unittest
 from integrations.playerok.client import PlayerokAdapter, _BFF, _GRAPHQL
 
 
+_MISSING = object()
+
+
 class MemoryKeyring:
     def get_password(self, service, account):
         return "test-session-token"
@@ -15,6 +18,43 @@ class MemoryKeyring:
 
 
 class PlayerokReadOnlySalesTests(unittest.TestCase):
+    @staticmethod
+    def _deal_node(deal_id, *, status="PAID"):
+        return {
+            "id": deal_id,
+            "status": status,
+            "createdAt": "2026-11-01T00:00:00Z",
+            "item": {"id": "listing-1", "name": "Game item"},
+            "user": {"id": "buyer-1", "username": "buyer"},
+            "chat": {"id": "chat-1"},
+            "transaction": {"value": 10},
+        }
+
+    @classmethod
+    def _sales_page(cls, deal_ids=(), *, has_next=False, end_cursor=_MISSING, total_count=_MISSING):
+        page_info = {"hasNextPage": has_next}
+        if end_cursor is not _MISSING:
+            page_info["endCursor"] = end_cursor
+        connection = {
+            "edges": [{"node": cls._deal_node(deal_id)} for deal_id in deal_ids],
+            "pageInfo": page_info,
+        }
+        if total_count is not _MISSING:
+            connection["totalCount"] = total_count
+        return {"data": {"deals": connection}}
+
+    @staticmethod
+    def _adapter_for_pages(pages):
+        requests = []
+
+        def fake_request(url, *, method="GET", payload=None, token=None, bearer=False):
+            requests.append(payload)
+            return pages[len(requests) - 1], None
+
+        return PlayerokAdapter(
+            keyring_backend=MemoryKeyring(), request_func=fake_request,
+        ), requests
+
     def test_profile_uses_bff_bearer_and_parses_identity(self):
         requests = []
 
@@ -144,6 +184,90 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
             {"first": 1, "after": "cursor-1"},
         )
         self.assertEqual(requests[0]["variables"]["filter"], {"direction": "OUT"})
+
+    def test_page_info_requires_boolean_has_next_page(self):
+        for has_next in (_MISSING, None, "false", 0, 1):
+            with self.subTest(has_next=has_next):
+                page = self._sales_page()
+                page_info = page["data"]["deals"]["pageInfo"]
+                if has_next is _MISSING:
+                    page_info.pop("hasNextPage")
+                else:
+                    page_info["hasNextPage"] = has_next
+                adapter, _ = self._adapter_for_pages([page])
+                with self.assertRaisesRegex(RuntimeError, "hasNextPage"):
+                    adapter.fetch_sales(statuses=None)
+
+    def test_page_info_must_be_an_object(self):
+        for page_info in (None, "done", []):
+            with self.subTest(page_info=page_info):
+                page = self._sales_page()
+                page["data"]["deals"]["pageInfo"] = page_info
+                adapter, _ = self._adapter_for_pages([page])
+                with self.assertRaisesRegex(RuntimeError, "pageInfo"):
+                    adapter.fetch_sales(statuses=None)
+
+    def test_next_page_requires_nonempty_cursor(self):
+        for cursor in (_MISSING, None, "", "   ", 123):
+            with self.subTest(cursor=cursor):
+                page = self._sales_page(has_next=True, end_cursor=cursor)
+                adapter, _ = self._adapter_for_pages([page])
+                with self.assertRaisesRegex(RuntimeError, "endCursor"):
+                    adapter.fetch_sales(statuses=None)
+
+    def test_repeated_cursor_fails_closed(self):
+        pages = [
+            self._sales_page(["deal-1"], has_next=True, end_cursor="cursor-1"),
+            self._sales_page(["deal-2"], has_next=True, end_cursor="cursor-1"),
+        ]
+        adapter, _ = self._adapter_for_pages(pages)
+        with self.assertRaisesRegex(RuntimeError, "курсор"):
+            adapter.fetch_sales(statuses=None)
+
+    def test_total_count_must_be_a_nonnegative_integer_not_bool(self):
+        for total_count in (True, False, None, "1", 1.0, -1):
+            with self.subTest(total_count=total_count):
+                page = self._sales_page(total_count=total_count)
+                adapter, _ = self._adapter_for_pages([page])
+                with self.assertRaisesRegex(RuntimeError, "totalCount"):
+                    adapter.fetch_sales(statuses=None)
+
+    def test_total_count_must_match_unique_deal_count(self):
+        page = self._sales_page(["deal-1"], total_count=2)
+        adapter, _ = self._adapter_for_pages([page])
+        with self.assertRaisesRegex(RuntimeError, "totalCount"):
+            adapter.fetch_sales(statuses=None)
+
+    def test_total_count_must_not_change_between_pages(self):
+        pages = [
+            self._sales_page(["deal-1"], has_next=True, end_cursor="cursor-1", total_count=2),
+            self._sales_page(["deal-2"], total_count=3),
+        ]
+        adapter, _ = self._adapter_for_pages(pages)
+        with self.assertRaisesRegex(RuntimeError, "totalCount"):
+            adapter.fetch_sales(statuses=None)
+
+    def test_last_page_may_omit_end_cursor(self):
+        adapter, _ = self._adapter_for_pages([self._sales_page(["deal-1"], total_count=1)])
+        deals = adapter.fetch_sales(statuses=None)
+        self.assertEqual([deal["deal_id"] for deal in deals], ["deal-1"])
+
+    def test_identical_duplicate_deal_is_deduplicated(self):
+        node = self._deal_node("deal-1")
+        first = self._sales_page(["deal-1"], has_next=True, end_cursor="cursor-1", total_count=2)
+        second = self._sales_page(["deal-2"], total_count=2)
+        second["data"]["deals"]["edges"].insert(0, {"node": node})
+        adapter, _ = self._adapter_for_pages([first, second])
+        deals = adapter.fetch_sales(statuses=None)
+        self.assertEqual([deal["deal_id"] for deal in deals], ["deal-1", "deal-2"])
+
+    def test_conflicting_duplicate_deal_fails(self):
+        first = self._sales_page(["deal-1"], has_next=True, end_cursor="cursor-1")
+        second = self._sales_page(["deal-1"], total_count=1)
+        second["data"]["deals"]["edges"][0]["node"]["status"] = "SENT"
+        adapter, _ = self._adapter_for_pages([first, second])
+        with self.assertRaisesRegex(RuntimeError, "конфликтующие записи"):
+            adapter.fetch_sales(statuses=None)
 
     def test_update_deal_status_only_allows_sent_and_uses_update_deal_input(self):
         requests = []
