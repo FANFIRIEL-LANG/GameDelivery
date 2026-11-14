@@ -8,10 +8,12 @@ from pathlib import Path
 
 from core.database.db import Database
 from integrations.playerok.listing_config import PlayerokListingConfigService
+import app.playerok_browser as playerok_browser
+from PySide6.QtCore import Signal
 from app.playerok_browser import (
-    PlayerokBrowserController, PlayerokBrowserPanel, WEBENGINE_AVAILABLE,
+    PLAYEROK_ORIGIN, PlayerokBrowserController, PlayerokBrowserPanel, WEBENGINE_AVAILABLE,
 )
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 
 
@@ -74,6 +76,91 @@ class PlayerokListingConfigTests(unittest.TestCase):
             "https://playerok.com/deal/deal-123",
             "https://playerok.com/chats/chat-456",
         ])
+
+    def test_profile_routes_are_built_for_all_sales_statuses(self):
+        self.assertEqual(playerok_browser.playerok_profile_routes("seller"), {
+            "Мои объявления": "/profile/seller/products",
+            "Продажи: Оплаченные (PAID)": "/profile/seller/sales?status=paid",
+            "Продажи: Отправленные (SENT)": "/profile/seller/sales?status=sent",
+            "Продажи: Завершённые (CONFIRMED)": "/profile/seller/sales?status=confirmed",
+            "Продажи: Возврат средств": "/profile/seller/sales?status=rolled-back",
+        })
+
+    def test_profile_username_is_encoded_as_one_path_segment(self):
+        routes = playerok_browser.playerok_profile_routes("seller name/тест")
+        self.assertEqual(routes["Мои объявления"], "/profile/seller%20name%2F%D1%82%D0%B5%D1%81%D1%82/products")
+
+    def test_profile_routes_reject_missing_username_before_navigation(self):
+        opened = []
+        controller = PlayerokBrowserController(opened.append)
+        with self.assertRaisesRegex(ValueError, "username"):
+            controller.open_profile_route(None, "Мои объявления")
+        self.assertEqual(opened, [])
+
+    def test_profile_failure_or_missing_username_does_not_navigate(self):
+        class ProfileAdapter:
+            def __init__(self, profile=None, error=None):
+                self.profile = profile
+                self.error = error
+
+            def restore_session(self):
+                if self.error:
+                    raise RuntimeError(self.error)
+                return self.profile
+
+        for adapter in (
+            ProfileAdapter(error="profile unavailable"),
+            ProfileAdapter(profile={"connected": True, "username": ""}),
+            ProfileAdapter(profile={"connected": True, "username": "Аккаунт Playerok"}),
+        ):
+            with self.subTest(adapter=adapter):
+                parent = QWidget()
+                parent.playerok = adapter
+                panel = PlayerokBrowserPanel(database=self.db, parent=parent, enable_webengine=False)
+                panel._profile_route_buttons["Мои объявления"].click()
+                worker = panel._profile_lookup_thread
+                self.assertIsNotNone(worker)
+                self.assertTrue(worker.wait(3000))
+                self.qt_app.processEvents()
+                self.assertEqual(panel.address.text(), PLAYEROK_ORIGIN)
+                self.assertIn("username", panel.browser_status.text().lower())
+                panel.close()
+                parent.close()
+
+    def test_profile_button_uses_username_from_existing_adapter_profile(self):
+        class ProfileAdapter:
+            def restore_session(self):
+                return {"connected": True, "username": "seller"}
+
+        parent = QWidget()
+        parent.playerok = ProfileAdapter()
+        panel = PlayerokBrowserPanel(database=self.db, parent=parent, enable_webengine=False)
+        panel._profile_route_buttons["Продажи: Оплаченные (PAID)"].click()
+        worker = panel._profile_lookup_thread
+        self.assertIsNotNone(worker)
+        self.assertTrue(worker.wait(3000))
+        self.qt_app.processEvents()
+        self.assertEqual(
+            panel.address.text(),
+            PLAYEROK_ORIGIN + "/profile/seller/sales?status=paid",
+        )
+        panel.close()
+        parent.close()
+
+    def test_chat_quick_route_remains_available_without_profile(self):
+        self.assertEqual(playerok_browser.PLAYEROK_FIXED_ROUTES, {"Чаты": "/chats"})
+
+    def test_playerok_connection_change_invalidates_cached_username(self):
+        class ProfileParent(QWidget):
+            connection_status_changed = Signal(str)
+
+        parent = ProfileParent()
+        panel = PlayerokBrowserPanel(database=self.db, parent=parent, enable_webengine=False)
+        panel._seller_username = "old-seller"
+        parent.connection_status_changed.emit("Playerok: не подключён")
+        self.assertIsNone(panel._seller_username)
+        panel.close()
+        parent.close()
 
     def test_headless_panel_constructs_without_webengine(self):
         # CI may have WebEngine installed or omitted; both are valid.

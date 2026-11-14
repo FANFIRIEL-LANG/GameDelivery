@@ -4,9 +4,9 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, quote
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QThread, QUrl, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QPlainTextEdit, QSplitter, QMessageBox,
@@ -22,13 +22,45 @@ except Exception:  # CI/headless installs may not ship QtWebEngine.
 
 
 PLAYEROK_ORIGIN = "https://playerok.com"
-PLAYEROK_ROUTES = {
-    "Мои объявления": "/products",
-    "Продажи: Оплаченные (PAID)": "/sales?status=PAID",
-    "Продажи: Отправленные (SENT)": "/sales?status=SENT",
-    "Продажи: Завершённые (CONFIRMED)": "/sales?status=CONFIRMED",
-    "Чаты": "/chats",
+PLAYEROK_FIXED_ROUTES = {"Чаты": "/chats"}
+PLAYEROK_PROFILE_ROUTE_LABELS = (
+    "Мои объявления",
+    "Продажи: Оплаченные (PAID)",
+    "Продажи: Отправленные (SENT)",
+    "Продажи: Завершённые (CONFIRMED)",
+    "Продажи: Возврат средств",
+)
+
+
+def playerok_profile_routes(username: str) -> dict[str, str]:
+    if not isinstance(username, str) or not username.strip():
+        raise ValueError("username текущего профиля Playerok недоступен.")
+    seller = username.strip()
+    if seller in {".", ".."}:
+        raise ValueError("username текущего профиля Playerok некорректен.")
+    seller = quote(seller, safe="")
+    return {
+        "Мои объявления": f"/profile/{seller}/products",
+        "Продажи: Оплаченные (PAID)": f"/profile/{seller}/sales?status=paid",
+        "Продажи: Отправленные (SENT)": f"/profile/{seller}/sales?status=sent",
+        "Продажи: Завершённые (CONFIRMED)": f"/profile/{seller}/sales?status=confirmed",
+        "Продажи: Возврат средств": f"/profile/{seller}/sales?status=rolled-back",
 }
+
+
+class _PlayerokProfileLookup(QThread):
+    def __init__(self, adapter, parent=None):
+        super().__init__(parent)
+        self.adapter = adapter
+        self.profile = None
+        self.failed = False
+
+    def run(self) -> None:
+        try:
+            self.profile = self.adapter.restore_session()
+        except Exception:
+            # Keep exception text and any transport details out of the UI.
+            self.failed = True
 
 
 def playerok_resource_url(resource: str, identifier: str) -> str:
@@ -58,6 +90,14 @@ class PlayerokBrowserController:
         self._navigate(url)
         return url
 
+    def open_profile_route(self, username: str, route_label: str) -> str:
+        path = playerok_profile_routes(username).get(route_label)
+        if path is None:
+            raise ValueError("Неизвестный быстрый маршрут профиля Playerok.")
+        url = PLAYEROK_ORIGIN + path
+        self._navigate(url)
+        return url
+
 
 class PlayerokBrowserPanel(QWidget):
     listing_config_saved = Signal(object)
@@ -67,6 +107,13 @@ class PlayerokBrowserPanel(QWidget):
         self.database = database
         self.controller = PlayerokBrowserController(self.navigate)
         self._profile = None
+        self._seller_username: str | None = None
+        self._profile_lookup_thread: _PlayerokProfileLookup | None = None
+        self._pending_profile_route: str | None = None
+        self._profile_route_buttons: dict[str, QPushButton] = {}
+        connection_signal = getattr(parent, "connection_status_changed", None)
+        if connection_signal is not None and callable(getattr(connection_signal, "connect", None)):
+            connection_signal.connect(self._invalidate_seller_username)
         root = QVBoxLayout(self)
         nav = QHBoxLayout()
         self.address = QLineEdit(PLAYEROK_ORIGIN)
@@ -76,7 +123,14 @@ class PlayerokBrowserPanel(QWidget):
         nav.addWidget(self.go_button)
         root.addLayout(nav)
         quick = QHBoxLayout()
-        for label, path in PLAYEROK_ROUTES.items():
+        for label in PLAYEROK_PROFILE_ROUTE_LABELS:
+            button = QPushButton(label)
+            button.clicked.connect(
+                lambda checked=False, route_label=label: self._open_profile_route(route_label)
+            )
+            self._profile_route_buttons[label] = button
+            quick.addWidget(button)
+        for label, path in PLAYEROK_FIXED_ROUTES.items():
             button = QPushButton(label)
             button.clicked.connect(lambda checked=False, p=path: self.navigate(PLAYEROK_ORIGIN + p))
             quick.addWidget(button)
@@ -167,6 +221,61 @@ class PlayerokBrowserPanel(QWidget):
 
     def open_chat(self, chat_id: str) -> str:
         return self.controller.open_chat(chat_id)
+
+    def _open_profile_route(self, route_label: str) -> None:
+        if self._seller_username:
+            self.controller.open_profile_route(self._seller_username, route_label)
+            return
+        if self._profile_lookup_thread is not None:
+            return
+        adapter = getattr(self.parent(), "playerok", None)
+        if adapter is None or not callable(getattr(adapter, "restore_session", None)):
+            self._profile_route_lookup_failed()
+            return
+        self._pending_profile_route = route_label
+        self.browser_status.setText("Проверяю сохранённый профиль Playerok для быстрого перехода…")
+        for button in self._profile_route_buttons.values():
+            button.setEnabled(False)
+        worker = _PlayerokProfileLookup(adapter, self)
+        worker.finished.connect(lambda: self._profile_route_lookup_finished(worker))
+        self._profile_lookup_thread = worker
+        worker.start()
+
+    def _profile_route_lookup_finished(self, worker: _PlayerokProfileLookup) -> None:
+        if self._profile_lookup_thread is worker:
+            self._profile_lookup_thread = None
+        username = worker.profile.get("username") if isinstance(worker.profile, dict) else None
+        route_label = self._pending_profile_route
+        self._pending_profile_route = None
+        if (
+            not worker.failed
+            and isinstance(username, str)
+            and username.strip()
+            and username.strip() != "Аккаунт Playerok"
+            and route_label
+        ):
+            self._seller_username = username.strip()
+            try:
+                self.controller.open_profile_route(self._seller_username, route_label)
+            except ValueError:
+                self._seller_username = None
+                self._profile_route_lookup_failed()
+            else:
+                self.browser_status.setText("Профиль Playerok подтверждён; быстрый переход выполнен.")
+        else:
+            self._profile_route_lookup_failed()
+        for button in self._profile_route_buttons.values():
+            button.setEnabled(True)
+        worker.deleteLater()
+
+    def _profile_route_lookup_failed(self) -> None:
+        self.browser_status.setText(
+            "Не удалось получить username из профиля Playerok. Быстрая ссылка не открыта; "
+            "остальные функции браузера доступны."
+        )
+
+    def _invalidate_seller_username(self, *_args) -> None:
+        self._seller_username = None
 
     def _capture_current_listing(self):
         current = self.address.text().strip()
