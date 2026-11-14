@@ -29,6 +29,140 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 _TIMEOUT_SECONDS = 20
+_HTTP_ERROR_BODY_LIMIT = 64 * 1024
+_SAFE_HTTP_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,47}$")
+_SENSITIVE_CODE_MARKER = re.compile(
+    r"(?i)(?:TOKEN|PASSWORD|COOKIE|SECRET|AUTHORIZATION|BEARER|SESSION)"
+)
+_SAFE_OPERATION_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_SAFE_CONTENT_TYPE = re.compile(
+    r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$"
+)
+_REQUEST_ID_HEADERS = {
+    "x-request-id": "request_id",
+    "request-id": "request_id",
+    "x-correlation-id": "correlation_id",
+    "x-trace-id": "trace_id",
+    "trace-id": "trace_id",
+    "traceparent": "trace_id",
+    "cf-ray": "request_id",
+    "x-amzn-requestid": "request_id",
+}
+
+
+class PlayerokHTTPError(RuntimeError):
+    """HTTP failure with a strictly filtered, user-visible diagnostic summary."""
+
+    def __init__(self, status_code: int, diagnostics: dict[str, Any]):
+        self.status_code = status_code
+        self.diagnostics = dict(diagnostics)
+        details = []
+        for key in (
+            "operation",
+            "content_type",
+            "request_id",
+            "correlation_id",
+            "trace_id",
+            "error_code",
+        ):
+            value = self.diagnostics.get(key)
+            if value:
+                label = {
+                    "operation": "операция",
+                    "content_type": "Content-Type",
+                    "request_id": "request_id",
+                    "correlation_id": "correlation_id",
+                    "trace_id": "trace_id",
+                    "error_code": "код ошибки",
+                }[key]
+                details.append(f"{label}={value}")
+        suffix = "; ".join(details)
+        message = f"Playerok вернул HTTP {status_code}."
+        if suffix:
+            message += " Диагностика: " + suffix + "."
+        super().__init__(message)
+
+
+def _safe_error_code(value: Any) -> str | None:
+    if (
+        type(value) is str
+        and _SAFE_HTTP_ERROR_CODE.fullmatch(value)
+        and not _SENSITIVE_CODE_MARKER.search(value)
+    ):
+        return value
+    return None
+
+
+def _json_error_code(payload: Any, *, depth: int = 0) -> str | None:
+    if depth > 3:
+        return None
+    if isinstance(payload, dict):
+        for key in ("code", "errorCode", "error_code"):
+            code = _safe_error_code(payload.get(key))
+            if code:
+                return code
+        for key in ("error", "errors", "data", "extensions"):
+            code = _json_error_code(payload.get(key), depth=depth + 1)
+            if code:
+                return code
+    elif isinstance(payload, list):
+        for item in payload[:5]:
+            code = _json_error_code(item, depth=depth + 1)
+            if code:
+                return code
+    return None
+
+
+def _http_error_diagnostics(
+    exc: urllib.error.HTTPError, operation: str | None
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    if isinstance(operation, str) and _SAFE_OPERATION_NAME.fullmatch(operation):
+        diagnostics["operation"] = operation
+
+    headers = getattr(exc, "headers", None)
+    header_values: dict[str, str] = {}
+    if headers is not None and callable(getattr(headers, "items", None)):
+        for name, value in headers.items():
+            if isinstance(name, str) and isinstance(value, str):
+                header_values.setdefault(name.lower(), value.strip())
+
+    raw_content_type = (
+        header_values.get("content-type", "").split(";", 1)[0].strip()
+    )
+    if _SAFE_CONTENT_TYPE.fullmatch(raw_content_type):
+        diagnostics["content_type"] = raw_content_type.lower()
+
+    for header, key in _REQUEST_ID_HEADERS.items():
+        value = header_values.get(header, "")
+        if key not in diagnostics and _SAFE_REQUEST_ID.fullmatch(value):
+            diagnostics[key] = value
+
+    raw_body = b""
+    try:
+        raw_body = exc.read(_HTTP_ERROR_BODY_LIMIT)
+    except Exception:
+        pass
+    finally:
+        try:
+            exc.close()
+        except Exception:
+            pass
+    if isinstance(raw_body, bytes):
+        try:
+            diagnostics["error_code"] = _json_error_code(json.loads(raw_body))
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+            RecursionError,
+        ):
+            pass
+    if not diagnostics.get("error_code"):
+        diagnostics.pop("error_code", None)
+    return diagnostics
 
 
 def _unwrap_envelope(payload: Any) -> Any:
@@ -110,6 +244,7 @@ class PlayerokAdapter(MarketplaceAdapter):
         payload: dict[str, Any] | None = None,
         token: str | None = None,
         bearer: bool = False,
+        operation: str | None = None,
     ) -> tuple[Any, str | None]:
         if not self._request_url_is_allowed(url):
             raise ValueError("Разрешены только HTTPS-запросы к доменам Playerok.")
@@ -152,8 +287,9 @@ class PlayerokAdapter(MarketplaceAdapter):
                 raw = response.read()
                 cookie_token = _token_from_headers(response.headers)
         except urllib.error.HTTPError as exc:
-            # Do not include response bodies, request data, tokens, or cookies in errors.
-            raise RuntimeError(f"Playerok вернул HTTP {exc.code}.") from None
+            # Only allowlisted headers and a validated machine error code reach the UI.
+            diagnostics = _http_error_diagnostics(exc, operation)
+            raise PlayerokHTTPError(exc.code, diagnostics) from None
         except urllib.error.URLError:
             raise RuntimeError(
                 "Не удалось установить HTTPS-соединение с Playerok."
@@ -218,7 +354,12 @@ class PlayerokAdapter(MarketplaceAdapter):
         )
 
     def _profile(self, token: str, session_saved: bool) -> dict[str, Any]:
-        payload, _ = self._request(_BFF + "/viewer", token=token, bearer=True)
+        payload, _ = self._request(
+            _BFF + "/viewer",
+            token=token,
+            bearer=True,
+            operation="viewer",
+        )
         payload = self._raise_api_errors(_unwrap_envelope(payload))
         if not isinstance(payload, dict):
             raise RuntimeError("Playerok вернул профиль в неожиданном формате.")
@@ -279,6 +420,7 @@ class PlayerokAdapter(MarketplaceAdapter):
             _PUBLIC + "/auth/send-otp",
             method="POST",
             payload={"email": address},
+            operation="send-otp",
         )
         return {"sent": True, "email": address}
 
@@ -291,6 +433,7 @@ class PlayerokAdapter(MarketplaceAdapter):
             _PUBLIC + "/auth/confirm-otp",
             method="POST",
             payload={"email": address, "otpCode": otp},
+            operation="confirm-otp",
         )
         payload = self._raise_api_errors(_unwrap_envelope(payload))
         if not isinstance(payload, dict):
@@ -322,6 +465,7 @@ class PlayerokAdapter(MarketplaceAdapter):
             _PUBLIC + "/auth/confirm-second-factor",
             method="POST",
             payload={"token": session_token, "totpCode": otp},
+            operation="confirm-second-factor",
         )
         payload = self._raise_api_errors(_unwrap_envelope(payload))
         token = self._session_token_from_payload(payload, cookie_token)
@@ -352,6 +496,7 @@ class PlayerokAdapter(MarketplaceAdapter):
                     method="POST",
                     token=token,
                     bearer=True,
+                    operation="logout",
                 )
             except Exception:
                 remote_logout_failed = True
@@ -509,6 +654,7 @@ class PlayerokAdapter(MarketplaceAdapter):
                         "pagination": pagination,
                     },
                 },
+                operation="Deals",
             )
             payload = self._raise_api_errors(payload)
             data = payload.get("data") if isinstance(payload, dict) else None
@@ -590,6 +736,7 @@ class PlayerokAdapter(MarketplaceAdapter):
                 "query": query,
                 "variables": {"id": external_id},
             },
+            operation="Deal",
         )
         payload = self._raise_api_errors(payload)
         data = payload.get("data") if isinstance(payload, dict) else None
@@ -635,6 +782,7 @@ class PlayerokAdapter(MarketplaceAdapter):
                 "query": mutation,
                 "variables": {"input": {"id": external_id, "status": "SENT"}},
             },
+            operation="UpdateDeal",
         )
         payload = self._raise_api_errors(payload)
         data = payload.get("data") if isinstance(payload, dict) else None
