@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import weakref
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, parse_qs, quote
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QPlainTextEdit, QSplitter, QMessageBox,
 )
+from integrations.playerok.browser_sales import BrowserSalesReader
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -98,6 +100,7 @@ class PlayerokBrowserPanel(QWidget):
         self._profile = None
         self._clear_pending = False
         self._page_storage_clear_ok = False
+        self._page_ready = False
         self._profile_route_buttons: dict[str, QPushButton] = {}
         root = QVBoxLayout(self)
         nav = QHBoxLayout()
@@ -230,10 +233,43 @@ class PlayerokBrowserPanel(QWidget):
         self.browser_status.setText("Username профиля не получен из браузерной страницы. Откройте нужный раздел через сайт.")
 
     def _load_finished(self, ok: bool) -> None:
+        self._page_ready = bool(ok)
         self.browser_status.setText(
             "Браузер открыт; вход Playerok не подтверждён."
             if ok else "Не удалось загрузить страницу Playerok."
         )
+
+    def read_sales(self, finished, *, on_request_started=None) -> BrowserSalesReader:
+        if self.web is None or not self._page_ready or self._clear_pending:
+            raise RuntimeError("Сначала дождитесь загрузки сайта Playerok во встроенном браузере.")
+        page = self.web.page()
+        current_url = urlsplit(page.url().toString())
+        if current_url.scheme != "https" or current_url.hostname not in {"playerok.com", "www.playerok.com"}:
+            raise RuntimeError("Откройте Playerok во встроенном браузере перед синхронизацией продаж.")
+        reader_ref = None
+
+        def page_destroyed(*_args):
+            current_reader = reader_ref() if reader_ref is not None else None
+            if current_reader is not None:
+                current_reader.cancel()
+
+        def reader_finished(snapshot, error):
+            try:
+                page.destroyed.disconnect(page_destroyed)
+            except (RuntimeError, TypeError):
+                pass
+            finished(snapshot, error)
+
+        reader = BrowserSalesReader(
+            page.runJavaScript,
+            reader_finished,
+            schedule=lambda callback: QTimer.singleShot(50, callback),
+            on_request_started=on_request_started,
+        )
+        reader_ref = weakref.ref(reader)
+        page.destroyed.connect(page_destroyed)
+        reader.start()
+        return reader
 
     def clear_browser_session(self) -> bool:
         if self._profile is None:

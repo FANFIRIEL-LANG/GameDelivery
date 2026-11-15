@@ -227,6 +227,45 @@ class PlayerokDealSyncTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_status_outbox").fetchone()[0], 0)
         self.assertEqual(adapter.mutation_calls, [])
 
+    def test_browser_snapshot_baseline_is_historical_and_does_not_create_orders(self):
+        self.configure_listing("listing-old")
+        result = self.syncer.sync_browser_snapshot(
+            "browser-seller", [deal("browser-old", "listing-old", "PAID", "chat-old")]
+        )
+        self.assertTrue(result["baseline"])
+        self.assertEqual(result["new_deals"], 0)
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT external_deal_id,is_historical,playerok_account_id FROM gd_deals"
+            ).fetchone()
+            self.assertEqual(tuple(row), ("browser-old", 1, "browser-seller"))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_status_outbox").fetchone()[0], 0)
+
+    def test_browser_baseline_save_failure_rolls_back_deals_and_baseline_state(self):
+        good = deal("browser-good", "listing-good")
+        invalid = deal("", "listing-invalid")
+        with self.assertRaisesRegex(ValueError, "deal_id"):
+            self.syncer.sync_browser_snapshot("browser-seller", [good, invalid])
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_sync_state").fetchone()[0], 0)
+
+    def test_browser_snapshot_incremental_sync_is_idempotent(self):
+        self.configure_listing()
+        self.syncer.sync_browser_snapshot("browser-seller", [deal("browser-old", "listing-live", "SENT")])
+        snapshot = [
+            deal("browser-old", "listing-live", "SENT"),
+            deal("browser-new", "listing-live", "PAID", "chat-new"),
+        ]
+        first = self.syncer.sync_browser_snapshot("browser-seller", snapshot)
+        second = self.syncer.sync_browser_snapshot("browser-seller", snapshot)
+        self.assertEqual(first["new_deals"], 1)
+        self.assertEqual(second["new_deals"], 0)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 1)
+
 
     def test_new_paid_deal_waiting_for_listing_setup_uses_new_config_when_available(self):
         adapter = FakePlayerok(

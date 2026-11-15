@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from app.playerok_browser import PlayerokBrowserPanel
+from integrations.playerok.sync import PlayerokDealSyncService
 
 
 class MarketplacePanel(QWidget):
@@ -17,7 +18,7 @@ class MarketplacePanel(QWidget):
     def __init__(
         self,
         parent=None,
-        *, database=None,
+        *, database=None, sync_service: PlayerokDealSyncService | None = None,
     ):
         super().__init__(parent)
         root = QVBoxLayout(self)
@@ -33,6 +34,12 @@ class MarketplacePanel(QWidget):
         self.status_label.setWordWrap(True)
         self.status_label.setObjectName("muted")
         root.addWidget(self.status_label)
+        self.sync_service = sync_service
+        self._sales_reader = None
+        self._sales_sync_timeout = QTimer(self)
+        self._sales_sync_timeout.setSingleShot(True)
+        self._sales_sync_timeout.setInterval(60_000)
+        self._sales_sync_timeout.timeout.connect(self._sales_read_timed_out)
 
         self.browser_panel = PlayerokBrowserPanel(database=database, parent=self)
         root.addWidget(self.browser_panel, 5)
@@ -53,12 +60,63 @@ class MarketplacePanel(QWidget):
         root.addWidget(self.orders_table, 1)
 
         actions = QHBoxLayout()
+        self.sync_sales_button = QPushButton("Синхронизировать продажи из браузера")
+        self.sync_sales_button.clicked.connect(self._sync_sales)
+        actions.addWidget(self.sync_sales_button)
         self.import_order_button = QPushButton("Добавить выбранный заказ в GameDelivery")
+        self.import_order_button.setEnabled(False)
         self.import_order_button.clicked.connect(self._import_selected_order)
         actions.addWidget(self.import_order_button)
         actions.addStretch()
         root.addLayout(actions)
         self._update_button_state()
+
+    def _sync_sales(self) -> None:
+        if self._sales_reader is not None:
+            return
+        if self.sync_service is None:
+            self.status_label.setText("Служба сохранения сделок не настроена.")
+            return
+        self.sync_sales_button.setEnabled(False)
+        self.status_label.setText("Читаю продажи Playerok через сессию встроенного браузера…")
+        try:
+            self._sales_reader = self.browser_panel.read_sales(
+                self._sales_read_completed,
+                on_request_started=self._sales_sync_timeout.start,
+            )
+        except Exception as exc:
+            self._sales_reader = None
+            self.sync_sales_button.setEnabled(True)
+            self.status_label.setText(str(exc))
+
+    def _sales_read_timed_out(self) -> None:
+        if self._sales_reader is not None:
+            self._sales_reader.cancel("Истекло время ожидания ответа Playerok.")
+
+    def _sales_read_completed(self, snapshot, error: str | None) -> None:
+        self._sales_sync_timeout.stop()
+        self._sales_reader = None
+        self.sync_sales_button.setEnabled(True)
+        if error or not isinstance(snapshot, dict):
+            self.status_label.setText(error or "Не удалось получить полный снимок продаж.")
+            return
+        try:
+            result = self.sync_service.sync_browser_snapshot(
+                snapshot["account_user_id"], snapshot["deals"]
+            )
+        except Exception as exc:
+            self.status_label.setText(f"Продажи не сохранены: {type(exc).__name__}.")
+            return
+        deals = result["deals"]
+        self._show_orders(deals)
+        if result["baseline"]:
+            self.status_label.setText(
+                f"Baseline завершён: {result['historical_deals']} старых сделок сохранено как исторические."
+            )
+        else:
+            self.status_label.setText(
+                f"Продажи синхронизированы: {len(deals)}. Новых сделок: {result['new_deals']}."
+            )
 
     def _update_button_state(self) -> None:
         row = self.orders_table.currentRow()

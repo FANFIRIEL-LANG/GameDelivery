@@ -15,6 +15,8 @@ from app.playerok_browser import (
 )
 from app.platforms_panel import MarketplacePanel
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
+from PySide6.QtCore import QUrl
+from integrations.playerok.sync import PlayerokDealSyncService
 
 
 
@@ -153,6 +155,81 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertFalse(hasattr(panel, "_fetch_orders"))
         self.assertFalse(hasattr(panel, "playerok"))
         self.assertFalse(panel.import_order_button.isEnabled())
+        panel.close()
+
+    def test_failed_browser_read_does_not_call_sync_service_or_commit_baseline(self):
+        service = PlayerokDealSyncService(self.db)
+        panel = MarketplacePanel(database=self.db, sync_service=service)
+        panel._sales_read_completed(None, "Неполная загрузка; снимок не сохранён.")
+        self.assertIn("снимок не сохранён", panel.status_label.text())
+        with self.db.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_sync_state").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
+        panel.close()
+
+    def test_page_destruction_cancels_browser_reader_once(self):
+        class SignalStub:
+            def __init__(self):
+                self.callback = None
+
+            def connect(self, callback):
+                self.callback = callback
+
+            def disconnect(self, callback):
+                if self.callback == callback:
+                    self.callback = None
+
+            def emit(self):
+                self.callback(object())
+
+        class PageStub:
+            def __init__(self):
+                self.destroyed = SignalStub()
+                self.requests = []
+
+            def url(self):
+                return QUrl("https://playerok.com/sales")
+
+            def runJavaScript(self, script, callback):
+                self.requests.append((script, callback))
+
+        class WebStub:
+            def __init__(self, page):
+                self._page = page
+
+            def page(self):
+                return self._page
+
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        page = PageStub()
+        panel.web = WebStub(page)
+        panel._page_ready = True
+        completed = []
+        reader = panel.read_sales(lambda result, error: completed.append((result, error)))
+        page.destroyed.emit()
+        page.requests[0][1]("__late_start_callback")
+        self.assertFalse(reader.active)
+        self.assertEqual(len(completed), 1)
+        self.assertIsNone(completed[0][0])
+        self.assertIn("закрыта", completed[0][1])
+        self.assertIsNone(page.destroyed.callback)
+        panel.close()
+
+    def test_sales_read_rejects_non_playerok_page(self):
+        class PageStub:
+            def url(self):
+                return QUrl("https://example.org/")
+
+        class WebStub:
+            def page(self):
+                return PageStub()
+
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        panel.web = WebStub()
+        panel._page_ready = True
+        with self.assertRaisesRegex(RuntimeError, "Откройте Playerok"):
+            panel.read_sales(lambda _snapshot, _error: None)
         panel.close()
 
     def test_browser_clear_waits_for_async_steps_and_reports_cookie_limit(self):

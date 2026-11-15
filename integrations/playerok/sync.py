@@ -341,3 +341,41 @@ class PlayerokDealSyncService:
             "new_deals": new_count, "historical_deals": 0,
             "status_updates": outbox_updates,
         }
+
+    def sync_browser_snapshot(
+        self, account_user_id: str, deals: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Persist a fully fetched read-only browser snapshot without API follow-ups."""
+        account_id = str(account_user_id or "").strip()
+        if not account_id:
+            raise ValueError("Browser snapshot is missing the Playerok account ID.")
+        if not isinstance(deals, list) or any(not isinstance(deal, dict) for deal in deals):
+            raise ValueError("Browser snapshot has an invalid deal list.")
+        with self.database.connect() as db:
+            state = db.execute(
+                "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id=?",
+                (account_id,),
+            ).fetchone()
+        if state is None or state["baseline_completed"] != 1:
+            with self.database.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                for deal in deals:
+                    self._upsert_deal(db, deal, account_id, historical=True)
+                db.execute("""
+                    INSERT INTO playerok_sync_state
+                        (account_user_id,baseline_completed,baseline_completed_at,last_sync_at)
+                    VALUES(?,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                    ON CONFLICT(account_user_id) DO UPDATE SET
+                        baseline_completed=1,
+                        baseline_completed_at=COALESCE(playerok_sync_state.baseline_completed_at,excluded.baseline_completed_at),
+                        last_sync_at=excluded.last_sync_at
+                """, (account_id,))
+            return {
+                "baseline": True, "baseline_deals": len(deals), "deals": deals,
+                "new_deals": 0, "historical_deals": len(deals), "status_updates": 0,
+            }
+        new_count = self._upsert_incremental(deals, account_id)
+        return {
+            "baseline": False, "baseline_deals": 0, "deals": deals,
+            "new_deals": new_count, "historical_deals": 0, "status_updates": 0,
+        }

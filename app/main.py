@@ -24,6 +24,7 @@ from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
 from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
 from integrations.openskin.client import configure_openskin_diagnostics
+from integrations.playerok.sync import PlayerokDealSyncService
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from core.database.connection import connect_sqlite
 from core.database.db import Database
@@ -73,6 +74,7 @@ class MainWindow(QMainWindow):
             self._trade_credentials = SteamTradeCredentialStore()
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
+            self.playerok_sync = PlayerokDealSyncService(Database(self._database_path))
             self.delivery_pipeline = DeliveryOrderPipeline(Database(self._database_path))
             logger.info("Local delivery storage initialized")
         except (OSError, sqlite3.Error, ValueError) as exc:
@@ -119,7 +121,9 @@ class MainWindow(QMainWindow):
         if not os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip():
             self.bot_selection_model.set_accounts(configured_bot_names())
         self.tabs.addTab(self._orders_tab(), "Заказы")
-        self.marketplace_panel = MarketplacePanel(database=Database(self._database_path))
+        self.marketplace_panel = MarketplacePanel(
+            database=Database(self._database_path), sync_service=self.playerok_sync
+        )
         self.marketplace_panel.order_import_requested.connect(self._import_marketplace_order)
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
