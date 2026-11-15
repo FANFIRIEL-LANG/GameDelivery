@@ -3,17 +3,18 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 
 from core.database.db import Database
 from integrations.playerok.listing_config import PlayerokListingConfigService
 import app.playerok_browser as playerok_browser
-from PySide6.QtCore import Signal
 from app.playerok_browser import (
     PLAYEROK_ORIGIN, PlayerokBrowserController, PlayerokBrowserPanel, WEBENGINE_AVAILABLE,
 )
-from PySide6.QtWidgets import QApplication, QWidget
+from app.platforms_panel import MarketplacePanel
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 
 
@@ -77,6 +78,22 @@ class PlayerokListingConfigTests(unittest.TestCase):
             "https://playerok.com/chats/chat-456",
         ])
 
+    def test_browser_navigation_keeps_exact_deal_chat_ids_and_url_allowlist(self):
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        self.assertEqual(panel.open_deal("deal-123"), "https://playerok.com/deal/deal-123")
+        self.assertEqual(panel.open_chat("chat-456"), "https://playerok.com/chats/chat-456")
+        self.assertEqual(panel.address.text(), "https://playerok.com/chats/chat-456")
+        for url in ("http://playerok.com/", "https://evil.example/"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                panel.navigate(url)
+        panel.close()
+
+    def test_persistent_profile_path_is_user_local_and_outside_repository(self):
+        profile_root = playerok_browser.playerok_profile_root().resolve()
+        repository = Path(__file__).resolve().parents[1]
+        self.assertEqual(profile_root.parts[-2:], (".gamedelivery", "playerok-web-profile"))
+        self.assertFalse(profile_root.is_relative_to(repository))
+
     def test_profile_routes_are_built_for_all_sales_statuses(self):
         self.assertEqual(playerok_browser.playerok_profile_routes("seller"), {
             "Мои объявления": "/profile/seller/products",
@@ -97,75 +114,133 @@ class PlayerokListingConfigTests(unittest.TestCase):
             controller.open_profile_route(None, "Мои объявления")
         self.assertEqual(opened, [])
 
-    def test_profile_failure_or_missing_username_does_not_navigate(self):
-        class ProfileAdapter:
-            def __init__(self, profile=None, error=None):
-                self.profile = profile
-                self.error = error
-
+    def test_quick_profile_route_does_not_guess_username_or_call_adapter(self):
+        class Adapter:
             def restore_session(self):
-                if self.error:
-                    raise RuntimeError(self.error)
-                return self.profile
-
-        for adapter in (
-            ProfileAdapter(error="profile unavailable"),
-            ProfileAdapter(profile={"connected": True, "username": ""}),
-            ProfileAdapter(profile={"connected": True, "username": "Аккаунт Playerok"}),
-        ):
-            with self.subTest(adapter=adapter):
-                parent = QWidget()
-                parent.playerok = adapter
-                panel = PlayerokBrowserPanel(database=self.db, parent=parent, enable_webengine=False)
-                panel._profile_route_buttons["Мои объявления"].click()
-                worker = panel._profile_lookup_thread
-                self.assertIsNotNone(worker)
-                self.assertTrue(worker.wait(3000))
-                self.qt_app.processEvents()
-                self.assertEqual(panel.address.text(), PLAYEROK_ORIGIN)
-                self.assertIn("username", panel.browser_status.text().lower())
-                panel.close()
-                parent.close()
-
-    def test_profile_button_uses_username_from_existing_adapter_profile(self):
-        class ProfileAdapter:
-            def restore_session(self):
-                return {"connected": True, "username": "seller"}
+                raise AssertionError("adapter session must not be accessed")
 
         parent = QWidget()
-        parent.playerok = ProfileAdapter()
+        parent.playerok = Adapter()
         panel = PlayerokBrowserPanel(database=self.db, parent=parent, enable_webengine=False)
-        panel._profile_route_buttons["Продажи: Оплаченные (PAID)"].click()
-        worker = panel._profile_lookup_thread
-        self.assertIsNotNone(worker)
-        self.assertTrue(worker.wait(3000))
-        self.qt_app.processEvents()
-        self.assertEqual(
-            panel.address.text(),
-            PLAYEROK_ORIGIN + "/profile/seller/sales?status=paid",
-        )
+        panel._profile_route_buttons["Мои объявления"].click()
+        self.assertEqual(panel.address.text(), PLAYEROK_ORIGIN)
+        self.assertIn("username", panel.browser_status.text().lower())
         panel.close()
         parent.close()
 
     def test_chat_quick_route_remains_available_without_profile(self):
         self.assertEqual(playerok_browser.PLAYEROK_FIXED_ROUTES, {"Чаты": "/chats"})
 
-    def test_playerok_connection_change_invalidates_cached_username(self):
-        class ProfileParent(QWidget):
-            connection_status_changed = Signal(str)
-
-        parent = ProfileParent()
-        panel = PlayerokBrowserPanel(database=self.db, parent=parent, enable_webengine=False)
-        panel._seller_username = "old-seller"
-        parent.connection_status_changed.emit("Playerok: не подключён")
-        self.assertIsNone(panel._seller_username)
-        panel.close()
-        parent.close()
-
     def test_headless_panel_constructs_without_webengine(self):
         # CI may have WebEngine installed or omitted; both are valid.
         self.assertIsInstance(WEBENGINE_AVAILABLE, bool)
         panel = PlayerokBrowserPanel(database=self.db)
         self.assertIsNone(panel.web)
+        self.assertEqual(panel.address.text(), PLAYEROK_ORIGIN)
         self.assertIn("headless", panel.browser_status.text())
+        panel.close()
+
+    def test_marketplace_panel_has_browser_status_and_no_adapter_login_or_sync(self):
+        panel = MarketplacePanel(database=self.db)
+        visible_text = " ".join(widget.text() for widget in panel.findChildren(QLabel))
+        for legacy_label in ("Получить код", "Подтвердить код", "Подтвердить 2FA", "E-mail аккаунта"):
+            self.assertNotIn(legacy_label, visible_text)
+        self.assertNotIn("не подключён", visible_text.lower())
+        self.assertIn("не подтверждён", panel.status_label.text().lower())
+        self.assertIn("следующем этапе", panel.status_label.text().lower())
+        self.assertFalse(hasattr(panel, "_sync_timer"))
+        self.assertFalse(hasattr(panel, "_pending_initial_sync"))
+        self.assertFalse(hasattr(panel, "_fetch_orders"))
+        self.assertFalse(hasattr(panel, "playerok"))
+        self.assertFalse(panel.import_order_button.isEnabled())
+        panel.close()
+
+    def test_browser_clear_waits_for_async_steps_and_reports_cookie_limit(self):
+        class SignalStub:
+            def __init__(self):
+                self.callback = None
+
+            def connect(self, callback):
+                self.callback = callback
+
+            def disconnect(self, callback):
+                self.callback = None
+
+            def emit(self):
+                self.callback()
+
+        class PageStub:
+            def runJavaScript(self, script, callback):
+                self.script = script
+                self.callback = callback
+
+            def deleteLater(self):
+                pass
+
+        class ProfileStub:
+            def __init__(self):
+                self.clearHttpCacheCompleted = SignalStub()
+                self.cookie_requested = False
+                self.cache_requested = False
+
+            def cookieStore(self):
+                return self
+
+            def deleteAllCookies(self):
+                self.cookie_requested = True
+
+            def clearHttpCache(self):
+                self.cache_requested = True
+
+        class WebStub:
+            def __init__(self):
+                self.current_page = PageStub()
+
+            def page(self):
+                return self.current_page
+
+            def setPage(self, page):
+                self.current_page = page
+
+            def setUrl(self, url):
+                self.url = url.toString()
+
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        profile, web = ProfileStub(), WebStub()
+        panel._profile, panel.web = profile, web
+        with patch.object(playerok_browser.QMessageBox, "question", return_value=playerok_browser.QMessageBox.StandardButton.No):
+            self.assertFalse(panel.clear_browser_session())
+        self.assertFalse(profile.cookie_requested)
+
+        with patch.object(playerok_browser.QMessageBox, "question", return_value=playerok_browser.QMessageBox.StandardButton.Yes), \
+             patch.object(playerok_browser, "QWebEnginePage", side_effect=lambda profile, parent: PageStub()):
+            self.assertTrue(panel.clear_browser_session())
+            self.assertIn("Очищаю", panel.browser_status.text())
+            web.page().callback(True)
+            self.assertTrue(profile.cookie_requested)
+            self.assertTrue(profile.cache_requested)
+            self.assertIn("Очищаю", panel.browser_status.text())
+            profile.clearHttpCacheCompleted.emit()
+
+        self.assertIn("не подтверждён", panel.browser_status.text().lower())
+        self.assertIsNot(web.page(), None)
+        self.assertEqual(web.url, "about:blank")
+        self.assertEqual(panel.address.text(), "")
+        panel.close()
+
+    def test_import_keeps_original_order_payload_without_adapter_session(self):
+        panel = MarketplacePanel(database=self.db)
+        order = {
+            "order_id": "order-1", "deal_id": "deal-1", "chat_id": "chat-1",
+            "listing_id": "listing-1", "title": "Item", "buyer": "buyer",
+            "status": "PAID", "amount": "10", "created_at": "now",
+        }
+        panel._show_orders([order])
+        received = []
+        panel.order_import_requested.connect(received.append)
+        panel.orders_table.selectRow(0)
+        self.assertTrue(panel.import_order_button.isEnabled())
+        panel._import_selected_order()
+        self.assertEqual(received, [order])
+        self.assertIsNot(received[0], order)
         panel.close()

@@ -1,132 +1,43 @@
-"""Playerok connection and order-import panel.
-
-Network calls are kept off the Qt UI thread. The panel communicates through
-the generic marketplace adapter contract so other marketplaces can be added.
-"""
+"""Playerok browser and order-import panel."""
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
-from PySide6.QtCore import QThread, Signal, Qt, QTimer
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QMessageBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTableWidget, QTableWidgetItem, QHeaderView,
 )
-from integrations.marketplaces import MarketplaceRegistry
-from integrations.playerok.client import PlayerokAdapter
 from app.playerok_browser import PlayerokBrowserPanel
 
 
-class _MarketplaceTask(QThread):
-    completed = Signal(str, bool, object)
-
-    def __init__(self, action: str, operation: Callable[[], Any], parent=None):
-        super().__init__(parent)
-        self.action = action
-        self.operation = operation
-
-    def run(self) -> None:
-        try:
-            self.completed.emit(self.action, True, self.operation())
-        except Exception as exc:
-            self.completed.emit(self.action, False, str(exc) or exc.__class__.__name__)
-
-
 class MarketplacePanel(QWidget):
-    connection_status_changed = Signal(str)
     order_import_requested = Signal(object)
 
-    def __init__(self, parent=None, *, sync_operation: Callable[[PlayerokAdapter], dict[str, Any]] | None = None, database=None):
+    def __init__(
+        self,
+        parent=None,
+        *, database=None,
+    ):
         super().__init__(parent)
-        self.registry = MarketplaceRegistry()
-        self.registry.register(PlayerokAdapter())
-        self.playerok = self.registry.get("playerok")
-        self.sync_operation = sync_operation
-        self._pending_initial_sync = False
-        self._sync_timer = QTimer(self)
-        self._sync_timer.setInterval(30_000)
-        self._sync_timer.timeout.connect(self._fetch_orders)
-        self._worker: _MarketplaceTask | None = None
-        self._connected = False
-
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)
+        root.setSpacing(10)
 
-        heading = QLabel("Подключение торговой площадки")
+        heading = QLabel("Playerok")
         heading.setStyleSheet("font-size: 20px; font-weight: 700;")
-        description = QLabel(
-            "Вход в Playerok по коду из e-mail. Сессионный токен хранится в системном "
-            "хранилище учётных данных, не в базе заказов. Клиент Playerok сторонний и "
-            "неофициальный; после авторизации сначала только читаются активные сделки."
-        )
-        description.setWordWrap(True)
-        description.setObjectName("muted")
         root.addWidget(heading)
-        root.addWidget(description)
-
-        connection_card = QFrame()
-        connection_card.setObjectName("card")
-        form = QVBoxLayout(connection_card)
-        form.setSpacing(8)
-        self.profile_label = QLabel("Аккаунт не подключён")
-        self.profile_label.setStyleSheet("font-weight: 600;")
-        form.addWidget(self.profile_label)
-
-        email_row = QHBoxLayout()
-        self.email_input = QLineEdit()
-        self.email_input.setPlaceholderText("E-mail аккаунта Playerok")
-        self.send_code_button = QPushButton("Получить код")
-        self.send_code_button.clicked.connect(self._request_code)
-        email_row.addWidget(self.email_input, 1)
-        email_row.addWidget(self.send_code_button)
-        form.addLayout(email_row)
-
-        code_row = QHBoxLayout()
-        self.email_code_input = QLineEdit()
-        self.email_code_input.setPlaceholderText("Код из письма")
-        self.email_code_input.setMaxLength(32)
-        self.confirm_code_button = QPushButton("Подтвердить код")
-        self.confirm_code_button.clicked.connect(self._confirm_email_code)
-        code_row.addWidget(self.email_code_input, 1)
-        code_row.addWidget(self.confirm_code_button)
-        form.addLayout(code_row)
-
-        two_factor_row = QHBoxLayout()
-        self.two_factor_input = QLineEdit()
-        self.two_factor_input.setPlaceholderText("Код 2FA, если запрошен")
-        self.two_factor_input.setMaxLength(32)
-        self.two_factor_button = QPushButton("Подтвердить 2FA")
-        self.two_factor_button.clicked.connect(self._confirm_second_factor)
-        two_factor_row.addWidget(self.two_factor_input, 1)
-        two_factor_row.addWidget(self.two_factor_button)
-        form.addLayout(two_factor_row)
-
-        session_actions = QHBoxLayout()
-        self.restore_button = QPushButton("Проверить сохранённый вход")
-        self.restore_button.clicked.connect(self._restore_session)
-        self.disconnect_button = QPushButton("Выйти из Playerok")
-        self.disconnect_button.clicked.connect(self._disconnect)
-        session_actions.addWidget(self.restore_button)
-        session_actions.addWidget(self.disconnect_button)
-        session_actions.addStretch()
-        form.addLayout(session_actions)
-
-        order_actions = QHBoxLayout()
-        self.fetch_orders_button = QPushButton("Синхронизировать сделки")
-        self.fetch_orders_button.clicked.connect(self._fetch_orders)
-        self.import_order_button = QPushButton("Добавить выбранный заказ в GameDelivery")
-        self.import_order_button.clicked.connect(self._import_selected_order)
-        order_actions.addWidget(self.fetch_orders_button)
-        order_actions.addWidget(self.import_order_button)
-        order_actions.addStretch()
-        form.addLayout(order_actions)
-        root.addWidget(connection_card)
-
-        self.status_label = QLabel("Готово к подключению.")
+        self.status_label = QLabel(
+            "Вход Playerok через браузер не подтверждён. Синхронизация через браузер будет реализована на следующем этапе."
+        )
         self.status_label.setWordWrap(True)
+        self.status_label.setObjectName("muted")
         root.addWidget(self.status_label)
 
+        self.browser_panel = PlayerokBrowserPanel(database=database, parent=self)
+        root.addWidget(self.browser_panel, 5)
+
+        root.addWidget(QLabel("Заказы Playerok"))
         self.orders_table = QTableWidget(0, 8)
         self.orders_table.setHorizontalHeaderLabels([
             "Deal ID", "Chat ID", "Listing ID", "Товар", "Покупатель", "Статус", "Сумма", "Создано"
@@ -138,124 +49,23 @@ class MarketplacePanel(QWidget):
         self.orders_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.orders_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.orders_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
-        root.addWidget(QLabel("Сделки Playerok (полная синхронизация):"))
+        self.orders_table.cellClicked.connect(self._open_selected_playerok_resource)
         root.addWidget(self.orders_table, 1)
 
-        self.browser_panel = PlayerokBrowserPanel(database=database, parent=self)
-        root.addWidget(self.browser_panel, 2)
-        self.orders_table.cellClicked.connect(self._open_selected_playerok_resource)
-
-        if self.playerok.has_saved_session():
-            self.profile_label.setText("Найдена сохранённая сессия — выполняю проверку")
-            self._start_task(
-                "restore",
-                self.playerok.restore_session,
-                "Проверяю сохранённую сессию Playerok перед baseline-синхронизацией…",
-            )
+        actions = QHBoxLayout()
+        self.import_order_button = QPushButton("Добавить выбранный заказ в GameDelivery")
+        self.import_order_button.clicked.connect(self._import_selected_order)
+        actions.addWidget(self.import_order_button)
+        actions.addStretch()
+        root.addLayout(actions)
         self._update_button_state()
-
-    def _set_busy(self, busy: bool) -> None:
-        for widget in (
-            self.send_code_button, self.confirm_code_button, self.two_factor_button,
-            self.restore_button, self.disconnect_button, self.fetch_orders_button,
-            self.import_order_button,
-        ):
-            widget.setEnabled(not busy)
-        if not busy:
-            self._update_button_state()
 
     def _update_button_state(self) -> None:
-        running = self._worker is not None and self._worker.isRunning()
-        for widget in (
-            self.send_code_button, self.confirm_code_button, self.two_factor_button,
-            self.restore_button, self.disconnect_button,
-        ):
-            widget.setEnabled(not running)
-        self.fetch_orders_button.setEnabled(not running and self._connected)
+        row = self.orders_table.currentRow()
+        item = self.orders_table.item(row, 0) if row >= 0 else None
+        order = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         self.import_order_button.setEnabled(
-            not running and self._connected and self.orders_table.currentRow() >= 0
-        )
-        self.two_factor_button.setEnabled(
-            not running and bool(getattr(self.playerok, "_pending_second_factor_session", None))
-        )
-        self.disconnect_button.setEnabled(not running and self._connected)
-
-    def _start_task(self, action: str, operation: Callable[[], Any], message: str) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            return
-        self.status_label.setText(message)
-        self._set_busy(True)
-        worker = _MarketplaceTask(action, operation, self)
-        worker.completed.connect(self._task_completed)
-        worker.finished.connect(self._worker_finished)
-        self._worker = worker
-        worker.start()
-
-    def _worker_finished(self) -> None:
-        worker = self.sender()
-        self._worker = None
-        if worker is not None:
-            worker.deleteLater()
-        self._update_button_state()
-        if self._pending_initial_sync and self._connected:
-            self._pending_initial_sync = False
-            self._fetch_orders()
-
-    def _request_code(self) -> None:
-        email = self.email_input.text().strip()
-        self._start_task(
-            "request_code",
-            lambda: self.playerok.request_login_code(email),
-            "Запрашиваю код Playerok…",
-        )
-
-    def _confirm_email_code(self) -> None:
-        email = self.email_input.text().strip()
-        code = self.email_code_input.text().strip()
-        self._start_task(
-            "confirm_code",
-            lambda: self.playerok.confirm_login_code(email, code),
-            "Проверяю код…",
-        )
-
-    def _confirm_second_factor(self) -> None:
-        code = self.two_factor_input.text().strip()
-        self._start_task(
-            "confirm_2fa",
-            lambda: self.playerok.confirm_second_factor(code),
-            "Проверяю второй фактор…",
-        )
-
-    def _restore_session(self) -> None:
-        self._start_task(
-            "restore",
-            self.playerok.restore_session,
-            "Проверяю сохранённую сессию Playerok…",
-        )
-
-    def _disconnect(self) -> None:
-        if QMessageBox.question(
-            self, "Выход из Playerok",
-            "Завершить сессию и удалить её из системного хранилища?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        self._start_task("disconnect", self.playerok.disconnect, "Завершаю сессию…")
-
-    def _sync_playerok(self) -> dict[str, Any]:
-        if self.sync_operation is not None:
-            return self.sync_operation(self.playerok)
-        deals = self.playerok.fetch_orders()
-        return {"baseline": False, "deals": deals, "new_deals": 0, "status_updates": 0}
-
-    def _fetch_orders(self) -> None:
-        if not self._connected:
-            return
-        self._start_task(
-            "sync",
-            self._sync_playerok,
-            "Синхронизирую сделки Playerok и проверяю статусы завершённых заказов…",
+            isinstance(order, dict) and bool(order.get("order_id"))
         )
 
     def _import_selected_order(self) -> None:
@@ -273,60 +83,6 @@ class MarketplacePanel(QWidget):
             f"Передаю сделку {order['order_id']} в очередь GameDelivery. "
             "Итог импорта отображается в статусной строке главного окна."
         )
-
-    def _task_completed(self, action: str, ok: bool, payload: Any) -> None:
-        self._set_busy(False)
-        if not ok:
-            self.status_label.setText(f"Ошибка: {payload}")
-            return
-
-        if action == "request_code":
-            self.status_label.setText(f"Код отправлен на {payload['email']}. Проверь почту.")
-        elif action == "confirm_code" and payload.get("requires_second_factor"):
-            self.status_label.setText("Код принят. Для завершения входа введи код 2FA.")
-            self.two_factor_input.setFocus()
-        elif action in {"confirm_code", "confirm_2fa", "restore"} and payload.get("connected"):
-            self._connected = True
-            username = payload.get("username") or "Аккаунт Playerok"
-            self._pending_initial_sync = True
-            self._sync_timer.start()
-            self.profile_label.setText(f"Подключено: {username}")
-            if payload.get("session_saved"):
-                self.status_label.setText("Вход выполнен. Сессия сохранена в системном хранилище.")
-            else:
-                self.status_label.setText(
-                    "Вход выполнен только на время работы приложения: системное хранилище "
-                    "недоступно, после перезапуска придётся войти снова."
-                )
-            self.connection_status_changed.emit(f"Playerok: подключён · {username}")
-            self._update_button_state()
-        elif action == "disconnect":
-            self._connected = False
-            self._pending_initial_sync = False
-            self._sync_timer.stop()
-            self.profile_label.setText("Аккаунт не подключён")
-            self.status_label.setText(payload.get("message", "Сессия удалена."))
-            self.orders_table.setRowCount(0)
-            self.connection_status_changed.emit("Playerok: не подключён")
-            self._update_button_state()
-        elif action in {"orders", "sync"}:
-            if action == "sync" and isinstance(payload, dict):
-                deals = payload.get("deals", [])
-                self._show_orders(deals if isinstance(deals, list) else [])
-                if payload.get("baseline"):
-                    self.status_label.setText(
-                        f"Первый baseline завершён: {payload.get('historical_deals', 0)} существовавших сделок "
-                        "сохранено как исторические. Автовыдача для них не запускалась."
-                    )
-                else:
-                    self.status_label.setText(
-                        f"Сделки синхронизированы: {len(deals)}. Новых: {payload.get('new_deals', 0)}. "
-                        f"Обновлено статусов Playerok: {payload.get('status_updates', 0)}."
-                    )
-            else:
-                self._show_orders(payload)
-                self.status_label.setText(f"Загружено активных сделок: {len(payload)}.")
-        self._update_button_state()
 
     def _show_orders(self, orders: list[dict[str, Any]]) -> None:
         self.orders_table.setRowCount(0)
@@ -352,7 +108,7 @@ class MarketplacePanel(QWidget):
                 elif column == 1 and order.get("chat_url"):
                     cell.setToolTip(str(order["chat_url"]))
                 self.orders_table.setItem(row, column, cell)
-
+        self._update_button_state()
 
     def _open_selected_playerok_resource(self, row: int, column: int) -> None:
         item = self.orders_table.item(row, 0)

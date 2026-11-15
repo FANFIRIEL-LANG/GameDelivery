@@ -35,7 +35,6 @@ from core.delivery.reservation_service import InventorySnapshot
 from games.inventory import GameInventoryStore
 from games.catalog import GAME_CATALOG
 from games.steam_cards.recipient_diagnostics import normalize_recipient_card_diagnostics
-from integrations.playerok.sync import PlayerokDealSyncService
 from core.database.ledger_migrations import ensure_pre_migration_backup, migrate_delivery_ledger
 from app.diagnostics import configure_logging, get_log_directory, get_logger, log_exception
 
@@ -74,7 +73,6 @@ class MainWindow(QMainWindow):
             self._trade_credentials = SteamTradeCredentialStore()
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
-            self.playerok_sync = PlayerokDealSyncService(Database(self._database_path))
             self.delivery_pipeline = DeliveryOrderPipeline(Database(self._database_path))
             logger.info("Local delivery storage initialized")
         except (OSError, sqlite3.Error, ValueError) as exc:
@@ -106,7 +104,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("title")
         subtitle = QLabel("Автоматизация доставки игровых предметов")
         subtitle.setObjectName("muted")
-        status = QLabel("Playerok: не подключён")
+        status = QLabel("Playerok: вход через браузер не подтверждён")
         self.platform_status = status
         status.setObjectName("status")
         header.addWidget(title)
@@ -121,8 +119,7 @@ class MainWindow(QMainWindow):
         if not os.environ.get(TEST_ASF_IPC_URL_ENV, "").strip():
             self.bot_selection_model.set_accounts(configured_bot_names())
         self.tabs.addTab(self._orders_tab(), "Заказы")
-        self.marketplace_panel = MarketplacePanel(sync_operation=self.playerok_sync.sync, database=Database(self._database_path))
-        self.marketplace_panel.connection_status_changed.connect(self.platform_status.setText)
+        self.marketplace_panel = MarketplacePanel(database=Database(self._database_path))
         self.marketplace_panel.order_import_requested.connect(self._import_marketplace_order)
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()

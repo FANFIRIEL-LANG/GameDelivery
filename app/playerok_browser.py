@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, parse_qs, quote
 
-from PySide6.QtCore import QThread, QUrl, Signal
+from PySide6.QtCore import QUrl, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QSpinBox, QPlainTextEdit, QSplitter, QMessageBox,
@@ -32,6 +32,10 @@ PLAYEROK_PROFILE_ROUTE_LABELS = (
 )
 
 
+def playerok_profile_root() -> Path:
+    return Path.home() / ".gamedelivery" / "playerok-web-profile"
+
+
 def playerok_profile_routes(username: str) -> dict[str, str]:
     if not isinstance(username, str) or not username.strip():
         raise ValueError("username текущего профиля Playerok недоступен.")
@@ -46,21 +50,6 @@ def playerok_profile_routes(username: str) -> dict[str, str]:
         "Продажи: Завершённые (CONFIRMED)": f"/profile/{seller}/sales?status=confirmed",
         "Продажи: Возврат средств": f"/profile/{seller}/sales?status=rolled-back",
 }
-
-
-class _PlayerokProfileLookup(QThread):
-    def __init__(self, adapter, parent=None):
-        super().__init__(parent)
-        self.adapter = adapter
-        self.profile = None
-        self.failed = False
-
-    def run(self) -> None:
-        try:
-            self.profile = self.adapter.restore_session()
-        except Exception:
-            # Keep exception text and any transport details out of the UI.
-            self.failed = True
 
 
 def playerok_resource_url(resource: str, identifier: str) -> str:
@@ -107,15 +96,18 @@ class PlayerokBrowserPanel(QWidget):
         self.database = database
         self.controller = PlayerokBrowserController(self.navigate)
         self._profile = None
-        self._seller_username: str | None = None
-        self._profile_lookup_thread: _PlayerokProfileLookup | None = None
-        self._pending_profile_route: str | None = None
+        self._clear_pending = False
+        self._page_storage_clear_ok = False
         self._profile_route_buttons: dict[str, QPushButton] = {}
-        connection_signal = getattr(parent, "connection_status_changed", None)
-        if connection_signal is not None and callable(getattr(connection_signal, "connect", None)):
-            connection_signal.connect(self._invalidate_seller_username)
         root = QVBoxLayout(self)
         nav = QHBoxLayout()
+        self.back_button = QPushButton("Назад")
+        self.forward_button = QPushButton("Вперёд")
+        self.reload_button = QPushButton("Обновить")
+        self.home_button = QPushButton("Домой")
+        self.clear_session_button = QPushButton("Очистить данные сайта")
+        for button in (self.back_button, self.forward_button, self.reload_button, self.home_button, self.clear_session_button):
+            nav.addWidget(button)
         self.address = QLineEdit(PLAYEROK_ORIGIN)
         self.go_button = QPushButton("Перейти")
         self.go_button.clicked.connect(lambda: self.navigate(self.address.text().strip()))
@@ -146,7 +138,7 @@ class PlayerokBrowserPanel(QWidget):
         )
         if use_webengine:
             self.web = QWebEngineView()
-            profile_dir = Path.home() / ".gamedelivery" / "playerok-web-profile"
+            profile_dir = playerok_profile_root()
             profile_dir.mkdir(parents=True, exist_ok=True)
             self._profile = QWebEngineProfile("GameDelivery-Playerok", self)
             self._profile.setPersistentStoragePath(str(profile_dir / "storage"))
@@ -157,10 +149,22 @@ class PlayerokBrowserPanel(QWidget):
             page = QWebEnginePage(self._profile, self.web)
             self.web.setPage(page)
             self.web.urlChanged.connect(lambda u: self.address.setText(u.toString()))
+            self.web.loadStarted.connect(lambda: self.browser_status.setText("Загрузка Playerok…"))
+            self.web.loadFinished.connect(self._load_finished)
+            self.back_button.clicked.connect(self.web.back)
+            self.forward_button.clicked.connect(self.web.forward)
+            self.reload_button.clicked.connect(self.web.reload)
+            self.home_button.clicked.connect(lambda: self.navigate(PLAYEROK_ORIGIN + "/"))
+            self.clear_session_button.clicked.connect(self.clear_browser_session)
             split.addWidget(self.web)
-            self.browser_status.setText("Сессия браузера хранится отдельно в профиле GameDelivery.")
+            self.browser_status.setText("Войдите на сайте Playerok. Сессия хранится локально в профиле браузера.")
+            self.navigate(PLAYEROK_ORIGIN + "/")
         else:
             self.web = None
+            for button in (self.back_button, self.forward_button, self.reload_button):
+                button.setEnabled(False)
+            self.home_button.clicked.connect(lambda: self.navigate(PLAYEROK_ORIGIN + "/"))
+            self.clear_session_button.setEnabled(False)
             self.browser_status.setText(
                 "QtWebEngine недоступен (headless/CI). Контроллер навигации и панель настроек доступны."
             )
@@ -223,59 +227,65 @@ class PlayerokBrowserPanel(QWidget):
         return self.controller.open_chat(chat_id)
 
     def _open_profile_route(self, route_label: str) -> None:
-        if self._seller_username:
-            self.controller.open_profile_route(self._seller_username, route_label)
-            return
-        if self._profile_lookup_thread is not None:
-            return
-        adapter = getattr(self.parent(), "playerok", None)
-        if adapter is None or not callable(getattr(adapter, "restore_session", None)):
-            self._profile_route_lookup_failed()
-            return
-        self._pending_profile_route = route_label
-        self.browser_status.setText("Проверяю сохранённый профиль Playerok для быстрого перехода…")
-        for button in self._profile_route_buttons.values():
-            button.setEnabled(False)
-        worker = _PlayerokProfileLookup(adapter, self)
-        worker.finished.connect(lambda: self._profile_route_lookup_finished(worker))
-        self._profile_lookup_thread = worker
-        worker.start()
+        self.browser_status.setText("Username профиля не получен из браузерной страницы. Откройте нужный раздел через сайт.")
 
-    def _profile_route_lookup_finished(self, worker: _PlayerokProfileLookup) -> None:
-        if self._profile_lookup_thread is worker:
-            self._profile_lookup_thread = None
-        username = worker.profile.get("username") if isinstance(worker.profile, dict) else None
-        route_label = self._pending_profile_route
-        self._pending_profile_route = None
-        if (
-            not worker.failed
-            and isinstance(username, str)
-            and username.strip()
-            and username.strip() != "Аккаунт Playerok"
-            and route_label
-        ):
-            self._seller_username = username.strip()
-            try:
-                self.controller.open_profile_route(self._seller_username, route_label)
-            except ValueError:
-                self._seller_username = None
-                self._profile_route_lookup_failed()
-            else:
-                self.browser_status.setText("Профиль Playerok подтверждён; быстрый переход выполнен.")
-        else:
-            self._profile_route_lookup_failed()
-        for button in self._profile_route_buttons.values():
-            button.setEnabled(True)
-        worker.deleteLater()
-
-    def _profile_route_lookup_failed(self) -> None:
+    def _load_finished(self, ok: bool) -> None:
         self.browser_status.setText(
-            "Не удалось получить username из профиля Playerok. Быстрая ссылка не открыта; "
-            "остальные функции браузера доступны."
+            "Браузер открыт; вход Playerok не подтверждён."
+            if ok else "Не удалось загрузить страницу Playerok."
         )
 
-    def _invalidate_seller_username(self, *_args) -> None:
-        self._seller_username = None
+    def clear_browser_session(self) -> bool:
+        if self._profile is None:
+            self.browser_status.setText("Профиль WebEngine недоступен в этом режиме.")
+            return False
+        answer = QMessageBox.question(
+            self, "Очистить сессию Playerok",
+            "Очистить Web Storage и HTTP-кэш Playerok и запросить удаление cookies? "
+            "Qt не сообщает о завершении удаления cookies, поэтому полное завершение выхода подтвердить нельзя.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self._clear_pending = True
+        self.clear_session_button.setEnabled(False)
+        self.browser_status.setText("Очищаю Web Storage и HTTP-кэш; отправляю запрос на удаление cookies…")
+        self._profile.clearHttpCacheCompleted.connect(self._finish_browser_clear)
+        self.web.page().runJavaScript(
+            "(() => { try { localStorage.clear(); sessionStorage.clear(); return true; } catch (_) { return false; } })()",
+            self._page_storage_cleared,
+        )
+        return True
+
+    def _page_storage_cleared(self, cleared: bool) -> None:
+        if not self._clear_pending:
+            return
+        self._page_storage_clear_ok = bool(cleared)
+        self._profile.cookieStore().deleteAllCookies()
+        self._profile.clearHttpCache()
+
+    def _finish_browser_clear(self) -> None:
+        if not self._clear_pending:
+            return
+        self._profile.clearHttpCacheCompleted.disconnect(self._finish_browser_clear)
+        self._clear_pending = False
+        old_page = self.web.page()
+        self.web.setPage(QWebEnginePage(self._profile, self.web))
+        old_page.deleteLater()
+        self.web.setUrl(QUrl("about:blank"))
+        self.address.clear()
+        self.clear_session_button.setEnabled(True)
+        if not self._page_storage_clear_ok:
+            self.browser_status.setText(
+                "HTTP-кэш очищен; запрос на удаление cookies отправлен. Очистку Web Storage подтвердить не удалось, "
+                "а удаление cookies и прочих persistent site data не подтверждено."
+            )
+        else:
+            self.browser_status.setText(
+                "Web Storage и HTTP-кэш очищены; запрос на удаление cookies отправлен. "
+                "Qt не подтверждает завершение удаления cookies/прочих persistent site data, поэтому полный выход не подтверждён."
+            )
 
     def _capture_current_listing(self):
         current = self.address.text().strip()
