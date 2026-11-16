@@ -7,12 +7,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QUrl, QObject, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtCore import Qt, QUrl, QObject, QRunnable, QThreadPool, QSettings, QTimer, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QFrame,
     QLineEdit, QComboBox, QListWidget, QListWidgetItem, QMessageBox, QCompleter, QHeaderView,
+    QCheckBox,
 )
 from games.steam_cards.snapshot import InventorySnapshotStore
 from games.steam_cards.reservations import AssetReservationStore
@@ -33,6 +34,7 @@ from core.delivery.ledger import DeliveryLedger
 from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.reservation_service import InventorySnapshot
+from core.delivery.send_policy import DeliverySendPolicy, ManualDispatchAuthorization
 from games.inventory import GameInventoryStore
 from games.catalog import GAME_CATALOG
 from games.steam_cards.recipient_diagnostics import normalize_recipient_card_diagnostics
@@ -74,7 +76,12 @@ class MainWindow(QMainWindow):
             self._trade_credentials = SteamTradeCredentialStore()
             self._ensure_delivery_order_schema()
             self._recover_interrupted_delivery_orders()
-            self.playerok_sync = PlayerokDealSyncService(Database(self._database_path))
+            self._delivery_send_policy = DeliverySendPolicy(
+                QSettings("FANFIRIEL-LANG", "GameDelivery")
+            )
+            self.playerok_sync = PlayerokDealSyncService(
+                Database(self._database_path), send_policy=self._delivery_send_policy
+            )
             self.delivery_pipeline = DeliveryOrderPipeline(Database(self._database_path))
             logger.info("Local delivery storage initialized")
         except (OSError, sqlite3.Error, ValueError) as exc:
@@ -324,10 +331,17 @@ class MainWindow(QMainWindow):
                     self.orders.selectRow(row)
                     break
             self.statusBar().showMessage(
-                f"CS2-заказ {order_id} зарезервирован ({len(result.reserved_assets)} предметов). "
-                "Проверяю все DeliveryLeg через ASF перед подтверждением отправки."
+                f"CS2-заказ {order_id} подготовлен; зарезервировано предметов: "
+                f"{len(result.reserved_assets)}."
             )
-            self._start_send_ledger_order_async()
+            if self._auto_send_enabled():
+                self._start_send_ledger_order_async(automatic=True)
+            else:
+                QMessageBox.information(
+                    self, "CS2-заказ подготовлен",
+                    f"Заказ {order_id} полностью подготовлен и зарезервирован. "
+                    "Автоматическая отправка выключена; для запуска выбери заказ и подтверди ручную отправку.",
+                )
         except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
             QMessageBox.warning(self, "Не удалось подготовить CS2-заказ", str(exc))
 
@@ -350,13 +364,26 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         note = QLabel(
-            "Заказы Playerok и ручные отправки отображаются из единого списка. Для нормализованного заказа "
-            "подготовка выполняется по ConfigVersion и свежим снимкам ASF; Steam offers отправляются только "
-            "после preview всех legs и явного подтверждения. Старый ручной поток сохранён для совместимости."
+            "Заказы Playerok и ручные отправки отображаются в единой очереди. Подготовка, свежие снимки, "
+            "preflight и резервы выполняются в обоих режимах. При автоматической отправке включённый режим "
+            "разрешает запуск только после успешного ASF preview; выключенный режим оставляет заказ готовым "
+            "к отдельному ручному подтверждению."
         )
         note.setObjectName("muted")
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        send_mode = QHBoxLayout()
+        self.auto_send_checkbox = QCheckBox()
+        self.auto_send_checkbox.setChecked(self._delivery_send_policy.auto_send_enabled())
+        self.auto_send_checkbox.toggled.connect(self._on_auto_send_toggled)
+        send_mode.addWidget(self.auto_send_checkbox)
+        self.auto_send_mode_note = QLabel()
+        self.auto_send_mode_note.setObjectName("muted")
+        self.auto_send_mode_note.setWordWrap(True)
+        send_mode.addWidget(self.auto_send_mode_note, 1)
+        layout.addLayout(send_mode)
+        self._refresh_auto_send_mode_text()
 
         form = QHBoxLayout()
         self.order_recipient = QLineEdit()
@@ -388,7 +415,7 @@ class MainWindow(QMainWindow):
         self.prepare_order_button.clicked.connect(self._prepare_delivery_order)
         self.preview_offer_button = QPushButton("Проверить черновик через ASF")
         self.preview_offer_button.clicked.connect(self._preview_selected_order_with_asf)
-        self.send_offer_button = QPushButton("Отправить предложение Steam…")
+        self.send_offer_button = QPushButton("Отправить заказ…")
         self.send_offer_button.setEnabled(False)
         self.send_offer_button.clicked.connect(self._start_send_selected_order_async)
         actions.addWidget(self.prepare_order_button)
@@ -400,8 +427,10 @@ class MainWindow(QMainWindow):
         AssetReservationStore(self._database_path)
         self._ensure_delivery_order_schema()
         self._recover_interrupted_delivery_orders()
-        self.orders = QTableWidget(0, 5)
-        self.orders.setHorizontalHeaderLabels(["ID заказа", "Источник", "Товар", "Цена", "Дата заказа"])
+        self.orders = QTableWidget(0, 6)
+        self.orders.setHorizontalHeaderLabels(
+            ["ID заказа", "Источник", "Товар", "Цена", "Состояние", "Дата заказа"]
+        )
         self.orders.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.orders.horizontalHeader().setStretchLastSection(False)
         self.orders.setTextElideMode(Qt.TextElideMode.ElideNone)
@@ -433,6 +462,37 @@ class MainWindow(QMainWindow):
         self._load_order_bots()
         self._load_saved_orders()
         return page
+
+    def _auto_send_enabled(self):
+        policy = getattr(self, "_delivery_send_policy", None)
+        return bool(policy and policy.auto_send_enabled())
+
+    def _refresh_auto_send_mode_text(self):
+        if not hasattr(self, "auto_send_checkbox"):
+            return
+        enabled = self._auto_send_enabled()
+        self.auto_send_checkbox.setText(
+            f"Автоматическая отправка заказов: {'ВКЛ' if enabled else 'ВЫКЛ'}"
+        )
+        self.auto_send_mode_note.setText(
+            "После перезапуска режим всегда выключен. Подготовка и резервы сохраняются. "
+            + (
+                "После успешного ASF preflight заказ может быть отправлен автоматически."
+                if enabled else
+                "Заказ остаётся готовым к ручной отправке; запуск требует подтверждения конкретного заказа."
+            )
+        )
+
+    def _on_auto_send_toggled(self, enabled):
+        saved = self._delivery_send_policy.set_auto_send_enabled(bool(enabled))
+        if not saved:
+            self.auto_send_checkbox.blockSignals(True)
+            self.auto_send_checkbox.setChecked(False)
+            self.auto_send_checkbox.blockSignals(False)
+            self.statusBar().showMessage(
+                "Не удалось надёжно сохранить режим. Автоматическая отправка остаётся выключенной."
+            )
+        self._refresh_auto_send_mode_text()
 
     @property
     def _database_path(self):
@@ -828,11 +888,19 @@ class MainWindow(QMainWindow):
 
             self._load_saved_orders()
             self._load_order_assets()
-            QMessageBox.information(
-                self, "Заказ подготовлен",
-                f"Заказ {order_id} создан/подготовлен. Активов зарезервировано: {len(selected)}. "
-                "Обмен не отправлялся."
-            )
+            for row in range(self.orders.rowCount()):
+                context = self.orders.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                if isinstance(context, dict) and context.get("order_id") == order_id:
+                    self.orders.selectRow(row)
+                    break
+            if self._auto_send_enabled():
+                self._start_send_selected_order_async(automatic=True)
+            else:
+                QMessageBox.information(
+                    self, "Заказ подготовлен",
+                    f"Заказ {order_id} создан/подготовлен. Активов зарезервировано: {len(selected)}. "
+                    "Обмен не отправлялся; заказ готов к ручной отправке.",
+                )
         except (OSError, sqlite3.Error, ValueError) as exc:
             QMessageBox.warning(self, "Не удалось подготовить заказ", str(exc))
 
@@ -917,15 +985,17 @@ class MainWindow(QMainWindow):
                 "Не удалось удалить сохранённый Steam trade token из системного хранилища."
             )
 
-    def _start_send_selected_order_async(self):
+    def _start_send_selected_order_async(self, *, automatic=False):
         """Validate locally, then perform preview and send IPC calls off the GUI thread."""
         try:
             context_reader = getattr(self, "_order_context", None)
             if callable(context_reader) and context_reader().get("kind") == "ledger":
-                self._start_send_ledger_order_async()
+                self._start_send_ledger_order_async(automatic=automatic)
                 return
         except ValueError as exc:
             QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
+            return
+        if automatic and not self._auto_send_enabled():
             return
         if getattr(self, "_asf_send_in_progress", False):
             return
@@ -975,7 +1045,8 @@ class MainWindow(QMainWindow):
                     order_id=order_id, bot_name=bot_name, trade_url=recipient, asset_ids=asset_ids
                 ),
                 lambda result, error: self._on_async_trade_preview(
-                    order_id, bot_name, recipient, asset_ids, assets, client, result, error
+                    order_id, bot_name, recipient, asset_ids, assets, client, result, error,
+                    automatic=automatic,
                 ),
             )
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
@@ -996,12 +1067,16 @@ class MainWindow(QMainWindow):
         self._asf_workers.discard(worker)
         worker.callback(result, error)
 
-    def _on_async_trade_preview(self, order_id, bot_name, recipient, asset_ids, assets, client, preview, error):
+    def _on_async_trade_preview(
+        self, order_id, bot_name, recipient, asset_ids, assets, client, preview, error,
+        *, automatic=False,
+    ):
         if error is not None:
             log_exception(logger, "async ASF trade preview", error)
             self._finish_async_send_ui()
             QMessageBox.warning(self, "Проверка ASF не выполнена", f"{error}\n\nПредложение не отправлялось.")
             return
+        manual_grant = None
         try:
             if (
                 not isinstance(preview, dict)
@@ -1014,35 +1089,72 @@ class MainWindow(QMainWindow):
                 or [str(item.get("assetId", "")) for item in preview.get("assets", []) if isinstance(item, dict)] != asset_ids
             ):
                 raise ASFError("ASF не подтвердил точное совпадение получателя, бота и состава активов. Отправка отменена.")
-            confirmation_lines = [
-                "Сейчас будет создано реальное предложение обмена Steam.", "",
-                f"Заказ: {order_id}", f"Бот ASF: {bot_name}",
-                f"Получатель SteamID64: {preview['targetSteamId64']}",
-                f"Количество активов: {len(asset_ids)}", "", "Asset ID:", *asset_ids, "",
-                "GameDelivery повторно проверил передаваемость через ASF.",
-                "Отправка не означает, что получатель принял обмен.",
-                "При неопределённом результате повторная отправка будет заблокирована.",
-            ]
-            answer = QMessageBox.question(
-                self, "Подтвердить реальную отправку Steam", "\n".join(confirmation_lines),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+            if not automatic:
+                confirmation_lines = [
+                    "Сейчас будет создано реальное предложение обмена Steam.", "",
+                    f"Заказ: {order_id}", f"Бот ASF: {bot_name}",
+                    f"Получатель SteamID64: {preview['targetSteamId64']}",
+                    f"Количество активов: {len(asset_ids)}", "", "Asset ID:", *asset_ids, "",
+                    "GameDelivery повторно проверил передаваемость через ASF.",
+                    "Отправка не означает, что получатель принял обмен.",
+                    "При неопределённом результате повторная отправка будет заблокирована.",
+                ]
+                answer = QMessageBox.question(
+                    self, "Подтвердить отправку выбранного заказа", "\n".join(confirmation_lines),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    logger.info("Async trade send cancelled by user; order_id=%s", order_id)
+                    self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
+                    self._finish_async_send_ui()
+                    return
+                manual_grant = self._delivery_send_policy.issue_manual_authorization(
+                    order_id, "legacy-send"
+                )
+
+            self._claim_legacy_order_for_send(
+                order_id, assets, automatic=automatic,
+                manual_authorization=manual_grant,
             )
-            if answer != QMessageBox.StandardButton.Yes:
-                logger.info("Async trade send cancelled by user; order_id=%s", order_id)
-                self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
-                self._finish_async_send_ui()
-                return
+            logger.info(
+                "Async trade IPC dispatch started; order_id=%s mode=%s bot=%s asset_count=%s",
+                order_id, "automatic" if automatic else "manual", bot_name, len(asset_ids),
+            )
+            self.statusBar().showMessage(f"Отправка заказа {order_id} через ASF…")
+            send_client = self.asf_management._client(timeout=120.0)
+            self._run_asf_call_async(
+                lambda: send_client.send_trade_offer(
+                    order_id=order_id, bot_name=bot_name, trade_url=recipient, asset_ids=asset_ids
+                ),
+                lambda result, send_error: self._on_async_trade_send_complete(
+                    order_id, bot_name, result, send_error
+                ),
+            )
+        except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            if manual_grant is not None:
+                self._delivery_send_policy.revoke_manual_authorization(manual_grant)
+            log_exception(logger, "async trade preview confirmation", exc)
+            self._finish_async_send_ui()
+            QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
+
+    def _claim_legacy_order_for_send(
+        self, order_id, assets, *, automatic,
+        manual_authorization: ManualDispatchAuthorization | None = None,
+    ):
+        def claim():
             with connect_sqlite(self._database_path) as db:
                 db.execute("BEGIN IMMEDIATE")
-                current = db.execute("SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)).fetchone()
+                current = db.execute(
+                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                ).fetchone()
                 current_assets = db.execute(
-                    "SELECT bot_name, asset_id FROM delivery_order_assets WHERE order_id = ? ORDER BY bot_name, asset_id",
-                    (order_id,),
+                    "SELECT bot_name, asset_id FROM delivery_order_assets WHERE order_id = ? "
+                    "ORDER BY bot_name, asset_id", (order_id,),
                 ).fetchall()
                 current_reservations = db.execute(
-                    "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ? ORDER BY bot_name, asset_id",
-                    (order_id,),
+                    "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ? "
+                    "ORDER BY bot_name, asset_id", (order_id,),
                 ).fetchall()
                 if current is None or current[0] != "reserved — не отправлен":
                     raise ValueError("Статус заказа изменился во время проверки. Обнови список.")
@@ -1055,21 +1167,25 @@ class MainWindow(QMainWindow):
                 ).rowcount
                 if changed != 1:
                     raise ValueError("Заказ уже обрабатывается другой операцией.")
-            logger.info("Async trade IPC dispatch started; order_id=%s bot=%s asset_count=%s", order_id, bot_name, len(asset_ids))
-            self.statusBar().showMessage(f"Отправка заказа {order_id} через ASF…")
-            send_client = self.asf_management._client(timeout=120.0)
-            self._run_asf_call_async(
-                lambda: send_client.send_trade_offer(
-                    order_id=order_id, bot_name=bot_name, trade_url=recipient, asset_ids=asset_ids
-                ),
-                lambda result, send_error: self._on_async_trade_send_complete(
-                    order_id, bot_name, result, send_error
-                ),
+                return {"_claimed": True}
+
+        if automatic:
+            authorized, result = self._delivery_send_policy.run_auto_dispatch_claim(claim)
+            if not authorized:
+                raise ValueError("Автоматическая отправка выключена; заказ остался подготовленным.")
+        else:
+            authorized, result = self._delivery_send_policy.run_manual_dispatch_claim(
+                manual_authorization, order_id, "legacy-send", claim
             )
-        except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
-            log_exception(logger, "async trade preview confirmation", exc)
-            self._finish_async_send_ui()
-            QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
+            if not authorized:
+                raise ValueError("Ручное разрешение отправки недействительно или уже использовано.")
+        if not result.get("_claimed"):
+            raise ValueError("Заказ не был захвачен для единственной отправки.")
+        if not automatic and manual_authorization is not None:
+            logger.info(
+                "Manual delivery authorized; order_id=%s authorization_id=%s",
+                order_id, manual_authorization.authorization_id,
+            )
 
     def _on_async_trade_send_complete(self, order_id, bot_name, outcome, error):
         try:
@@ -1179,6 +1295,7 @@ class MainWindow(QMainWindow):
     def _send_selected_order_with_asf(self):
         request_started = False
         order_id = None
+        manual_grant = None
         try:
             order_id = self._selected_order_id()
             with connect_sqlite(self._database_path) as db:
@@ -1271,37 +1388,12 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
                 return
 
-            # Compare-and-set prevents a second UI click from sending the same order concurrently.
-            with connect_sqlite(self._database_path) as db:
-                db.execute("BEGIN IMMEDIATE")
-                current = db.execute(
-                    "SELECT status FROM delivery_orders WHERE order_id = ?",
-                    (order_id,),
-                ).fetchone()
-                current_assets = db.execute(
-                    "SELECT bot_name, asset_id FROM delivery_order_assets "
-                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
-                    (order_id,),
-                ).fetchall()
-                current_reservations = db.execute(
-                    "SELECT bot_name, asset_id FROM steam_asset_reservations "
-                    "WHERE order_id = ? ORDER BY bot_name, asset_id",
-                    (order_id,),
-                ).fetchall()
-                if current is None or current[0] != "reserved — не отправлен":
-                    raise ValueError("Статус заказа изменился во время проверки. Обнови список.")
-                if current_assets != assets or current_reservations != assets:
-                    raise ValueError(
-                        "Состав заказа или резервы изменились после проверки. "
-                        "Повтори проверку; предложение не отправлено."
-                    )
-                changed = db.execute(
-                    "UPDATE delivery_orders SET status = 'sending — запрос ASF' "
-                    "WHERE order_id = ? AND status = 'reserved — не отправлен'",
-                    (order_id,),
-                ).rowcount
-                if changed != 1:
-                    raise ValueError("Заказ уже обрабатывается другой операцией.")
+            manual_grant = self._delivery_send_policy.issue_manual_authorization(
+                order_id, "legacy-send"
+            )
+            self._claim_legacy_order_for_send(
+                order_id, assets, automatic=False, manual_authorization=manual_grant
+            )
 
             try:
                 request_started = True
@@ -1430,6 +1522,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "ASF не отправил предложение", user_message)
 
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            if manual_grant is not None:
+                self._delivery_send_policy.revoke_manual_authorization(manual_grant)
             log_exception(logger, "trade send workflow", exc)
             if request_started and order_id:
                 try:
@@ -1508,8 +1602,10 @@ class MainWindow(QMainWindow):
                 self, "Выдача подготовлена",
                 f"Заказ {order_id}: резерв подтверждён. DeliveryLeg: {len(result.legs)}, "
                 f"CS2 assets: {len(result.reserved_assets)}. Для отправки введи trade URL покупателя "
-                "и нажми «Отправить предложение Steam…»."
+                "и нажми «Отправить заказ…»."
             )
+            if self._auto_send_enabled():
+                self._start_send_ledger_order_async(automatic=True)
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
             QMessageBox.warning(self, "Не удалось подготовить выдачу", str(exc))
 
@@ -1708,9 +1804,10 @@ class MainWindow(QMainWindow):
             f"Зарезервировано физических карточек: {len(preflight.reserved_assets)}\n"
             f"Боты: {', '.join(bots)}\n\n{allocation_text}\n\n"
             "Каждый полный набор собран из обычных (не foil) карточек. "
-            "Все DeliveryLeg подготовлены. Для отправки введи/проверь Steam Trade URL "
-            "и нажми «Отправить предложение Steam…»; перед первым offer ASF повторно проверит каждую leg.",
+            "Все DeliveryLeg подготовлены. Перед отправкой ASF повторно проверит каждую leg.",
         )
+        if self._auto_send_enabled():
+            self._start_send_ledger_order_async(automatic=True)
 
     def _schedule_delivery_reconciliation(self):
         if getattr(self, "_delivery_reconcile_running", False):
@@ -1780,8 +1877,10 @@ class MainWindow(QMainWindow):
             })
         return previews
 
-    def _start_send_ledger_order_async(self):
+    def _start_send_ledger_order_async(self, *, automatic=False):
         if getattr(self, "_asf_send_in_progress", False):
+            return
+        if automatic and not self._auto_send_enabled():
             return
         order_id = self._selected_order_id()
         try:
@@ -1806,14 +1905,17 @@ class MainWindow(QMainWindow):
             self._run_asf_call_async(
                 lambda: self._preview_ledger_order(client, order_id, trade_url, legs),
                 lambda result, error: self._on_ledger_previews_ready(
-                    order_id, trade_url, legs, client, result, error
+                    order_id, trade_url, legs, client, result, error,
+                    automatic=automatic,
                 ),
             )
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
             self._finish_async_send_ui()
             QMessageBox.warning(self, "Проверка заказа не выполнена", str(exc))
 
-    def _on_ledger_previews_ready(self, order_id, trade_url, legs, client, previews, error):
+    def _on_ledger_previews_ready(
+        self, order_id, trade_url, legs, client, previews, error, *, automatic=False,
+    ):
         if error is not None:
             self._finish_async_send_ui()
             QMessageBox.warning(
@@ -1821,41 +1923,74 @@ class MainWindow(QMainWindow):
                 f"{error}\n\nНи один Steam offer не отправлялся.",
             )
             return
-        lines = [
-            f"Канонический заказ: {order_id}",
-            f"Получатель SteamID64: {previews[0].get('steam_id64') if previews else '—'}",
-            "",
-            "Все DeliveryLeg прошли preview:",
-        ]
-        for item in previews:
-            lines.append(
-                f"{item['bot_name']} · AppID {item['app_id']}/{item['context_id']} · "
-                f"assets: {', '.join(item['asset_ids'])}"
-            )
-        lines.extend(["", "Сейчас будут отправлены все перечисленные offers. Продолжить?"])
-        answer = QMessageBox.question(
-            self, "Подтвердить отправку всех Steam offers", "\n".join(lines),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            self._finish_async_send_ui()
-            self.statusBar().showMessage(f"Отправка заказа {order_id} отменена; резервы сохранены.")
-            return
+        manual_grant = None
+        if not automatic:
+            lines = [
+                f"Канонический заказ: {order_id}",
+                f"Получатель SteamID64: {previews[0].get('steam_id64') if previews else '—'}",
+                "",
+                "Все DeliveryLeg прошли preview:",
+            ]
+            for item in previews:
+                lines.append(
+                    f"{item['bot_name']} · AppID {item['app_id']}/{item['context_id']} · "
+                    f"assets: {', '.join(item['asset_ids'])}"
+                )
+            manual_grants = {}
+            if not automatic:
+                for leg, item in zip(legs, previews):
+                    leg_id = str(leg["leg_id"])
+                    leg_lines = [
+                        f"Канонический заказ: {order_id}",
+                        f"DeliveryLeg: {leg_id}",
+                        f"Бот: {item['bot_name']} · AppID {item['app_id']}/{item['context_id']}",
+                        f"Assets: {', '.join(item['asset_ids'])}",
+                        "", "Это подтверждение разрешает отправку только этой DeliveryLeg.",
+                    ]
+                    answer = QMessageBox.question(
+                        self, "Подтвердить отправку одной DeliveryLeg", "\n".join(leg_lines),
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if answer != QMessageBox.StandardButton.Yes:
+                        for existing in manual_grants.values():
+                            self._delivery_send_policy.revoke_manual_authorization(existing)
+                        self._finish_async_send_ui()
+                        self.statusBar().showMessage(
+                            f"Отправка leg {leg_id} отменена; неподтверждённые legs не запускаются."
+                        )
+                        return
+                    manual_grants[leg_id] = self._delivery_send_policy.issue_manual_authorization(
+                        order_id, leg_id
+                    )
         try:
             safe_url = self._trade_credentials.store_trade_url(order_id, trade_url)
             dispatcher = DeliveryDispatcher(
-                Database(self._database_path), client, self._trade_credentials
+                Database(self._database_path), client, self._trade_credentials,
+                send_policy=self._delivery_send_policy,
             )
+
+            def dispatch_all_legs():
+                results = []
+                try:
+                    for leg in legs:
+                        leg_id = str(leg["leg_id"])
+                        grant = manual_grants.get(leg_id) if not automatic else None
+                        results.append(dispatcher.dispatch_leg(
+                            order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
+                            manual_authorization=grant,
+                        ))
+                        if grant is not None:
+                            self._delivery_send_policy.revoke_manual_authorization(grant)
+                        if not automatic and not results[-1].get("dispatched"):
+                            break
+                    return results
+                finally:
+                    for grant in manual_grants.values():
+                        self._delivery_send_policy.revoke_manual_authorization(grant)
+
             self._run_asf_call_async(
-                lambda: [
-                    dispatcher.dispatch_leg(
-                        order_id=order_id,
-                        leg_id=leg["leg_id"],
-                        stored_trade_url=safe_url,
-                    )
-                    for leg in legs
-                ],
+                dispatch_all_legs,
                 lambda result, dispatch_error: self._on_ledger_dispatch_complete(
                     order_id, result, dispatch_error
                 ),
@@ -1875,10 +2010,12 @@ class MainWindow(QMainWindow):
             return
         sent = sum(1 for item in results if item.get("dispatched"))
         unknown = sum(1 for item in results if item.get("status") == "UNKNOWN")
+        blocked = sum(1 for item in results if item.get("status") == "AUTO_SEND_DISABLED")
         self._load_saved_orders()
         QMessageBox.information(
             self, "Результат отправки",
-            f"Заказ: {order_id}\nСоздано offers: {sent}\nНеизвестный результат: {unknown}\n\n"
+            f"Заказ: {order_id}\nСоздано offers: {sent}\nНеизвестный результат: {unknown}\n"
+            f"Остановлено глобальным режимом: {blocked}\n\n"
             "Принятие покупателем будет отслеживаться отдельно. DELIVERED появится только после "
             "Accepted по всем обязательным DeliveryLeg.",
         )
@@ -1990,10 +2127,11 @@ class MainWindow(QMainWindow):
                 price = str(payload.get("amount") or "—")
                 entries.append((
                     str(row["created_at"] or ""), display_id, source, product, price,
+                    self._order_status_label(row["status"]),
                     {"kind": "ledger", "order_id": str(row["order_id"]),
                      "deal_id": str(row["deal_id"]), "external_deal_id": external_id,
                      "status": str(row["status"] or "")},
-                    f"Внутренний order_id: {row['order_id']}\nСтатус: {row['status']}\n"
+                    f"Внутренний order_id: {row['order_id']}\nСостояние: {self._order_status_label(row['status'])}\n"
                     f"Deal ID: {external_id or '—'}\nChat ID: {row['chat_id'] or '—'}",
                 ))
             for row in legacy_rows:
@@ -2013,16 +2151,17 @@ class MainWindow(QMainWindow):
                     price = "—"
                 entries.append((
                     str(row["created_at"] or ""), display_id, source, product, price,
+                    self._order_status_label(row["status"]),
                     {"kind": "legacy", "order_id": str(row["order_id"]),
                      "status": str(row["status"] or "")},
-                    f"Внутренний order_id: {row['order_id']}\nСтатус: {row['status']}\n"
+                    f"Внутренний order_id: {row['order_id']}\nСостояние: {self._order_status_label(row['status'])}\n"
                     f"Покупатель: {row['source_buyer'] or '—'}\nOffer ID: {row['trade_offer_id'] or '—'}",
                 ))
             entries.sort(key=lambda item: item[0], reverse=True)
-            for created, display_id, source, product, price, context, tooltip in entries:
+            for created, display_id, source, product, price, status_label, context, tooltip in entries:
                 row_index = self.orders.rowCount()
                 self.orders.insertRow(row_index)
-                cells = (display_id, source, product, price, created)
+                cells = (display_id, source, product, price, status_label, created)
                 for column, value in enumerate(cells):
                     cell = QTableWidgetItem(str(value))
                     cell.setToolTip(tooltip)
@@ -2036,6 +2175,33 @@ class MainWindow(QMainWindow):
 
     def _selected_order_context(self):
         return self._order_context()
+
+    @staticmethod
+    def _order_status_label(status):
+        value = str(status or "").strip()
+        return {
+            "pending": "Подготовка",
+            "PAID": "Оплачен — ожидает подготовки",
+            "insufficient_stock": "Ожидает предметы",
+            "preflight_blocked": "Ошибка подготовки",
+            "reserved": "Готов к ручной отправке",
+            "reserved — не отправлен": "Готов к ручной отправке",
+            "sending — запрос ASF": "Отправка выполняется",
+            "PROCESSING": "Отправка выполняется",
+            "DISPATCHING": "Отправка выполняется",
+            "SENT_TO_STEAM": "Отправлено — ожидает покупателя",
+            "sent — требуется подтверждение Steam": "Отправлено — ожидает подтверждения Steam",
+            "sent — ожидание покупателя": "Отправлено — ожидает покупателя",
+            "UNKNOWN": "Неизвестный результат — требуется сверка",
+            "неизвестен результат отправки — проверь исходящие Steam": "Неизвестный результат — требуется сверка",
+            "DELIVERED": "Доставка подтверждена",
+            "CANCELLED": "Отменён",
+            "DECLINED": "Обмен отклонён — требуется действие",
+            "PRIVACY_WAIT": "Ожидает настройки приватности",
+            "TRADE_RESTRICTED": "Ограничение обмена",
+            "FAILED": "Ошибка доставки",
+            "imported — ожидание подготовки": "Ожидает подготовки",
+        }.get(value, value or "Неизвестно")
 
     def _selected_order_id(self):
         return str(self._selected_order_context()["order_id"])

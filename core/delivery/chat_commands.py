@@ -283,16 +283,29 @@ class BuyerChatCommandRegistry:
                 (leg["leg_id"],),
             )
             db.execute(
-                "UPDATE gd_orders SET status='PROCESSING',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                "UPDATE gd_orders SET status='reserved',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
                 (order_id,),
             )
             db.commit()
+
+        if not self.dispatcher.auto_send_enabled():
+            return ChatCommandResult(
+                True, "!настроил приватность", "ready_for_manual_send",
+                "Инвентарь повторно проверен, заказ подготовлен и резерв сохранён. "
+                "Автоматическая отправка выключена; для доставки подтверди отправку этого заказа.",
+            )
 
         safe_trade_url = str(payload.get("stored_trade_url") or payload.get("trade_url_safe") or "")
         result = self.dispatcher.dispatch_leg(
             order_id=order_id, leg_id=leg["leg_id"],
             stored_trade_url=safe_trade_url, retry_generation=retry_generation,
         )
+        if result.get("status") == "AUTO_SEND_DISABLED":
+            return ChatCommandResult(
+                True, "!настроил приватность", "ready_for_manual_send",
+                "Инвентарь повторно проверен, заказ подготовлен и резерв сохранён. "
+                "Автоматическая отправка выключена; для доставки подтверди отправку этого заказа.",
+            )
         return ChatCommandResult(
             True, "!настроил приватность", str(result.get("status", "unknown")),
             "Повторная попытка обработки заказа запущена." if result.get("dispatched")

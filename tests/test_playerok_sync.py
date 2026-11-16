@@ -28,6 +28,31 @@ def deal(deal_id: str, listing_id: str, status: str = "PAID", chat_id: str | Non
     }
 
 
+class MutableSendPolicy:
+    def __init__(self):
+        self.enabled = False
+
+    def auto_send_enabled(self):
+        return self.enabled
+
+    def run_auto_dispatch_claim(self, claim):
+        if not self.enabled:
+            return False, None
+        return True, claim()
+
+
+class AutoClaimClosedPolicy:
+    def __init__(self):
+        self.claim_called = False
+
+    def auto_send_enabled(self):
+        return True
+
+    def run_auto_dispatch_claim(self, claim):
+        self.claim_called = True
+        return False, None
+
+
 class FakePlayerok:
     account_user_id = "seller-account-1"
 
@@ -60,7 +85,8 @@ class PlayerokDealSyncTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.database = Database(Path(self.temp.name) / "playerok.sqlite3")
         self.ledger = DeliveryLedger(self.database)
-        self.syncer = PlayerokDealSyncService(self.database)
+        self.send_policy = MutableSendPolicy()
+        self.syncer = PlayerokDealSyncService(self.database, send_policy=self.send_policy)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -153,6 +179,10 @@ class PlayerokDealSyncTests(unittest.TestCase):
             )
 
         self.syncer.sync(adapter, allow_status_mutation=True)
+        self.assertEqual(adapter.mutation_calls, [])
+        self.assertEqual(adapter.remote["new-deal"]["status"], "PAID")
+        self.send_policy.enabled = True
+        self.syncer.sync(adapter, allow_status_mutation=True)
         self.assertEqual(adapter.mutation_calls, [("new-deal", "SENT")])
         with self.database.connect() as db:
             state = db.execute(
@@ -185,6 +215,7 @@ class PlayerokDealSyncTests(unittest.TestCase):
         with self.database.connect() as db:
             order = db.execute("SELECT order_id FROM gd_orders WHERE deal_id=?", (normalized_id,)).fetchone()
             db.execute("UPDATE gd_orders SET status='DELIVERED' WHERE order_id=?", (order["order_id"],))
+        self.send_policy.enabled = True
         adapter.raise_after_mutation = True
         self.syncer.sync(adapter, allow_status_mutation=True)
         with self.database.connect() as db:
@@ -328,6 +359,39 @@ class PlayerokDealSyncTests(unittest.TestCase):
                 (order["order_id"],),
             ).fetchone()
         self.assertEqual(tuple(state), ("pending", "PAID"))
+
+    def test_playerok_status_mutation_uses_atomic_auto_dispatch_claim(self):
+        self.configure_listing()
+        adapter = FakePlayerok(
+            baseline=[deal("old-atomic", "listing-live", "PAID")],
+            active=[deal("new-atomic", "listing-live", "PAID")],
+        )
+        self.syncer.sync(adapter)
+        self.syncer.sync(adapter)
+        normalized_id = self.normalized_deal_id("new-atomic")
+        with self.database.connect() as db:
+            order = db.execute(
+                "SELECT order_id FROM gd_orders WHERE deal_id=?", (normalized_id,)
+            ).fetchone()
+            db.execute(
+                "UPDATE gd_orders SET status='DELIVERED' WHERE order_id=?", (order["order_id"],)
+            )
+        self.syncer.sync(adapter)
+
+        policy = AutoClaimClosedPolicy()
+        self.syncer.send_policy = policy
+        self.syncer.process_status_outbox(
+            adapter, adapter.account_user_id, allow_status_mutation=True
+        )
+
+        self.assertTrue(policy.claim_called)
+        self.assertEqual(adapter.mutation_calls, [])
+        with self.database.connect() as db:
+            state = db.execute(
+                "SELECT state,attempt_count FROM playerok_status_outbox WHERE order_id=?",
+                (order["order_id"],),
+            ).fetchone()
+        self.assertEqual(tuple(state), ("pending", 0))
 
     def test_listing_config_changes_do_not_mutate_existing_paid_order_snapshot(self):
         first_config = self.configure_listing("listing-versioned")

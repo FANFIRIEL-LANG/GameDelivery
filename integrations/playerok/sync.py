@@ -11,8 +11,9 @@ class PlayerokDealSyncService:
 
     ACTIVE_STATUSES = ("PAID", "SENT", "CONFIRMED", "CONFIRMED_AUTOMATICALLY")
 
-    def __init__(self, database: Any):
+    def __init__(self, database: Any, *, send_policy: Any = None):
         self.database = database
+        self.send_policy = send_policy
         database.initialize()
         with database.connect() as db:
             columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_deals)")}
@@ -292,16 +293,23 @@ class PlayerokDealSyncService:
                 continue
             # Normal application sync is read-only. The embedded Playerok browser
             # introduced in Part B owns the "Выполнил заказ" UI action.
-            if not allow_status_mutation:
+            claim_auto_dispatch = getattr(self.send_policy, "run_auto_dispatch_claim", None)
+            if not allow_status_mutation or not callable(claim_auto_dispatch):
                 continue
-            with self.database.connect() as db:
-                claimed = db.execute("""
-                    UPDATE playerok_status_outbox
-                    SET state='dispatching',attempt_count=attempt_count+1,last_error_type='',
-                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                    WHERE idempotency_key=? AND state='pending'
-                """, (key,)).rowcount
-            if claimed != 1:
+
+            def claim_status_mutation():
+                with self.database.connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    claimed = db.execute("""
+                        UPDATE playerok_status_outbox
+                        SET state='dispatching',attempt_count=attempt_count+1,last_error_type='',
+                            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                        WHERE idempotency_key=? AND state='pending'
+                    """, (key,)).rowcount
+                return {"_claimed": claimed == 1}
+
+            authorized, claim = claim_auto_dispatch(claim_status_mutation)
+            if not authorized or not isinstance(claim, dict) or claim.get("_claimed") is not True:
                 continue
             try:
                 updated = adapter.update_deal_status(row["external_deal_id"], "SENT")

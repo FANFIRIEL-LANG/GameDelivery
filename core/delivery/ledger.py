@@ -192,6 +192,7 @@ class DeliveryLedger:
     def create_delivery_attempt(
         self, *, order_id: str, leg_id: str, retry_generation: int,
         status: str = "prepared", result: dict[str, Any] | None = None,
+        connection=None,
     ) -> tuple[dict[str, Any], bool]:
         order, leg = order_id.strip(), leg_id.strip()
         if not order or not leg:
@@ -200,7 +201,7 @@ class DeliveryLedger:
             raise ValueError("retry_generation должен быть целым числом не меньше нуля")
         key = f"{order}:{leg}:{retry_generation}"
         attempt_id = f"attempt:{key}"
-        with self.database.connect() as connection:
+        def insert(connection):
             cursor = connection.execute(
                 """
                 INSERT INTO gd_delivery_attempts
@@ -214,6 +215,13 @@ class DeliveryLedger:
             row = connection.execute(
                 "SELECT * FROM gd_delivery_attempts WHERE idempotency_key=?", (key,)
             ).fetchone()
+            return row, cursor.rowcount == 1
+
+        if connection is None:
+            with self.database.connect() as connection:
+                row, created = insert(connection)
+        else:
+            row, created = insert(connection)
         if row is None:
             raise RuntimeError("Не удалось прочитать DeliveryAttempt после записи")
         return dict(row), created

@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 from app.main import MainWindow
+from core.database.connection import connect_sqlite
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
@@ -30,6 +31,23 @@ class MemoryKeyring:
         self.values.pop((service, account), None)
 
 
+class MemorySettings:
+    def __init__(self, *_args, **_kwargs):
+        self.values = {}
+    def value(self, key, default=None):
+        return self.values.get(key, default)
+    def setValue(self, key, value):
+        self.values[key] = value
+    def sync(self):
+        pass
+    def status(self):
+        return 0
+
+
+def _tuple_row(_cursor, row):
+    return tuple(row)
+
+
 class TradeDeliveryUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -39,6 +57,9 @@ class TradeDeliveryUITests(unittest.TestCase):
         )
         cls._ipc_test_mode_patch.start()
         cls.addClassCleanup(cls._ipc_test_mode_patch.stop)
+        cls._settings_patch = patch("app.main.QSettings", side_effect=MemorySettings)
+        cls._settings_patch.start()
+        cls.addClassCleanup(cls._settings_patch.stop)
 
     @staticmethod
     def _preview():
@@ -79,7 +100,7 @@ class TradeDeliveryUITests(unittest.TestCase):
             "GD-ORDER-1",
             "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123",
         )
-        with sqlite3.connect(database) as db:
+        with connect_sqlite(database, row_factory=_tuple_row) as db:
             db.execute(
                 "INSERT INTO delivery_orders "
                 "(order_id, recipient_trade_url, status, asset_count, source_platform) "
@@ -158,7 +179,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                     with patch("app.main.QMessageBox.warning") as warning:
                         window._prepare_delivery_order()
                     warning.assert_called_once()
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=_tuple_row) as db:
                         orders = db.execute("SELECT COUNT(*) FROM delivery_orders").fetchone()[0]
                         reservations = db.execute("SELECT COUNT(*) FROM steam_asset_reservations").fetchone()[0]
                     self.assertEqual(orders, 0)
@@ -194,6 +215,54 @@ class TradeDeliveryUITests(unittest.TestCase):
                     window.deleteLater()
                     self.app.processEvents()
 
+    def test_auto_send_switch_defaults_off_and_off_mode_keeps_prepared_reserves(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            InventorySnapshotStore(database).replace(
+                [CardCopy("1234567890", "Example Game", "Example Card")], bot_name="Bot A"
+            )
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                window._trade_credentials = SteamTradeCredentialStore(backend=MemoryKeyring())
+                try:
+                    self.assertFalse(window.auto_send_checkbox.isChecked())
+                    self.assertIn("ВЫКЛ", window.auto_send_checkbox.text())
+                    window.order_recipient.setText(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+                    )
+                    card = next(
+                        window.order_assets.item(i)
+                        for i in range(window.order_assets.count())
+                        if "Example Card" in window.order_assets.item(i).text()
+                    )
+                    card.setSelected(True)
+                    with patch("app.main.QMessageBox.information"):
+                        window._prepare_delivery_order()
+                    with connect_sqlite(database, row_factory=_tuple_row) as db:
+                        order = db.execute(
+                            "SELECT status FROM delivery_orders ORDER BY created_at DESC LIMIT 1"
+                        ).fetchone()
+                        reservation_count = db.execute(
+                            "SELECT COUNT(*) FROM steam_asset_reservations"
+                        ).fetchone()[0]
+                    self.assertEqual(order[0], "reserved — не отправлен")
+                    self.assertEqual(reservation_count, 1)
+                    status_cell = window.orders.item(0, 4)
+                    self.assertEqual(status_cell.text(), "Готов к ручной отправке")
+                    window.auto_send_checkbox.click()
+                    self.assertTrue(window._delivery_send_policy.auto_send_enabled())
+                    window.auto_send_checkbox.click()
+                    self.assertFalse(window._delivery_send_policy.auto_send_enabled())
+                    with connect_sqlite(database, row_factory=_tuple_row) as db:
+                        self.assertEqual(
+                            db.execute("SELECT status FROM delivery_orders LIMIT 1").fetchone()[0],
+                            "reserved — не отправлен",
+                        )
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
     def test_successful_send_persists_offer_id_and_pending_recipient_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
@@ -214,7 +283,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                 )
                 warning.assert_not_called()
                 info.assert_called_once()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     row = db.execute(
                         "SELECT status, trade_offer_id, trade_confirmation_status, recipient_trade_url "
                         "FROM delivery_orders WHERE order_id = ?",
@@ -265,7 +334,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                     window._send_selected_order_with_asf()
 
                 send.assert_called_once()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     status = db.execute(
                         "SELECT status FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -285,7 +354,7 @@ class TradeDeliveryUITests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
 
             def exercise(window):
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     before = db.execute(
                         "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -304,7 +373,7 @@ class TradeDeliveryUITests(unittest.TestCase):
 
                 warning.assert_not_called()
                 send.assert_not_called()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     status = db.execute(
                         "SELECT status FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -328,7 +397,7 @@ class TradeDeliveryUITests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
 
             def exercise(window):
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ?",
                         ("неизвестен результат отправки — проверь исходящие Steam", "GD-ORDER-1"),
@@ -340,7 +409,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                     window._cancel_selected_order()
 
                 warning.assert_not_called()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     status = db.execute(
                         "SELECT status FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -366,7 +435,7 @@ class TradeDeliveryUITests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
 
             def exercise(window):
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ?, trade_offer_id = ? WHERE order_id = ?",
                         ("cancelled — результат отправки требует сверки", "9876543210", "GD-ORDER-1"),
@@ -378,7 +447,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                     window._reconcile_cancelled_order_reservation()
 
                 warning.assert_not_called()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     row = db.execute(
                         "SELECT status, trade_confirmation_status FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -407,7 +476,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                     window._delete_selected_order()
 
                 warning.assert_not_called()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     order_count = db.execute(
                         "SELECT COUNT(*) FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -429,7 +498,7 @@ class TradeDeliveryUITests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
 
             def exercise(window):
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     db.execute(
                         "UPDATE delivery_orders SET status = ? WHERE order_id = ?",
                         ("неизвестен результат отправки — проверь исходящие Steam", "GD-ORDER-1"),
@@ -437,7 +506,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                 with patch("app.main.QMessageBox.warning") as warning:
                     window._delete_selected_order()
                 warning.assert_called_once()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     order_count = db.execute(
                         "SELECT COUNT(*) FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -464,7 +533,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                         )
                     info.assert_called_once()
                     self.assertEqual(window.orders.rowCount(), 0)
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=_tuple_row) as db:
                         reservations = db.execute(
                             "SELECT COUNT(*) FROM steam_asset_reservations"
                         ).fetchone()[0]
@@ -487,7 +556,7 @@ class TradeDeliveryUITests(unittest.TestCase):
 
                 send.assert_not_called()
                 warning.assert_not_called()
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     status = db.execute(
                         "SELECT status FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -502,7 +571,7 @@ class TradeDeliveryUITests(unittest.TestCase):
             database = Path(temp_dir) / "orders.sqlite3"
 
             def exercise(window):
-                with sqlite3.connect(database) as db:
+                with connect_sqlite(database, row_factory=_tuple_row) as db:
                     db.execute(
                         "DELETE FROM steam_asset_reservations WHERE order_id = ?",
                         ("GD-ORDER-1",),
@@ -536,7 +605,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                 window = MainWindow()
                 window._trade_credentials = SteamTradeCredentialStore(backend=MemoryKeyring())
                 try:
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=_tuple_row) as db:
                         db.execute(
                             "INSERT INTO delivery_orders "
                             "(order_id, recipient_trade_url, status, asset_count, source_platform) "
@@ -552,7 +621,7 @@ class TradeDeliveryUITests(unittest.TestCase):
 
                     window._ensure_delivery_order_schema()
 
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=_tuple_row) as db:
                         stored_url = db.execute(
                             "SELECT recipient_trade_url FROM delivery_orders WHERE order_id = ?",
                             ("GD-LEGACY-1",),

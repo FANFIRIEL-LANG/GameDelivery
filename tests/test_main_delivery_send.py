@@ -2,12 +2,14 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtWidgets import QMessageBox
 
 from app.main import MainWindow
+from core.database.connection import connect_sqlite
+from core.delivery.send_policy import DeliverySendPolicy
 
 
 class DeliverySendFlowTests(unittest.TestCase):
@@ -18,8 +20,22 @@ class DeliverySendFlowTests(unittest.TestCase):
     SAFE_TRADE_URL = "https://steamcommunity.com/tradeoffer/new/?partner=12345"
     STEAM_ID64 = 76561197960265728 + 12345
 
+    class MemorySettings:
+        def __init__(self):
+            self.values = {}
+        def value(self, key, default=None):
+            return self.values.get(key, default)
+        def setValue(self, key, value):
+            self.values[key] = value
+        def sync(self):
+            pass
+        def status(self):
+            return 0
+
     def _database(self, path: Path):
-        with sqlite3.connect(path) as db:
+        connection = sqlite3.connect(path)
+        try:
+            db = connection
             db.execute("""
                 CREATE TABLE delivery_orders (
                     order_id TEXT PRIMARY KEY,
@@ -57,11 +73,25 @@ class DeliverySendFlowTests(unittest.TestCase):
                 "INSERT INTO steam_asset_reservations (bot_name, asset_id, order_id) VALUES (?, ?, ?)",
                 (self.BOT_NAME, self.ASSET_ID, self.ORDER_ID),
             )
+            connection.commit()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _query(path: Path, sql: str, params=(), *, all_rows=False):
+        connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        try:
+            cursor = connection.execute(sql, params)
+            return cursor.fetchall() if all_rows else cursor.fetchone()
+        finally:
+            connection.close()
 
     def _fake_window(self, path: Path):
         status_bar = MagicMock()
-        return SimpleNamespace(
+        window = SimpleNamespace(
             _database_path=path,
+            _delivery_send_policy=DeliverySendPolicy(self.MemorySettings()),
             asf_management=SimpleNamespace(
                 ipc_password=SimpleNamespace(text=lambda: ""),
                 _client=MagicMock(),
@@ -75,9 +105,16 @@ class DeliverySendFlowTests(unittest.TestCase):
             _delete_trade_credential_best_effort=lambda order_id: None,
             _load_saved_orders=MagicMock(),
             _load_order_assets=MagicMock(),
+            _update_order_action_buttons=MagicMock(),
+            send_offer_button=MagicMock(),
             statusBar=lambda: status_bar,
             _status_bar=status_bar,
         )
+        window._claim_legacy_order_for_send = MethodType(
+            MainWindow._claim_legacy_order_for_send, window
+        )
+        window._finish_async_send_ui = MethodType(MainWindow._finish_async_send_ui, window)
+        return window
 
     @staticmethod
     def _preview(order_id, bot_name, steam_id, assets):
@@ -133,14 +170,74 @@ class DeliverySendFlowTests(unittest.TestCase):
                 trade_url=self.TRADE_URL,
                 asset_ids=[self.ASSET_ID],
             )
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 row = db.execute(
                     "SELECT status, trade_offer_id, trade_confirmation_status "
                     "FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
                 ).fetchone()
-            self.assertEqual(row, ("sent — требуется подтверждение Steam", "456789", "pending"))
+            self.assertEqual(tuple(row), ("sent — требуется подтверждение Steam", "456789", "pending"))
             warning.assert_not_called()
+
+    def test_auto_dispatch_off_blocks_post_preflight_send_and_preserves_reservation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            window = self._fake_window(db_path)
+            client = window.asf_management._client.return_value
+            preview = self._preview(self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID])
+            assets = self._query(
+                db_path,
+                "SELECT bot_name,asset_id FROM delivery_order_assets WHERE order_id=? "
+                "ORDER BY bot_name,asset_id", (self.ORDER_ID,), all_rows=True,
+            )
+
+            with patch("app.main.QMessageBox.question") as question:
+                with patch("app.main.QMessageBox.warning"):
+                    MainWindow._on_async_trade_preview(
+                        window, self.ORDER_ID, self.BOT_NAME, self.TRADE_URL,
+                        [self.ASSET_ID], assets, client, preview, None, automatic=True,
+                    )
+
+            question.assert_not_called()
+            client.send_trade_offer.assert_not_called()
+            row = self._query(
+                db_path, "SELECT status FROM delivery_orders WHERE order_id=?", (self.ORDER_ID,)
+            )
+            reservation = self._query(
+                db_path, "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (self.ORDER_ID,)
+            )[0]
+            self.assertEqual(row[0], "reserved — не отправлен")
+            self.assertEqual(reservation, 1)
+
+    def test_auto_dispatch_on_requires_successful_preview_and_skips_manual_dialog(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "delivery.sqlite3"
+            self._database(db_path)
+            window = self._fake_window(db_path)
+            window._delivery_send_policy.set_auto_send_enabled(True)
+            client = window.asf_management._client.return_value
+            preview = self._preview(self.ORDER_ID, self.BOT_NAME, self.STEAM_ID64, [self.ASSET_ID])
+            assets = self._query(
+                db_path,
+                "SELECT bot_name,asset_id FROM delivery_order_assets WHERE order_id=? "
+                "ORDER BY bot_name,asset_id", (self.ORDER_ID,), all_rows=True,
+            )
+            window._run_asf_call_async = MagicMock()
+
+            with patch("app.main.QMessageBox.question") as question:
+                MainWindow._on_async_trade_preview(
+                    window, self.ORDER_ID, self.BOT_NAME, self.TRADE_URL,
+                    [self.ASSET_ID], assets, client, preview, None,
+                    automatic=True,
+                )
+
+            question.assert_not_called()
+            window._run_asf_call_async.assert_called_once()
+            status = self._query(
+                db_path, "SELECT status FROM delivery_orders WHERE order_id=?", (self.ORDER_ID,)
+            )[0]
+            self.assertEqual(status, "sending — запрос ASF")
 
     def test_unknown_result_locks_order_and_does_not_reset_for_retry(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -164,7 +261,7 @@ class DeliverySendFlowTests(unittest.TestCase):
                     with patch("app.main.QMessageBox.warning") as warning:
                         MainWindow._send_selected_order_with_asf(window)
 
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 status = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
@@ -201,14 +298,14 @@ class DeliverySendFlowTests(unittest.TestCase):
                     with patch("app.main.QMessageBox.warning"):
                         MainWindow._send_selected_order_with_asf(window)
 
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 row = db.execute(
                     "SELECT status, trade_offer_id, trade_confirmation_status "
                     "FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
                 ).fetchone()
             self.assertEqual(
-                row,
+                tuple(row),
                 ("неизвестен результат отправки — проверь исходящие Steam", "123456, 456789", "unknown"),
             )
             client.send_trade_offer.assert_called_once()
@@ -261,7 +358,7 @@ class DeliverySendFlowTests(unittest.TestCase):
                     MainWindow._send_selected_order_with_asf(window)
 
             client.send_trade_offer.assert_not_called()
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 status = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
@@ -273,7 +370,7 @@ class DeliverySendFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 db.execute(
                     "DELETE FROM steam_asset_reservations WHERE order_id = ?",
                     (self.ORDER_ID,),
@@ -288,7 +385,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             client.preview_trade_offer.assert_not_called()
             client.send_trade_offer.assert_not_called()
             warning.assert_called_once()
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 status = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
@@ -306,7 +403,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             )
 
             def remove_reservation_then_confirm(*args, **kwargs):
-                with sqlite3.connect(db_path) as db:
+                with connect_sqlite(db_path) as db:
                     db.execute(
                         "DELETE FROM steam_asset_reservations WHERE order_id = ?",
                         (self.ORDER_ID,),
@@ -324,7 +421,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             client.preview_trade_offer.assert_called_once()
             client.send_trade_offer.assert_not_called()
             warning.assert_called_once()
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 status = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
@@ -347,7 +444,7 @@ class DeliverySendFlowTests(unittest.TestCase):
                     with patch("app.main.QMessageBox.warning"):
                         MainWindow._send_selected_order_with_asf(window)
 
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 status = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
@@ -359,7 +456,7 @@ class DeliverySendFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             db_path = Path(temp) / "delivery.sqlite3"
             self._database(db_path)
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 db.execute(
                     "UPDATE delivery_orders SET status = ?, trade_confirmation_status = '' WHERE order_id = ?",
                     ("sending — запрос ASF", self.ORDER_ID),
@@ -372,13 +469,13 @@ class DeliverySendFlowTests(unittest.TestCase):
 
             self.assertEqual(recovered, 1)
             window._delete_trade_credential_best_effort.assert_called_once_with(self.ORDER_ID)
-            with sqlite3.connect(db_path) as db:
+            with connect_sqlite(db_path) as db:
                 row = db.execute(
                     "SELECT status, trade_confirmation_status FROM delivery_orders WHERE order_id = ?",
                     (self.ORDER_ID,),
                 ).fetchone()
             self.assertEqual(
-                row,
+                tuple(row),
                 ("неизвестен результат отправки — проверь исходящие Steam", "unknown"),
             )
 

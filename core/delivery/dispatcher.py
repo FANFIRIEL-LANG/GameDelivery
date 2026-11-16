@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
+from core.delivery.send_policy import DeliverySendPolicy, ManualDispatchAuthorization
 from integrations.asf.client import ASFClient, ASFError
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class DeliveryDispatcher:
@@ -23,14 +28,19 @@ class DeliveryDispatcher:
             "и торговые ограничения аккаунта. После устранения ограничения сообщите магазину."
         ),
         telegram_event: Callable[[str, dict[str, Any]], None] | None = None,
+        send_policy: DeliverySendPolicy | None = None,
     ) -> None:
         self.database = database
         self.asf = asf_client
         self.credentials = credential_store
         self.restricted_buyer_message = restricted_buyer_message
         self.telegram_event = telegram_event
+        self.send_policy = send_policy
         self.ledger = DeliveryLedger(database)
         self._ensure_events()
+
+    def auto_send_enabled(self) -> bool:
+        return bool(self.send_policy and self.send_policy.auto_send_enabled())
 
     def _ensure_events(self) -> None:
         with self.database.connect() as db:
@@ -85,46 +95,104 @@ class DeliveryDispatcher:
         leg_id: str,
         stored_trade_url: str,
         retry_generation: int = 0,
+        manual_authorization: ManualDispatchAuthorization | None = None,
     ) -> dict[str, Any]:
         order, leg = order_id.strip(), leg_id.strip()
         if not order or not leg:
             raise ValueError("order_id и leg_id обязательны")
+        if manual_authorization is None:
+            if not self.auto_send_enabled():
+                return {"dispatched": False, "status": "AUTO_SEND_DISABLED", "reason": "automatic dispatch is disabled"}
+        elif not self.send_policy or not self.send_policy.validate_manual_authorization(
+            manual_authorization, order, leg
+        ):
+            return {"dispatched": False, "status": "MANUAL_AUTHORIZATION_INVALID", "reason": "manual authorization is missing or expired"}
 
-        with self.database.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                """
-                SELECT l.*, o.status AS order_status, d.chat_id
-                FROM gd_delivery_legs l
-                JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
-                JOIN gd_orders o ON o.order_id=ol.order_id
-                JOIN gd_deals d ON d.deal_id=o.deal_id
-                WHERE l.leg_id=? AND o.order_id=?
-                """, (leg, order)
-            ).fetchone()
-            if row is None:
-                raise KeyError("DeliveryLeg не найден в указанном заказе")
-            if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "DELIVERED"}:
-                return {"dispatched": False, "status": row["order_status"], "reason": "order is locked"}
-            if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED", "PRIVACY_WAIT", "TRADE_RESTRICTED"}:
-                return {"dispatched": False, "status": row["status"], "reason": "leg is already locked"}
-            if row["status"] not in {"reserved", "planned"}:
-                return {"dispatched": False, "status": row["status"], "reason": "leg is not dispatchable"}
-            db.commit()
+        trade_url = self.credentials.load_trade_url(order, stored_trade_url)
+        authorization = {
+            "mode": "manual" if manual_authorization is not None else "automatic",
+        }
+        if manual_authorization is not None:
+            authorization["authorization_id"] = manual_authorization.authorization_id
 
-        attempt, created = self.ledger.create_delivery_attempt(
-            order_id=order, leg_id=leg, retry_generation=retry_generation,
-            status="prepared",
-        )
-        if not created:
-            # A previous attempt may have reached Steam before the process stopped.
-            self._set_state(order, leg, "UNKNOWN", "UNKNOWN", attempt["attempt_id"],
-                            {"reason": "idempotency key already exists; automatic retry prohibited"})
-            return {"dispatched": False, "status": "UNKNOWN", "reason": "idempotency key already exists"}
-
-        try:
-            trade_url = self.credentials.load_trade_url(order, stored_trade_url)
+        def claim_dispatch():
             with self.database.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    """
+                    SELECT l.*, o.status AS order_status, d.chat_id, ol.order_line_id
+                    FROM gd_delivery_legs l
+                    JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
+                    JOIN gd_orders o ON o.order_id=ol.order_id
+                    JOIN gd_deals d ON d.deal_id=o.deal_id
+                    WHERE l.leg_id=? AND o.order_id=?
+                    """, (leg, order)
+                ).fetchone()
+                if row is None:
+                    raise KeyError("DeliveryLeg не найден в указанном заказе")
+                if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "DELIVERED"}:
+                    return {"_claimed": False, "response": {"dispatched": False, "status": row["order_status"], "reason": "order is locked"}}
+                if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED", "PRIVACY_WAIT", "TRADE_RESTRICTED"}:
+                    return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "leg is already locked"}}
+                if row["status"] not in {"reserved", "planned"}:
+                    return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "leg is not dispatchable"}}
+                if db.execute(
+                    "SELECT 1 FROM gd_delivery_attempts "
+                    "WHERE order_id=? AND status='dispatching' LIMIT 1",
+                    (order,),
+                ).fetchone():
+                    return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "another leg of this order is dispatching"}}
+
+                try:
+                    asset_ids = json.loads(row["asset_ids_json"])
+                except (TypeError, ValueError):
+                    asset_ids = None
+                if (
+                    not isinstance(asset_ids, list) or not asset_ids
+                    or any(not isinstance(value, str) or not value for value in asset_ids)
+                    or len(set(asset_ids)) != len(asset_ids)
+                ):
+                    return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "invalid asset manifest"}}
+
+                reservations = db.execute(
+                    "SELECT asset_id FROM gd_resource_reservations "
+                    "WHERE order_line_id=? AND bot_name=? COLLATE NOCASE "
+                    "AND owner_type='order' AND app_id=? AND context_id=? AND state='active'",
+                    (row["order_line_id"], row["bot_name"], int(row["app_id"]), str(row["context_id"])),
+                ).fetchall()
+                reserved_ids = [str(value["asset_id"]) for value in reservations]
+                if sorted(reserved_ids) != sorted(asset_ids):
+                    return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "active reservation mismatch"}}
+                for asset_id in asset_ids:
+                    active_count = db.execute(
+                        "SELECT COUNT(*) FROM gd_resource_reservations "
+                        "WHERE bot_name=? COLLATE NOCASE AND asset_id=? AND state='active'",
+                        (row["bot_name"], asset_id),
+                    ).fetchone()[0]
+                    if active_count != 1:
+                        return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "asset has conflicting active reservations"}}
+
+                attempt, created = self.ledger.create_delivery_attempt(
+                    order_id=order, leg_id=leg, retry_generation=retry_generation,
+                    status="prepared", result={"dispatch_authorization": authorization},
+                    connection=db,
+                )
+                if not created:
+                    db.execute(
+                        "UPDATE gd_delivery_legs SET status='UNKNOWN', "
+                        "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
+                        (leg,),
+                    )
+                    db.execute(
+                        "UPDATE gd_delivery_attempts SET status='unknown',result_json=? WHERE attempt_id=?",
+                        (json.dumps({"reason": "idempotency key already exists; automatic retry prohibited"}), attempt["attempt_id"]),
+                    )
+                    db.execute(
+                        "UPDATE gd_orders SET status='UNKNOWN',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                        (order,),
+                    )
+                    return {"_claimed": False, "response": {"dispatched": False, "status": "UNKNOWN", "reason": "idempotency key already exists"}}
+
                 db.execute(
                     "UPDATE gd_delivery_attempts SET status='dispatching' WHERE attempt_id=?",
                     (attempt["attempt_id"],),
@@ -134,11 +202,36 @@ class DeliveryDispatcher:
                     "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
                     (leg,),
                 )
+                db.execute(
+                    "UPDATE gd_orders SET status='PROCESSING', "
+                    "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                    (order,),
+                )
+                return {"_claimed": True, "attempt": attempt, "row": dict(row), "asset_ids": asset_ids}
+
+        if manual_authorization is None:
+            authorized, claim = self.send_policy.run_auto_dispatch_claim(claim_dispatch) if self.send_policy else (False, None)
+        else:
+            authorized, claim = self.send_policy.run_manual_dispatch_claim(
+                manual_authorization, order, leg, claim_dispatch
+            )
+        if not authorized:
+            status = "AUTO_SEND_DISABLED" if manual_authorization is None else "MANUAL_AUTHORIZATION_INVALID"
+            return {"dispatched": False, "status": status, "reason": "dispatch authorization failed"}
+        if not claim["_claimed"]:
+            return claim["response"]
+        attempt, row, asset_ids = claim["attempt"], claim["row"], claim["asset_ids"]
+        try:
+            if manual_authorization is not None:
+                logger.info(
+                    "Manual delivery authorized; order_id=%s leg_id=%s authorization_id=%s",
+                    order, leg, manual_authorization.authorization_id,
+                )
             result = self.asf.send_trade_offer(
                 order_id=order,
                 bot_name=row["bot_name"],
                 trade_url=trade_url,
-                asset_ids=json.loads(row["asset_ids_json"]),
+                asset_ids=asset_ids,
                 app_id=int(row["app_id"]),
                 context_id=int(row["context_id"]),
             )
@@ -203,9 +296,20 @@ class DeliveryDispatcher:
         self, order_id: str, leg_id: str, leg_status: str, order_status: str,
         attempt_id: str, result: dict[str, Any], *, trade_offer_id: str | None = None,
     ) -> None:
-        encoded = json.dumps(result, ensure_ascii=False, sort_keys=True)
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT result_json FROM gd_delivery_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            try:
+                prior_result = json.loads(previous["result_json"] or "{}") if previous else {}
+            except (TypeError, ValueError):
+                prior_result = {}
+            merged_result = dict(result)
+            if isinstance(prior_result, dict) and "dispatch_authorization" in prior_result:
+                merged_result.setdefault("dispatch_authorization", prior_result["dispatch_authorization"])
+            encoded = json.dumps(merged_result, ensure_ascii=False, sort_keys=True)
             db.execute(
                 "UPDATE gd_delivery_legs SET status=?, trade_offer_id=COALESCE(?,trade_offer_id), "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",

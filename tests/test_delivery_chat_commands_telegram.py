@@ -10,6 +10,7 @@ from core.delivery.ledger import DeliveryLedger
 from core.delivery.chat_commands import BuyerChatCommandRegistry
 from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.reconciliation import DeliveryReconciliation
+from core.delivery.send_policy import DeliverySendPolicy
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from integrations.telegram.outbox import (
     BuyerPlatformMessageOutbox, TelegramBotOutbox, TelegramCredentialStore,
@@ -54,6 +55,23 @@ class FakeReconciliation:
         return []
 
 
+class MemorySettings:
+    def __init__(self):
+        self.values = {}
+
+    def value(self, key, default=None):
+        return self.values.get(key, default)
+
+    def setValue(self, key, value):
+        self.values[key] = value
+
+    def sync(self):
+        pass
+
+    def status(self):
+        return 0
+
+
 class ChatCommandsAndTelegramTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -66,7 +84,11 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         self.trade_credentials.store_trade_url(
             "order-1", "https://steamcommunity.com/tradeoffer/new/?partner=123&token=trade_secret"
         )
-        self.dispatcher = DeliveryDispatcher(self.db, self.asf, self.trade_credentials)
+        self.send_policy = DeliverySendPolicy(MemorySettings())
+        self.send_policy.set_auto_send_enabled(True)
+        self.dispatcher = DeliveryDispatcher(
+            self.db, self.asf, self.trade_credentials, send_policy=self.send_policy
+        )
         self._create_order()
 
     def tearDown(self):
@@ -130,6 +152,31 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(attempt["retry_generation"], 1)
         self.assertEqual(attempt["idempotency_key"], "order-1:leg-1:1")
+
+    def test_privacy_command_rechecks_inventory_and_prepares_manual_send_while_auto_is_off(self):
+        self.send_policy.set_auto_send_enabled(False)
+        self.asf.inventory["Bot-A"] = {
+            "Success": True, "Result": {"Bot-A": {"Assets": [{"assetid": "asset-1", "tradable": True}]}}
+        }
+        result = self._commands().handle(
+            text="!настроил приватность", chat_id="buyer-chat-1",
+            deal_id="deal-1", buyer_identity="76561197960265851", identity_verified=True,
+        )
+
+        self.assertEqual(result.status, "ready_for_manual_send")
+        self.assertTrue(result.message)
+        self.assertIn("Bot-A", self.asf.inventory)
+        self.assertEqual(self.asf.sent, [])
+        with self.db.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_orders WHERE order_id='order-1'"
+            ).fetchone()[0], "reserved")
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_delivery_legs WHERE leg_id='leg-1'"
+            ).fetchone()[0], "reserved")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
+            ).fetchone()[0], 1)
 
     def test_privacy_command_is_ignored_for_stale_states_and_wrong_identity_or_chat(self):
         commands = self._commands()
