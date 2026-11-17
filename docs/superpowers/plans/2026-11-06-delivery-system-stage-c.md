@@ -1067,3 +1067,9 @@ Fix: commit d08b7e13ef49801b86624837c655922ec6d69259 направляет test-m
 - Listing/deal/chat/order identities сохраняются независимо; история статусов и переписки привязана к правильной сделке.
 
 **Граница текущих работ:** в рамках текущего C.3 разрабатывается и тестируется только устойчивый listing stock/resource ledger contract и атомарные переходы. Live Playerok browser automation, действия с объявлениями, сообщения покупателям и автоматический relisting реализуются позднее отдельными этапами после готовности внутреннего браузера.
+
+#### Дополнение от 2026-11-16 — отдельная проверка авторизации в текущей WebEngine-странице
+
+Для устранения статической метки «вход не подтверждён» добавлена отдельная read-only проверка viewer, не запускающая загрузку продаж: пользователь нажимает отдельную кнопку, `BrowserViewerChecker` выполняет только GET `/rest-api/public/viewer` из контекста уже существующей `QWebEnginePage` с `credentials: include`. Новый page/profile не создаётся. Проверяются HTTP, JSON и непустой `viewer.id`; наружу передаётся только булев результат, viewer ID не сохраняется и не логируется. Классифицируются безопасные ошибки fetch/HTTP/JSON/viewer/JS bridge/request ID/poll/timeout/page destruction. MainWindow обновляет status label по сигналу панели.
+
+Целевой запуск `python -m unittest tests.test_playerok_browser_sales tests.test_playerok_browser_and_listing_config -q` — 49 tests OK; compileall затронутых Python-файлов и `git diff --check` прошли. Это mock-проверка, не live-acceptance: проверка на открытой авторизованной сессии ещё не запускалась. Просмотр продаж, sync, SQLite, заказов/резервов, Freshness proof, dispatcher, ASF и Steam не выполнялся. Live-результат должен быть зафиксирован отдельно и только после проверки пользователем.

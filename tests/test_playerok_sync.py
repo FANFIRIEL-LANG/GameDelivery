@@ -3,13 +3,15 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from integrations.playerok.sync import PlayerokDealSyncService
+from tests.playerok_freshness_fixtures import reader_completed_snapshot
 
 
-def deal(deal_id: str, listing_id: str, status: str = "PAID", chat_id: str | None = None):
+def deal(deal_id: str, listing_id: str | None, status: str = "PAID", chat_id: str | None = None):
     return {
         "platform": "playerok",
         "deal_id": deal_id,
@@ -102,11 +104,12 @@ class PlayerokDealSyncTests(unittest.TestCase):
             title="Configured CS2 listing",
         )
 
-    def normalized_deal_id(self, external_deal_id):
+    def normalized_deal_id(self, external_deal_id, account="seller-account-1"):
         with self.database.connect() as db:
             row = db.execute(
-                "SELECT deal_id FROM gd_deals WHERE source_platform='playerok' AND external_deal_id=?",
-                (external_deal_id,),
+                "SELECT deal_id FROM gd_deals WHERE source_platform='playerok' "
+                "AND playerok_account_id=? AND external_deal_id=?",
+                (account, external_deal_id),
             ).fetchone()
         self.assertIsNotNone(row)
         return row["deal_id"]
@@ -261,7 +264,9 @@ class PlayerokDealSyncTests(unittest.TestCase):
     def test_browser_snapshot_baseline_is_historical_and_does_not_create_orders(self):
         self.configure_listing("listing-old")
         result = self.syncer.sync_browser_snapshot(
-            "browser-seller", [deal("browser-old", "listing-old", "PAID", "chat-old")]
+            reader_completed_snapshot(
+                "browser-seller", [deal("browser-old", "listing-old", "PAID", "chat-old")]
+            )
         )
         self.assertTrue(result["baseline"])
         self.assertEqual(result["new_deals"], 0)
@@ -273,29 +278,109 @@ class PlayerokDealSyncTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_status_outbox").fetchone()[0], 0)
 
-    def test_browser_baseline_save_failure_rolls_back_deals_and_baseline_state(self):
-        good = deal("browser-good", "listing-good")
-        invalid = deal("", "listing-invalid")
-        with self.assertRaisesRegex(ValueError, "deal_id"):
-            self.syncer.sync_browser_snapshot("browser-seller", [good, invalid])
+    def test_browser_snapshot_requires_trusted_provenance_before_any_write(self):
+        from integrations.playerok.browser_sales import BrowserSalesSnapshot
+
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            self.syncer.sync_browser_snapshot(
+                BrowserSalesSnapshot("browser-seller", [deal("fake", "listing")])
+            )
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_sync_state").fetchone()[0], 0)
+
+    def test_browser_baseline_transaction_rolls_back_deals_and_state_on_write_error(self):
+        snapshot = reader_completed_snapshot("browser-seller", [
+            deal("browser-good", "listing-good"), deal("browser-fails", "listing-fails")
+        ])
+        original = self.syncer._upsert_deal
+        calls = 0
+
+        def fail_second(db, row, account, historical):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError("injected isolated test failure")
+            return original(db, row, account, historical)
+
+        with patch.object(self.syncer, "_upsert_deal", side_effect=fail_second):
+            with self.assertRaisesRegex(ValueError, "injected"):
+                self.syncer.sync_browser_snapshot(snapshot)
         with self.database.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_sync_state").fetchone()[0], 0)
 
     def test_browser_snapshot_incremental_sync_is_idempotent(self):
         self.configure_listing()
-        self.syncer.sync_browser_snapshot("browser-seller", [deal("browser-old", "listing-live", "SENT")])
-        snapshot = [
+        self.syncer.sync_browser_snapshot(reader_completed_snapshot(
+            "browser-seller", [deal("browser-old", "listing-live", "SENT")]
+        ))
+        snapshot_deals = [
             deal("browser-old", "listing-live", "SENT"),
             deal("browser-new", "listing-live", "PAID", "chat-new"),
         ]
-        first = self.syncer.sync_browser_snapshot("browser-seller", snapshot)
-        second = self.syncer.sync_browser_snapshot("browser-seller", snapshot)
+        first = self.syncer.sync_browser_snapshot(reader_completed_snapshot("browser-seller", snapshot_deals))
+        second = self.syncer.sync_browser_snapshot(reader_completed_snapshot("browser-seller", snapshot_deals))
         self.assertEqual(first["new_deals"], 1)
         self.assertEqual(second["new_deals"], 0)
         with self.database.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 2)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 1)
+
+    def test_unresolved_deals_complete_baseline_without_creating_delivery_rows(self):
+        snapshot = reader_completed_snapshot("seller-unresolved", [
+            deal("deal-no-listing", None, "PAID", "shared-chat"),
+        ])
+        result = self.syncer.sync_browser_snapshot(snapshot)
+        self.assertTrue(result["baseline"])
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT external_deal_id,chat_id,listing_id,config_version_id,is_historical,"
+                "source_listing_ref,listing_resolution_status FROM gd_deals"
+            ).fetchone()
+            self.assertEqual(tuple(row), (
+                "deal-no-listing", "shared-chat", None, None, 1, "", "unresolved"
+            ))
+            for table in ("gd_orders", "gd_order_lines", "gd_delivery_legs", "gd_resource_reservations"):
+                self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
+            state = db.execute(
+                "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id='seller-unresolved'"
+            ).fetchone()
+            self.assertEqual(state[0], 1)
+
+    def test_account_scoped_deals_and_multiple_deals_in_one_chat_remain_distinct(self):
+        rows = [
+            deal("shared-deal-id", None, "PAID", "shared-chat"),
+            deal("second-deal", None, "SENT", "shared-chat"),
+        ]
+        self.syncer.sync_browser_snapshot(reader_completed_snapshot("seller-one", rows))
+        self.syncer.sync_browser_snapshot(reader_completed_snapshot("seller-two", [rows[0]]))
+        with self.database.connect() as db:
+            stored = db.execute(
+                "SELECT playerok_account_id,external_deal_id,chat_id,deal_id FROM gd_deals "
+                "WHERE source_platform='playerok' ORDER BY playerok_account_id,external_deal_id"
+            ).fetchall()
+        self.assertEqual(len(stored), 3)
+        self.assertEqual(len({row[3] for row in stored}), 3)
+        self.assertEqual(sum(row[2] == "shared-chat" for row in stored), 3)
+
+    def test_manual_listing_resolution_updates_existing_row_and_preserves_historical_flag(self):
+        self.syncer.sync_browser_snapshot(reader_completed_snapshot("seller-one", [
+            {**deal("unresolved", None), "source_listing_ref": "untrusted-slug"}
+        ]))
+        original_id = self.normalized_deal_id("unresolved", "seller-one")
+        self.configure_listing("canonical-item-id")
+        result = self.syncer.resolve_unresolved_deal(
+            "seller-one", "unresolved", "canonical-item-id"
+        )
+        self.assertTrue(result["resolved"])
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT deal_id,listing_id,is_historical,listing_resolution_status,source_listing_ref "
+                "FROM gd_deals WHERE playerok_account_id='seller-one' AND external_deal_id='unresolved'"
+            ).fetchone()
+            self.assertEqual(tuple(row), (original_id, "configured-canonical-item-id", 1, "resolved", ""))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
 
 
     def test_new_paid_deal_waiting_for_listing_setup_uses_new_config_when_available(self):

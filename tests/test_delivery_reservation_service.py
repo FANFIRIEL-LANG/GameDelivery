@@ -12,6 +12,8 @@ from core.delivery.reservation_service import (
     DeliveryReservationService,
     InventorySnapshot,
 )
+from core.delivery.playerok_eligibility import PlayerokDeliveryBlocked
+from integrations.playerok.sync import PlayerokDealSyncService
 from games.cs2.inventory_view import (
     CS2InventoryInstance,
     RestrictionStatus,
@@ -29,6 +31,7 @@ class DeliveryReservationServiceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.database = Database(Path(self.temp.name) / "delivery.sqlite3")
         self.ledger = DeliveryLedger(self.database)
+        self.playerok_sync = PlayerokDealSyncService(self.database)
         self.service = DeliveryReservationService(self.database)
         self._counter = 0
 
@@ -148,6 +151,36 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
             ).fetchone()[0], 3)
+
+    def test_non_paid_playerok_order_is_rejected_before_any_reservation(self):
+        order, config_id = self.create_order(
+            quantity=1,
+            selectors={"game_id": "cs2", "app_id": 730, "context_id": 2},
+            bot_pool=["Bot-A"],
+            prefix="unpaid",
+        )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET platform_status='SENT' WHERE deal_id=?",
+                (f"deal-{order}",),
+            )
+        snapshots = {"Bot-A": self.snapshot("Bot-A", "cs2", 730, 2, [self.cs2_item("Bot-A", "x")])}
+
+        with self.assertRaises(PlayerokDeliveryBlocked):
+            self.service.reserve_order(
+                order_id=order, config_version_id=config_id, snapshots=snapshots, now=NOW
+            )
+
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_orders WHERE order_id=?", (order,)
+            ).fetchone()[0], "pending")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_order_lines WHERE order_id=?", (order,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
+            ).fetchone()[0], 0)
 
     def test_card_set_uses_existing_owned_set_selection_and_splits_across_bots(self):
         order, config_id = self.create_order(

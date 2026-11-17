@@ -11,6 +11,7 @@ from core.delivery.reservation_service import (
     InventorySnapshot,
     OrderReservationResult,
 )
+from core.delivery.playerok_eligibility import require_canonical_playerok_delivery_eligible
 from games.catalog import GAME_CATALOG
 from games.steam_cards.order_preflight import SteamCardOrderPreflight, MultiGameOrderPreflight
 from games.steam_cards.recipient_badge import RecipientBadge
@@ -39,6 +40,7 @@ class DeliveryOrderPipeline:
 
     def _config_for_order(self, order_id: str) -> dict[str, Any]:
         with self.database.connect() as db:
+            require_canonical_playerok_delivery_eligible(db, order_id)
             row = db.execute(
                 """
                 SELECT o.order_id,o.status,o.total_quantity,d.source_platform,
@@ -262,6 +264,7 @@ class DeliveryOrderPipeline:
         try:
             with self.database.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
+                require_canonical_playerok_delivery_eligible(db, order)
                 current = db.execute(
                     "SELECT status FROM gd_orders WHERE order_id=?", (order,)
                 ).fetchone()

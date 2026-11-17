@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from core.database.db import Database
+from core.delivery.playerok_eligibility import require_canonical_playerok_delivery_eligible
 from games.cs2.inventory_view import CS2InventoryInstance
 from games.steam_cards.owned_selection import select_owned_complete_sets
 from games.steam_cards.recipient_badge import RecipientBadge, evaluate_recipient_badge_capacity
@@ -290,6 +291,7 @@ class DeliveryReservationService:
 
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            require_canonical_playerok_delivery_eligible(connection, order)
             order_row = connection.execute(
                 "SELECT o.order_id, o.status, d.chat_id, d.config_version_id "
                 "FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id "

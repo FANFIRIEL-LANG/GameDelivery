@@ -8,9 +8,12 @@ from pathlib import Path
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.dispatcher import DeliveryDispatcher
+from core.delivery.playerok_freshness import PlayerokFreshnessGate
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.send_policy import DeliverySendPolicy
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
+from integrations.playerok.sync import PlayerokDealSyncService
+from tests.playerok_freshness_fixtures import reader_completed_snapshot
 
 
 class MemoryKeyring:
@@ -72,11 +75,13 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.db = Database(self.root / "delivery.sqlite3")
         self.ledger = DeliveryLedger(self.db)
+        self.playerok_sync = PlayerokDealSyncService(self.db)
         self.keyring = MemoryKeyring()
         self.credentials = SteamTradeCredentialStore(backend=self.keyring)
         self.asf = FakeASF()
         self.send_policy = DeliverySendPolicy(MemorySettings())
         self.send_policy.set_auto_send_enabled(True)
+        self.freshness_gate = PlayerokFreshnessGate()
         self.sent_offers = self.root / "sent_offers.json"
         self.reconciler = DeliveryReconciliation(
             self.db, self.asf, sent_offers_path=self.sent_offers
@@ -85,6 +90,7 @@ class DeliveryDispatchTests(unittest.TestCase):
             self.db, self.asf, self.credentials,
             restricted_buyer_message="Настройте Steam Guard и повторно обратитесь в магазин.",
             send_policy=self.send_policy,
+            playerok_freshness_gate=self.freshness_gate,
         )
         self.trade_url = self.credentials.store_trade_url(
             "order-1", "https://steamcommunity.com/tradeoffer/new/?partner=123&token=secret_token"
@@ -111,6 +117,11 @@ class DeliveryDispatchTests(unittest.TestCase):
             config_version_id=config["config_version_id"],
             platform_status="PAID",
         )
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET playerok_account_id=? WHERE deal_id=?",
+                (f"account-{order_id}", f"deal-{order_id}"),
+            )
         self.ledger.create_order(order_id=order_id, deal_id=f"deal-{order_id}", total_quantity=1)
         line_id = f"line-{order_id}"
         self.ledger.add_order_line(
@@ -142,13 +153,38 @@ class DeliveryDispatchTests(unittest.TestCase):
             )
         return legs
 
-    def dispatch(self, order_id, leg_id):
+    def _freshness_arguments(self, order_id, leg_id):
+        with self.db.connect() as db:
+            row = db.execute(
+                "SELECT external_deal_id,platform_status,playerok_account_id FROM gd_deals WHERE deal_id=?",
+                (f"deal-{order_id}",),
+            ).fetchone()
+        if row is None or row["platform_status"] != "PAID":
+            return {}
+        lease = self.freshness_gate.try_acquire_order(order_id)
+        proof = self.freshness_gate.issue_from_complete_snapshot(
+            reader_completed_snapshot(row["playerok_account_id"], [
+                {"deal_id": row["external_deal_id"], "status": "PAID"}
+            ]),
+            expected_account_user_id=row["playerok_account_id"],
+            deal_id=row["external_deal_id"], order_id=order_id, leg_id=leg_id,
+            lease=lease,
+        )
+        return {"playerok_freshness_authorization": proof, "playerok_order_lease": lease}
+
+    def dispatch(self, order_id, leg_id, *, manual_authorization=None):
         safe_url = self.trade_url if order_id == "order-1" else (
             "https://steamcommunity.com/tradeoffer/new/?partner=123"
         )
-        return self.dispatcher.dispatch_leg(
-            order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url
-        )
+        freshness = self._freshness_arguments(order_id, leg_id)
+        try:
+            return self.dispatcher.dispatch_leg(
+                order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
+                manual_authorization=manual_authorization, **freshness,
+            )
+        finally:
+            if freshness.get("playerok_order_lease") is not None:
+                self.freshness_gate.release_order(freshness["playerok_order_lease"])
 
     def test_transport_failure_becomes_unknown_and_reconciliation_recovers_offer_without_resend(self):
         leg = self.create_order()[0]
@@ -215,6 +251,10 @@ class DeliveryDispatchTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
             ).fetchone()[0], 0)
             self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations "
+                "WHERE order_line_id='line-order-1' AND state='active'"
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
                 "SELECT status FROM gd_delivery_legs WHERE leg_id=?", (leg,)
             ).fetchone()[0], "reserved")
             self.assertEqual(db.execute(
@@ -227,10 +267,7 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["manual-offer"]}
         grant = self.send_policy.issue_manual_authorization("order-1", leg)
 
-        result = self.dispatcher.dispatch_leg(
-            order_id="order-1", leg_id=leg, stored_trade_url=self.trade_url,
-            manual_authorization=grant,
-        )
+        result = self.dispatch("order-1", leg, manual_authorization=grant)
 
         self.assertTrue(result["dispatched"])
         self.assertEqual(len(self.asf.sent), 1)
@@ -253,6 +290,62 @@ class DeliveryDispatchTests(unittest.TestCase):
 
         self.assertFalse(result["dispatched"])
         self.assertIn("reservation", result["reason"])
+        self.assertEqual(self.asf.sent, [])
+        with self.db.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
+            ).fetchone()[0], 0)
+
+    def test_dispatch_blocks_non_paid_playerok_statuses_before_asf(self):
+        for index, status in enumerate(("SENT", "CONFIRMED", "CANCELLED", "unknown", ""), start=1):
+            order_id = f"nonpaid-{index}"
+            leg = self.create_order(order_id=order_id, bots=(f"Bot-{index}",))[0]
+            with self.db.connect() as db:
+                db.execute(
+                    "UPDATE gd_deals SET platform_status=? WHERE external_deal_id=?",
+                    (status, f"deal-external-{order_id}"),
+                )
+
+            result = self.dispatch(order_id, leg)
+
+            self.assertFalse(result["dispatched"], status)
+            self.assertEqual(result["status"], "PLAYEROK_NOT_ELIGIBLE")
+            self.assertEqual(self.asf.sent, [])
+            with self.db.connect() as db:
+                self.assertEqual(db.execute(
+                    "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id=?", (order_id,)
+                ).fetchone()[0], 0)
+
+    def test_paid_local_snapshot_without_fresh_browser_proof_is_blocked_before_asf(self):
+        leg = self.create_order()[0]
+        result = self.dispatcher.dispatch_leg(
+            order_id="order-1", leg_id=leg, stored_trade_url=self.trade_url
+        )
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["status"], "PLAYEROK_FRESHNESS_REQUIRED")
+        self.assertEqual(self.asf.sent, [])
+        with self.db.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_delivery_legs WHERE leg_id=?", (leg,)
+            ).fetchone()[0], "reserved")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations "
+                "WHERE order_line_id='line-order-1' AND state='active'"
+            ).fetchone()[0], 1)
+
+    def test_dispatch_blocks_historical_paid_playerok_deal_before_asf(self):
+        leg = self.create_order()[0]
+        with self.db.connect() as db:
+            db.execute("UPDATE gd_deals SET is_historical=1 WHERE deal_id='deal-order-1'")
+
+        result = self.dispatch("order-1", leg)
+
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["status"], "PLAYEROK_NOT_ELIGIBLE")
+        self.assertIn("Историческая", result["reason"])
         self.assertEqual(self.asf.sent, [])
         with self.db.connect() as db:
             self.assertEqual(db.execute(

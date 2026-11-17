@@ -10,7 +10,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QListWidgetItem
 from app.main import MainWindow
+from core.database.connection import connect_sqlite
+from core.database.db import Database
+from core.delivery.ledger import DeliveryLedger
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
+from integrations.playerok.sync import PlayerokDealSyncService
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
 
@@ -432,6 +436,20 @@ class AppStartupSmokeTests(unittest.TestCase):
                 ],
                 bot_name="Bot A",
             )
+            ledger_database = Database(database)
+            ledger = DeliveryLedger(ledger_database)
+            PlayerokDealSyncService(ledger_database)
+            config = ledger.create_listing_config_version(
+                listing_id="listing-deal-123", source_platform="playerok",
+                external_listing_id="listing-123", delivery_quantity_per_deal=1,
+                item_selectors={"game_id": "steam_cards", "app_id": 753, "context_id": 6},
+                bot_pool=["Bot A"],
+            )
+            ledger.create_deal(
+                deal_id="deal-123", source_platform="playerok", external_deal_id="deal-123",
+                chat_id="chat-123", listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"], platform_status="PAID",
+            )
             source_order = {
                 "platform": "playerok",
                 "order_id": "deal-123",
@@ -465,7 +483,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window._prepare_delivery_order()
                     warning.assert_not_called()
                     info.assert_called_once()
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=lambda _cursor, row: tuple(row)) as db:
                         order = db.execute(
                             "SELECT source_platform, source_order_id, source_title, source_buyer, "
                             "recipient_trade_url, status, asset_count, source_status, source_amount, source_url "
@@ -492,7 +510,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                         ],
                         "Abc_123",
                     )
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=lambda _cursor, row: tuple(row)) as db:
                         order_assets = db.execute(
                             "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"
                         ).fetchall()
@@ -509,7 +527,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.order_assets.item(1).setSelected(True)
                     window._prepare_delivery_order()
                     warning.assert_called_once()
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=lambda _cursor, row: tuple(row)) as db:
                         local_order_count = db.execute(
                             "SELECT COUNT(*) FROM delivery_orders"
                         ).fetchone()[0]

@@ -5,6 +5,11 @@ import json
 import sqlite3
 from typing import Any
 
+from integrations.playerok.browser_sales import (
+    BrowserSalesSnapshot,
+    is_trusted_browser_sales_snapshot,
+)
+
 
 class PlayerokDealSyncService:
     """Historical baseline and idempotent Playerok status synchronization."""
@@ -16,11 +21,6 @@ class PlayerokDealSyncService:
         self.send_policy = send_policy
         database.initialize()
         with database.connect() as db:
-            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_deals)")}
-            if "playerok_account_id" not in columns:
-                db.execute("ALTER TABLE gd_deals ADD COLUMN playerok_account_id TEXT")
-            if "is_historical" not in columns:
-                db.execute("ALTER TABLE gd_deals ADD COLUMN is_historical INTEGER NOT NULL DEFAULT 0")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS playerok_sync_state (
                     account_user_id TEXT PRIMARY KEY,
@@ -86,7 +86,7 @@ class PlayerokDealSyncService:
     def _listing_config(self, db: sqlite3.Connection, deal: dict[str, Any]):
         external_listing_id = str(deal.get("listing_id") or "").strip()
         if not external_listing_id:
-            raise ValueError("Playerok deal не содержит listing_id")
+            return None, None, None
         row = db.execute(
             "SELECT listing_id FROM gd_listings WHERE source_platform='playerok' AND external_listing_id=?",
             (external_listing_id,),
@@ -124,18 +124,43 @@ class PlayerokDealSyncService:
         return listing_id, str(config["config_version_id"]), dict(config)
 
     def _upsert_deal(self, db: sqlite3.Connection, deal: dict[str, Any], account_user_id: str, historical: bool):
-        external_id = str(deal.get("deal_id") or deal.get("order_id") or "").strip()
+        account_id = str(account_user_id or "").strip()
+        external_id = str(deal.get("deal_id") or "").strip()
+        if not account_id:
+            raise ValueError("Playerok account_user_id обязателен")
         if not external_id:
             raise ValueError("Playerok deal_id обязателен")
+        source_listing_ref = str(
+            deal.get("source_listing_ref") or deal.get("listing_reference") or ""
+        ).strip()
         listing_id, config_id, config = self._listing_config(db, deal)
         old = db.execute(
-            "SELECT deal_id,is_historical,listing_id,config_version_id FROM gd_deals "
-            "WHERE source_platform='playerok' AND external_deal_id=?",
-            (external_id,),
+            "SELECT deal_id,is_historical,listing_id,config_version_id,listing_resolution_status "
+            "FROM gd_deals WHERE source_platform='playerok' AND playerok_account_id=? "
+            "AND external_deal_id=?",
+            (account_id, external_id),
         ).fetchone()
         created = old is None
-        normalized_id = str(old["deal_id"]) if old else self._stable("playerok-deal", external_id)
+        normalized_id = str(old["deal_id"]) if old else self._stable(
+            "playerok-deal", account_id + "\x1f" + external_id
+        )
         historical_value = int(historical or (bool(old["is_historical"]) if old else False))
+        if old is not None:
+            previous_listing = str(old["listing_id"] or "")
+            if previous_listing and listing_id and previous_listing != listing_id:
+                raise ValueError("Playerok deal получил конфликтующую связь с объявлением")
+            if previous_listing and listing_id is None:
+                listing_id = previous_listing
+                config_id = str(old["config_version_id"]) if old["config_version_id"] else None
+                config_row = db.execute(
+                    "SELECT config_version_id,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
+                    "FROM gd_config_versions WHERE config_version_id=?", (config_id,),
+                ).fetchone() if config_id else None
+                config = dict(config_row) if config_row else None
+        listing_resolution_status = "resolved" if listing_id else "unresolved"
+        if not listing_id:
+            config_id = None
+            config = None
         # Freeze the ConfigVersion once an order exists: listing edits are only
         # applicable to future purchases. Deals awaiting setup may adopt a new version.
         if old is not None:
@@ -165,37 +190,102 @@ class PlayerokDealSyncService:
         db.execute("""
             INSERT INTO gd_deals
                 (deal_id,source_platform,external_deal_id,chat_id,listing_id,config_version_id,
-                 platform_status,payload_json,playerok_account_id,is_historical)
-            VALUES(?,'playerok',?,?,?,?,?,?,?,?)
+                 platform_status,payload_json,playerok_account_id,is_historical,
+                 source_listing_ref,listing_resolution_status)
+            VALUES(?,'playerok',?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(deal_id) DO UPDATE SET
                 chat_id=excluded.chat_id,listing_id=excluded.listing_id,
                 config_version_id=excluded.config_version_id,
                 platform_status=excluded.platform_status,payload_json=excluded.payload_json,
                 playerok_account_id=excluded.playerok_account_id,
-                is_historical=CASE WHEN gd_deals.is_historical=1 THEN 1 ELSE excluded.is_historical END
+                is_historical=CASE WHEN gd_deals.is_historical=1 THEN 1 ELSE excluded.is_historical END,
+                source_listing_ref=CASE WHEN excluded.source_listing_ref=''
+                    THEN gd_deals.source_listing_ref ELSE excluded.source_listing_ref END,
+                listing_resolution_status=excluded.listing_resolution_status
         """, (
             normalized_id, external_id, str(deal.get("chat_id") or "").strip() or None,
             listing_id, config_id, self._status(deal), self._json(payload),
-            account_user_id, historical_value,
+            account_id, historical_value, source_listing_ref, listing_resolution_status,
         ))
 
+        if config is not None:
+            self._maybe_create_order(
+                db, normalized_id, external_id, account_id, self._status(deal),
+                historical_value, listing_id, config_id, config,
+            )
+        return normalized_id, created
+
+    def resolve_unresolved_deal(
+        self, account_user_id: str, external_deal_id: str, external_listing_id: str
+    ) -> dict[str, Any]:
+        """Attach an existing deal to an exact, already-known Playerok listing ID."""
+        account_id = str(account_user_id or "").strip()
+        deal_id = str(external_deal_id or "").strip()
+        listing_external_id = str(external_listing_id or "").strip()
+        if not account_id or not deal_id or not listing_external_id:
+            raise ValueError("Account ID, deal_id и точный listing_id обязательны")
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT deal_id,is_historical,platform_status,listing_id,listing_resolution_status "
+                "FROM gd_deals WHERE source_platform='playerok' AND playerok_account_id=? "
+                "AND external_deal_id=?",
+                (account_id, deal_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Playerok deal не найден для этого аккаунта")
+            listing = db.execute(
+                "SELECT listing_id FROM gd_listings WHERE source_platform='playerok' "
+                "AND external_listing_id=?", (listing_external_id,),
+            ).fetchone()
+            if listing is None:
+                raise KeyError("Точный listing_id ещё не зарегистрирован в ConfigVersion")
+            listing_id = str(listing["listing_id"])
+            config = db.execute(
+                "SELECT config_version_id,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
+                "FROM gd_config_versions WHERE listing_id=? ORDER BY version_number DESC LIMIT 1",
+                (listing_id,),
+            ).fetchone()
+            if row["listing_id"] and str(row["listing_id"]) != listing_id:
+                raise ValueError("Сделка уже сопоставлена с другим объявлением")
+            config_id = str(config["config_version_id"]) if config else None
+            db.execute(
+                "UPDATE gd_deals SET listing_id=?,config_version_id=?,listing_resolution_status='resolved', "
+                "source_listing_ref='' WHERE deal_id=? AND playerok_account_id=?",
+                (listing_id, config_id, row["deal_id"], account_id),
+            )
+            if config:
+                self._maybe_create_order(
+                    db, str(row["deal_id"]), deal_id, account_id,
+                    str(row["platform_status"]), int(row["is_historical"]), listing_id,
+                    config_id, dict(config),
+                )
+        return {"deal_id": deal_id, "listing_id": listing_external_id, "resolved": True}
+
+    def _maybe_create_order(
+        self, db, normalized_id, external_id, account_id, status, historical,
+        listing_id, config_id, config,
+    ) -> None:
+        baseline = db.execute(
+            "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id=?",
+            (account_id,),
+        ).fetchone()
         quantity = config.get("delivery_quantity_per_deal")
         try:
             bot_pool = json.loads(config.get("bot_pool_json") or "[]")
         except (TypeError, ValueError):
             bot_pool = []
         if (
-            not historical_value and self._status(deal) == "PAID"
-            and type(quantity) is int and quantity > 0
-            and isinstance(bot_pool, list)
+            not historical and baseline is not None and baseline[0] == 1
+            and listing_id is not None and config_id is not None and status == "PAID"
+            and type(quantity) is int and quantity > 0 and isinstance(bot_pool, list)
             and any(isinstance(bot, str) and bot.strip() for bot in bot_pool)
         ):
-            order_id = self._stable("playerok-order", external_id)
-            db.execute("""
-                INSERT OR IGNORE INTO gd_orders(order_id,deal_id,status,total_quantity)
-                VALUES(?,?,'pending',?)
-            """, (order_id, normalized_id, quantity))
-        return normalized_id, created
+            order_id = self._stable("playerok-order", account_id + "\x1f" + external_id)
+            db.execute(
+                "INSERT OR IGNORE INTO gd_orders(order_id,deal_id,status,total_quantity) "
+                "VALUES(?,?,'pending',?)", (order_id, normalized_id, quantity),
+            )
 
     def _baseline(
         self, adapter: Any, account_user_id: str, *, allow_status_mutation: bool = False
@@ -350,15 +440,22 @@ class PlayerokDealSyncService:
             "status_updates": outbox_updates,
         }
 
-    def sync_browser_snapshot(
-        self, account_user_id: str, deals: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        """Persist a fully fetched read-only browser snapshot without API follow-ups."""
-        account_id = str(account_user_id or "").strip()
-        if not account_id:
-            raise ValueError("Browser snapshot is missing the Playerok account ID.")
-        if not isinstance(deals, list) or any(not isinstance(deal, dict) for deal in deals):
-            raise ValueError("Browser snapshot has an invalid deal list.")
+    def sync_browser_snapshot(self, snapshot: BrowserSalesSnapshot) -> dict[str, Any]:
+        """Persist only a complete snapshot registered by BrowserSalesReader."""
+        if not isinstance(snapshot, BrowserSalesSnapshot) or not is_trusted_browser_sales_snapshot(snapshot):
+            raise ValueError("Playerok snapshot is incomplete or lacks trusted reader provenance.")
+        account_id = str(snapshot.account_user_id or "").strip()
+        deals = snapshot.deals
+        if not account_id or not isinstance(deals, list):
+            raise ValueError("Browser snapshot has an invalid account or deal list.")
+        seen: set[str] = set()
+        for deal in deals:
+            if not isinstance(deal, dict):
+                raise ValueError("Browser snapshot has an invalid deal entry.")
+            external_id = str(deal.get("deal_id") or "").strip()
+            if not external_id or external_id in seen:
+                raise ValueError("Browser snapshot has a missing or duplicate deal_id.")
+            seen.add(external_id)
         with self.database.connect() as db:
             state = db.execute(
                 "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id=?",

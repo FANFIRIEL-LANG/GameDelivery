@@ -11,6 +11,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 from app.main import MainWindow
 from core.database.connection import connect_sqlite
+from core.database.db import Database
+from core.delivery.ledger import DeliveryLedger
+from integrations.playerok.sync import PlayerokDealSyncService
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
@@ -184,6 +187,93 @@ class TradeDeliveryUITests(unittest.TestCase):
                         reservations = db.execute("SELECT COUNT(*) FROM steam_asset_reservations").fetchone()[0]
                     self.assertEqual(orders, 0)
                     self.assertEqual(reservations, 0)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+    def test_playerok_import_without_canonical_account_does_not_create_legacy_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            self._make_database(database)
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                window._trade_credentials = SteamTradeCredentialStore(backend=MemoryKeyring())
+                try:
+                    window._import_marketplace_order({
+                        "platform": "playerok", "deal_id": "deal-unpaid", "order_id": "deal-unpaid",
+                        "account_user_id": "seller-1", "title": "Test card", "buyer": "buyer", "status": "SENT",
+                    })
+                    with connect_sqlite(database) as db:
+                        self.assertEqual(db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders WHERE source_order_id='deal-unpaid'"
+                        ).fetchone()[0], 0)
+                        self.assertEqual(db.execute(
+                            "SELECT COUNT(*) FROM delivery_order_assets WHERE order_id LIKE 'GD-%'"
+                        ).fetchone()[0], 0)
+                        self.assertEqual(db.execute(
+                            "SELECT COUNT(*) FROM steam_asset_reservations"
+                        ).fetchone()[0], 0)
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
+
+    def test_reimported_paid_status_cannot_unblock_historical_baseline_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "orders.sqlite3"
+            self._make_database(database)
+            ledger_database = Database(database)
+            ledger = DeliveryLedger(ledger_database)
+            PlayerokDealSyncService(ledger_database)
+            config = ledger.create_listing_config_version(
+                listing_id="listing-baseline", source_platform="playerok",
+                external_listing_id="external-listing-baseline", delivery_quantity_per_deal=1,
+                item_selectors={"app_id": 753, "context_id": 6, "item_type": "steam_card_set"},
+                bot_pool=["Bot A"],
+            )
+            ledger.create_deal(
+                deal_id="deal-baseline", source_platform="playerok", external_deal_id="deal-baseline",
+                chat_id="chat-baseline", listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"], platform_status="PAID",
+            )
+            with ledger_database.connect() as db:
+                db.execute("UPDATE gd_deals SET playerok_account_id='seller-1',is_historical=1 WHERE deal_id='deal-baseline'")
+                db.execute(
+                    "INSERT INTO playerok_sync_state(account_user_id,baseline_completed) VALUES('seller-1',1)"
+                )
+
+            with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
+                window = MainWindow()
+                window._trade_credentials = SteamTradeCredentialStore(backend=MemoryKeyring())
+                try:
+                    order = {
+                        "platform": "playerok", "deal_id": "deal-baseline", "order_id": "deal-baseline",
+                        "account_user_id": "seller-1",
+                        "title": "Historical listing", "buyer": "buyer", "status": "SENT",
+                    }
+                    window._import_marketplace_order(order)
+                    window._import_marketplace_order({**order, "status": "PAID"})
+                    window.orders.selectRow(0)
+                    window.order_recipient.setText(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+                    )
+                    window.order_assets.item(0).setSelected(True)
+                    with patch("app.main.QMessageBox.warning") as warning, \
+                         patch("app.main.ASFClient") as asf_client:
+                        window._prepare_delivery_order()
+                    warning.assert_called_once()
+                    asf_client.assert_not_called()
+                    with connect_sqlite(database) as db:
+                        self.assertEqual(db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders WHERE source_order_id='deal-baseline'"
+                        ).fetchone()[0], 0)
+                        self.assertEqual(db.execute(
+                            "SELECT is_historical FROM gd_deals WHERE deal_id='deal-baseline'"
+                        ).fetchone()[0], 1)
+                        self.assertEqual(db.execute(
+                            "SELECT COUNT(*) FROM steam_asset_reservations"
+                        ).fetchone()[0], 0)
                 finally:
                     window.close()
                     window.deleteLater()

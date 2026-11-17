@@ -306,6 +306,12 @@ class BuyerChatCommandRegistry:
                 "Инвентарь повторно проверен, заказ подготовлен и резерв сохранён. "
                 "Автоматическая отправка выключена; для доставки подтверди отправку этого заказа.",
             )
+        if result.get("status") == "PLAYEROK_FRESHNESS_REQUIRED":
+            return ChatCommandResult(
+                True, "!настроил приватность", "playerok_freshness_required",
+                "Отправка заблокирована: требуется свежая проверка статуса сделки в браузере Playerok. "
+                "Резерв сохранён; Steam offer не создавался.",
+            )
         return ChatCommandResult(
             True, "!настроил приватность", str(result.get("status", "unknown")),
             "Повторная попытка обработки заказа запущена." if result.get("dispatched")

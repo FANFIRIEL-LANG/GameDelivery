@@ -16,6 +16,7 @@ from integrations.telegram.outbox import (
     BuyerPlatformMessageOutbox, TelegramBotOutbox, TelegramCredentialStore,
     TelegramOperatorReplyRouter,
 )
+from integrations.playerok.sync import PlayerokDealSyncService
 
 
 class MemoryKeyring:
@@ -77,6 +78,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.temp.name) / "delivery.sqlite3")
         self.ledger = DeliveryLedger(self.db)
+        self.playerok_sync = PlayerokDealSyncService(self.db)
         self.asf = FakeASF()
         self.reconciliation = FakeReconciliation()
         self.keyring = MemoryKeyring()
@@ -135,7 +137,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             inventory_client=self.asf, custom_commands=custom,
         )
 
-    def test_privacy_command_rechecks_inventory_and_dispatches_generation_plus_one(self):
+    def test_privacy_command_fails_closed_without_gui_browser_freshness_bridge(self):
         self.asf.inventory["Bot-A"] = {
             "Success": True, "Result": {"Bot-A": {"Assets": [{"assetid": "asset-1", "tradable": True}]}}
         }
@@ -143,15 +145,20 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             text="!настроил приватность", chat_id="buyer-chat-1",
             deal_id="deal-1", buyer_identity="76561197960265851", identity_verified=True,
         )
-        self.assertEqual(result.status, "SENT_TO_STEAM")
-        self.assertEqual(len(self.asf.sent), 1)
+        self.assertEqual(result.status, "playerok_freshness_required")
+        self.assertEqual(len(self.asf.sent), 0)
+        self.assertIn("свежая проверка статуса", result.message)
         with self.db.connect() as db:
             attempt = db.execute(
                 "SELECT retry_generation,idempotency_key FROM gd_delivery_attempts "
                 "WHERE order_id='order-1' ORDER BY retry_generation DESC LIMIT 1"
             ).fetchone()
-        self.assertEqual(attempt["retry_generation"], 1)
-        self.assertEqual(attempt["idempotency_key"], "order-1:leg-1:1")
+            leg_status = db.execute(
+                "SELECT status FROM gd_delivery_legs WHERE leg_id='leg-1'"
+            ).fetchone()[0]
+        self.assertEqual(attempt["retry_generation"], 0)
+        self.assertEqual(attempt["idempotency_key"], "order-1:leg-1:0")
+        self.assertEqual(leg_status, "reserved")
 
     def test_privacy_command_rechecks_inventory_and_prepares_manual_send_while_auto_is_off(self):
         self.send_policy.set_auto_send_enabled(False)

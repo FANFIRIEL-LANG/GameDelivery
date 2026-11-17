@@ -13,6 +13,8 @@ from core.database.connection import connect_sqlite
 
 MIGRATION_ID = "2026-11-delivery-ledger-v1"
 BACKUP_SUFFIX = ".pre-gamedelivery-ledger-v1.bak"
+PLAYEROK_SYNC_MIGRATION_ID = "2026-11-playerok-sync-v2"
+PLAYEROK_SYNC_BACKUP_SUFFIX = ".pre-gamedelivery-playerok-sync-v2.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -195,11 +197,13 @@ def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def _migration_applied(connection: sqlite3.Connection) -> bool:
+def _migration_applied(
+    connection: sqlite3.Connection, migration_id: str = MIGRATION_ID
+) -> bool:
     if not _table_exists(connection, "gd_schema_migrations"):
         return False
     return connection.execute(
-        "SELECT 1 FROM gd_schema_migrations WHERE migration_id=?", (MIGRATION_ID,)
+        "SELECT 1 FROM gd_schema_migrations WHERE migration_id=?", (migration_id,)
     ).fetchone() is not None
 
 
@@ -267,18 +271,23 @@ def _sanitize_backup_secrets(connection: sqlite3.Connection) -> None:
                         )
 
 
-def ensure_pre_migration_backup(database_path: str | Path) -> Path | None:
+def ensure_pre_migration_backup(
+    database_path: str | Path,
+    *,
+    migration_id: str = MIGRATION_ID,
+    backup_suffix: str = BACKUP_SUFFIX,
+) -> Path | None:
     """Create one online backup before migration, with token-bearing fields redacted."""
     path = Path(database_path)
     if str(database_path) == ":memory:" or not path.exists() or path.stat().st_size == 0:
         return None
-    backup_path = Path(str(path) + BACKUP_SUFFIX)
+    backup_path = Path(str(path) + backup_suffix)
     if backup_path.exists():
         return backup_path
     temporary_path = Path(str(backup_path) + ".tmp")
     try:
         with connect_sqlite(path) as source:
-            if _migration_applied(source):
+            if _migration_applied(source, migration_id):
                 return None
             with connect_sqlite(temporary_path) as destination:
                 source.backup(destination)
@@ -604,40 +613,180 @@ def _backfill_legacy_reservations(connection: sqlite3.Connection) -> None:
             )
 
 
-def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
-    """Apply the one-time additive v1 ledger migration to an open DB."""
-    connection.execute("PRAGMA foreign_keys = ON")
-    if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-        raise sqlite3.OperationalError("Foreign-key enforcement is required for the delivery ledger")
-    if _migration_applied(connection):
+def _apply_playerok_sync_migration(connection: sqlite3.Connection) -> bool:
+    if _migration_applied(connection, PLAYEROK_SYNC_MIGRATION_ID):
         return False
+    if connection.in_transaction:
+        raise sqlite3.OperationalError(
+            "Playerok sync migration requires a connection without an active transaction"
+        )
+
+    previous_foreign_keys = int(connection.execute("PRAGMA foreign_keys").fetchone()[0])
+    connection.execute("PRAGMA foreign_keys = OFF")
     connection.execute("BEGIN IMMEDIATE")
     try:
-        for statement in SCHEMA_STATEMENTS:
-            connection.execute(statement)
-        _backfill_core_orders(connection)
-        _backfill_delivery_orders(connection)
-        _backfill_legacy_reservations(connection)
-        connection.execute("INSERT INTO gd_schema_migrations (migration_id) VALUES (?)", (MIGRATION_ID,))
-        violations = []
-        for table in (
-            "gd_config_versions", "gd_deals", "gd_orders", "gd_order_lines",
-            "gd_delivery_legs", "gd_delivery_attempts", "gd_resource_reservations",
-            "gd_legacy_order_map",
-        ):
-            violations.extend(connection.execute(f"PRAGMA foreign_key_check({table})").fetchall())
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS playerok_sync_state (
+                account_user_id TEXT PRIMARY KEY,
+                baseline_completed INTEGER NOT NULL DEFAULT 0 CHECK (baseline_completed IN (0,1)),
+                baseline_completed_at TEXT,
+                last_sync_at TEXT
+            )
+        """)
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(gd_deals)")}
+        if "playerok_account_id" not in columns:
+            connection.execute("ALTER TABLE gd_deals ADD COLUMN playerok_account_id TEXT")
+        if "is_historical" not in columns:
+            connection.execute(
+                "ALTER TABLE gd_deals ADD COLUMN is_historical INTEGER NOT NULL DEFAULT 0"
+            )
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(gd_deals)")}
+        if "source_listing_ref" not in columns:
+            connection.execute(
+                "ALTER TABLE gd_deals ADD COLUMN source_listing_ref TEXT NOT NULL DEFAULT ''"
+            )
+        if "listing_resolution_status" not in columns:
+            connection.execute(
+                "ALTER TABLE gd_deals ADD COLUMN listing_resolution_status TEXT NOT NULL DEFAULT 'resolved'"
+            )
+
+        duplicate = connection.execute("""
+            SELECT playerok_account_id,external_deal_id,COUNT(*) AS copies
+            FROM gd_deals
+            WHERE source_platform='playerok'
+              AND playerok_account_id IS NOT NULL AND trim(playerok_account_id)<>''
+            GROUP BY playerok_account_id,external_deal_id
+            HAVING COUNT(*)>1 LIMIT 1
+        """).fetchone()
+        if duplicate is not None:
+            raise sqlite3.IntegrityError(
+                "Playerok account/deal identity conflict; migration stopped without removing rows"
+            )
+
+        # Unknown historical ownership/baseline cannot authorize delivery.
+        connection.execute("""
+            UPDATE gd_deals SET is_historical=1
+            WHERE source_platform='playerok' AND (
+                playerok_account_id IS NULL OR trim(playerok_account_id)=''
+                OR NOT EXISTS (
+                    SELECT 1 FROM playerok_sync_state s
+                    WHERE s.account_user_id=gd_deals.playerok_account_id
+                      AND s.baseline_completed=1
+                )
+            )
+        """)
+
+        connection.execute("""
+            CREATE TABLE gd_deals_v2 (
+                deal_id TEXT PRIMARY KEY,
+                source_platform TEXT NOT NULL,
+                external_deal_id TEXT NOT NULL,
+                chat_id TEXT,
+                listing_id TEXT REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                config_version_id TEXT REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                platform_status TEXT NOT NULL DEFAULT 'unknown',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                playerok_account_id TEXT,
+                is_historical INTEGER NOT NULL DEFAULT 0 CHECK (is_historical IN (0,1)),
+                source_listing_ref TEXT NOT NULL DEFAULT '',
+                listing_resolution_status TEXT NOT NULL DEFAULT 'resolved'
+                    CHECK (listing_resolution_status IN ('resolved','unresolved')),
+                CHECK (
+                    (listing_id IS NULL AND config_version_id IS NULL
+                        AND listing_resolution_status='unresolved')
+                    OR (listing_id IS NOT NULL AND listing_resolution_status='resolved')
+                )
+            )
+        """)
+        connection.execute("""
+            INSERT INTO gd_deals_v2
+                (deal_id,source_platform,external_deal_id,chat_id,listing_id,config_version_id,
+                 platform_status,payload_json,created_at,playerok_account_id,is_historical,
+                 source_listing_ref,listing_resolution_status)
+            SELECT deal_id,source_platform,external_deal_id,chat_id,listing_id,config_version_id,
+                   platform_status,payload_json,created_at,playerok_account_id,is_historical,
+                   source_listing_ref,
+                   CASE WHEN listing_id IS NULL THEN 'unresolved' ELSE 'resolved' END
+            FROM gd_deals
+        """)
+        connection.execute("DROP TABLE gd_deals")
+        connection.execute("ALTER TABLE gd_deals_v2 RENAME TO gd_deals")
+        connection.execute("""
+            CREATE UNIQUE INDEX idx_gd_deals_playerok_account_external
+            ON gd_deals(playerok_account_id,external_deal_id)
+            WHERE source_platform='playerok'
+              AND playerok_account_id IS NOT NULL AND trim(playerok_account_id)<>''
+        """)
+        connection.execute("""
+            CREATE UNIQUE INDEX idx_gd_deals_non_playerok_external
+            ON gd_deals(source_platform,external_deal_id)
+            WHERE source_platform<>'playerok'
+        """)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gd_deals_chat ON gd_deals(chat_id, created_at)"
+        )
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise sqlite3.IntegrityError(
-                f"Delivery ledger migration created FK violations: {len(violations)}"
+                f"Playerok sync migration found {len(violations)} foreign-key violation(s)"
             )
+        connection.execute(
+            "INSERT INTO gd_schema_migrations (migration_id) VALUES (?)",
+            (PLAYEROK_SYNC_MIGRATION_ID,),
+        )
         connection.commit()
     except Exception:
         connection.rollback()
         raise
+    finally:
+        if previous_foreign_keys:
+            connection.execute("PRAGMA foreign_keys = ON")
+    if previous_foreign_keys and int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+        raise sqlite3.OperationalError("Foreign-key enforcement could not be restored")
     return True
+
+
+def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
+    """Apply the canonical ledger and the account-scoped Playerok sync migration."""
+    connection.execute("PRAGMA foreign_keys = ON")
+    if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+        raise sqlite3.OperationalError("Foreign-key enforcement is required for the delivery ledger")
+    changed = False
+    if not _migration_applied(connection):
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in SCHEMA_STATEMENTS:
+                connection.execute(statement)
+            _backfill_core_orders(connection)
+            _backfill_delivery_orders(connection)
+            _backfill_legacy_reservations(connection)
+            connection.execute("INSERT INTO gd_schema_migrations (migration_id) VALUES (?)", (MIGRATION_ID,))
+            violations = []
+            for table in (
+                "gd_config_versions", "gd_deals", "gd_orders", "gd_order_lines",
+                "gd_delivery_legs", "gd_delivery_attempts", "gd_resource_reservations",
+                "gd_legacy_order_map",
+            ):
+                violations.extend(connection.execute(f"PRAGMA foreign_key_check({table})").fetchall())
+            if violations:
+                raise sqlite3.IntegrityError(
+                    f"Delivery ledger migration created FK violations: {len(violations)}"
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        changed = True
+    return _apply_playerok_sync_migration(connection) or changed
 
 
 def migrate_delivery_ledger(database_path: str | Path) -> bool:
     ensure_pre_migration_backup(database_path)
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=PLAYEROK_SYNC_MIGRATION_ID,
+        backup_suffix=PLAYEROK_SYNC_BACKUP_SUFFIX,
+    )
     with connect_sqlite(database_path) as connection:
         return apply_delivery_ledger_migrations(connection)

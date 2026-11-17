@@ -557,8 +557,8 @@ class PlayerokAdapter(MarketplaceAdapter):
         deal_id = str(deal.get("id") or "").strip()
         listing_id = str(item.get("id") or "").strip()
         chat_id = str(chat.get("id") or "").strip()
-        if not deal_id or not listing_id:
-            raise RuntimeError("Playerok не вернул отдельные deal ID и listing ID.")
+        if not deal_id:
+            raise RuntimeError("Playerok не вернул подтверждённый deal ID.")
         deal_url = "https://playerok.com/deal/" + deal_id
         chat_url = "https://playerok.com/chats/" + chat_id if chat_id else ""
         return {
@@ -566,7 +566,10 @@ class PlayerokAdapter(MarketplaceAdapter):
             "deal_id": deal_id,
             "order_id": deal_id,
             "chat_id": chat_id,
-            "listing_id": listing_id,
+            # An absent item.id is unresolved. Never substitute a URL slug or title.
+            "listing_id": listing_id or None,
+            "source_listing_ref": str(item.get("slug") or "").strip(),
+            "listing_resolution_status": "resolved" if listing_id else "unresolved",
             "title": str(item.get("name") or "Товар Playerok"),
             "buyer": str(buyer.get("username") or buyer.get("name") or "—"),
             "buyer_id": str(buyer.get("id") or ""),

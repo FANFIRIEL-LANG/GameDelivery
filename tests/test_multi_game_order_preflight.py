@@ -5,10 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.order_pipeline import DeliveryOrderPipeline, NO_CARDS_MESSAGE
+from core.delivery.playerok_eligibility import PlayerokDeliveryBlocked
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.reservation_service import InventorySnapshot
 from games.cs2.inventory_view import (
@@ -27,6 +29,7 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.database = Database(Path(self.temp.name) / "pipeline.sqlite3")
         self.ledger = DeliveryLedger(self.database)
+        self.playerok_sync = PlayerokDealSyncService(self.database)
         self.pipeline = DeliveryOrderPipeline(self.database)
 
     def tearDown(self):
@@ -57,6 +60,38 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
             total_quantity=quantity,
         )
         return "order-" + suffix, config["config_version_id"]
+
+    def test_non_paid_card_order_is_rejected_before_preflight_or_reservation(self):
+        order, _ = self.create_order(
+            quantity=1,
+            selectors={"game_id": "steam_cards", "app_id": 753, "context_id": 6,
+                       "item_type": "steam_card_set"},
+            bots=["Bot-A"],
+            suffix="unpaid-cards",
+        )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET platform_status='CONFIRMED' WHERE deal_id=?",
+                ("deal-unpaid-cards",),
+            )
+
+        with patch("core.delivery.order_pipeline.SteamCardOrderPreflight.prepare_multi_game") as preflight:
+            with self.assertRaises(PlayerokDeliveryBlocked):
+                self.pipeline.prepare_steam_card_order(
+                    order_id=order, inventories={}, recipient_badges=(),
+                    badge_data_verified=False, buyer_complete_sets_by_app_id={},
+                    buyer_inventory_verified=False, seller_inventory_verified=False,
+                    card_hashes_by_app_id={}, card_definitions_verified=False,
+                )
+
+        preflight.assert_not_called()
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_order_lines WHERE order_id=?", (order,)
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
+            ).fetchone()[0], 0)
 
     def test_card_sets_use_quantity_badge_formula_shared_bots_and_canonical_legs(self):
         order, _ = self.create_order(

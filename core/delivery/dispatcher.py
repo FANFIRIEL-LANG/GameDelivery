@@ -6,6 +6,16 @@ from typing import Any, Callable
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
+from core.delivery.playerok_eligibility import (
+    PlayerokDeliveryBlocked,
+    require_canonical_playerok_delivery_eligible,
+)
+from core.delivery.playerok_freshness import (
+    PlayerokFreshnessBlocked,
+    PlayerokFreshnessGate,
+    PlayerokFreshnessProof,
+    PlayerokOrderLease,
+)
 from core.delivery.send_policy import DeliverySendPolicy, ManualDispatchAuthorization
 from integrations.asf.client import ASFClient, ASFError
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
@@ -29,6 +39,7 @@ class DeliveryDispatcher:
         ),
         telegram_event: Callable[[str, dict[str, Any]], None] | None = None,
         send_policy: DeliverySendPolicy | None = None,
+        playerok_freshness_gate: PlayerokFreshnessGate | None = None,
     ) -> None:
         self.database = database
         self.asf = asf_client
@@ -36,6 +47,7 @@ class DeliveryDispatcher:
         self.restricted_buyer_message = restricted_buyer_message
         self.telegram_event = telegram_event
         self.send_policy = send_policy
+        self.playerok_freshness_gate = playerok_freshness_gate
         self.ledger = DeliveryLedger(database)
         self._ensure_events()
 
@@ -96,6 +108,8 @@ class DeliveryDispatcher:
         stored_trade_url: str,
         retry_generation: int = 0,
         manual_authorization: ManualDispatchAuthorization | None = None,
+        playerok_freshness_authorization: PlayerokFreshnessProof | None = None,
+        playerok_order_lease: PlayerokOrderLease | None = None,
     ) -> dict[str, Any]:
         order, leg = order_id.strip(), leg_id.strip()
         if not order or not leg:
@@ -114,13 +128,16 @@ class DeliveryDispatcher:
         }
         if manual_authorization is not None:
             authorization["authorization_id"] = manual_authorization.authorization_id
+        if isinstance(playerok_freshness_authorization, PlayerokFreshnessProof):
+            authorization["playerok_status_checked_at"] = playerok_freshness_authorization.checked_at
 
         def claim_dispatch():
             with self.database.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
                     """
-                    SELECT l.*, o.status AS order_status, d.chat_id, ol.order_line_id
+                    SELECT l.*, o.status AS order_status, d.chat_id, ol.order_line_id,
+                           d.source_platform, d.external_deal_id, d.playerok_account_id
                     FROM gd_delivery_legs l
                     JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
                     JOIN gd_orders o ON o.order_id=ol.order_id
@@ -129,7 +146,49 @@ class DeliveryDispatcher:
                     """, (leg, order)
                 ).fetchone()
                 if row is None:
+                    if self.playerok_freshness_gate is not None:
+                        self.playerok_freshness_gate.revoke(playerok_freshness_authorization)
                     raise KeyError("DeliveryLeg не найден в указанном заказе")
+                is_playerok = str(row["source_platform"] or "").strip().casefold() == "playerok"
+                if (
+                    is_playerok and self.playerok_freshness_gate is not None
+                    and playerok_freshness_authorization is not None
+                ):
+                    try:
+                        self.playerok_freshness_gate.consume_for_claim(
+                            playerok_freshness_authorization,
+                            account_user_id=str(row["playerok_account_id"] or ""),
+                            deal_id=str(row["external_deal_id"] or ""),
+                            order_id=order,
+                            leg_id=leg,
+                            lease=playerok_order_lease,
+                            claim=lambda: True,
+                        )
+                    except PlayerokFreshnessBlocked as exc:
+                        return {"_claimed": False, "response": {
+                            "dispatched": False,
+                            "status": "PLAYEROK_FRESHNESS_REQUIRED",
+                            "reason": str(exc),
+                        }}
+                try:
+                    require_canonical_playerok_delivery_eligible(db, order)
+                except PlayerokDeliveryBlocked as exc:
+                    if is_playerok and self.playerok_freshness_gate is not None:
+                        self.playerok_freshness_gate.revoke(playerok_freshness_authorization)
+                    return {"_claimed": False, "response": {
+                        "dispatched": False,
+                        "status": "PLAYEROK_NOT_ELIGIBLE",
+                        "reason": str(exc),
+                    }}
+                if is_playerok and (
+                    self.playerok_freshness_gate is None
+                    or playerok_freshness_authorization is None
+                ):
+                    return {"_claimed": False, "response": {
+                        "dispatched": False,
+                        "status": "PLAYEROK_FRESHNESS_REQUIRED",
+                        "reason": "Перед отправкой требуется свежая проверка Playerok через браузер.",
+                    }}
                 if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "DELIVERED"}:
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["order_status"], "reason": "order is locked"}}
                 if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED", "PRIVACY_WAIT", "TRADE_RESTRICTED"}:

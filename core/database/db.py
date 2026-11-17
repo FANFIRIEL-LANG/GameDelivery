@@ -4,7 +4,12 @@ import sqlite3
 from pathlib import Path
 
 from core.database.connection import connect_sqlite
-from core.database.ledger_migrations import apply_delivery_ledger_migrations, ensure_pre_migration_backup
+from core.database.ledger_migrations import (
+    PLAYEROK_SYNC_BACKUP_SUFFIX,
+    PLAYEROK_SYNC_MIGRATION_ID,
+    apply_delivery_ledger_migrations,
+    ensure_pre_migration_backup,
+)
 
 
 SCHEMA = """
@@ -41,6 +46,11 @@ class Database:
 
     def initialize(self) -> None:
         ensure_pre_migration_backup(self.path)
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=PLAYEROK_SYNC_MIGRATION_ID,
+            backup_suffix=PLAYEROK_SYNC_BACKUP_SUFFIX,
+        )
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             apply_delivery_ledger_migrations(connection)

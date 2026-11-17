@@ -126,6 +126,8 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
             "order_id": "deal-123",
             "chat_id": "chat-123",
             "listing_id": "listing-1",
+            "source_listing_ref": "",
+            "listing_resolution_status": "resolved",
             "title": "Game item",
             "buyer": "buyer_name",
             "buyer_id": "buyer-1",
@@ -136,6 +138,19 @@ class PlayerokReadOnlySalesTests(unittest.TestCase):
             "chat_url": "https://playerok.com/chats/chat-123",
             "url": "https://playerok.com/deal/deal-123",
         }])
+
+    def test_missing_item_id_remains_unresolved_and_never_uses_slug_or_chat_id(self):
+        mapped = PlayerokAdapter._map_deal({
+            "id": "deal-canonical",
+            "status": "PAID",
+            "item": {"slug": "1e3ef809c420-5-items", "name": "Example"},
+            "chat": {"id": "chat-distinct"},
+        })
+        self.assertEqual(mapped["deal_id"], "deal-canonical")
+        self.assertEqual(mapped["chat_id"], "chat-distinct")
+        self.assertIsNone(mapped["listing_id"])
+        self.assertEqual(mapped["source_listing_ref"], "1e3ef809c420-5-items")
+        self.assertEqual(mapped["listing_resolution_status"], "unresolved")
 
 
     def test_sales_fetches_every_cursor_page_and_never_uses_unread_counts(self):

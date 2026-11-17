@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QUrl, QObject, QRunnable, QThreadPool, QSettings, QTimer, Signal
+from PySide6.QtCore import Qt, QUrl, QObject, QRunnable, QThreadPool, QSettings, QTimer, QThread, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -32,6 +32,16 @@ from core.database.db import Database
 from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.order_pipeline import DeliveryOrderPipeline
+from core.delivery.playerok_eligibility import (
+    require_canonical_playerok_delivery_eligible,
+    require_legacy_playerok_delivery_eligible,
+)
+from core.delivery.playerok_freshness import (
+    PlayerokFreshnessBlocked,
+    PlayerokFreshnessGate,
+    PlayerokFreshnessProof,
+    PlayerokOrderLease,
+)
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.reservation_service import InventorySnapshot
 from core.delivery.send_policy import DeliverySendPolicy, ManualDispatchAuthorization
@@ -79,6 +89,8 @@ class MainWindow(QMainWindow):
             self._delivery_send_policy = DeliverySendPolicy(
                 QSettings("FANFIRIEL-LANG", "GameDelivery")
             )
+            self._playerok_freshness_gate = PlayerokFreshnessGate()
+            self._active_playerok_order_lease: PlayerokOrderLease | None = None
             self.playerok_sync = PlayerokDealSyncService(
                 Database(self._database_path), send_policy=self._delivery_send_policy
             )
@@ -113,7 +125,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("title")
         subtitle = QLabel("Автоматизация доставки игровых предметов")
         subtitle.setObjectName("muted")
-        status = QLabel("Playerok: вход через браузер не подтверждён")
+        status = QLabel("Playerok: статус входа не проверен")
         self.platform_status = status
         status.setObjectName("status")
         header.addWidget(title)
@@ -132,6 +144,9 @@ class MainWindow(QMainWindow):
             database=Database(self._database_path), sync_service=self.playerok_sync
         )
         self.marketplace_panel.order_import_requested.connect(self._import_marketplace_order)
+        self.marketplace_panel.browser_auth_status_changed.connect(
+            self._update_playerok_auth_status
+        )
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
@@ -605,89 +620,52 @@ class MainWindow(QMainWindow):
         return recovered_count
 
 
+    def _update_playerok_auth_status(self, authorized: bool) -> None:
+        self.platform_status.setText(
+            "Playerok: вход подтверждён" if authorized else "Playerok: вход не подтверждён"
+        )
+
     def _import_marketplace_order(self, marketplace_order):
         platform = str(marketplace_order.get("platform") or "").strip().lower()
         external_id = str(marketplace_order.get("deal_id") or marketplace_order.get("order_id") or "").strip()
-        chat_id = str(marketplace_order.get("chat_id") or "").strip()
-        listing_id = str(marketplace_order.get("listing_id") or "").strip()
-        chat_url = str(marketplace_order.get("chat_url") or "").strip()
-        title = str(marketplace_order.get("title") or "Заказ с торговой площадки").strip()
-        buyer = str(marketplace_order.get("buyer") or "").strip()
-        source_status = str(marketplace_order.get("status") or "").strip()
-        source_amount = str(marketplace_order.get("amount") or "").strip()
-        source_url = str(marketplace_order.get("url") or "").strip()
+        account_id = str(marketplace_order.get("account_user_id") or "").strip()
         if platform != "playerok" or not external_id:
             self.statusBar().showMessage("Не удалось импортировать заказ: нет поддерживаемого источника или ID.")
             return
-        local_order_id = f"GD-{uuid4().hex[:12].upper()}"
-        imported_now = False
+        if not account_id:
+            self.statusBar().showMessage(
+                "Сделка не добавлена: отсутствует подтверждённый аккаунт Playerok."
+            )
+            return
         try:
-            self._ensure_delivery_order_schema()
             with connect_sqlite(self._database_path) as db:
                 canonical = db.execute(
                     "SELECT o.order_id FROM gd_deals d JOIN gd_orders o ON o.deal_id=d.deal_id "
-                    "WHERE d.source_platform='playerok' AND d.external_deal_id=?",
-                    (external_id,),
+                    "WHERE d.source_platform='playerok' AND d.playerok_account_id=? "
+                    "AND d.external_deal_id=?",
+                    (account_id, external_id),
                 ).fetchone()
-                if canonical:
-                    local_order_id = str(canonical["order_id"])
-                else:
-                    canonical = None
-                existing = db.execute(
-                    "SELECT order_id FROM delivery_orders WHERE source_platform = ? AND COALESCE(source_deal_id, source_order_id) = ?",
-                    (platform, external_id),
-                ).fetchone()
-                if canonical:
-                    pass
-                elif existing:
-                    local_order_id = existing[0]
-                    db.execute(
-                        "UPDATE delivery_orders SET source_order_id=?, source_deal_id=?, source_chat_id=?, "
-                        "source_listing_id=?, source_chat_url=?, source_status=?, source_amount=?, source_url=? "
-                        "WHERE order_id=?",
-                        (external_id, external_id, chat_id or None, listing_id or None, chat_url,
-                         source_status, source_amount, source_url, local_order_id),
-                    )
-                else:
-                    db.execute("""
-                        INSERT INTO delivery_orders
-                            (order_id, recipient_trade_url, status, asset_count,
-                             source_platform, source_order_id, source_deal_id, source_chat_id,
-                             source_listing_id, source_chat_url, source_title, source_buyer,
-                             source_status, source_amount, source_url)
-                        VALUES (?, '', 'imported — ожидание подготовки', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        local_order_id, platform, external_id, external_id, chat_id or None,
-                        listing_id or None, chat_url, title, buyer, source_status, source_amount, source_url,
-                    ))
-                    imported_now = True
+            if canonical is None:
+                self.statusBar().showMessage(
+                    "Сделка не добавлена: для неё нет нового canonical-заказа с точным объявлением "
+                    "и ConfigVersion. Baseline и неразрешённые сделки не импортируются в legacy-очередь."
+                )
+                return
+            local_order_id = str(canonical["order_id"])
             self._load_saved_orders()
             self.tabs.setCurrentIndex(0)
             for row in range(self.orders.rowCount()):
                 context = self.orders.item(row, 0).data(Qt.ItemDataRole.UserRole)
                 if isinstance(context, dict) and (
-                    context.get("order_id") == local_order_id
-                    or context.get("external_deal_id") == external_id
+                    context.get("kind") == "ledger" and context.get("order_id") == local_order_id
                 ):
                     self.orders.setCurrentCell(row, 0)
                     self.orders.selectRow(row)
                     break
-            if canonical:
-                self.statusBar().showMessage(
-                    f"Сделка Playerok {external_id} уже связана с каноническим заказом "
-                    f"{local_order_id}; отдельный legacy-дубль не создавался."
-                )
-                return
-            if imported_now:
-                self.statusBar().showMessage(
-                    f"Сделка Playerok {external_id} добавлена как {local_order_id}. "
-                    "Укажи trade URL покупателя и выбери активы для подготовки."
-                )
-            else:
-                self.statusBar().showMessage(
-                    f"Сделка Playerok {external_id} уже есть как {local_order_id}; "
-                    "данные площадки обновлены."
-                )
+            self.statusBar().showMessage(
+                f"Сделка Playerok {external_id} уже связана с canonical-заказом "
+                f"{local_order_id}; legacy-дубль не создавался."
+            )
         except (OSError, sqlite3.Error, ValueError) as exc:
             self.statusBar().showMessage(f"Не удалось импортировать заказ Playerok: {exc}")
 
@@ -837,6 +815,8 @@ class MainWindow(QMainWindow):
                             "Эта сделка Playerok уже не ожидает подготовки. "
                             "Нельзя создавать отдельный ручной заказ из выбранной сделки."
                         )
+                    with connect_sqlite(self._database_path) as db:
+                        require_legacy_playerok_delivery_eligible(db, candidate_id)
                     existing_order_id = candidate_id
 
             order_id = existing_order_id or f"GD-{uuid4().hex[:12].upper()}"
@@ -855,6 +835,7 @@ class MainWindow(QMainWindow):
                 with connect_sqlite(self._database_path) as db:
                     db.execute("BEGIN IMMEDIATE")
                     if existing_order_id:
+                        require_legacy_playerok_delivery_eligible(db, order_id)
                         current = db.execute(
                             "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
                         ).fetchone()
@@ -909,6 +890,7 @@ class MainWindow(QMainWindow):
             order_id = self._selected_order_id()
             logger.info("Trade send preflight started; order_id=%s", order_id)
             with connect_sqlite(self._database_path) as db:
+                require_legacy_playerok_delivery_eligible(db, order_id)
                 order = db.execute(
                     "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
                     (order_id,),
@@ -985,6 +967,88 @@ class MainWindow(QMainWindow):
                 "Не удалось удалить сохранённый Steam trade token из системного хранилища."
             )
 
+    def _legacy_playerok_identity(self, db, order_id: str):
+        columns = {str(row[1]) for row in db.execute("PRAGMA table_info(delivery_orders)")}
+        if "source_platform" not in columns:
+            return None
+        row = db.execute(
+            "SELECT source_platform "
+            "FROM delivery_orders WHERE order_id=?", (str(order_id).strip(),),
+        ).fetchone()
+        if row is None or str(row["source_platform"] or "").strip().casefold() != "playerok":
+            return None
+        raise PlayerokFreshnessBlocked(
+            "Legacy-заказ Playerok не допускается: импорт должен ссылаться на canonical deal/account."
+        )
+
+    def _canonical_playerok_identity(self, db, order_id: str):
+        row = db.execute(
+            "SELECT d.source_platform,d.external_deal_id,d.playerok_account_id "
+            "FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id WHERE o.order_id=?",
+            (str(order_id).strip(),),
+        ).fetchone()
+        if row is None or str(row["source_platform"] or "").strip().casefold() != "playerok":
+            return None
+        deal_id = str(row["external_deal_id"] or "").strip()
+        account_id = str(row["playerok_account_id"] or "").strip()
+        if not deal_id or not account_id:
+            raise PlayerokFreshnessBlocked("В canonical-сделке отсутствует ID Playerok или аккаунта.")
+        return {"deal_id": deal_id, "account_user_id": account_id}
+
+    def _acquire_playerok_order_lease(self, order_id: str, identity):
+        if identity is None:
+            return None
+        lease = self._playerok_freshness_gate.try_acquire_order(order_id)
+        if lease is None:
+            raise PlayerokFreshnessBlocked("Для этого заказа уже выполняется проверка или отправка.")
+        self._active_playerok_order_lease = lease
+        return lease
+
+    def _request_playerok_freshness(self, order_id, leg_id, identity, lease, callback):
+        """Start BrowserSalesReader on the GUI-owned panel and return a scoped proof."""
+        if not callable(callback):
+            raise TypeError("callback должен быть вызываемым")
+        qt_app = QApplication.instance()
+        if qt_app is None or QThread.currentThread() != qt_app.thread():
+            callback(None, "BrowserSalesReader разрешено запускать только из GUI-потока Qt.")
+            return
+
+        def snapshot_ready(snapshot, error):
+            if error or snapshot is None:
+                callback(None, error or "Полный снимок Playerok недоступен.")
+                return
+            proof = None
+            try:
+                proof = self._playerok_freshness_gate.issue_from_complete_snapshot(
+                    snapshot,
+                    expected_account_user_id=identity["account_user_id"],
+                    deal_id=identity["deal_id"],
+                    order_id=order_id,
+                    leg_id=leg_id,
+                    lease=lease,
+                )
+                with connect_sqlite(self._database_path) as db:
+                    row = db.execute(
+                        "SELECT platform_status,is_historical,playerok_account_id FROM gd_deals "
+                        "WHERE source_platform='playerok' AND playerok_account_id=? AND external_deal_id=?",
+                        (identity["account_user_id"], identity["deal_id"]),
+                    ).fetchone()
+                if (
+                    row is None or row["platform_status"] != "PAID"
+                    or type(row["is_historical"]) is not int or row["is_historical"] != 0
+                    or str(row["playerok_account_id"] or "").strip() != identity["account_user_id"]
+                ):
+                    raise PlayerokFreshnessBlocked(
+                        "Снимок сохранён, но локальная сделка не прошла проверку PAID/account/baseline."
+                    )
+            except Exception as exc:
+                self._playerok_freshness_gate.revoke(proof)
+                callback(None, str(exc))
+                return
+            callback(proof, None)
+
+        self.marketplace_panel.read_sales_for_delivery(identity["account_user_id"], snapshot_ready)
+
     def _start_send_selected_order_async(self, *, automatic=False):
         """Validate locally, then perform preview and send IPC calls off the GUI thread."""
         try:
@@ -1004,6 +1068,13 @@ class MainWindow(QMainWindow):
         self.preview_offer_button.setEnabled(False)
         try:
             order_id = self._selected_order_id()
+            with connect_sqlite(self._database_path) as db:
+                require_legacy_playerok_delivery_eligible(db, order_id)
+                playerok_identity = self._legacy_playerok_identity(db, order_id)
+            playerok_lease = self._acquire_playerok_order_lease(order_id, playerok_identity)
+            self._active_send_identity = playerok_identity
+            self._active_send_order_id = order_id
+            self._active_send_lease = playerok_lease
             with connect_sqlite(self._database_path) as db:
                 order = db.execute(
                     "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
@@ -1046,7 +1117,8 @@ class MainWindow(QMainWindow):
                 ),
                 lambda result, error: self._on_async_trade_preview(
                     order_id, bot_name, recipient, asset_ids, assets, client, result, error,
-                    automatic=automatic,
+                    automatic=automatic, playerok_identity=playerok_identity,
+                    playerok_lease=playerok_lease,
                 ),
             )
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
@@ -1069,7 +1141,7 @@ class MainWindow(QMainWindow):
 
     def _on_async_trade_preview(
         self, order_id, bot_name, recipient, asset_ids, assets, client, preview, error,
-        *, automatic=False,
+        *, automatic=False, playerok_identity=None, playerok_lease=None,
     ):
         if error is not None:
             log_exception(logger, "async ASF trade preview", error)
@@ -1112,10 +1184,52 @@ class MainWindow(QMainWindow):
                 manual_grant = self._delivery_send_policy.issue_manual_authorization(
                     order_id, "legacy-send"
                 )
+            if playerok_identity is not None:
+                self.statusBar().showMessage(
+                    f"Повторно проверяю статус сделки Playerok {playerok_identity['deal_id']}…"
+                )
+                self._request_playerok_freshness(
+                    order_id, "legacy-send", playerok_identity, playerok_lease,
+                    lambda proof, check_error: self._dispatch_legacy_after_freshness(
+                        order_id, bot_name, recipient, asset_ids, assets, automatic,
+                        manual_grant, proof, check_error, playerok_lease,
+                    ),
+                )
+                return
+            self._dispatch_legacy_after_freshness(
+                order_id, bot_name, recipient, asset_ids, assets, automatic,
+                manual_grant, None, None, None,
+            )
+        except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            if manual_grant is not None:
+                self._delivery_send_policy.revoke_manual_authorization(manual_grant)
+            log_exception(logger, "async trade preview confirmation", exc)
+            self._finish_async_send_ui()
+            QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
 
+    def _dispatch_legacy_after_freshness(
+        self, order_id, bot_name, recipient, asset_ids, assets, automatic,
+        manual_grant, freshness_proof, freshness_error, playerok_lease,
+    ):
+        if freshness_error is not None:
+            gate = getattr(self, "_playerok_freshness_gate", None)
+            if gate is not None:
+                gate.revoke(freshness_proof)
+            if manual_grant is not None:
+                self._delivery_send_policy.revoke_manual_authorization(manual_grant)
+            self._finish_async_send_ui()
+            QMessageBox.warning(
+                self, "Отправка заблокирована",
+                f"Проверка статуса Playerok не пройдена: {freshness_error}\n\n"
+                "Предложение не создавалось. Резерв сохранён.",
+            )
+            return
+        try:
             self._claim_legacy_order_for_send(
                 order_id, assets, automatic=automatic,
                 manual_authorization=manual_grant,
+                playerok_freshness_authorization=freshness_proof,
+                playerok_order_lease=playerok_lease,
             )
             logger.info(
                 "Async trade IPC dispatch started; order_id=%s mode=%s bot=%s asset_count=%s",
@@ -1132,19 +1246,36 @@ class MainWindow(QMainWindow):
                 ),
             )
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
+            gate = getattr(self, "_playerok_freshness_gate", None)
+            if gate is not None:
+                gate.revoke(freshness_proof)
             if manual_grant is not None:
                 self._delivery_send_policy.revoke_manual_authorization(manual_grant)
-            log_exception(logger, "async trade preview confirmation", exc)
+            log_exception(logger, "async trade claim after Playerok freshness", exc)
             self._finish_async_send_ui()
             QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
 
     def _claim_legacy_order_for_send(
         self, order_id, assets, *, automatic,
         manual_authorization: ManualDispatchAuthorization | None = None,
+        playerok_freshness_authorization: PlayerokFreshnessProof | None = None,
+        playerok_order_lease: PlayerokOrderLease | None = None,
     ):
         def claim():
             with connect_sqlite(self._database_path) as db:
                 db.execute("BEGIN IMMEDIATE")
+                require_legacy_playerok_delivery_eligible(db, order_id)
+                identity = self._legacy_playerok_identity(db, order_id)
+                if identity is not None:
+                    self._playerok_freshness_gate.consume_for_claim(
+                        playerok_freshness_authorization,
+                        account_user_id=identity["account_user_id"],
+                        deal_id=identity["deal_id"],
+                        order_id=order_id,
+                        leg_id="legacy-send",
+                        lease=playerok_order_lease,
+                        claim=lambda: True,
+                    )
                 current = db.execute(
                     "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
                 ).fetchone()
@@ -1181,6 +1312,11 @@ class MainWindow(QMainWindow):
                 raise ValueError("Ручное разрешение отправки недействительно или уже использовано.")
         if not result.get("_claimed"):
             raise ValueError("Заказ не был захвачен для единственной отправки.")
+        if isinstance(playerok_freshness_authorization, PlayerokFreshnessProof):
+            logger.info(
+                "Playerok freshness authorization consumed; order_id=%s leg_id=legacy-send checked_at=%s",
+                order_id, playerok_freshness_authorization.checked_at,
+            )
         if not automatic and manual_authorization is not None:
             logger.info(
                 "Manual delivery authorized; order_id=%s authorization_id=%s",
@@ -1288,6 +1424,12 @@ class MainWindow(QMainWindow):
             self._finish_async_send_ui()
 
     def _finish_async_send_ui(self):
+        lease = getattr(self, "_active_send_lease", None)
+        if lease is not None:
+            self._playerok_freshness_gate.release_order(lease)
+            self._active_send_lease = None
+            self._active_send_identity = None
+            self._active_send_order_id = None
         self._asf_send_in_progress = False
         self._load_saved_orders()
         self._update_order_action_buttons()
@@ -1298,6 +1440,14 @@ class MainWindow(QMainWindow):
         manual_grant = None
         try:
             order_id = self._selected_order_id()
+            with connect_sqlite(self._database_path) as db:
+                require_legacy_playerok_delivery_eligible(db, order_id)
+                playerok_identity = self._legacy_playerok_identity(db, order_id)
+            if playerok_identity is not None:
+                raise PlayerokFreshnessBlocked(
+                    "Синхронный путь Playerok отключён: он не может безопасно дождаться Qt browser check. "
+                    "Используй асинхронную отправку из панели заказов."
+                )
             with connect_sqlite(self._database_path) as db:
                 order = db.execute(
                     "SELECT recipient_trade_url, status FROM delivery_orders WHERE order_id = ?",
@@ -1886,6 +2036,8 @@ class MainWindow(QMainWindow):
         try:
             trade_url = self._validate_trade_url(self.order_recipient.text())
             with connect_sqlite(self._database_path) as db:
+                require_canonical_playerok_delivery_eligible(db, order_id)
+                playerok_identity = self._canonical_playerok_identity(db, order_id)
                 order = db.execute(
                     "SELECT status FROM gd_orders WHERE order_id=?", (order_id,)
                 ).fetchone()
@@ -1898,6 +2050,10 @@ class MainWindow(QMainWindow):
                 raise ValueError("Канонический заказ должен иметь статус reserved.")
             if not legs or any(leg["status"] != "reserved" for leg in legs):
                 raise ValueError("Каждая обязательная DeliveryLeg должна быть зарезервирована; повторная отправка запрещена.")
+            playerok_lease = self._acquire_playerok_order_lease(order_id, playerok_identity)
+            self._active_send_identity = playerok_identity
+            self._active_send_order_id = order_id
+            self._active_send_lease = playerok_lease
             client = self.asf_management._client(timeout=60.0)
             self._asf_send_in_progress = True
             self.send_offer_button.setEnabled(False)
@@ -1906,7 +2062,8 @@ class MainWindow(QMainWindow):
                 lambda: self._preview_ledger_order(client, order_id, trade_url, legs),
                 lambda result, error: self._on_ledger_previews_ready(
                     order_id, trade_url, legs, client, result, error,
-                    automatic=automatic,
+                    automatic=automatic, playerok_identity=playerok_identity,
+                    playerok_lease=playerok_lease,
                 ),
             )
         except (OSError, sqlite3.Error, ValueError, ASFError, KeyError, TypeError) as exc:
@@ -1915,6 +2072,7 @@ class MainWindow(QMainWindow):
 
     def _on_ledger_previews_ready(
         self, order_id, trade_url, legs, client, previews, error, *, automatic=False,
+        playerok_identity=None, playerok_lease=None,
     ):
         if error is not None:
             self._finish_async_send_ui()
@@ -1924,6 +2082,7 @@ class MainWindow(QMainWindow):
             )
             return
         manual_grant = None
+        manual_grants = {}
         if not automatic:
             lines = [
                 f"Канонический заказ: {order_id}",
@@ -1936,39 +2095,45 @@ class MainWindow(QMainWindow):
                     f"{item['bot_name']} · AppID {item['app_id']}/{item['context_id']} · "
                     f"assets: {', '.join(item['asset_ids'])}"
                 )
-            manual_grants = {}
-            if not automatic:
-                for leg, item in zip(legs, previews):
-                    leg_id = str(leg["leg_id"])
-                    leg_lines = [
-                        f"Канонический заказ: {order_id}",
-                        f"DeliveryLeg: {leg_id}",
-                        f"Бот: {item['bot_name']} · AppID {item['app_id']}/{item['context_id']}",
-                        f"Assets: {', '.join(item['asset_ids'])}",
-                        "", "Это подтверждение разрешает отправку только этой DeliveryLeg.",
-                    ]
-                    answer = QMessageBox.question(
-                        self, "Подтвердить отправку одной DeliveryLeg", "\n".join(leg_lines),
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
+            for leg, item in zip(legs, previews):
+                leg_id = str(leg["leg_id"])
+                leg_lines = [
+                    f"Канонический заказ: {order_id}",
+                    f"DeliveryLeg: {leg_id}",
+                    f"Бот: {item['bot_name']} · AppID {item['app_id']}/{item['context_id']}",
+                    f"Assets: {', '.join(item['asset_ids'])}",
+                    "", "Это подтверждение разрешает отправку только этой DeliveryLeg.",
+                ]
+                answer = QMessageBox.question(
+                    self, "Подтвердить отправку одной DeliveryLeg", "\n".join(leg_lines),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    for existing in manual_grants.values():
+                        self._delivery_send_policy.revoke_manual_authorization(existing)
+                    self._finish_async_send_ui()
+                    self.statusBar().showMessage(
+                        f"Отправка leg {leg_id} отменена; неподтверждённые legs не запускаются."
                     )
-                    if answer != QMessageBox.StandardButton.Yes:
-                        for existing in manual_grants.values():
-                            self._delivery_send_policy.revoke_manual_authorization(existing)
-                        self._finish_async_send_ui()
-                        self.statusBar().showMessage(
-                            f"Отправка leg {leg_id} отменена; неподтверждённые legs не запускаются."
-                        )
-                        return
-                    manual_grants[leg_id] = self._delivery_send_policy.issue_manual_authorization(
-                        order_id, leg_id
-                    )
+                    return
+                manual_grants[leg_id] = self._delivery_send_policy.issue_manual_authorization(
+                    order_id, leg_id
+                )
         try:
             safe_url = self._trade_credentials.store_trade_url(order_id, trade_url)
             dispatcher = DeliveryDispatcher(
                 Database(self._database_path), client, self._trade_credentials,
                 send_policy=self._delivery_send_policy,
+                playerok_freshness_gate=self._playerok_freshness_gate,
             )
+
+            if playerok_identity is not None:
+                self._dispatch_playerok_legs_sequentially(
+                    order_id, trade_url, legs, dispatcher, safe_url,
+                    playerok_identity, playerok_lease, manual_grants, 0, [],
+                )
+                return
 
             def dispatch_all_legs():
                 results = []
@@ -1999,6 +2164,83 @@ class MainWindow(QMainWindow):
             self._finish_async_send_ui()
             QMessageBox.warning(self, "Отправка не начата", str(exc))
 
+    def _dispatch_playerok_legs_sequentially(
+        self, order_id, trade_url, legs, dispatcher, safe_url, identity, lease,
+        manual_grants, index, results,
+    ):
+        if index >= len(legs):
+            self._on_ledger_dispatch_complete(order_id, results, None)
+            return
+        leg = legs[index]
+        leg_id = str(leg["leg_id"])
+
+        def checked(proof, error):
+            if error is not None:
+                self._playerok_freshness_gate.revoke(proof)
+                for grant in manual_grants.values():
+                    self._delivery_send_policy.revoke_manual_authorization(grant)
+                results.append({
+                    "dispatched": False,
+                    "status": "PLAYEROK_FRESHNESS_REQUIRED",
+                    "reason": str(error),
+                    "leg_id": leg_id,
+                })
+                self._on_ledger_dispatch_complete(order_id, results, None)
+                return
+            grant = manual_grants.get(leg_id)
+
+            def send_one():
+                return dispatcher.dispatch_leg(
+                    order_id=order_id,
+                    leg_id=leg_id,
+                    stored_trade_url=safe_url,
+                    manual_authorization=grant,
+                    playerok_freshness_authorization=proof,
+                    playerok_order_lease=lease,
+                )
+
+            def sent_one(_worker, result, send_error):
+                if grant is not None:
+                    self._delivery_send_policy.revoke_manual_authorization(grant)
+                if send_error is not None:
+                    self._playerok_freshness_gate.revoke(proof)
+                    results.append({
+                        "dispatched": False,
+                        "status": "UNKNOWN",
+                        "reason": type(send_error).__name__,
+                        "leg_id": leg_id,
+                    })
+                    self._on_ledger_dispatch_complete(order_id, results, send_error)
+                    return
+                results.append(result)
+                if result.get("dispatched") is True:
+                    self._dispatch_playerok_legs_sequentially(
+                        order_id, trade_url, legs, dispatcher, safe_url, identity,
+                        lease, manual_grants, index + 1, results,
+                    )
+                else:
+                    self._playerok_freshness_gate.revoke(proof)
+                    for pending in manual_grants.values():
+                        self._delivery_send_policy.revoke_manual_authorization(pending)
+                    self._on_ledger_dispatch_complete(order_id, results, None)
+
+            try:
+                self._run_asf_call_async(
+                    send_one, lambda result, send_error: sent_one(None, result, send_error)
+                )
+            except Exception as exc:
+                sent_one(None, None, exc)
+
+        try:
+            self.statusBar().showMessage(
+                f"Проверяю свежий статус Playerok перед отправкой leg {leg_id}…"
+            )
+            self._request_playerok_freshness(
+                order_id, leg_id, identity, lease, checked
+            )
+        except Exception as exc:
+            checked(None, str(exc))
+
     def _on_ledger_dispatch_complete(self, order_id, results, error):
         self._finish_async_send_ui()
         if error is not None:
@@ -2011,7 +2253,22 @@ class MainWindow(QMainWindow):
         sent = sum(1 for item in results if item.get("dispatched"))
         unknown = sum(1 for item in results if item.get("status") == "UNKNOWN")
         blocked = sum(1 for item in results if item.get("status") == "AUTO_SEND_DISABLED")
+        playerok_blocks = [
+            item for item in results
+            if item.get("status") in {"PLAYEROK_NOT_ELIGIBLE", "PLAYEROK_FRESHNESS_REQUIRED"}
+        ]
         self._load_saved_orders()
+        if playerok_blocks:
+            reasons = list(dict.fromkeys(
+                str(item.get("reason") or "Источник не подтвердил допустимость сделки.")
+                for item in playerok_blocks
+            ))
+            QMessageBox.warning(
+                self, "Отправка заблокирована",
+                f"Проверка Playerok заблокировала отправку. Steam offers не создавались.\n\n"
+                + "\n".join(reasons),
+            )
+            return
         QMessageBox.information(
             self, "Результат отправки",
             f"Заказ: {order_id}\nСоздано offers: {sent}\nНеизвестный результат: {unknown}\n"
@@ -2101,11 +2358,6 @@ class MainWindow(QMainWindow):
                     "LEFT JOIN gd_listings l ON l.listing_id=d.listing_id "
                     "ORDER BY o.created_at DESC"
                 ).fetchall()
-            canonical_external = {
-                str(row["external_deal_id"])
-                for row in canonical_rows
-                if row["source_platform"] == "playerok" and row["external_deal_id"]
-            }
             for row in canonical_rows:
                 platform = str(row["source_platform"] or "")
                 external_id = str(row["external_deal_id"] or "")
@@ -2136,12 +2388,10 @@ class MainWindow(QMainWindow):
                 ))
             for row in legacy_rows:
                 platform = str(row["source_platform"] or "manual")
-                if platform == "playerok" and row["external_deal_id"] in canonical_external:
-                    continue
                 if platform == "playerok":
                     display_id = str(row["external_deal_id"] or row["order_id"])
                     buyer = str(row["source_buyer"] or "").strip()
-                    source = f"Playerok · {buyer}" if buyer else "Playerok"
+                    source = f"Playerok · legacy · {buyer}" if buyer else "Playerok · legacy (account unknown)"
                     product = str(row["source_title"] or "Заказ Playerok")
                     price = str(row["source_amount"] or "—")
                 else:

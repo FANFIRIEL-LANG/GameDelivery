@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 import os
 import weakref
+import shiboken6
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, parse_qs, quote
 
-from PySide6.QtCore import QTimer, QUrl, Signal
+from PySide6.QtCore import QTimer, QUrl, Signal, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QComboBox, QSpinBox, QPlainTextEdit, QSplitter, QMessageBox,
+    QComboBox, QSpinBox, QPlainTextEdit, QSplitter, QMessageBox, QDialog,
 )
-from integrations.playerok.browser_sales import BrowserSalesReader
+from integrations.playerok.browser_sales import BrowserSalesReader, BrowserViewerChecker
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -65,6 +66,19 @@ def playerok_resource_url(resource: str, identifier: str) -> str:
     raise ValueError("Неизвестный тип ресурса Playerok.")
 
 
+class _PlayerokDevToolsDialog(QDialog):
+    def __init__(self, parent, closed_callback):
+        super().__init__(parent, Qt.WindowType.Window)
+        self._closed_callback = closed_callback
+
+    def closeEvent(self, event) -> None:
+        callback = self._closed_callback
+        self._closed_callback = None
+        if callback is not None:
+            callback(self)
+        event.accept()
+
+
 class PlayerokBrowserController:
     """Small navigation controller, independently testable without WebEngine."""
 
@@ -98,18 +112,33 @@ class PlayerokBrowserPanel(QWidget):
         self.database = database
         self.controller = PlayerokBrowserController(self.navigate)
         self._profile = None
+        self._devtools_window = None
+        self._devtools_view = None
+        self._devtools_page = None
+        self._devtools_target_page_ref = None
+        self._devtools_destroy_slot = None
         self._clear_pending = False
         self._page_storage_clear_ok = False
         self._page_ready = False
+        self._viewer_checker = None
         self._profile_route_buttons: dict[str, QPushButton] = {}
+        self._viewer_check_timeout = QTimer(self)
+        self._viewer_check_timeout.setSingleShot(True)
+        self._viewer_check_timeout.setInterval(30_000)
+        self._viewer_check_timeout.timeout.connect(self._viewer_check_timed_out)
         root = QVBoxLayout(self)
         nav = QHBoxLayout()
         self.back_button = QPushButton("Назад")
         self.forward_button = QPushButton("Вперёд")
         self.reload_button = QPushButton("Обновить")
         self.home_button = QPushButton("Домой")
+        self.devtools_button = QPushButton("Открыть DevTools")
         self.clear_session_button = QPushButton("Очистить данные сайта")
-        for button in (self.back_button, self.forward_button, self.reload_button, self.home_button, self.clear_session_button):
+        self.devtools_button.clicked.connect(self.open_devtools)
+        for button in (
+            self.back_button, self.forward_button, self.reload_button,
+            self.home_button, self.devtools_button, self.clear_session_button,
+        ):
             nav.addWidget(button)
         self.address = QLineEdit(PLAYEROK_ORIGIN)
         self.go_button = QPushButton("Перейти")
@@ -223,6 +252,180 @@ class PlayerokBrowserPanel(QWidget):
             self.web.setUrl(QUrl(url))
         self.address.setText(url)
 
+    def open_devtools(self) -> bool:
+        """Open Chromium DevTools for the existing Playerok page, without navigation."""
+        if self.web is None or self._profile is None or self._clear_pending:
+            self.browser_status.setText(
+                "Не удалось открыть DevTools: страница Playerok сейчас недоступна."
+            )
+            return False
+
+        try:
+            page = self.web.page()
+            if page is None or not shiboken6.isValid(page):
+                raise RuntimeError("invalid page")
+        except (RuntimeError, TypeError, AttributeError):
+            self.browser_status.setText(
+                "Не удалось открыть DevTools: страница Playerok сейчас недоступна."
+            )
+            return False
+
+        try:
+            page_url = urlsplit(page.url().toString())
+        except (RuntimeError, TypeError, AttributeError):
+            page_url = None
+        if (
+            page_url is None
+            or page_url.scheme != "https"
+            or page_url.hostname not in {"playerok.com", "www.playerok.com"}
+        ):
+            self.browser_status.setText(
+                "Не удалось открыть DevTools: сначала откройте Playerok во встроенном браузере."
+            )
+            return False
+
+        current_target_ref = self._devtools_target_page_ref
+        if current_target_ref is not None and current_target_ref() is page:
+            try:
+                attached_page = page.devToolsPage()
+                if (
+                    attached_page is self._devtools_page
+                    and self._devtools_window is not None
+                    and shiboken6.isValid(self._devtools_window)
+                ):
+                    self._activate_devtools_window()
+                    return True
+            except (RuntimeError, TypeError, AttributeError):
+                pass
+            self._discard_devtools_references(delete_window=True)
+        elif self._devtools_window is not None:
+            self._discard_devtools_references(delete_window=True)
+
+        try:
+            attached_page = page.devToolsPage()
+        except (RuntimeError, TypeError, AttributeError):
+            self.browser_status.setText(
+                "Не удалось открыть DevTools: состояние страницы Playerok недоступно."
+            )
+            return False
+        if attached_page is not None:
+            self.browser_status.setText(
+                "Не удалось открыть DevTools: к странице Playerok уже подключён другой инспектор."
+            )
+            return False
+
+        window = None
+        try:
+            window = _PlayerokDevToolsDialog(self, self._devtools_window_closed)
+            window.setWindowTitle("Chrome DevTools — Playerok")
+            window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            view = QWebEngineView(window)
+            devtools_page = QWebEnginePage(self._profile, view)
+            view.setPage(devtools_page)
+            layout = QVBoxLayout(window)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(view)
+
+            target_page_ref = weakref.ref(page)
+            destroy_slot = lambda *_args, ref=target_page_ref: self._inspected_page_destroyed(ref)
+            page.destroyed.connect(destroy_slot)
+
+            self._devtools_window = window
+            self._devtools_view = view
+            self._devtools_page = devtools_page
+            self._devtools_target_page_ref = target_page_ref
+            self._devtools_destroy_slot = destroy_slot
+
+            page.setDevToolsPage(devtools_page)
+            window.resize(1100, 750)
+            self._activate_devtools_window()
+            self.browser_status.setText(
+                "Chrome DevTools подключён к текущей странице Playerok."
+            )
+            return True
+        except Exception:
+            if self._devtools_window is window and window is not None:
+                target_ref = self._devtools_target_page_ref
+                target_page = target_ref() if target_ref is not None else None
+                try:
+                    if (
+                        target_page is not None
+                        and shiboken6.isValid(target_page)
+                        and target_page.devToolsPage() is self._devtools_page
+                    ):
+                        target_page.setDevToolsPage(None)
+                except (RuntimeError, TypeError, AttributeError):
+                    pass
+                self._discard_devtools_references(delete_window=True)
+            elif window is not None:
+                try:
+                    window.close()
+                    window.deleteLater()
+                except (RuntimeError, AttributeError):
+                    pass
+            self.browser_status.setText(
+                "Не удалось подключить DevTools к странице Playerok."
+            )
+            return False
+
+    def _activate_devtools_window(self) -> None:
+        window = self._devtools_window
+        if window is None or not shiboken6.isValid(window):
+            return
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _inspected_page_destroyed(self, target_page_ref) -> None:
+        if self._devtools_target_page_ref is not target_page_ref:
+            return
+        self._discard_devtools_references(delete_window=True)
+        if shiboken6.isValid(self):
+            self.browser_status.setText(
+                "Страница Playerok закрыта; окно DevTools закрыто."
+            )
+
+    def _devtools_window_closed(self, window) -> None:
+        if not shiboken6.isValid(self) or self._devtools_window is not window:
+            return
+        self._discard_devtools_references(delete_window=True, close_window=False)
+
+    def _discard_devtools_references(
+        self, *, delete_window: bool, close_window: bool = True
+    ) -> None:
+        window = self._devtools_window
+        target_ref = self._devtools_target_page_ref
+        destroy_slot = self._devtools_destroy_slot
+        devtools_page = self._devtools_page
+        self._devtools_window = None
+        self._devtools_view = None
+        self._devtools_page = None
+        self._devtools_target_page_ref = None
+        self._devtools_destroy_slot = None
+
+        target_page = target_ref() if target_ref is not None else None
+        if target_page is not None and destroy_slot is not None:
+            try:
+                if (
+                    shiboken6.isValid(target_page)
+                    and target_page.devToolsPage() is devtools_page
+                ):
+                    target_page.setDevToolsPage(None)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                target_page.destroyed.disconnect(destroy_slot)
+            except (RuntimeError, TypeError):
+                pass
+        if window is not None:
+            try:
+                if close_window:
+                    window.close()
+                if delete_window:
+                    window.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass
+
     def open_deal(self, deal_id: str) -> str:
         return self.controller.open_deal(deal_id)
 
@@ -235,9 +438,111 @@ class PlayerokBrowserPanel(QWidget):
     def _load_finished(self, ok: bool) -> None:
         self._page_ready = bool(ok)
         self.browser_status.setText(
-            "Браузер открыт; вход Playerok не подтверждён."
+            "Браузер открыт; статус входа Playerok не проверен."
             if ok else "Не удалось загрузить страницу Playerok."
         )
+
+    @property
+    def viewer_check_active(self) -> bool:
+        return bool(self._viewer_checker is not None and self._viewer_checker.active)
+
+    def check_authentication(self, finished) -> BrowserViewerChecker | None:
+        """Check the current page session with one read-only viewer GET; do not sync sales."""
+        if not callable(finished):
+            raise TypeError("finished должен быть вызываемым")
+        if self._viewer_checker is not None and self._viewer_checker.active:
+            finished(False, "poll_state_error: проверка авторизации уже выполняется.")
+            return None
+        if self.web is None or not self._page_ready or self._clear_pending:
+            message = "javascript_start_error: страница Playerok не готова для проверки авторизации."
+            self.browser_status.setText(message)
+            finished(False, message)
+            return None
+
+        page = self.web.page()
+        current_url = urlsplit(page.url().toString())
+        if current_url.scheme != "https" or current_url.hostname not in {"playerok.com", "www.playerok.com"}:
+            message = "javascript_start_error: откройте Playerok во встроенном браузере."
+            self.browser_status.setText(message)
+            finished(False, message)
+            return None
+
+        checker_ref = None
+        page_destroyed_state = [False]
+
+        def page_destroyed(*_args):
+            page_destroyed_state[0] = True
+            checker = checker_ref[0] if checker_ref else None
+            if checker is not None:
+                checker.cancel(stage="page_destroyed")
+
+        def page_is_alive() -> bool:
+            return not page_destroyed_state[0] and shiboken6.isValid(page)
+
+        def checker_finished(authorized: bool, error: str | None):
+            self._viewer_check_timeout.stop()
+            try:
+                page.destroyed.disconnect(page_destroyed)
+            except (RuntimeError, TypeError):
+                pass
+            checker = checker_ref[0] if checker_ref else None
+            if self._viewer_checker is checker:
+                self._viewer_checker = None
+            if authorized:
+                self.browser_status.setText("Авторизация Playerok подтверждена.")
+            else:
+                self.browser_status.setText(error or "viewer_parse_error: авторизация не подтверждена.")
+            finished(authorized, error)
+
+        checker = BrowserViewerChecker(
+            page.runJavaScript,
+            checker_finished,
+            schedule=lambda callback: QTimer.singleShot(50, callback),
+            is_page_alive=page_is_alive,
+        )
+        checker_ref = [checker]
+        self._viewer_checker = checker
+        page.destroyed.connect(page_destroyed)
+        self._viewer_check_timeout.start()
+        checker.start()
+        return checker
+
+    def _viewer_check_timed_out(self) -> None:
+        if self._viewer_checker is not None:
+            self._viewer_checker.cancel(stage="timeout")
+
+    def read_page_hostname(self, finished) -> None:
+        """Read only location.hostname from the existing loaded WebEngine page."""
+        if not callable(finished):
+            raise TypeError("finished должен быть вызываемым")
+        if self.web is None or not self._page_ready or self._clear_pending:
+            finished(None)
+            return
+
+        page = self.web.page()
+        completed = [False]
+
+        def complete(value=None):
+            if completed[0]:
+                return
+            completed[0] = True
+            try:
+                page.destroyed.disconnect(page_destroyed)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+            finished(value if type(value) is str else None)
+
+        def page_destroyed(*_args):
+            complete(None)
+
+        try:
+            page.destroyed.connect(page_destroyed)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            page.runJavaScript("location.hostname", complete)
+        except Exception:
+            complete(None)
 
     def read_sales(self, finished, *, on_request_started=None) -> BrowserSalesReader:
         if self.web is None or not self._page_ready or self._clear_pending:
@@ -251,7 +556,7 @@ class PlayerokBrowserPanel(QWidget):
         def page_destroyed(*_args):
             current_reader = reader_ref() if reader_ref is not None else None
             if current_reader is not None:
-                current_reader.cancel()
+                current_reader.cancel(stage="page_destroyed")
 
         def reader_finished(snapshot, error):
             try:
