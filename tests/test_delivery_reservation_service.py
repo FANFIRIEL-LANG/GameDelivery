@@ -64,6 +64,15 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             deal_id=f"deal-{suffix}",
             total_quantity=quantity,
         )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET playerok_account_id='reservation-test-account',is_historical=0 "
+                "WHERE deal_id=?", (f"deal-{suffix}",),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO playerok_sync_state(account_user_id,baseline_completed) "
+                "VALUES('reservation-test-account',1)"
+            )
         return suffix, config["config_version_id"]
 
     @staticmethod
@@ -151,6 +160,53 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
             ).fetchone()[0], 3)
+
+    def test_legacy_reservation_reuses_recipe_materialized_compatible_line(self):
+        order, config_id = self.create_order(
+            quantity=2,
+            selectors={"game_id": "cs2", "app_id": 730, "context_id": 2,
+                       "market_hash_name": "AK-47 | Redline"},
+            bot_pool=["Bot-A"], prefix="recipe-seed",
+        )
+        line = self.ledger.materialize_recipe_order_lines(order)[0]
+        result = self.service.reserve_order(
+            order_id=order,
+            config_version_id=config_id,
+            snapshots={"Bot-A": self.snapshot("Bot-A", "cs2", 730, 2, [
+                self.cs2_item("Bot-A", "seed-1"), self.cs2_item("Bot-A", "seed-2"),
+            ])},
+            now=NOW,
+        )
+        self.assertTrue(result.reserved)
+        with self.database.connect() as db:
+            lines = db.execute(
+                "SELECT order_line_id,line_number,item_type,quantity FROM gd_order_lines WHERE order_id=?",
+                (order,),
+            ).fetchall()
+            legs = db.execute(
+                "SELECT order_line_id FROM gd_delivery_legs WHERE order_line_id=?",
+                (line["order_line_id"],),
+            ).fetchall()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual((lines[0]["order_line_id"], lines[0]["line_number"],
+                          lines[0]["item_type"], lines[0]["quantity"]),
+                         (line["order_line_id"], 1, "steam_asset", 2))
+        self.assertTrue(legs)
+
+    def test_legacy_cs2_items_wrapper_is_normalized_before_reservation(self):
+        order, config_id = self.create_order(
+            quantity=1,
+            selectors={
+                "delivery_mode": "cs2_items", "app_id": 730, "context_id": 2,
+                "items": [{"market_hash_name": "AK-47 | Redline"}],
+            },
+            bot_pool=["Bot-A"], prefix="legacy-wrapper",
+        )
+        result = self.service.reserve_order(
+            order_id=order, config_version_id=config_id, snapshots={}, now=NOW
+        )
+        self.assertEqual(result.status, "insufficient_stock")
+        self.assertIn("требуется 1", result.message)
 
     def test_non_paid_playerok_order_is_rejected_before_any_reservation(self):
         order, config_id = self.create_order(
@@ -246,6 +302,11 @@ class DeliveryReservationServiceTests(unittest.TestCase):
             deal_id="parallel-second-deal",
             total_quantity=1,
         )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET playerok_account_id='reservation-test-account',is_historical=0 "
+                "WHERE deal_id='parallel-second-deal'"
+            )
         second = "parallel-second-order"
         snapshots = {
             "Bot-A": self.snapshot("Bot-A", "cs2", 730, 2, [

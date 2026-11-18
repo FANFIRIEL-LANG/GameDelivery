@@ -21,7 +21,7 @@ class DeliveryLedgerMigrationTests(unittest.TestCase):
     def test_legacy_orders_delivery_orders_and_reservations_are_preserved_and_imported(self):
         with tempfile.TemporaryDirectory() as tmp:
             database_path = Path(tmp) / "legacy.sqlite3"
-            with sqlite3.connect(database_path) as legacy:
+            with connect_sqlite(database_path) as legacy:
                 legacy.executescript(
                     """
                     CREATE TABLE orders (

@@ -7,6 +7,7 @@ from typing import Iterable
 
 from games.steam_cards.selection import CardCopy
 from core.database.connection import connect_sqlite
+from games.asset_ids import validate_asset_id
 
 
 class InventorySnapshotStore:
@@ -121,7 +122,7 @@ class InventorySnapshotStore:
     def _normalize(cards: Iterable[CardCopy]) -> dict[str, CardCopy]:
         normalized: dict[str, CardCopy] = {}
         for card in cards:
-            asset_id = str(card.asset_id).strip()
+            asset_id = validate_asset_id(card.asset_id)
             game_name = card.game_name.strip()
             card_name = card.card_name.strip()
             if not asset_id or not game_name or not card_name:

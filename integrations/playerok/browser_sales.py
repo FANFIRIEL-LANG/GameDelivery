@@ -5,6 +5,7 @@ import json
 import weakref
 from threading import Lock
 from typing import Any, Callable
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from integrations.playerok.client import PlayerokAdapter
@@ -12,8 +13,9 @@ from integrations.playerok.client import PlayerokAdapter
 
 _VIEWER_URL = "https://bff.playerok.com/rest-api/public/viewer"
 _GRAPHQL_URL = "https://playerok.com/graphql"
-_PAGE_SIZE = 50
+_PAGE_SIZE = 24
 _MAX_PAGES = 10_000
+_DEALS_PERSISTED_QUERY_SHA256 = "591b0e6d036c2120c8f95b97dbfdf5635df3747cd901f4895e009935229417ef"
 _POLL_INTERVAL_MS = 50
 _SAFE_ERROR_CAUSES = frozenset({
     "AbortError", "NetworkError", "NotAllowedError", "RangeError", "ReferenceError",
@@ -24,18 +26,30 @@ _DIAGNOSTIC_MARKERS = frozenset({
     "javascript_start_error", "request_id_error", "poll_state_error", "fetch_error",
     "http_error", "json_parse_error", "viewer_parse_error",
 })
-_DEALS_QUERY = """
-query Deals($pagination: Pagination, $filter: ItemDealFilter!, $sort: Sort) {
-  deals(pagination: $pagination, filter: $filter, sort: $sort) {
-    edges { node { id status createdAt item { id name } user { id username } chat { id } transaction { value } } }
-    pageInfo { hasNextPage endCursor }
-    totalCount
-  }
-}
-"""
-
 _SNAPSHOT_LOCK = Lock()
 _TRUSTED_SNAPSHOTS = weakref.WeakKeyDictionary()
+
+
+def _deals_page_url(account_user_id: str, page_size: int, cursor: str | None) -> str:
+    """Build the observed read-only Playerok deals GET used by its paginated client."""
+    pagination: dict[str, Any] = {"first": page_size, "after": cursor}
+    variables = {
+        "pagination": pagination,
+        "filter": {"userId": account_user_id, "direction": "Out", "status": None},
+        "showForbiddenImage": True,
+    }
+    extensions = {
+        "persistedQuery": {
+            "version": 1,
+            "sha256Hash": _DEALS_PERSISTED_QUERY_SHA256,
+        }
+    }
+    query = urlencode({
+        "operationName": "deals",
+        "variables": json.dumps(variables, separators=(",", ":")),
+        "extensions": json.dumps(extensions, separators=(",", ":")),
+    })
+    return f"{_GRAPHQL_URL}?{query}"
 
 
 class BrowserSalesSnapshot:
@@ -111,19 +125,9 @@ def _start_fetch_script(
     url: str,
     request_id: str,
     *,
-    method: str = "GET",
-    body: dict[str, Any] | None = None,
-    operation: str = "",
     result_kind: str = "deals",
 ) -> str:
-    options: dict[str, Any] = {"method": method, "credentials": "include"}
-    if body is not None:
-        options["headers"] = {
-            "Accept": "application/json", "Content-Type": "application/json",
-            "apollo-require-preflight": "true", "x-gql-op": operation,
-            "x-apollo-operation-name": operation,
-        }
-        options["body"] = json.dumps(body, separators=(",", ":"))
+    options = {"method": "GET", "credentials": "include"}
     diagnostic_guard = (
         "const diagnosticPayload=payload=>{if(payload===null||typeof payload!=='object'||"
         "!Object.prototype.hasOwnProperty.call(payload,'__diagnostic'))return {found:false};"
@@ -142,7 +146,7 @@ def _start_fetch_script(
              "return payload&&payload.errors?{__graphql_error:true}:payload;}"
     )
     safe_cause = _safe_cause_javascript()
-    deals_operation = json.dumps(operation == "Deals")
+    deals_operation = json.dumps(result_kind == "deals")
     return (
         "(()=>{const key=" + json.dumps(request_id) + ";" + diagnostic_guard + safe_cause
         + "const isDealsOperation=" + deals_operation + ";"
@@ -330,16 +334,10 @@ class BrowserSalesReader:
         url: str,
         callback: Callable[[Any], None],
         *,
-        method: str = "GET",
-        body: dict[str, Any] | None = None,
-        operation: str = "",
         result_kind: str = "deals",
     ) -> None:
         request_id = "__gamedelivery_playerok_" + uuid4().hex
-        script = _start_fetch_script(
-            url, request_id, method=method, body=body, operation=operation,
-            result_kind=result_kind,
-        )
+        script = _start_fetch_script(url, request_id, result_kind=result_kind)
         if self._on_request_started is not None:
             try:
                 self._on_request_started()
@@ -489,14 +487,10 @@ class BrowserSalesReader:
         if self._page_count > self.max_pages:
             self._complete(None, "Превышен защитный лимит страниц продаж Playerok.")
             return
-        pagination: dict[str, Any] = {"first": self.page_size}
-        if self._cursor is not None:
-            pagination["after"] = self._cursor
-        body = {
-            "operationName": "Deals", "query": _DEALS_QUERY,
-            "variables": {"filter": {"direction": "OUT"}, "sort": None, "pagination": pagination},
-        }
-        self._fetch(_GRAPHQL_URL, self._on_page, method="POST", body=body, operation="Deals")
+        self._fetch(
+            _deals_page_url(self._account_id, self.page_size, self._cursor),
+            self._on_page,
+        )
 
     def _on_page(self, payload: Any) -> None:
         if not self._active:
@@ -640,7 +634,7 @@ class BrowserViewerChecker:
         self._active = True
         self._request_id = "__gamedelivery_playerok_viewer_" + uuid4().hex
         script = _start_fetch_script(
-            _VIEWER_URL, self._request_id, method="GET", result_kind="viewer"
+            _VIEWER_URL, self._request_id, result_kind="viewer"
         )
         try:
             self._run_javascript(script, self._on_started)

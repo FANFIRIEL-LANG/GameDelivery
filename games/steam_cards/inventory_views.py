@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable, Literal, Mapping
 
+from games.asset_ids import validate_asset_id
 from games.steam_cards.selection import CardCopy
 
 
@@ -68,7 +69,7 @@ def build_inventory_view(
     seen_assets: set[tuple[str, str]] = set()
     for bot in selected:
         for card in normalized[known_bots[bot]]:
-            asset_id = str(card.asset_id).strip()
+            asset_id = validate_asset_id(card.asset_id)
             game_name = card.game_name.strip()
             card_name = card.card_name.strip()
             if not asset_id or not game_name or not card_name:
@@ -178,7 +179,7 @@ def select_inventory_instances(
     unique: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for raw_bot, raw_asset in instances:
-        bot, asset = str(raw_bot).strip(), str(raw_asset).strip()
+        bot, asset = str(raw_bot).strip(), validate_asset_id(raw_asset)
         key = (bot.casefold(), asset)
         if bot and asset and key not in seen:
             seen.add(key)

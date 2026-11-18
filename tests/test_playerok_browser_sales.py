@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from urllib.parse import parse_qs, urlsplit
 
 from integrations.playerok.browser_sales import (
     BrowserSalesReader,
@@ -62,18 +63,48 @@ class BrowserSalesReaderTests(unittest.TestCase):
         _poll_script, poll_callback = requests.pop(0)
         poll_callback(json.dumps({"state": "done", "payload": payload}))
 
+    @staticmethod
+    def request_url(script):
+        match = re.search(r'fetch\(("(?:\\.|[^"\\])*")\s*,', script)
+        if match is None:
+            raise AssertionError("fetch URL not found in reader script")
+        return json.loads(match.group(1))
+
     def test_multiple_pages_keep_deal_chat_listing_ids_independent(self):
         reader, requests, scripts, results, scheduled = self.make_reader()
         reader.start()
         self.assertIn("credentials", requests[0][0])
         self.assertNotIn("async()=>", requests[0][0])
         self.complete_fetch(requests, scheduled, {"id": "seller-id"})
+        first_url = urlsplit(self.request_url(requests[0][0]))
+        first_query = parse_qs(first_url.query)
+        self.assertEqual(first_url.scheme, "https")
+        self.assertEqual(first_url.netloc, "playerok.com")
+        self.assertEqual(first_url.path, "/graphql")
+        self.assertEqual(first_query["operationName"], ["deals"])
+        first_variables = json.loads(first_query["variables"][0])
+        first_extensions = json.loads(first_query["extensions"][0])
+        self.assertEqual(first_variables, {
+            "pagination": {"first": 2, "after": None},
+            "filter": {"userId": "seller-id", "direction": "Out", "status": None},
+            "showForbiddenImage": True,
+        })
+        self.assertEqual(first_extensions["persistedQuery"]["version"], 1)
+        self.assertEqual(
+            first_extensions["persistedQuery"]["sha256Hash"],
+            "591b0e6d036c2120c8f95b97dbfdf5635df3747cd901f4895e009935229417ef",
+        )
+        self.assertNotIn('"method":"POST"', requests[0][0])
+        self.assertNotIn('"body":', requests[0][0])
         self.complete_fetch(
             requests, scheduled,
             page([raw_deal("d1", "l1", "c1")], has_next=True, cursor="next", total=2),
         )
         self.assertEqual(results, [])
-        self.assertIn(r'\"after\":\"next\"', requests[0][0])
+        second_query = parse_qs(urlsplit(self.request_url(requests[0][0])).query)
+        self.assertEqual(json.loads(second_query["variables"][0])["pagination"], {
+            "first": 2, "after": "next",
+        })
         self.complete_fetch(requests, scheduled, page([raw_deal("d2", "l2", "c2")], total=2))
         self.assertTrue(requests, "Reader должен повторно проверить viewer после последней страницы")
         self.complete_fetch(requests, scheduled, {"id": "seller-id"})
@@ -92,6 +123,24 @@ class BrowserSalesReaderTests(unittest.TestCase):
             [("d1", "c1", "l1"), ("d2", "c2", "l2")],
         )
         self.assertTrue(all("mutation" not in script.lower() for script in scripts))
+
+    def test_empty_terminal_page_is_accepted_when_unique_total_is_complete(self):
+        reader, requests, _scripts, results, scheduled = self.make_reader()
+        reader.start()
+        self.complete_fetch(requests, scheduled, {"id": "seller"})
+        self.complete_fetch(
+            requests, scheduled,
+            page([raw_deal("d1", "l1", "c1")], has_next=True, cursor="next", total=1),
+        )
+        self.complete_fetch(requests, scheduled, page([], total=1))
+        self.complete_fetch(requests, scheduled, {"id": "seller"})
+
+        snapshot, error = results[0]
+        self.assertIsNone(error)
+        self.assertTrue(is_trusted_browser_sales_snapshot(snapshot))
+        self.assertEqual(reader.pages_read, 2)
+        self.assertEqual(reader.deals_read, 1)
+        self.assertEqual([row["deal_id"] for row in snapshot.deals], ["d1"])
 
     def test_missing_and_repeated_cursor_fail_without_snapshot(self):
         for cursor in (None, ""):
@@ -543,7 +592,10 @@ class BrowserSalesReaderTests(unittest.TestCase):
         self.assertNotIn("Authorization", scripts[0])
         self.complete_fetch(requests, scheduled, {"id": "seller"})
         script = scripts[-1]
-        self.assertIn(r'\"operationName\":\"Deals\"', script)
+        query = parse_qs(urlsplit(self.request_url(script)).query)
+        self.assertEqual(query["operationName"], ["deals"])
+        self.assertIn('"method":"GET"', script)
+        self.assertNotIn('"body":', script)
         self.assertNotIn("mutation", script.lower())
         self.assertFalse(results)
 

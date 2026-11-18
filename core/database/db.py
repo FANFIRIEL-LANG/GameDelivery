@@ -7,6 +7,16 @@ from core.database.connection import connect_sqlite
 from core.database.ledger_migrations import (
     PLAYEROK_SYNC_BACKUP_SUFFIX,
     PLAYEROK_SYNC_MIGRATION_ID,
+    ORDER_LINE_CONFIG_BACKUP_SUFFIX,
+    ORDER_LINE_CONFIG_MIGRATION_ID,
+    UNIFIED_RESERVATION_BACKUP_SUFFIX,
+    UNIFIED_RESERVATION_MIGRATION_ID,
+    ASSET_ID_KEY_BACKUP_SUFFIX,
+    ASSET_ID_KEY_MIGRATION_ID,
+    ASSET_ID_BLOCKING_STATE_BACKUP_SUFFIX,
+    ASSET_ID_BLOCKING_STATE_MIGRATION_ID,
+    RECIPE_BACKUP_SUFFIX,
+    RECIPE_MIGRATION_ID,
     apply_delivery_ledger_migrations,
     ensure_pre_migration_backup,
 )
@@ -50,6 +60,31 @@ class Database:
             self.path,
             migration_id=PLAYEROK_SYNC_MIGRATION_ID,
             backup_suffix=PLAYEROK_SYNC_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=RECIPE_MIGRATION_ID,
+            backup_suffix=RECIPE_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=ORDER_LINE_CONFIG_MIGRATION_ID,
+            backup_suffix=ORDER_LINE_CONFIG_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=UNIFIED_RESERVATION_MIGRATION_ID,
+            backup_suffix=UNIFIED_RESERVATION_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=ASSET_ID_KEY_MIGRATION_ID,
+            backup_suffix=ASSET_ID_KEY_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=ASSET_ID_BLOCKING_STATE_MIGRATION_ID,
+            backup_suffix=ASSET_ID_BLOCKING_STATE_BACKUP_SUFFIX,
         )
         with self.connect() as connection:
             connection.executescript(SCHEMA)

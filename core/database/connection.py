@@ -4,6 +4,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from games.asset_ids import asset_id_key
+
 
 class ClosingSQLiteConnection(sqlite3.Connection):
     """Commit/rollback and always release the database handle on context exit."""
@@ -24,6 +26,10 @@ def connect_sqlite(
     """Open a connection with connection-local foreign-key enforcement enabled."""
     connection = sqlite3.connect(str(database), timeout=timeout, factory=ClosingSQLiteConnection)
     connection.row_factory = row_factory
+    # Reservation triggers use the same strict key function as Python paths.
+    # Connections that bypass this project factory fail closed when writing to
+    # the protected reservation tables.
+    connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
     connection.execute("PRAGMA foreign_keys = ON")
     enabled = connection.execute("PRAGMA foreign_keys").fetchone()
     if enabled is None or int(enabled[0]) != 1:

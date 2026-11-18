@@ -1,6 +1,7 @@
 import os
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -75,6 +76,78 @@ class InventoryOrderHandoffTests(unittest.TestCase):
 
         warning.assert_called_once()
         self.assertFalse(item.isSelected())
+
+    def test_steam_card_adapter_rejects_invalid_asset_id_types_before_matching(self):
+        invalid_ids = (None, True, 123, 12.5, "", " \t\n")
+        for asset_id in invalid_ids:
+            with self.subTest(asset_id=asset_id):
+                window, item = self.make_window()
+                with patch("app.main.QMessageBox.warning") as warning:
+                    window._open_order_with_trade_url(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc",
+                        [("Bot A", asset_id)],
+                    )
+                warning.assert_called_once()
+                self.assertFalse(item.isSelected())
+                self.assertEqual(window.order_recipient.text(), "")
+
+    def test_game_adapter_rejects_invalid_asset_id_types_before_snapshot_lookup(self):
+        invalid_ids = (None, True, 123, 12.5, "", " \t\n")
+        for asset_id in invalid_ids:
+            with self.subTest(asset_id=asset_id):
+                window = MainWindow.__new__(MainWindow)
+                QMainWindow.__init__(window)
+                with patch("app.main.QMessageBox.warning") as warning:
+                    window._open_game_order_with_trade_url(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc",
+                        [("Bot A", asset_id)],
+                    )
+                warning.assert_called_once()
+                self.assertFalse(hasattr(window, "game_inventory_panel"))
+
+    def test_game_adapter_preserves_valid_asset_id_string(self):
+        window = MainWindow.__new__(MainWindow)
+        QMainWindow.__init__(window)
+        asset_id = "0001001"
+        item = SimpleNamespace(
+            bot_name="Bot A", asset_id=asset_id, appid=730, context_id=2,
+            is_tradable=True, amount=1,
+        )
+        window.game_inventory_panel = SimpleNamespace(cs2_all_instances=[item])
+        window.order_recipient = QLineEdit()
+        window._load_saved_orders = lambda: None
+        window.orders = MagicMock()
+        window.orders.rowCount.return_value = 0
+        window.delivery_pipeline = MagicMock()
+        window.delivery_pipeline.prepare_cs2_order.return_value = SimpleNamespace(
+            status="reserved", message="", reserved_assets=(("Bot A", asset_id),),
+        )
+        window._auto_send_enabled = lambda: False
+        connection = MagicMock()
+        connection.execute.return_value.fetchall.return_value = [{
+            "bot_name": "Bot A", "updated_at": "2026-11-17T10:00:00+00:00",
+        }]
+
+        with patch("app.main.connect_sqlite") as connect, \
+                patch("app.main.Database"), \
+                patch("app.main.DeliveryLedger") as ledger_factory, \
+                patch("app.main.QMessageBox.information") as information, \
+                patch("app.main.QMessageBox.warning") as warning:
+            connect.return_value.__enter__.return_value = connection
+            window._open_game_order_with_trade_url(
+                "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc",
+                [("Bot A", asset_id)],
+            )
+
+        warning.assert_not_called()
+        information.assert_called_once()
+        ledger = ledger_factory.return_value
+        self.assertEqual(
+            ledger.create_listing_config_version.call_args.kwargs["item_selectors"]["asset_keys"],
+            ["bot a::0001001"],
+        )
+        prepared_snapshots = window.delivery_pipeline.prepare_cs2_order.call_args.kwargs["snapshots"]
+        self.assertEqual(prepared_snapshots["Bot A"].items[0].asset_id, asset_id)
 
 
 if __name__ == "__main__":

@@ -47,12 +47,25 @@ from core.delivery.reservation_service import InventorySnapshot
 from core.delivery.send_policy import DeliverySendPolicy, ManualDispatchAuthorization
 from games.inventory import GameInventoryStore
 from games.catalog import GAME_CATALOG
+from games.asset_ids import validate_asset_id
+from games.asset_ids import asset_id_key
 from games.steam_cards.recipient_diagnostics import normalize_recipient_card_diagnostics
 from core.database.ledger_migrations import ensure_pre_migration_backup, migrate_delivery_ledger
 from app.diagnostics import configure_logging, get_log_directory, get_logger, log_exception
 
 
 logger = get_logger("ui")
+
+
+def _normalize_selected_asset_pairs(selected_assets):
+    """Validate source asset IDs before normalizing UI selection keys."""
+    normalized = set()
+    for raw_bot, raw_asset_id in (selected_assets or []):
+        asset_id = validate_asset_id(raw_asset_id)
+        bot_name = str(raw_bot).strip()
+        if bot_name:
+            normalized.add((bot_name, asset_id))
+    return tuple(sorted(normalized))
 
 
 class _AsfCallSignals(QObject):
@@ -208,11 +221,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Некорректный Trade URL", str(exc))
             return
 
-        normalized_assets = sorted({
-            (str(bot).strip(), str(asset).strip())
-            for bot, asset in (selected_assets or [])
-            if str(bot).strip() and str(asset).strip()
-        })
+        try:
+            normalized_assets = _normalize_selected_asset_pairs(selected_assets)
+        except (TypeError, ValueError) as exc:
+            QMessageBox.warning(self, "Некорректный Asset ID", str(exc))
+            return
         if normalized_assets:
             bots = {bot.casefold() for bot, _asset in normalized_assets}
             if len(bots) != 1:
@@ -267,11 +280,7 @@ class MainWindow(QMainWindow):
         """Create a canonical CS2 730/2 manual order from exact selected inventory assets."""
         try:
             recipient = self._validate_trade_url(trade_url)
-            selected = tuple(sorted({
-                (str(bot).strip(), str(asset).strip())
-                for bot, asset in (selected_assets or [])
-                if str(bot).strip() and str(asset).strip()
-            }))
+            selected = _normalize_selected_asset_pairs(selected_assets)
             if not selected:
                 raise ValueError("Выбери хотя бы один CS2 предмет.")
             panel = self.game_inventory_panel
@@ -706,7 +715,7 @@ class MainWindow(QMainWindow):
                 existing = db.execute(
                     "SELECT asset_id FROM steam_asset_reservations WHERE bot_name = ?", (bot,)
                 ).fetchall()
-            reserved_ids = {row[0] for row in existing}
+            reserved_ids = {asset_id_key(row[0]) for row in existing}
             for asset_id, game, name, is_card, is_foil, is_tradable in rows:
                 if is_card != 1 or is_foil == 1:
                     continue
@@ -721,7 +730,7 @@ class MainWindow(QMainWindow):
                     label += f" · {state}"
                     item = QListWidgetItem(label)
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                elif asset_id in reserved_ids:
+                elif asset_id_key(asset_id) in reserved_ids:
                     label += " · УЖЕ ЗАРЕЗЕРВИРОВАН"
                     item = QListWidgetItem(label)
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)

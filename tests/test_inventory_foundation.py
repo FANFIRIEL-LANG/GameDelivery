@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from core.database.connection import connect_sqlite
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
 from games.steam_cards.owned_selection import select_owned_complete_sets
@@ -31,7 +32,8 @@ class InventorySnapshotMigrationTests(unittest.TestCase):
     def test_migrates_legacy_snapshot_without_losing_data(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "old.db"
-            with sqlite3.connect(path) as connection:
+            connection = connect_sqlite(path)
+            with connection:
                 connection.executescript("""
                     CREATE TABLE steam_inventory_snapshot (
                         asset_id TEXT PRIMARY KEY, game_name TEXT NOT NULL,
@@ -45,6 +47,8 @@ class InventorySnapshotMigrationTests(unittest.TestCase):
                     );
                     INSERT INTO steam_inventory_snapshot_meta VALUES (1,'2026-01-01T00:00:00+00:00',1);
                 """)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
             store = InventorySnapshotStore(path)
             self.assertEqual(store.load("legacy")[0].asset_id, "old-id")
             self.assertEqual(store.status("legacy")["item_count"], 1)

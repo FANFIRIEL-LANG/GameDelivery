@@ -9,12 +9,23 @@ from pathlib import Path
 from typing import Any
 
 from core.database.connection import connect_sqlite
+from games.asset_ids import asset_id_key
 
 
 MIGRATION_ID = "2026-11-delivery-ledger-v1"
 BACKUP_SUFFIX = ".pre-gamedelivery-ledger-v1.bak"
 PLAYEROK_SYNC_MIGRATION_ID = "2026-11-playerok-sync-v2"
 PLAYEROK_SYNC_BACKUP_SUFFIX = ".pre-gamedelivery-playerok-sync-v2.bak"
+RECIPE_MIGRATION_ID = "2026-11-delivery-recipes-v1"
+RECIPE_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-recipes-v1.bak"
+ORDER_LINE_CONFIG_MIGRATION_ID = "2026-11-order-line-config-version-v1"
+ORDER_LINE_CONFIG_BACKUP_SUFFIX = ".pre-gamedelivery-order-line-config-version-v1.bak"
+UNIFIED_RESERVATION_MIGRATION_ID = "2026-11-unified-resource-reservations-v1"
+UNIFIED_RESERVATION_BACKUP_SUFFIX = ".pre-gamedelivery-unified-resource-reservations-v1.bak"
+ASSET_ID_KEY_MIGRATION_ID = "2026-11-asset-id-key-v1"
+ASSET_ID_KEY_BACKUP_SUFFIX = ".pre-gamedelivery-asset-id-key-v1.bak"
+ASSET_ID_BLOCKING_STATE_MIGRATION_ID = "2026-11-asset-id-blocking-state-v1"
+ASSET_ID_BLOCKING_STATE_BACKUP_SUFFIX = ".pre-gamedelivery-asset-id-blocking-state-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -78,6 +89,7 @@ SCHEMA_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS gd_order_lines (
         order_line_id TEXT PRIMARY KEY,
         order_id TEXT NOT NULL REFERENCES gd_orders(order_id) ON DELETE RESTRICT,
+        config_version_id TEXT REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
         line_number INTEGER NOT NULL CHECK (line_number > 0),
         item_type TEXT NOT NULL,
         item_name TEXT NOT NULL DEFAULT '',
@@ -748,7 +760,10 @@ def _apply_playerok_sync_migration(connection: sqlite3.Connection) -> bool:
 
 
 def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
-    """Apply the canonical ledger and the account-scoped Playerok sync migration."""
+    """Apply the canonical ledger, Playerok sync, recipe, and reservation migrations."""
+    connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
+    if not _migration_applied(connection, ASSET_ID_KEY_MIGRATION_ID):
+        _preflight_asset_id_alias_conflicts(connection)
     connection.execute("PRAGMA foreign_keys = ON")
     if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
         raise sqlite3.OperationalError("Foreign-key enforcement is required for the delivery ledger")
@@ -778,7 +793,767 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
             connection.rollback()
             raise
         changed = True
-    return _apply_playerok_sync_migration(connection) or changed
+    changed = _apply_playerok_sync_migration(connection) or changed
+    changed = _apply_recipe_migration(connection) or changed
+    changed = _apply_order_line_config_migration(connection) or changed
+    changed = _apply_unified_reservation_migration(connection) or changed
+    changed = _apply_asset_id_key_migration(connection) or changed
+    return _apply_asset_id_blocking_state_migration(connection) or changed
+
+
+def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
+    """Inspect existing reservations before earlier migrations can backfill them."""
+    conflicts: set[tuple[str, str, str]] = set()
+    canonical_rows = []
+    if _table_exists(connection, "gd_resource_reservations"):
+        columns = _columns(connection, "gd_resource_reservations")
+        if {"bot_name", "asset_id", "state"}.issubset(columns):
+            canonical_rows = connection.execute(
+                "SELECT rowid,bot_name,asset_id,state,owner_type,legacy_owner_id,order_line_id "
+                "FROM gd_resource_reservations WHERE state IN ('active','legacy_conflict')"
+            ).fetchall()
+    legacy_rows = []
+    if _table_exists(connection, "steam_asset_reservations"):
+        columns = _columns(connection, "steam_asset_reservations")
+        if {"bot_name", "asset_id", "order_id"}.issubset(columns):
+            legacy_rows = connection.execute(
+                "SELECT rowid,bot_name,asset_id,order_id FROM steam_asset_reservations"
+            ).fetchall()
+
+    grouped: dict[tuple[str, str, str], list[object]] = {}
+    for table, rows in (("gd_resource_reservations", canonical_rows), ("steam_asset_reservations", legacy_rows)):
+        for row in rows:
+            try:
+                key = asset_id_key(row["asset_id"])
+            except ValueError as exc:
+                raise sqlite3.IntegrityError(
+                    f"{table} contains an invalid asset_id; reservation migration stopped before changes"
+                ) from exc
+            bot = str(row["bot_name"] or "").strip()
+            if not bot:
+                raise sqlite3.IntegrityError(
+                    f"{table} contains an empty bot_name; reservation migration stopped before changes"
+                )
+            grouped.setdefault((table, bot.casefold(), key), []).append(row)
+    for (table, bot, key), rows in grouped.items():
+        if len(rows) > 1:
+            conflicts.add((table, bot, key))
+
+    # A pre-existing canonical/projection pair is accepted only when source ID
+    # and owner links prove it is the same record. Otherwise a previous
+    # migration must not materialize an additional owner before conflict review.
+    for legacy in legacy_rows:
+        key = asset_id_key(legacy["asset_id"])
+        bot = str(legacy["bot_name"] or "").strip()
+        order_id = str(legacy["order_id"] or "")
+        matches = [
+            row for row in canonical_rows
+            if str(row["bot_name"] or "").casefold() == bot.casefold()
+            and asset_id_key(row["asset_id"]) == key
+        ]
+        if not matches:
+            continue  # An unbackfilled legacy row will be imported by migration.
+        allowed = False
+        if len(matches) == 1:
+            candidate = matches[0]
+            if candidate["state"] == "active" and candidate["asset_id"] == legacy["asset_id"]:
+                allowed = (
+                    candidate["owner_type"] == "legacy"
+                    and candidate["legacy_owner_id"] == f"steam_asset_reservations:{order_id}"
+                )
+                if not allowed and candidate["owner_type"] == "order" and candidate["order_line_id"]:
+                    if _table_exists(connection, "gd_order_lines"):
+                        linked = connection.execute(
+                            "SELECT order_id FROM gd_order_lines WHERE order_line_id=?",
+                            (candidate["order_line_id"],),
+                        ).fetchone()
+                        if linked:
+                            canonical_order = str(linked[0])
+                            allowed = canonical_order == order_id
+                            if not allowed and _table_exists(connection, "gd_legacy_order_map"):
+                                allowed = connection.execute(
+                                    "SELECT 1 FROM gd_legacy_order_map WHERE legacy_table='delivery_orders' "
+                                    "AND legacy_order_id=? AND order_id=?",
+                                    (order_id, canonical_order),
+                                ).fetchone() is not None
+        if matches and not allowed:
+            conflicts.add(("cross_table", bot.casefold(), key))
+
+    if conflicts:
+        markers = sorted({
+            hashlib.sha256((table + "|" + bot + "|" + key).encode("utf-8")).hexdigest()[:10]
+            for table, bot, key in conflicts
+        })
+        raise sqlite3.IntegrityError(
+            "Asset ID alias conflicts prevent reservation migration: "
+            f"{len(conflicts)} blocking group(s); safe markers: {', '.join(markers[:8]) or 'unavailable'}. "
+            "No migration changes were made. Resolve owners manually and retry."
+        )
+
+
+def _apply_asset_id_key_migration(connection: sqlite3.Connection) -> bool:
+    """Add collision-safe comparison keys without rewriting stored asset IDs."""
+    if _migration_applied(connection, ASSET_ID_KEY_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for table in ("gd_resource_reservations", "steam_asset_reservations"):
+            columns = _columns(connection, table)
+            if "asset_id" not in columns:
+                raise sqlite3.IntegrityError(f"{table} has no asset_id column")
+            if "asset_id_key" not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN asset_id_key TEXT"
+                )
+
+        # Validate and compute all keys before changing rows. Collision reports
+        # expose only deterministic short fingerprints, never raw account data.
+        keyed: dict[str, list[tuple[str, str, str, str]]] = {}
+        for table, states in (
+            ("gd_resource_reservations", ("active", "legacy_conflict")),
+            ("steam_asset_reservations", ()),
+        ):
+            rows = connection.execute(
+                f"SELECT rowid,bot_name,asset_id,{('legacy_owner_id,owner_type,state' if table == 'gd_resource_reservations' else 'order_id')} "
+                f"FROM {table} " + ("WHERE state IN ('active','legacy_conflict') " if states else "")
+            ).fetchall()
+            for row in rows:
+                try:
+                    key = asset_id_key(row["asset_id"])
+                except ValueError as exc:
+                    raise sqlite3.IntegrityError(
+                        f"{table} contains an invalid asset_id; key migration rolled back"
+                    ) from exc
+                bot = str(row["bot_name"] or "").strip()
+                if not bot:
+                    raise sqlite3.IntegrityError(f"{table} contains an empty bot_name")
+                owner = str(row["legacy_owner_id"] or "") if table == "gd_resource_reservations" else str(row["order_id"] or "")
+                owner_type = str(row["owner_type"] or "") if table == "gd_resource_reservations" else ""
+                state = str(row["state"] or "") if table == "gd_resource_reservations" else "active"
+                keyed.setdefault(table, []).append((str(row["rowid"]), bot, key, owner + "|" + owner_type + "|" + state))
+
+        conflicts: list[tuple[str, str, str]] = []
+        # More than one blocking canonical row for a key cannot be collapsed.
+        for table, values in keyed.items():
+            groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
+            for rowid, bot, key, owner_state in values:
+                groups.setdefault((bot.casefold(), key), []).append((rowid, owner_state))
+            for (bot_key, key), group in groups.items():
+                if len(group) > 1:
+                    conflicts.append((table, bot_key, key))
+
+        # Every legacy projection must match exactly one active canonical row
+        # by key, raw source ID, and explicit owner relationship. Alias-only
+        # agreement is insufficient to rewrite or merge persisted identities.
+        legacy_values = keyed.get("steam_asset_reservations", [])
+        for rowid, bot, key, legacy_owner in legacy_values:
+            order_id = legacy_owner.rsplit("|", 2)[0]
+            source_id = connection.execute(
+                "SELECT asset_id FROM steam_asset_reservations WHERE rowid=?", (rowid,)
+            ).fetchone()[0]
+            matches = connection.execute("""
+                SELECT r.asset_id,r.state,r.owner_type,r.legacy_owner_id,r.order_line_id
+                FROM gd_resource_reservations r
+                WHERE r.bot_name=? COLLATE NOCASE AND gd_asset_id_key(r.asset_id)=?
+                  AND r.state IN ('active','legacy_conflict')
+            """, (bot, key)).fetchall()
+            owner_matches = []
+            for candidate in matches:
+                same_legacy = (
+                    candidate["owner_type"] == "legacy"
+                    and candidate["legacy_owner_id"] == f"steam_asset_reservations:{order_id}"
+                )
+                same_order = False
+                if candidate["owner_type"] == "order" and candidate["order_line_id"]:
+                    same_order = connection.execute("""
+                        SELECT 1 FROM gd_order_lines ol
+                        WHERE ol.order_line_id=? AND (
+                            ol.order_id=? OR EXISTS (
+                                SELECT 1 FROM gd_legacy_order_map m
+                                WHERE m.legacy_table='delivery_orders' AND m.legacy_order_id=?
+                                  AND m.order_id=ol.order_id
+                            )
+                        ) LIMIT 1
+                    """, (candidate["order_line_id"], order_id, order_id)).fetchone() is not None
+                owner_matches.append((candidate, same_legacy or same_order))
+            if (
+                len(owner_matches) != 1
+                or not owner_matches[0][1]
+                or owner_matches[0][0]["state"] != "active"
+                or owner_matches[0][0]["asset_id"] != source_id
+            ):
+                conflicts.append(("cross_table", bot.casefold(), key))
+
+        if conflicts:
+            markers = sorted({
+                hashlib.sha256((table + "|" + bot + "|" + key).encode("utf-8")).hexdigest()[:10]
+                for table, bot, key in conflicts
+            })
+            raise sqlite3.IntegrityError(
+                "Asset ID alias conflicts prevent migration: "
+                f"{len(conflicts)} blocking group(s); safe markers: {', '.join(markers[:8]) or 'unavailable'}. "
+                "Resolve reservations manually; no rows were merged or changed."
+            )
+
+        for table in ("gd_resource_reservations", "steam_asset_reservations"):
+            rows = connection.execute(f"SELECT rowid,asset_id FROM {table}").fetchall()
+            for row in rows:
+                connection.execute(
+                    f"UPDATE {table} SET asset_id_key=? WHERE rowid=?",
+                    (asset_id_key(row["asset_id"]), row["rowid"]),
+                )
+
+        connection.execute("DROP INDEX IF EXISTS idx_gd_resource_active_global")
+        connection.execute("DROP INDEX IF EXISTS idx_gd_resource_active_asset_key")
+        connection.execute("DROP INDEX IF EXISTS idx_steam_reservation_asset_key")
+        connection.execute("""
+            CREATE UNIQUE INDEX idx_gd_resource_active_asset_key
+            ON gd_resource_reservations(bot_name COLLATE NOCASE,asset_id_key)
+            WHERE state='active'
+        """)
+        connection.execute("""
+            CREATE UNIQUE INDEX idx_steam_reservation_asset_key
+            ON steam_asset_reservations(bot_name COLLATE NOCASE,asset_id_key)
+        """)
+
+        for trigger in (
+            "gd_asset_reservations_set_key_insert", "gd_asset_reservations_set_key_update",
+            "gd_asset_reservations_guard_insert", "gd_asset_reservations_guard_update",
+            "steam_asset_reservations_set_key_insert", "steam_asset_reservations_set_key_update",
+            "steam_asset_reservations_guard_insert", "steam_asset_reservations_to_ledger_insert",
+            "steam_asset_reservations_to_ledger_delete", "gd_reservations_to_steam_compatibility_state",
+            "steam_asset_reservations_guard_source_update",
+            "gd_reservations_guard_projected_asset_update",
+        ):
+            connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        trigger_statements = [
+            """
+            CREATE TRIGGER gd_asset_reservations_guard_insert
+            BEFORE INSERT ON gd_resource_reservations
+            WHEN NEW.state IN ('active','legacy_conflict') AND EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.state IN ('active','legacy_conflict')
+                  AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id_key=gd_asset_id_key(NEW.asset_id)
+            ) BEGIN SELECT RAISE(ABORT,'Resource already has a blocking reservation'); END
+            """,
+            """
+            CREATE TRIGGER gd_asset_reservations_guard_update
+            BEFORE UPDATE OF state,asset_id,bot_name ON gd_resource_reservations
+            WHEN NEW.state IN ('active','legacy_conflict') AND EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.reservation_id<>OLD.reservation_id
+                  AND r.state IN ('active','legacy_conflict')
+                  AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id_key=gd_asset_id_key(NEW.asset_id)
+            ) BEGIN SELECT RAISE(ABORT,'Resource already has a blocking reservation'); END
+            """,
+            """
+            CREATE TRIGGER gd_asset_reservations_set_key_insert
+            AFTER INSERT ON gd_resource_reservations BEGIN
+                UPDATE gd_resource_reservations SET asset_id_key=gd_asset_id_key(NEW.asset_id)
+                WHERE reservation_id=NEW.reservation_id;
+            END
+            """,
+            """
+            CREATE TRIGGER gd_asset_reservations_set_key_update
+            AFTER UPDATE OF asset_id,asset_id_key ON gd_resource_reservations
+            WHEN NEW.asset_id_key IS NOT gd_asset_id_key(NEW.asset_id) BEGIN
+                UPDATE gd_resource_reservations SET asset_id_key=gd_asset_id_key(NEW.asset_id)
+                WHERE reservation_id=NEW.reservation_id;
+            END
+            """,
+            """
+            CREATE TRIGGER steam_asset_reservations_set_key_insert
+            AFTER INSERT ON steam_asset_reservations BEGIN
+                UPDATE steam_asset_reservations SET asset_id_key=gd_asset_id_key(NEW.asset_id)
+                WHERE rowid=NEW.rowid;
+            END
+            """,
+            """
+            CREATE TRIGGER steam_asset_reservations_set_key_update
+            AFTER UPDATE OF asset_id,asset_id_key ON steam_asset_reservations
+            WHEN NEW.asset_id_key IS NOT gd_asset_id_key(NEW.asset_id) BEGIN
+                UPDATE steam_asset_reservations SET asset_id_key=gd_asset_id_key(NEW.asset_id)
+                WHERE rowid=NEW.rowid;
+            END
+            """,
+            """
+            CREATE TRIGGER steam_asset_reservations_guard_insert
+            BEFORE INSERT ON steam_asset_reservations
+            WHEN EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.state IN ('active','legacy_conflict') AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id_key=gd_asset_id_key(NEW.asset_id)
+                  AND NOT (
+                    (r.owner_type='legacy' AND r.legacy_owner_id='steam_asset_reservations:'||NEW.order_id)
+                    OR (r.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_order_lines ol JOIN gd_orders o ON o.order_id=ol.order_id
+                        WHERE ol.order_line_id=r.order_line_id AND o.order_id=NEW.order_id
+                    ))
+                    OR (r.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_legacy_order_map m JOIN gd_order_lines ol ON ol.order_id=m.order_id
+                        WHERE m.legacy_table='delivery_orders' AND m.legacy_order_id=NEW.order_id
+                          AND ol.order_line_id=r.order_line_id
+                    ))
+                  )
+            ) BEGIN SELECT RAISE(ABORT,'Resource already has a conflicting canonical reservation'); END
+            """,
+            """
+            CREATE TRIGGER steam_asset_reservations_guard_source_update
+            BEFORE UPDATE OF asset_id,order_id ON steam_asset_reservations
+            WHEN EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.bot_name=OLD.bot_name COLLATE NOCASE
+                  AND r.asset_id_key=gd_asset_id_key(OLD.asset_id)
+                  AND ((r.owner_type='legacy' AND r.legacy_owner_id='steam_asset_reservations:'||OLD.order_id)
+                    OR (r.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_order_lines ol JOIN gd_orders o ON o.order_id=ol.order_id
+                        WHERE ol.order_line_id=r.order_line_id AND o.order_id=OLD.order_id
+                    ))
+                    OR (r.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_legacy_order_map m JOIN gd_order_lines ol ON ol.order_id=m.order_id
+                        WHERE m.legacy_table='delivery_orders' AND m.legacy_order_id=OLD.order_id
+                          AND ol.order_line_id=r.order_line_id
+                    )))
+                  AND (NEW.asset_id<>r.asset_id OR NEW.order_id<>OLD.order_id)
+            ) BEGIN SELECT RAISE(ABORT,'Projected reservation identity is immutable; release and reserve again'); END
+            """,
+            """
+            CREATE TRIGGER gd_reservations_guard_projected_asset_update
+            BEFORE UPDATE OF asset_id ON gd_resource_reservations
+            WHEN NEW.asset_id<>OLD.asset_id AND EXISTS (
+                SELECT 1 FROM steam_asset_reservations s
+                WHERE s.bot_name=OLD.bot_name COLLATE NOCASE
+                  AND s.asset_id_key=OLD.asset_id_key
+                  AND ((OLD.owner_type='legacy' AND OLD.legacy_owner_id='steam_asset_reservations:'||s.order_id)
+                    OR (OLD.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_order_lines ol WHERE ol.order_line_id=OLD.order_line_id
+                          AND (ol.order_id=s.order_id OR EXISTS (
+                            SELECT 1 FROM gd_legacy_order_map m WHERE m.legacy_table='delivery_orders'
+                              AND m.legacy_order_id=s.order_id AND m.order_id=ol.order_id
+                          ))
+                    )))
+            ) BEGIN SELECT RAISE(ABORT,'Projected reservation asset_id is immutable; release and reserve again'); END
+            """,
+            """
+            CREATE TRIGGER steam_asset_reservations_to_ledger_insert
+            AFTER INSERT ON steam_asset_reservations
+            WHEN NOT EXISTS (
+                SELECT 1 FROM gd_resource_reservations r WHERE r.state='active'
+                  AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id_key=gd_asset_id_key(NEW.asset_id)
+            ) BEGIN
+                INSERT INTO gd_resource_reservations
+                    (reservation_id,owner_type,legacy_owner_id,game_id,app_id,context_id,
+                     bot_name,asset_id,asset_id_key,units,state)
+                VALUES('legacy-reservation:'||hex(NEW.order_id)||':'||hex(NEW.bot_name)||':'||hex(NEW.asset_id),
+                    'legacy','steam_asset_reservations:'||NEW.order_id,'steam_cards',753,'6',
+                    NEW.bot_name,NEW.asset_id,gd_asset_id_key(NEW.asset_id),1,'active');
+            END
+            """,
+            """
+            CREATE TRIGGER steam_asset_reservations_to_ledger_delete
+            AFTER DELETE ON steam_asset_reservations BEGIN
+                UPDATE gd_resource_reservations SET state='released',
+                    updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE state='active' AND bot_name=OLD.bot_name COLLATE NOCASE
+                  AND asset_id_key=gd_asset_id_key(OLD.asset_id)
+                  AND (
+                    (owner_type='legacy' AND legacy_owner_id='steam_asset_reservations:'||OLD.order_id)
+                    OR (owner_type='order' AND (
+                        EXISTS (SELECT 1 FROM gd_order_lines ol
+                                WHERE ol.order_line_id=gd_resource_reservations.order_line_id
+                                  AND ol.order_id=OLD.order_id)
+                        OR EXISTS (SELECT 1 FROM gd_legacy_order_map m JOIN gd_order_lines ol
+                                   ON ol.order_id=m.order_id
+                                   WHERE m.legacy_table='delivery_orders'
+                                     AND m.legacy_order_id=OLD.order_id
+                                     AND ol.order_line_id=gd_resource_reservations.order_line_id)
+                    ))
+                  );
+            END
+            """,
+            """
+            CREATE TRIGGER gd_reservations_to_steam_compatibility_state
+            AFTER UPDATE OF state ON gd_resource_reservations
+            WHEN OLD.state='active' AND NEW.state IN ('released','consumed') BEGIN
+                DELETE FROM steam_asset_reservations WHERE bot_name=NEW.bot_name COLLATE NOCASE
+                  AND asset_id_key=NEW.asset_id_key AND (
+                    (NEW.owner_type='legacy' AND NEW.legacy_owner_id='steam_asset_reservations:'||order_id)
+                    OR (NEW.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_order_lines ol WHERE ol.order_line_id=NEW.order_line_id
+                          AND (ol.order_id=steam_asset_reservations.order_id OR EXISTS (
+                            SELECT 1 FROM gd_legacy_order_map m WHERE m.legacy_table='delivery_orders'
+                              AND m.legacy_order_id=steam_asset_reservations.order_id AND m.order_id=ol.order_id
+                          ))
+                    ))
+                  );
+            END
+            """,
+        ]
+        for statement in trigger_statements:
+            connection.execute(statement)
+        connection.execute("INSERT INTO gd_schema_migrations(migration_id) VALUES(?)", (ASSET_ID_KEY_MIGRATION_ID,))
+        violations = connection.execute("PRAGMA foreign_key_check(gd_resource_reservations)").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(f"Asset ID key migration produced {len(violations)} foreign-key violation(s)")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+def _apply_asset_id_blocking_state_migration(connection: sqlite3.Connection) -> bool:
+    """Upgrade key-enabled databases so every blocking state is guarded."""
+    if _migration_applied(connection, ASSET_ID_BLOCKING_STATE_MIGRATION_ID):
+        return False
+    if not _migration_applied(connection, ASSET_ID_KEY_MIGRATION_ID):
+        raise sqlite3.IntegrityError("Asset ID key migration must precede blocking-state guards")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("DROP TRIGGER IF EXISTS gd_asset_reservations_guard_insert")
+        connection.execute("DROP TRIGGER IF EXISTS gd_asset_reservations_guard_update")
+        connection.execute("""
+            CREATE TRIGGER gd_asset_reservations_guard_insert
+            BEFORE INSERT ON gd_resource_reservations
+            WHEN NEW.state IN ('active','legacy_conflict') AND EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.state IN ('active','legacy_conflict')
+                  AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id_key=gd_asset_id_key(NEW.asset_id)
+            ) BEGIN SELECT RAISE(ABORT,'Resource already has a blocking reservation'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_asset_reservations_guard_update
+            BEFORE UPDATE OF state,asset_id,bot_name ON gd_resource_reservations
+            WHEN NEW.state IN ('active','legacy_conflict') AND EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.reservation_id<>OLD.reservation_id
+                  AND r.state IN ('active','legacy_conflict')
+                  AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id_key=gd_asset_id_key(NEW.asset_id)
+            ) BEGIN SELECT RAISE(ABORT,'Resource already has a blocking reservation'); END
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (ASSET_ID_BLOCKING_STATE_MIGRATION_ID,),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+def _apply_unified_reservation_migration(connection: sqlite3.Connection) -> bool:
+    """Make the legacy Steam reservation table a transactional compatibility projection."""
+    if _migration_applied(connection, UNIFIED_RESERVATION_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS steam_asset_reservations (
+                bot_name TEXT NOT NULL,
+                asset_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                PRIMARY KEY (bot_name, asset_id)
+            )
+        """)
+        required = {"bot_name", "asset_id", "order_id"}
+        if not required.issubset(_columns(connection, "steam_asset_reservations")):
+            raise sqlite3.IntegrityError("Legacy Steam reservation table has an unsupported schema")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS gd_reservation_events (
+                event_id TEXT PRIMARY KEY,
+                reservation_id TEXT NOT NULL REFERENCES gd_resource_reservations(reservation_id) ON DELETE RESTRICT,
+                previous_state TEXT,
+                new_state TEXT NOT NULL,
+                changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS gd_reservation_events_after_insert
+            AFTER INSERT ON gd_resource_reservations
+            BEGIN
+                INSERT INTO gd_reservation_events(event_id,reservation_id,previous_state,new_state)
+                VALUES(lower(hex(randomblob(16))),NEW.reservation_id,NULL,NEW.state);
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS gd_reservation_events_after_state_change
+            AFTER UPDATE OF state ON gd_resource_reservations
+            WHEN OLD.state<>NEW.state
+            BEGIN
+                INSERT INTO gd_reservation_events(event_id,reservation_id,previous_state,new_state)
+                VALUES(lower(hex(randomblob(16))),NEW.reservation_id,OLD.state,NEW.state);
+            END
+        """)
+
+        # Copy every pre-existing legacy reservation into the canonical active
+        # set. If the same physical asset already belongs to a different owner,
+        # retain an explicit conflict marker and keep it unavailable.
+        for row in connection.execute(
+            "SELECT bot_name,asset_id,order_id FROM steam_asset_reservations ORDER BY bot_name,asset_id"
+        ).fetchall():
+            bot = str(row["bot_name"] or "").strip()
+            asset = str(row["asset_id"] or "").strip()
+            owner_id = str(row["order_id"] or "")
+            if not bot or not asset or not owner_id:
+                raise sqlite3.IntegrityError("Legacy reservation contains an incomplete resource identity")
+            active = connection.execute(
+                "SELECT reservation_id,owner_type,legacy_owner_id,order_line_id "
+                "FROM gd_resource_reservations WHERE state='active' "
+                "AND bot_name=? COLLATE NOCASE AND asset_id=? LIMIT 1",
+                (bot, asset),
+            ).fetchone()
+            if active is not None:
+                same_legacy_owner = (
+                    active["owner_type"] == "legacy"
+                    and active["legacy_owner_id"] == f"steam_asset_reservations:{owner_id}"
+                )
+                same_order_owner = False
+                if active["owner_type"] == "order" and active["order_line_id"]:
+                    current_owner = connection.execute(
+                        "SELECT order_id FROM gd_order_lines WHERE order_line_id=?",
+                        (active["order_line_id"],),
+                    ).fetchone()
+                    same_order_owner = bool(
+                        current_owner and (
+                            str(current_owner[0]) == owner_id
+                            or connection.execute(
+                                "SELECT 1 FROM gd_legacy_order_map "
+                                "WHERE legacy_table='delivery_orders' AND legacy_order_id=? AND order_id=?",
+                                (owner_id, str(current_owner[0])),
+                            ).fetchone()
+                        )
+                    )
+                if same_legacy_owner or same_order_owner:
+                    continue
+                conflict_id = _stable_id(
+                    "legacy-reservation-conflict", bot.casefold() + "|" + asset + "|" + owner_id
+                )
+                connection.execute("""
+                    INSERT OR IGNORE INTO gd_resource_reservations
+                        (reservation_id,owner_type,legacy_owner_id,game_id,app_id,context_id,
+                         bot_name,asset_id,units,state)
+                    VALUES(?,'legacy',?,'steam_cards',753,'6',?,?,1,'legacy_conflict')
+                """, (conflict_id, f"steam_asset_reservations:{owner_id}", bot, asset))
+                continue
+            reservation_id = _stable_id(
+                "legacy-reservation", owner_id + "|" + bot.casefold() + "|" + asset
+            )
+            connection.execute("""
+                INSERT INTO gd_resource_reservations
+                    (reservation_id,owner_type,legacy_owner_id,game_id,app_id,context_id,
+                     bot_name,asset_id,units,state)
+                VALUES(?,'legacy',?,'steam_cards',753,'6',?,?,1,'active')
+                ON CONFLICT(reservation_id) DO UPDATE SET
+                    state='active',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            """, (reservation_id, f"steam_asset_reservations:{owner_id}", bot, asset))
+
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS steam_asset_reservations_guard_insert
+            BEFORE INSERT ON steam_asset_reservations
+            WHEN EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.state='active' AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id=NEW.asset_id
+                  AND NOT (
+                    (r.owner_type='legacy' AND r.legacy_owner_id='steam_asset_reservations:'||NEW.order_id)
+                    OR (r.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_order_lines ol JOIN gd_orders o ON o.order_id=ol.order_id
+                        WHERE ol.order_line_id=r.order_line_id AND o.order_id=NEW.order_id
+                    ))
+                    OR (r.owner_type='order' AND EXISTS (
+                        SELECT 1 FROM gd_legacy_order_map m JOIN gd_order_lines ol ON ol.order_id=m.order_id
+                        WHERE m.legacy_table='delivery_orders' AND m.legacy_order_id=NEW.order_id
+                          AND ol.order_line_id=r.order_line_id
+                    ))
+                  )
+            )
+            BEGIN
+                SELECT RAISE(ABORT,'Resource already has an active canonical reservation');
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS steam_asset_reservations_to_ledger_insert
+            AFTER INSERT ON steam_asset_reservations
+            WHEN NOT EXISTS (
+                SELECT 1 FROM gd_resource_reservations r
+                WHERE r.state='active' AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND r.asset_id=NEW.asset_id
+            )
+            BEGIN
+                INSERT INTO gd_resource_reservations
+                    (reservation_id,owner_type,legacy_owner_id,game_id,app_id,context_id,
+                     bot_name,asset_id,units,state)
+                VALUES(
+                    'legacy-reservation:'||hex(NEW.order_id)||':'||hex(NEW.bot_name)||':'||hex(NEW.asset_id),
+                    'legacy','steam_asset_reservations:'||NEW.order_id,'steam_cards',753,'6',
+                    NEW.bot_name,NEW.asset_id,1,'active'
+                )
+                ON CONFLICT(reservation_id) DO UPDATE SET
+                    state='active',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now');
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS steam_asset_reservations_to_ledger_delete
+            AFTER DELETE ON steam_asset_reservations
+            BEGIN
+                UPDATE gd_resource_reservations SET state='released',
+                    updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE state='active' AND bot_name=OLD.bot_name COLLATE NOCASE AND asset_id=OLD.asset_id
+                  AND (
+                    (owner_type='legacy' AND legacy_owner_id='steam_asset_reservations:'||OLD.order_id)
+                    OR (owner_type='order' AND (
+                        EXISTS (SELECT 1 FROM gd_order_lines ol JOIN gd_orders o ON o.order_id=ol.order_id
+                                WHERE ol.order_line_id=gd_resource_reservations.order_line_id
+                                  AND o.order_id=OLD.order_id)
+                        OR EXISTS (SELECT 1 FROM gd_legacy_order_map m JOIN gd_order_lines ol ON ol.order_id=m.order_id
+                                   WHERE m.legacy_table='delivery_orders' AND m.legacy_order_id=OLD.order_id
+                                     AND ol.order_line_id=gd_resource_reservations.order_line_id)
+                    ))
+                  );
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS gd_reservations_to_steam_compatibility_state
+            AFTER UPDATE OF state ON gd_resource_reservations
+            WHEN OLD.state='active' AND NEW.state IN ('released','consumed')
+            BEGIN
+                DELETE FROM steam_asset_reservations
+                WHERE bot_name=NEW.bot_name COLLATE NOCASE AND asset_id=NEW.asset_id
+                  AND (
+                    (NEW.owner_type='legacy' AND NEW.legacy_owner_id='steam_asset_reservations:'||order_id)
+                    OR (NEW.owner_type='order' AND (
+                        EXISTS (SELECT 1 FROM gd_order_lines ol JOIN gd_orders o ON o.order_id=ol.order_id
+                                WHERE ol.order_line_id=NEW.order_line_id AND o.order_id=steam_asset_reservations.order_id)
+                        OR EXISTS (SELECT 1 FROM gd_legacy_order_map m JOIN gd_order_lines ol ON ol.order_id=m.order_id
+                                   WHERE m.legacy_table='delivery_orders' AND ol.order_line_id=NEW.order_line_id
+                                     AND m.legacy_order_id=steam_asset_reservations.order_id)
+                    ))
+                  );
+            END
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_steam_asset_reservations_order ON steam_asset_reservations(order_id)")
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (UNIFIED_RESERVATION_MIGRATION_ID,),
+        )
+        violations = connection.execute("PRAGMA foreign_key_check(gd_resource_reservations)").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"Unified reservation migration produced {len(violations)} foreign-key violation(s)"
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+def _apply_recipe_migration(connection: sqlite3.Connection) -> bool:
+    """Add typed recipe columns to immutable ConfigVersion rows without rewriting them."""
+    if _migration_applied(connection, RECIPE_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        columns = _columns(connection, "gd_config_versions")
+        if "recipe_schema_version" not in columns:
+            connection.execute(
+                "ALTER TABLE gd_config_versions ADD COLUMN recipe_schema_version "
+                "INTEGER CHECK (recipe_schema_version IS NULL OR recipe_schema_version > 0)"
+            )
+        if "recipe_items_json" not in columns:
+            connection.execute(
+                "ALTER TABLE gd_config_versions ADD COLUMN recipe_items_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        connection.execute(
+            "INSERT INTO gd_schema_migrations (migration_id) VALUES (?)",
+            (RECIPE_MIGRATION_ID,),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+def _apply_order_line_config_migration(connection: sqlite3.Connection) -> bool:
+    """Backfill and enforce the immutable ConfigVersion owner of every OrderLine."""
+    if _migration_applied(connection, ORDER_LINE_CONFIG_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        columns = _columns(connection, "gd_order_lines")
+        if "config_version_id" not in columns:
+            connection.execute(
+                "ALTER TABLE gd_order_lines ADD COLUMN config_version_id TEXT "
+                "REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT"
+            )
+        connection.execute("""
+            UPDATE gd_order_lines
+            SET config_version_id=(
+                SELECT d.config_version_id
+                FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id
+                WHERE o.order_id=gd_order_lines.order_id
+            )
+            WHERE config_version_id IS NULL
+        """)
+        missing = connection.execute("""
+            SELECT ol.order_line_id
+            FROM gd_order_lines ol
+            LEFT JOIN gd_orders o ON o.order_id=ol.order_id
+            LEFT JOIN gd_deals d ON d.deal_id=o.deal_id
+            WHERE ol.config_version_id IS NULL OR d.config_version_id IS NULL
+               OR ol.config_version_id<>d.config_version_id
+            LIMIT 1
+        """).fetchone()
+        if missing is not None:
+            raise sqlite3.IntegrityError(
+                "Existing OrderLine cannot be safely linked to its deal ConfigVersion"
+            )
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS gd_order_lines_config_version_insert
+            BEFORE INSERT ON gd_order_lines
+            WHEN NEW.config_version_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id
+                WHERE o.order_id=NEW.order_id
+                  AND d.config_version_id=NEW.config_version_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'OrderLine ConfigVersion must match its deal');
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS gd_order_lines_config_version_update
+            BEFORE UPDATE OF order_id,config_version_id ON gd_order_lines
+            WHEN NEW.config_version_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id
+                WHERE o.order_id=NEW.order_id
+                  AND d.config_version_id=NEW.config_version_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'OrderLine ConfigVersion must match its deal');
+            END
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations (migration_id) VALUES (?)",
+            (ORDER_LINE_CONFIG_MIGRATION_ID,),
+        )
+        violations = connection.execute("PRAGMA foreign_key_check(gd_order_lines)").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"OrderLine ConfigVersion migration produced {len(violations)} foreign-key violation(s)"
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
 
 
 def migrate_delivery_ledger(database_path: str | Path) -> bool:
@@ -787,6 +1562,16 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
         database_path,
         migration_id=PLAYEROK_SYNC_MIGRATION_ID,
         backup_suffix=PLAYEROK_SYNC_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=RECIPE_MIGRATION_ID,
+        backup_suffix=RECIPE_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=ORDER_LINE_CONFIG_MIGRATION_ID,
+        backup_suffix=ORDER_LINE_CONFIG_BACKUP_SUFFIX,
     )
     with connect_sqlite(database_path) as connection:
         return apply_delivery_ledger_migrations(connection)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from integrations.asf.client import ASFError
+from games.asset_ids import validate_asset_id
 from games.steam_cards.selection import CardCopy
 
 
@@ -89,7 +90,7 @@ def parse_bot_inventory(payload: Any, bot_name: str, game_name: str) -> list[Car
         instance_key = _key(asset, "instanceid")
         if asset_key is None or class_key is None:
             raise ASFError("ASF вернул предмет без asset ID или class ID; снимок не обновлён")
-        asset_id = str(asset[asset_key]).strip()
+        asset_id = validate_asset_id(asset[asset_key])
         if not asset_id:
             raise ASFError("ASF вернул пустой asset ID; снимок не обновлён")
         if asset_id in seen_asset_ids:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Iterable, Mapping
 
 from games.catalog import GAME_CATALOG
+from games.asset_ids import asset_id_key, validate_asset_id
 from games.steam_cards.badge_allocation import (
     GameAllocation,
     GameCapacity,
@@ -37,13 +38,24 @@ class MultiGameOrderPreflight:
     reserved_assets: tuple[tuple[str, str], ...]
     ready_for_manual_review: bool
     message: str
+    _selection_proof: object | None = dataclass_field(default=None, init=False, repr=False, compare=False)
+
+
+_SELECTION_PROOF_TOKEN = object()
+
+
+def has_verified_card_selection(value: object) -> bool:
+    return isinstance(value, MultiGameOrderPreflight) and value._selection_proof is _SELECTION_PROOF_TOKEN
+
+
+def _mark_verified_card_selection(value: MultiGameOrderPreflight) -> MultiGameOrderPreflight:
+    object.__setattr__(value, "_selection_proof", _SELECTION_PROOF_TOKEN)
+    return value
 
 
 def _reservation_key(bot_name: str, asset_id: str) -> tuple[str, str]:
-    asset = str(asset_id).strip()
-    if asset.isdigit() and int(asset) > 0:
-        asset = str(int(asset))
-    return bot_name.strip().casefold(), asset
+    asset = validate_asset_id(asset_id)
+    return bot_name.strip().casefold(), asset_id_key(asset)
 
 
 class SteamCardOrderPreflight:
@@ -114,8 +126,15 @@ class SteamCardOrderPreflight:
         card_hashes_by_app_id: Mapping[int, Iterable[str]],
         card_definitions_verified: bool,
         game_app_ids_by_name: Mapping[str, int] | None = None,
+        persist_reservation: bool = True,
+        additional_reserved_assets: Iterable[tuple[str, str]] = (),
     ) -> MultiGameOrderPreflight:
-        """Plan and reserve an exact multi-game order; never sends a trade."""
+        """Plan and optionally reserve an exact multi-game order; never sends a trade.
+
+        ``persist_reservation=False`` is for callers that must combine this pure
+        card allocation with other resource types in one SQLite transaction.
+        The allocation algorithm remains shared with the legacy preflight path.
+        """
         order = order_id.strip()
         if not order:
             raise ValueError("order_id обязателен")
@@ -160,6 +179,10 @@ class SteamCardOrderPreflight:
                 excluding_order_id=order
             )
         }
+        reserved.update(
+            _reservation_key(bot_name, asset_id)
+            for bot_name, asset_id in additional_reserved_assets
+        )
         inventory_lists = {bot_name: list(cards) for bot_name, cards in inventories.items()}
         available_inventories = {
             bot_name: [
@@ -269,9 +292,11 @@ class SteamCardOrderPreflight:
                     game_name=shared_game.game_name,
                     cards_per_set=shared_game.cards_per_set,
                     asset_ids=tuple(
-                        OwnedAsset(bot_name, asset_id)
-                        for bot_name, asset_id in asset_set
+                        OwnedAsset(bot_name, asset_id, card_hash_name)
+                        for (bot_name, asset_id), card_hash_name
+                        in zip(asset_set, shared_game.card_hash_names, strict=True)
                     ),
+                    card_hash_names=shared_game.card_hash_names,
                 )
                 for asset_set in shared_game.sets[:allocation.sets]
             )
@@ -295,6 +320,17 @@ class SteamCardOrderPreflight:
                 selected_sets,
             )
 
+        if not persist_reservation:
+            return _mark_verified_card_selection(MultiGameOrderPreflight(
+                order,
+                requested_sets,
+                allocations,
+                selected_sets,
+                tuple(assets),
+                True,
+                "План сформирован без изменения резервов.",
+            ))
+
         reservation = self.reservations.reserve(order, assets)
         if not reservation["reserved"]:
             conflicts = reservation["conflicts"]
@@ -308,7 +344,7 @@ class SteamCardOrderPreflight:
                 selected_sets,
             )
 
-        return MultiGameOrderPreflight(
+        return _mark_verified_card_selection(MultiGameOrderPreflight(
             order,
             requested_sets,
             allocations,
@@ -316,7 +352,13 @@ class SteamCardOrderPreflight:
             tuple(reservation["assets"]),
             True,
             "Подготовлено к ручной проверке. Отправка обмена не выполнялась.",
-        )
+        ))
+
+    def plan_multi_game(self, **kwargs) -> MultiGameOrderPreflight:
+        """Pure version of the established algorithm for a larger atomic plan."""
+        if "persist_reservation" in kwargs:
+            raise TypeError("plan_multi_game controls persist_reservation")
+        return self.prepare_multi_game(persist_reservation=False, **kwargs)
 
     def cancel_preflight(self, order_id: str) -> int:
         """Release local reservations when a human rejects the review."""

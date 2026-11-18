@@ -1,0 +1,722 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
+
+from core.database.db import Database
+from core.delivery.ledger import DeliveryLedger
+from core.delivery.order_pipeline import DeliveryOrderPipeline
+from core.delivery.reservation_service import InventorySnapshot, PlannedRecipeLine, PlannedResource
+from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem, SteamAssetSpec, SteamCardSetSpec
+from games.cs2.inventory_view import CS2InventoryInstance, RestrictionStatus, RestrictionType
+from games.steam_cards.recipient_badge import RecipientBadge
+from games.steam_cards.order_preflight import SteamCardOrderPreflight
+from games.steam_cards.reservations import AssetReservationStore
+from games.steam_cards.selection import CardCopy
+
+
+NOW = datetime.now(timezone.utc)
+
+
+def recipe_item(item_id, position, kind, quantity, spec):
+    return RecipeItem(
+        item_id=item_id,
+        position=position,
+        kind=kind,
+        spec_version=1,
+        quantity_per_order=quantity,
+        required=True,
+        stock_source_id=None,
+        executor_key="steam_trade_offer",
+        spec=spec,
+    )
+
+
+class UnifiedRecipeReservationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.database = Database(Path(self.temp.name) / "unified.sqlite3")
+        self.ledger = DeliveryLedger(self.database)
+        self.pipeline = DeliveryOrderPipeline(self.database)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def create_recipe_order(self, suffix, items):
+        config = self.ledger.create_recipe_config_version(
+            listing_id=f"listing-{suffix}",
+            source_platform="playerok",
+            external_listing_id=f"external-listing-{suffix}",
+            recipe_items=items,
+            title="Recipe " + suffix,
+        )
+        self.ledger.create_deal(
+            deal_id=f"deal-{suffix}",
+            source_platform="playerok",
+            external_deal_id=f"external-deal-{suffix}",
+            chat_id=f"chat-{suffix}",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            platform_status="PAID",
+        )
+        self.ledger.create_order(
+            order_id=f"order-{suffix}", deal_id=f"deal-{suffix}", total_quantity=1
+        )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET playerok_account_id='seller-test',is_historical=0 WHERE deal_id=?",
+                (f"deal-{suffix}",),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO playerok_sync_state(account_user_id,baseline_completed) VALUES('seller-test',1)"
+            )
+        return f"order-{suffix}", config["config_version_id"]
+
+    @staticmethod
+    def cs2(bot, asset_id):
+        return CS2InventoryInstance(
+            game_id="cs2", appid=730, context_id=2, bot_name=bot, asset_id=asset_id,
+            class_id="1", instance_id="0", amount=1, name="AK-47 | Redline",
+            item_type="Rifle", market_hash_name="AK-47 | Redline",
+            is_tradable=True, is_marketable=True,
+            restriction_type=RestrictionType.NONE,
+            restriction_status=RestrictionStatus.AVAILABLE,
+            last_inventory_refresh=NOW,
+        )
+
+    @staticmethod
+    def mixed_snapshots(cs2_count=5):
+        cs2_ids = [f"cs2-{index}" for index in range(1, cs2_count + 1)]
+        cards_a = InventorySnapshot(
+            "Bot-A", "steam_cards", 753, "6", NOW,
+            (
+                CardCopy("card-alpha", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha", game_app_id=570),
+                CardCopy("card-beta", "Dota 2", "Dota Beta", market_hash_name="Dota Beta", game_app_id=570),
+            ), True,
+        )
+        cards_b = InventorySnapshot(
+            "Bot-B", "steam_cards", 753, "6", NOW, (), True,
+        )
+        assets_a = InventorySnapshot(
+            "Bot-A", "cs2", 730, "2", NOW,
+            tuple(UnifiedRecipeReservationTests.cs2("Bot-A", asset) for asset in cs2_ids[:2]), True,
+        )
+        assets_b = InventorySnapshot(
+            "Bot-B", "cs2", 730, "2", NOW,
+            tuple(UnifiedRecipeReservationTests.cs2("Bot-B", asset) for asset in cs2_ids[2:]), True,
+        )
+        return {
+            ("Bot-A", 753, "6"): cards_a,
+            ("Bot-B", 753, "6"): cards_b,
+            ("Bot-A", 730, "2"): assets_a,
+            ("Bot-B", 730, "2"): assets_b,
+        }
+
+    def mixed_recipe(self, cs2_quantity=5):
+        return (
+            recipe_item("cards", 1, "steam_card_set", 1,
+                        SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A", "Bot-B"))),
+            recipe_item("cs2", 2, "steam_asset", cs2_quantity,
+                        SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                                       ("Bot-A", "Bot-B"))),
+        )
+
+    def prepare(self, order_id, snapshots=None):
+        return self.pipeline.prepare_recipe_order(
+            order_id=order_id,
+            snapshots=snapshots or self.mixed_snapshots(),
+            recipient_badges=[RecipientBadge("Dota 2", 4)],
+            badge_data_verified=True,
+            buyer_complete_sets_by_app_id={570: 0},
+            buyer_inventory_verified=True,
+            seller_inventory_verified=True,
+            card_hashes_by_app_id={570: ("Dota Alpha", "Dota Beta")},
+            card_definitions_verified=True,
+        )
+
+    def line_rows(self, order):
+        with self.database.connect() as db:
+            return db.execute(
+                "SELECT order_line_id,line_number,item_type FROM gd_order_lines "
+                "WHERE order_id=? ORDER BY line_number", (order,),
+            ).fetchall()
+
+    def recipe_item_id(self, config_id, position):
+        with self.database.connect() as db:
+            recipe = self.ledger.recipe_for_config_version(db, config_id)
+        return next(item.item_id for item in recipe.items if item.position == position)
+
+    def assert_no_reservation_commit(self, order):
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0], "pending")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,),
+            ).fetchone()[0], 0)
+
+    def cs2_line_plan(self, item_id, asset_ids):
+        return PlannedRecipeLine(item_id, tuple(
+            (PlannedResource("Bot-A", asset, "cs2", 730, "2"),)
+            for asset in asset_ids
+        ))
+
+    def card_preflight(self, order_id, inventories, requested_sets=1):
+        return SteamCardOrderPreflight(AssetReservationStore(self.database.path)).plan_multi_game(
+            order_id=order_id,
+            requested_sets=requested_sets,
+            inventories=inventories,
+            recipient_badges=(RecipientBadge("Dota 2", 4),),
+            badge_data_verified=True,
+            buyer_complete_sets_by_app_id={570: 0},
+            buyer_inventory_verified=True,
+            seller_inventory_verified=True,
+            card_hashes_by_app_id={570: ("Dota Alpha", "Dota Beta")},
+            card_definitions_verified=True,
+        )
+
+    @staticmethod
+    def card_line_plan(item_id, preflight):
+        units = tuple(tuple(PlannedResource(
+            asset.bot_name, asset.asset_id, "steam_cards", 753, "6", True, asset.card_hash_name
+        ) for asset in selected_set.asset_ids) for selected_set in preflight.selected_sets)
+        card_sizes = {selected_set.cards_per_set for selected_set in preflight.selected_sets}
+        return PlannedRecipeLine(
+            item_id,
+            units,
+            steam_card_count_per_set=next(iter(card_sizes)) if len(card_sizes) == 1 else None,
+            steam_card_preflight=preflight,
+        )
+
+    def test_mixed_cards_and_five_cs2_assets_commit_all_positions_together(self):
+        order, _ = self.create_recipe_order("mixed", self.mixed_recipe())
+        result = self.prepare(order)
+        self.assertTrue(result.reserved, result.message)
+        self.assertEqual(len(result.reserved_assets), 7)
+        with self.database.connect() as db:
+            lines = db.execute(
+                "SELECT order_line_id,line_number,item_type,quantity FROM gd_order_lines WHERE order_id=? ORDER BY line_number",
+                (order,),
+            ).fetchall()
+            reservations = db.execute(
+                "SELECT game_id,app_id,context_id,state,COUNT(*) AS count FROM gd_resource_reservations "
+                "WHERE order_line_id IN (SELECT order_line_id FROM gd_order_lines WHERE order_id=?) "
+                "GROUP BY game_id,app_id,context_id,state",
+                (order,),
+            ).fetchall()
+            legacy_cards = db.execute(
+                "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,)
+            ).fetchone()[0]
+            event_count = db.execute(
+                "SELECT COUNT(*) FROM gd_reservation_events WHERE new_state='active'"
+            ).fetchone()[0]
+        self.assertEqual([(row["line_number"], row["item_type"], row["quantity"]) for row in lines], [
+            (1, "steam_card_set", 1), (2, "steam_asset", 5),
+        ])
+        self.assertEqual({(row["game_id"], row["app_id"], row["context_id"], row["state"], row["count"])
+                          for row in reservations}, {
+            ("steam_cards", 753, "6", "active", 2),
+            ("cs2", 730, "2", "active", 5),
+        })
+        self.assertEqual(legacy_cards, 2)
+        self.assertEqual(event_count, 7)
+        with self.database.connect() as db:
+            cs2_by_bot = {row["bot_name"]: row["count"] for row in db.execute(
+                "SELECT bot_name,COUNT(*) AS count FROM gd_resource_reservations "
+                "WHERE state='active' AND game_id='cs2' GROUP BY bot_name"
+            )}
+        self.assertEqual(cs2_by_bot, {"Bot-A": 2, "Bot-B": 3})
+
+    def test_reservation_boundary_rejects_plan_missing_required_recipe_item(self):
+        order, config_id = self.create_recipe_order("boundary-missing-item", self.mixed_recipe())
+        self.ledger.materialize_recipe_order_lines(order)
+        lines = self.line_rows(order)
+        cs2_line = next(row for row in lines if row["item_type"] == "steam_asset")
+        plan = {
+            cs2_line["order_line_id"]: self.cs2_line_plan(
+                self.recipe_item_id(config_id, cs2_line["line_number"]), ["boundary-1"]
+            )
+        }
+
+        with self.assertRaisesRegex(ValueError, "all mandatory|все обязательные"):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order, config_version_id=config_id, planned_by_line=plan,
+            )
+
+        self.assert_no_reservation_commit(order)
+
+    def test_reservation_boundary_rejects_insufficient_recipe_item_quantity(self):
+        recipe = (recipe_item(
+            "cs2", 1, "steam_asset", 2,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        ),)
+        order, config_id = self.create_recipe_order("boundary-short-quantity", recipe)
+        self.ledger.materialize_recipe_order_lines(order)
+        line = self.line_rows(order)[0]
+        plan = {
+            line["order_line_id"]: self.cs2_line_plan(
+                self.recipe_item_id(config_id, line["line_number"]), ["only-one"]
+            )
+        }
+
+        with self.assertRaisesRegex(ValueError, "quantity"):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order, config_version_id=config_id, planned_by_line=plan,
+            )
+
+        self.assert_no_reservation_commit(order)
+
+    def test_invalid_asset_ids_are_rejected_for_physical_resources(self):
+        recipe = (recipe_item(
+            "cs2", 1, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        ),)
+        order, config_id = self.create_recipe_order("bad-asset-id", recipe)
+        self.ledger.materialize_recipe_order_lines(order)
+        line = self.line_rows(order)[0]
+        item_id = self.recipe_item_id(config_id, 1)
+        for asset_id in (None, "", "   ", True, 123, 12.5):
+            with self.subTest(asset_id=asset_id):
+                plan = PlannedRecipeLine(item_id, ((
+                    PlannedResource("Bot-A", asset_id, "cs2", 730, "2"),
+                ),))
+                with self.assertRaisesRegex(ValueError, "asset_id должен быть непустой строкой"):
+                    self.pipeline.cs2_reservations.reserve_recipe_plan(
+                        order_id=order, config_version_id=config_id,
+                        planned_by_line={line["order_line_id"]: plan},
+                    )
+                self.assert_no_reservation_commit(order)
+
+        valid_plan = self.cs2_line_plan(item_id, [" valid-asset "])
+        result = self.pipeline.cs2_reservations.reserve_recipe_plan(
+            order_id=order, config_version_id=config_id,
+            planned_by_line={line["order_line_id"]: valid_plan},
+        )
+        self.assertTrue(result.reserved)
+        self.assertEqual(result.reserved_assets, (("Bot-A", "valid-asset"),))
+
+    def test_reservation_boundary_accepts_full_mixed_recipe_plan(self):
+        recipe = (
+            recipe_item("cards", 1, "steam_card_set", 1,
+                        SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A",))),
+            recipe_item("cs2", 2, "steam_asset", 1,
+                        SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",))),
+        )
+        order, config_id = self.create_recipe_order("boundary-full-mixed", recipe)
+        self.ledger.materialize_recipe_order_lines(order)
+        lines = self.line_rows(order)
+        card_line = next(row for row in lines if row["item_type"] == "steam_card_set")
+        cs2_line = next(row for row in lines if row["item_type"] == "steam_asset")
+        card_preflight = self.card_preflight(order, {"Bot-A": (
+            CardCopy("boundary-card-a", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha", game_app_id=570),
+            CardCopy("boundary-card-b", "Dota 2", "Dota Beta", market_hash_name="Dota Beta", game_app_id=570),
+        )})
+        plan = {
+            card_line["order_line_id"]: self.card_line_plan(self.recipe_item_id(config_id, 1), card_preflight),
+            cs2_line["order_line_id"]: self.cs2_line_plan(
+                self.recipe_item_id(config_id, 2), ["boundary-cs2"]
+            ),
+        }
+
+        result = self.pipeline.cs2_reservations.reserve_recipe_plan(
+            order_id=order, config_version_id=config_id, planned_by_line=plan,
+        )
+
+        self.assertTrue(result.reserved)
+        self.assertEqual(len(result.reserved_assets), 3)
+
+    def test_card_count_and_arbitrary_assets_cannot_substitute_for_preflight_composition(self):
+        recipe = (recipe_item(
+            "cards", 1, "steam_card_set", 1,
+            SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A",)),
+        ),)
+        order, config_id = self.create_recipe_order("card-proof-required", recipe)
+        self.ledger.materialize_recipe_order_lines(order)
+        line = self.line_rows(order)[0]
+        item_id = self.recipe_item_id(config_id, 1)
+        preflight = self.card_preflight(order, {"Bot-A": (
+            CardCopy("real-alpha", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha", game_app_id=570),
+            CardCopy("real-beta", "Dota 2", "Dota Beta", market_hash_name="Dota Beta", game_app_id=570),
+        )})
+
+        plans = (
+            PlannedRecipeLine(item_id, ((
+                PlannedResource("Bot-A", "one-card", "steam_cards", 753, "6", True, "Dota Alpha"),
+            ),), steam_card_count_per_set=1),
+            PlannedRecipeLine(item_id, ((
+                PlannedResource("Bot-A", "fake-alpha", "steam_cards", 753, "6", True, "Dota Alpha"),
+                PlannedResource("Bot-A", "fake-beta", "steam_cards", 753, "6", True, "Dota Beta"),
+            ),), steam_card_count_per_set=2,
+                steam_card_preflight=preflight),
+        )
+        for plan in plans:
+            with self.subTest(plan=plan):
+                with self.assertRaises(ValueError):
+                    self.pipeline.cs2_reservations.reserve_recipe_plan(
+                        order_id=order, config_version_id=config_id,
+                        planned_by_line={line["order_line_id"]: plan},
+                    )
+                self.assert_no_reservation_commit(order)
+
+    def test_card_unit_must_use_one_bot_and_unique_assets(self):
+        recipe = (recipe_item(
+            "cards", 1, "steam_card_set", 1,
+            SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A", "Bot-B")),
+        ),)
+        order, config_id = self.create_recipe_order("card-unit-owner", recipe)
+        self.ledger.materialize_recipe_order_lines(order)
+        line = self.line_rows(order)[0]
+        item_id = self.recipe_item_id(config_id, 1)
+        mixed_bot_preflight = self.card_preflight(order, {
+            "Bot-A": (CardCopy("card-a", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha", game_app_id=570),),
+            "Bot-B": (CardCopy("card-b", "Dota 2", "Dota Beta", market_hash_name="Dota Beta", game_app_id=570),),
+        })
+        complete_preflight = self.card_preflight(order, {"Bot-A": (
+            CardCopy("same-asset", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha", game_app_id=570),
+            CardCopy("card-b", "Dota 2", "Dota Beta", market_hash_name="Dota Beta", game_app_id=570),
+        )})
+        invalid_plans = (
+            self.card_line_plan(item_id, mixed_bot_preflight),
+            PlannedRecipeLine(item_id, ((
+                PlannedResource("Bot-A", "same-asset", "steam_cards", 753, "6", True, "Dota Alpha"),
+                PlannedResource("Bot-A", "same-asset", "steam_cards", 753, "6", True, "Dota Beta"),
+            ),), steam_card_count_per_set=2, steam_card_preflight=complete_preflight),
+        )
+        for plan in invalid_plans:
+            with self.subTest(plan=plan):
+                with self.assertRaises(ValueError):
+                    self.pipeline.cs2_reservations.reserve_recipe_plan(
+                        order_id=order, config_version_id=config_id,
+                        planned_by_line={line["order_line_id"]: plan},
+                    )
+                self.assert_no_reservation_commit(order)
+
+    def test_two_preflight_complete_card_sets_reserve_in_one_order_line(self):
+        recipe = (recipe_item(
+            "cards", 1, "steam_card_set", 2,
+            SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A",)),
+        ),)
+        order, _ = self.create_recipe_order("two-complete-card-sets", recipe)
+        snapshot = InventorySnapshot(
+            "Bot-A", "steam_cards", 753, "6", NOW,
+            (
+                CardCopy("alpha-1", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha", game_app_id=570),
+                CardCopy("alpha-2", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha", game_app_id=570),
+                CardCopy("beta-1", "Dota 2", "Dota Beta", market_hash_name="Dota Beta", game_app_id=570),
+                CardCopy("beta-2", "Dota 2", "Dota Beta", market_hash_name="Dota Beta", game_app_id=570),
+            ), True,
+        )
+        result = self.pipeline.prepare_recipe_order(
+            order_id=order,
+            snapshots={("Bot-A", 753, "6"): snapshot},
+            recipient_badges=[],
+            badge_data_verified=True,
+            buyer_complete_sets_by_app_id={570: 0},
+            buyer_inventory_verified=True,
+            seller_inventory_verified=True,
+            card_hashes_by_app_id={570: ("Dota Alpha", "Dota Beta")},
+            card_definitions_verified=True,
+        )
+        self.assertTrue(result.reserved, result.message)
+        self.assertEqual(len(result.reserved_assets), 4)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+            ).fetchone()[0], 1)
+
+    def test_mapped_legacy_owner_is_excluded_but_foreign_legacy_reservation_blocks(self):
+        recipe = (recipe_item(
+            "cs2", 1, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        ),)
+        order, config_id = self.create_recipe_order("foreign-legacy-block", recipe)
+        self.ledger.materialize_recipe_order_lines(order)
+        line = self.line_rows(order)[0]
+        store = AssetReservationStore(self.database.path)
+        self.assertTrue(store.reserve("unrelated-order", [("Bot-A", "legacy-owned")])["reserved"])
+        self.assertIn(("Bot-A", "legacy-owned"), store.list_reserved_assets(excluding_order_id=order))
+
+        plan = {
+            line["order_line_id"]: self.cs2_line_plan(
+                self.recipe_item_id(config_id, line["line_number"]), ["legacy-owned"]
+            )
+        }
+        with self.assertRaisesRegex(ValueError, "активный резерв"):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order, config_version_id=config_id, planned_by_line=plan,
+            )
+
+        self.assert_no_reservation_commit(order)
+
+    def test_optional_recipe_item_can_be_omitted_at_reservation_boundary(self):
+        optional_text = RecipeItem(
+            item_id="optional-text", position=1, kind="digital_text_unit", spec_version=1,
+            quantity_per_order=1, required=False, stock_source_id="text-stock",
+            executor_key="text_delivery", spec=DigitalTextUnitSpec(),
+        )
+        required_cs2 = recipe_item(
+            "required-cs2", 2, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        )
+        order, config_id = self.create_recipe_order("boundary-optional", (optional_text, required_cs2))
+        self.ledger.materialize_recipe_order_lines(order)
+        line = next(row for row in self.line_rows(order) if row["item_type"] == "steam_asset")
+
+        result = self.pipeline.cs2_reservations.reserve_recipe_plan(
+            order_id=order, config_version_id=config_id,
+            planned_by_line={line["order_line_id"]: self.cs2_line_plan(
+                self.recipe_item_id(config_id, line["line_number"]), ["optional-cs2"]
+            )},
+        )
+
+        self.assertTrue(result.reserved)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs l JOIN gd_order_lines ol "
+                "ON ol.order_line_id=l.order_line_id WHERE ol.order_id=? AND ol.item_type='digital_text_unit'",
+                (order,),
+            ).fetchone()[0], 0)
+
+    def test_reservation_boundary_rejects_recipe_line_and_config_mismatches(self):
+        order, config_id = self.create_recipe_order(
+            "boundary-mismatch", (recipe_item(
+                "cs2", 1, "steam_asset", 1,
+                SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+            ),),
+        )
+        self.ledger.materialize_recipe_order_lines(order)
+        line = self.line_rows(order)[0]
+        wrong_item_plan = {line["order_line_id"]: self.cs2_line_plan("different-item", ["mismatch-1"])}
+        with self.assertRaisesRegex(ValueError, "RecipeItem"):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order, config_version_id=config_id, planned_by_line=wrong_item_plan,
+            )
+        self.assert_no_reservation_commit(order)
+
+        foreign_line = "unknown-order-line"
+        with self.assertRaisesRegex(ValueError, "another order|другого заказа"):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order, config_version_id=config_id,
+                planned_by_line={foreign_line: self.cs2_line_plan("cs2", ["mismatch-2"])},
+            )
+        self.assert_no_reservation_commit(order)
+
+        with self.assertRaisesRegex(ValueError, "ConfigVersion"):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order, config_version_id="different-config",
+                planned_by_line={line["order_line_id"]: self.cs2_line_plan("cs2", ["mismatch-3"])},
+            )
+        self.assert_no_reservation_commit(order)
+
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_order_lines SET item_selector_json='{}' WHERE order_line_id=?",
+                (line["order_line_id"],),
+            )
+        with self.assertRaisesRegex(ValueError, "snapshot"):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order, config_version_id=config_id,
+                planned_by_line={line["order_line_id"]: self.cs2_line_plan(
+                    self.recipe_item_id(config_id, line["line_number"]), ["mismatch-4"]
+                )},
+            )
+        self.assert_no_reservation_commit(order)
+
+    def test_shortage_of_any_required_line_leaves_no_partial_reservations(self):
+        order, _ = self.create_recipe_order("short", self.mixed_recipe())
+        result = self.prepare(order, self.mixed_snapshots(cs2_count=4))
+        self.assertEqual(result.status, "preflight_blocked")
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                                        "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,)).fetchone()[0], 0)
+
+    def test_card_shortage_keeps_planned_cs2_assets_unreserved(self):
+        order, _ = self.create_recipe_order("cards-short", self.mixed_recipe())
+        snapshots = self.mixed_snapshots()
+        snapshots[("Bot-A", 753, "6")] = InventorySnapshot(
+            "Bot-A", "steam_cards", 753, "6", NOW, (), True,
+        )
+        result = self.prepare(order, snapshots)
+        self.assertEqual(result.status, "preflight_blocked")
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+            ).fetchone()[0], 0)
+
+    def test_insert_failure_after_card_plan_rolls_back_every_resource_and_leg(self):
+        order, _ = self.create_recipe_order("rollback", self.mixed_recipe())
+        with self.database.connect() as db:
+            db.execute("""
+                CREATE TRIGGER fail_cs2_reservation
+                BEFORE INSERT ON gd_resource_reservations
+                WHEN NEW.game_id='cs2'
+                BEGIN SELECT RAISE(ABORT,'synthetic reservation insert failure'); END
+            """)
+        with self.assertRaisesRegex(Exception, "synthetic reservation insert failure"):
+            self.prepare(order)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                                        "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0], "pending")
+
+    def test_recipe_plan_respects_legacy_reservations_in_the_shared_pool(self):
+        order, _ = self.create_recipe_order("legacy-conflict", self.mixed_recipe(cs2_quantity=4))
+        legacy = AssetReservationStore(self.database.path)
+        result = legacy.reserve("manual-legacy-order", [("Bot-A", "cs2-1")])
+        self.assertTrue(result["reserved"])
+        prepared = self.prepare(order)
+        self.assertTrue(prepared.reserved)
+        self.assertNotIn(("Bot-A", "cs2-1"), set(prepared.reserved_assets))
+
+    def test_two_orders_share_inventory_without_double_claiming(self):
+        spec = (recipe_item("cs2", 1, "steam_asset", 3,
+                            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                                           ("Bot-A", "Bot-B"))),)
+        first, _ = self.create_recipe_order("pool-a", spec)
+        second, _ = self.create_recipe_order("pool-b", spec)
+        snapshots = {
+            ("Bot-A", 730, "2"): InventorySnapshot("Bot-A", "cs2", 730, "2", NOW,
+                tuple(self.cs2("Bot-A", f"shared-{i}") for i in range(3)), True),
+            ("Bot-B", 730, "2"): InventorySnapshot("Bot-B", "cs2", 730, "2", NOW,
+                tuple(self.cs2("Bot-B", f"shared-{i}") for i in range(3, 6)), True),
+        }
+        first_result = self.pipeline.prepare_recipe_order(order_id=first, snapshots=snapshots)
+        second_result = self.pipeline.prepare_recipe_order(order_id=second, snapshots=snapshots)
+        self.assertTrue(first_result.reserved)
+        self.assertTrue(second_result.reserved)
+        self.assertEqual(len(set(first_result.reserved_assets) & set(second_result.reserved_assets)), 0)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
+            ).fetchone()[0], 6)
+
+    def test_reprocessing_reserved_recipe_is_idempotent(self):
+        order, _ = self.create_recipe_order("repeat", self.mixed_recipe())
+        first = self.prepare(order)
+        second = self.prepare(order)
+        self.assertTrue(first.reserved)
+        self.assertTrue(second.reserved)
+        self.assertEqual(first.legs, second.legs)
+        self.assertEqual(set(first.reserved_assets), set(second.reserved_assets))
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
+            ).fetchone()[0], 7)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+            ).fetchone()[0], 3)
+
+    def test_unknown_required_resource_fails_closed_and_optional_text_is_skipped(self):
+        required_text = RecipeItem(
+            item_id="text", position=1, kind="digital_text_unit", spec_version=1,
+            quantity_per_order=1, required=True, stock_source_id="text-stock",
+            executor_key="text_delivery", spec=DigitalTextUnitSpec(),
+        )
+        order, _ = self.create_recipe_order("text-required", (required_text,))
+        result = self.pipeline.prepare_recipe_order(order_id=order, snapshots={})
+        self.assertEqual(result.status, "preflight_blocked")
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'").fetchone()[0], 0)
+
+        optional_text = RecipeItem(
+            item_id="optional-text", position=1, kind="digital_text_unit", spec_version=1,
+            quantity_per_order=1, required=False, stock_source_id="text-stock",
+            executor_key="text_delivery", spec=DigitalTextUnitSpec(),
+        )
+        required_cs2 = recipe_item(
+            "required-cs2", 2, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        )
+        optional_order, _ = self.create_recipe_order("text-optional", (optional_text, required_cs2))
+        snapshots = {
+            ("Bot-A", 730, "2"): InventorySnapshot(
+                "Bot-A", "cs2", 730, "2", NOW, (self.cs2("Bot-A", "optional-skip-cs2"),), True,
+            ),
+        }
+        optional_result = self.pipeline.prepare_recipe_order(order_id=optional_order, snapshots=snapshots)
+        self.assertTrue(optional_result.reserved)
+        self.assertEqual(optional_result.reserved_assets, (("Bot-A", "optional-skip-cs2"),))
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active' AND order_line_id="
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=? AND item_type='digital_text_unit')",
+                (optional_order,),
+            ).fetchone()[0], 0)
+
+        optional_only, _ = self.create_recipe_order("text-optional-only", (optional_text,))
+        empty_plan = self.pipeline.prepare_recipe_order(order_id=optional_only, snapshots={})
+        self.assertEqual(empty_plan.status, "preflight_blocked")
+        self.assertIn("нет обязательных физических ресурсов", empty_plan.message)
+
+    def test_parallel_orders_cannot_claim_the_same_assets(self):
+        spec = (recipe_item(
+            "cs2", 1, "steam_asset", 2,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        ),)
+        first, _ = self.create_recipe_order("parallel-a", spec)
+        second, _ = self.create_recipe_order("parallel-b", spec)
+        snapshots = {
+            ("Bot-A", 730, "2"): InventorySnapshot(
+                "Bot-A", "cs2", 730, "2", NOW,
+                (self.cs2("Bot-A", "parallel-1"), self.cs2("Bot-A", "parallel-2")), True,
+            ),
+        }
+
+        def prepare(order_id):
+            return self.pipeline.prepare_recipe_order(order_id=order_id, snapshots=snapshots)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(prepare, (first, second)))
+        self.assertEqual(sum(result.reserved for result in results), 1)
+        self.assertEqual(sum(result.status == "preflight_blocked" for result in results), 1)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
+            ).fetchone()[0], 2)
+
+    def test_unknown_order_keeps_canonical_and_card_compatibility_reserves(self):
+        order, _ = self.create_recipe_order(
+            "unknown-retained", (recipe_item(
+                "cards", 1, "steam_card_set", 1,
+                SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A", "Bot-B")),
+            ),),
+        )
+        result = self.prepare(order)
+        self.assertTrue(result.reserved)
+        with self.database.connect() as db:
+            db.execute("UPDATE gd_orders SET status='UNKNOWN' WHERE order_id=?", (order,))
+            db.execute("UPDATE gd_delivery_legs SET status='UNKNOWN' WHERE order_line_id IN "
+                       "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,))
+        with self.assertRaisesRegex(ValueError, "UNKNOWN/SENT/PROCESSING"):
+            self.pipeline.cancel_order(order)
+        with self.database.connect() as db:
+            self.assertGreater(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+            ).fetchone()[0], 0)
+            self.assertGreater(db.execute(
+                "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,),
+            ).fetchone()[0], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

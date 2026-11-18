@@ -188,6 +188,18 @@ class DeliveryDispatchTests(unittest.TestCase):
 
     def test_transport_failure_becomes_unknown_and_reconciliation_recovers_offer_without_resend(self):
         leg = self.create_order()[0]
+        # This scenario is specifically about UNKNOWN recovery. Supply the
+        # canonical baseline facts required by the fail-closed Playerok gate
+        # so the test reaches dispatch/reconciliation rather than stopping at
+        # PLAYEROK_NOT_ELIGIBLE.
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET is_historical=0,listing_resolution_status='resolved' "
+                "WHERE deal_id='deal-order-1'"
+            )
+            db.execute(
+                "INSERT INTO playerok_sync_state(account_user_id,baseline_completed) VALUES('account-order-1',1)"
+            )
         self.asf.send_error["Bot-A"] = TimeoutError("IPC timeout")
         result = self.dispatch("order-1", leg)
         self.assertEqual(result["status"], "UNKNOWN")

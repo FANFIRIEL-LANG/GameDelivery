@@ -17,6 +17,7 @@ from app.inventory_display import (
     update_table_thumbnails,
 )
 from games.inventory_display import count_physical_metrics
+from games.asset_ids import asset_id_key
 
 from games.steam_cards.selection import find_available_sets
 from games.steam_cards.inventory_views import (
@@ -507,7 +508,7 @@ class InventoryPanel(QWidget):
                 available.extend(expand_inventory_instances(row_data))
         available = [
             (bot, asset) for bot, asset in available
-            if (bot, asset) not in self.reservation_rows
+            if self._reservation_key(bot, asset) not in self.reservation_rows
         ]
         self.quantity_input.setRange(0, len(available))
         for bot_name, asset_id in available:
@@ -543,7 +544,7 @@ class InventoryPanel(QWidget):
                 tile.setSelected(False)
                 continue
             tile.setSelected(any(
-                (bot, asset_id) in self._selected_asset_keys
+            (bot, asset_id) in self._selected_asset_keys
                 for bot, asset_ids in row_data.assets_by_bot
                 for asset_id in asset_ids
             ))
@@ -561,7 +562,7 @@ class InventoryPanel(QWidget):
                 (str(bot), str(asset_id))
                 for bot, asset_ids in row_data.assets_by_bot
                 for asset_id in asset_ids
-                if (str(bot), str(asset_id)) not in self.reservation_rows
+                if self._reservation_key(str(bot), str(asset_id)) not in self.reservation_rows
             }
             if tile.isSelected():
                 self._selected_asset_keys.update(keys)
@@ -577,7 +578,7 @@ class InventoryPanel(QWidget):
                 available.extend(expand_inventory_instances(row_data))
         available = [
             (str(bot), str(asset)) for bot, asset in available
-            if (str(bot), str(asset)) not in self.reservation_rows
+            if self._reservation_key(str(bot), str(asset)) not in self.reservation_rows
         ]
         requested = self.quantity_input.value()
         if requested <= 0:
@@ -659,7 +660,7 @@ class InventoryPanel(QWidget):
             if row_data is None or row_data.is_tradable is not True:
                 continue
             for bot_name, asset_id in expand_inventory_instances(row_data):
-                key = (str(bot_name), str(asset_id))
+                key = self._reservation_key(str(bot_name), str(asset_id))
                 if key not in self.reservation_rows:
                     candidates.add(key)
         self._selected_asset_keys.update(candidates)
@@ -694,7 +695,7 @@ class InventoryPanel(QWidget):
                 if take <= 0:
                     continue
                 for asset_id in game_set.asset_ids[:take * game_set.cards_per_set]:
-                    key = (bot_name, str(asset_id))
+                    key = self._reservation_key(bot_name, str(asset_id))
                     if key in self.reservation_rows:
                         problems.append(f"{bot_name}: выбранный набор содержит зарезервированную карточку")
                     bot_chosen.add(key)
@@ -730,7 +731,11 @@ class InventoryPanel(QWidget):
                 "SELECT bot_name, asset_id, order_id FROM steam_asset_reservations "
                 "ORDER BY bot_name, asset_id"
             ).fetchall()
-        return {(bot, asset): order for bot, asset, order in rows}
+        return {(str(bot).casefold(), asset_id_key(asset)): order for bot, asset, order in rows}
+
+    @staticmethod
+    def _reservation_key(bot_name, asset_id):
+        return str(bot_name).casefold(), asset_id_key(asset_id)
 
     def _filter_item_tiles(self, *_):
         query = self.search_input.text().strip().casefold()
@@ -758,8 +763,8 @@ class InventoryPanel(QWidget):
             (bot, asset_id)
             for row_data in view.rows if row_data.is_tradable is True
             for bot, asset_ids in row_data.assets_by_bot for asset_id in asset_ids
+            if self._reservation_key(bot, asset_id) not in self.reservation_rows
         }
-        eligible_keys.difference_update(getattr(self, "reservation_rows", {}))
         self._selected_asset_keys.intersection_update(eligible_keys)
         rows = filter_inventory_rows(
             view.rows, self.search_input.text(), item_filter=self.item_filter.currentData()
@@ -779,7 +784,7 @@ class InventoryPanel(QWidget):
             for bot, asset_ids in row_data.assets_by_bot:
                 for asset_id in asset_ids:
                     owners.append(f"{bot}: {asset_id}")
-                    order = self.reservation_rows.get((bot, asset_id))
+                    order = self.reservation_rows.get(self._reservation_key(bot, asset_id))
                     if order:
                         reservations.append(f"{bot}: {order}")
             row = self.table.rowCount()
@@ -836,7 +841,7 @@ class InventoryPanel(QWidget):
                 if icon_url:
                     self._request_item_image(icon_url)
             selectable = row_data.is_tradable is True and any(
-                (bot, asset_id) not in self.reservation_rows
+                self._reservation_key(bot, asset_id) not in self.reservation_rows
                 for bot, asset_ids in row_data.assets_by_bot
                 for asset_id in asset_ids
             )
@@ -844,9 +849,9 @@ class InventoryPanel(QWidget):
                 tile.setFlags(tile.flags() & ~Qt.ItemFlag.ItemIsSelectable)
                 for bot, asset_ids in row_data.assets_by_bot:
                     for asset_id in asset_ids:
-                        self._selected_asset_keys.discard((bot, asset_id))
+                        self._selected_asset_keys.discard(self._reservation_key(bot, asset_id))
             tile_selected = selectable and any(
-                (bot, asset_id) in self._selected_asset_keys
+                self._reservation_key(bot, asset_id) in self._selected_asset_keys
                 for bot, asset_ids in row_data.assets_by_bot
                 for asset_id in asset_ids
             )

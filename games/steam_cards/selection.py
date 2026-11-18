@@ -4,6 +4,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
+from games.asset_ids import validate_asset_id
+
 
 @dataclass(frozen=True)
 class CardCopy:
@@ -22,6 +24,9 @@ class CardCopy:
     item_quality: str = ""
     # Real game AppID from ASF's card description (market_fee_app/RealAppID).
     game_app_id: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "asset_id", validate_asset_id(self.asset_id))
 
 
 @dataclass(frozen=True)
@@ -44,7 +49,7 @@ def find_available_sets(cards: Iterable[CardCopy]) -> list[AvailableSet]:
     seen_asset_ids: set[str] = set()
 
     for card in cards:
-        asset_id = str(card.asset_id).strip()
+        asset_id = validate_asset_id(card.asset_id)
         game_name = card.game_name.strip()
         card_name = card.card_name.strip()
         if not asset_id or not game_name or not card_name:

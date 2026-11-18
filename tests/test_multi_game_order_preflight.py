@@ -59,6 +59,15 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
             deal_id="deal-" + suffix,
             total_quantity=quantity,
         )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET playerok_account_id='pipeline-test-account',is_historical=0 "
+                "WHERE deal_id=?", ("deal-" + suffix,),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO playerok_sync_state(account_user_id,baseline_completed) "
+                "VALUES('pipeline-test-account',1)"
+            )
         return "order-" + suffix, config["config_version_id"]
 
     def test_non_paid_card_order_is_rejected_before_preflight_or_reservation(self):
@@ -97,12 +106,13 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
         order, _ = self.create_order(
             quantity=2,
             selectors={
-                "game_id": "steam_cards", "app_id": 753, "context_id": 6,
+                "app_id": 753, "context_id": 6,
                 "item_type": "steam_card_set",
             },
             bots=["Bot-A", "Bot-B"],
             suffix="cards",
         )
+        seed_line = self.ledger.materialize_recipe_order_lines(order)[0]
         inventories = {
             "Bot-A": [
                 CardCopy("dota-a", "Dota 2", "Dota Alpha", market_hash_name="Dota Alpha"),
@@ -131,7 +141,7 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
         self.assertEqual(sum(allocation.sets for allocation in result.allocations), 2)
         with self.database.connect() as db:
             lines = db.execute(
-                "SELECT item_type,item_name,quantity,item_selector_json FROM gd_order_lines "
+                "SELECT order_line_id,item_type,item_name,quantity,item_selector_json FROM gd_order_lines "
                 "WHERE order_id=? ORDER BY line_number", (order,)
             ).fetchall()
             legs = db.execute(
@@ -147,8 +157,9 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
             state = db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0]
         self.assertEqual(state, "reserved")
         self.assertEqual([(row["item_type"], row["quantity"]) for row in lines], [
-            ("steam_card_set", 1), ("steam_card_set", 1),
+            ("steam_card_set", 2),
         ])
+        self.assertEqual(lines[0]["order_line_id"], seed_line["order_line_id"])
         self.assertEqual(len(legs), 4, "each game's complete set is split into its two source bots")
         self.assertEqual({(row["app_id"], row["context_id"]) for row in legs}, {(753, "6")})
         self.assertEqual(len(reservations), 4)
@@ -290,8 +301,9 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
             )
             db.execute(
                 "INSERT INTO gd_order_lines "
-                "(order_line_id,order_id,line_number,item_type,item_name,item_selector_json,quantity) "
-                "VALUES('line-reconcile','order-reconcile',1,'cs2_item','AK-47','{}',2)"
+                "(order_line_id,order_id,config_version_id,line_number,item_type,item_name,item_selector_json,quantity) "
+                "VALUES('line-reconcile','order-reconcile',?,1,'cs2_item','AK-47','{}',2)",
+                (config["config_version_id"],),
             )
             db.executemany(
                 "INSERT INTO gd_delivery_legs "

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from games.asset_ids import validate_asset_id
 from games.steam_cards.selection import CardCopy
 
 
@@ -10,6 +11,7 @@ from games.steam_cards.selection import CardCopy
 class OwnedAsset:
     bot_name: str
     asset_id: str
+    card_hash_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,7 @@ class OwnedSet:
     game_name: str
     cards_per_set: int
     asset_ids: tuple[OwnedAsset, ...]
+    card_hash_names: tuple[str, ...] = ()
 
 
 def select_owned_complete_sets(
@@ -44,7 +47,7 @@ def select_owned_complete_sets(
         if not owner:
             continue
         for card in cards:
-            asset = str(card.asset_id).strip()
+            asset = validate_asset_id(card.asset_id)
             name = card.card_name.strip()
             if not asset or not name or card.game_name.strip().casefold() != target.casefold():
                 continue
@@ -55,7 +58,8 @@ def select_owned_complete_sets(
             if card.is_foil or card.is_tradable is not True or (owner, asset) in seen:
                 continue
             seen.add((owner, asset))
-            by_name.setdefault(name, []).append(OwnedAsset(owner, asset))
+            hash_name = str(card.market_hash_name or name).strip()
+            by_name.setdefault(name, []).append(OwnedAsset(owner, asset, hash_name))
 
     if not all_card_names:
         raise ValueError("В выбранных инвентарях нет карточек этой игры")
@@ -70,5 +74,7 @@ def select_owned_complete_sets(
     result = []
     for index in range(sets_needed):
         assets = tuple(by_name[name][index] for name in names)
-        result.append(OwnedSet(actual_game, len(names), assets))
+        result.append(OwnedSet(actual_game, len(names), assets, tuple(
+            str(by_name[name][0].card_hash_name or name) for name in names
+        )))
     return result

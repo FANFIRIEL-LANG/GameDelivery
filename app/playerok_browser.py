@@ -6,7 +6,7 @@ import weakref
 import shiboken6
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, parse_qs, quote
+from urllib.parse import urlsplit, quote
 
 from PySide6.QtCore import QTimer, QUrl, Signal, Qt
 from PySide6.QtWidgets import (
@@ -635,14 +635,14 @@ class PlayerokBrowserPanel(QWidget):
             self.browser_status.setText("Открой объявление Playerok во встроенном браузере.")
             return
         self.listing_url.setText(current)
-        query_id = parse_qs(parsed.query).get("id", [""])[0]
-        segments = [part for part in parsed.path.split("/") if part]
-        candidate = query_id or (segments[-1] if len(segments) >= 2 and segments[-2].lower() in {"product", "products", "listing", "listings"} else "")
-        if candidate:
-            self.listing_id.setText(candidate)
+        # A route slug or query parameter is not evidence of canonical item.id.
+        # Clear any stale value so copying another page cannot silently bind it.
+        self.listing_id.clear()
         if self.web is not None and self.web.title():
             self.listing_title.setText(self.web.title())
-        self.browser_status.setText("URL страницы скопирован. Проверь listing_id и название перед сохранением.")
+        self.browser_status.setText(
+            "URL скопирован. Slug не используется как listing_id; введи подтверждённый canonical item.id отдельно."
+        )
 
     def _mode_changed(self, *_):
         mode = self.mode.currentData()

@@ -9,6 +9,8 @@ from integrations.playerok.browser_sales import (
     BrowserSalesSnapshot,
     is_trusted_browser_sales_snapshot,
 )
+from core.delivery.ledger import DeliveryLedger
+from core.delivery.recipes import UnsupportedLegacyRecipeError
 
 
 class PlayerokDealSyncService:
@@ -83,7 +85,9 @@ class PlayerokDealSyncService:
     def _status(deal: dict[str, Any]) -> str:
         return str(deal.get("status") or "UNKNOWN").strip().upper()
 
-    def _listing_config(self, db: sqlite3.Connection, deal: dict[str, Any]):
+    def _listing_config(
+        self, db: sqlite3.Connection, deal: dict[str, Any], *, include_config: bool = True
+    ):
         external_listing_id = str(deal.get("listing_id") or "").strip()
         if not external_listing_id:
             return None, None, None
@@ -103,6 +107,8 @@ class PlayerokDealSyncService:
                 INSERT INTO gd_listings(listing_id,source_platform,external_listing_id,title,status)
                 VALUES(?,'playerok',?,?,'unconfigured')
             """, (listing_id, external_listing_id, str(deal.get("title") or "")))
+        if not include_config:
+            return listing_id, None, None
         config = db.execute("""
             SELECT config_version_id,delivery_quantity_per_deal,item_selectors_json,bot_pool_json
             FROM gd_config_versions WHERE listing_id=? ORDER BY version_number DESC LIMIT 1
@@ -133,7 +139,10 @@ class PlayerokDealSyncService:
         source_listing_ref = str(
             deal.get("source_listing_ref") or deal.get("listing_reference") or ""
         ).strip()
-        listing_id, config_id, config = self._listing_config(db, deal)
+        deal_status = self._status(deal)
+        listing_id, config_id, config = self._listing_config(
+            db, deal, include_config=deal_status != "PAID"
+        )
         old = db.execute(
             "SELECT deal_id,is_historical,listing_id,config_version_id,listing_resolution_status "
             "FROM gd_deals WHERE source_platform='playerok' AND playerok_account_id=? "
@@ -161,8 +170,8 @@ class PlayerokDealSyncService:
         if not listing_id:
             config_id = None
             config = None
-        # Freeze the ConfigVersion once an order exists: listing edits are only
-        # applicable to future purchases. Deals awaiting setup may adopt a new version.
+        # Freeze the ConfigVersion once an order exists. An unbound PAID deal
+        # must not adopt the current version without payment-time evidence.
         if old is not None:
             existing_order = db.execute(
                 "SELECT 1 FROM gd_orders WHERE deal_id=? LIMIT 1", (normalized_id,)
@@ -178,6 +187,16 @@ class PlayerokDealSyncService:
                 if frozen_config is None:
                     raise RuntimeError("ConfigVersion сохранённой сделки не найден")
                 config = dict(frozen_config)
+            elif deal_status == "PAID":
+                # Without an authoritative payment timestamp, the latest
+                # listing version cannot be proven to match the paid deal.
+                config_id = None
+                config = None
+        elif deal_status == "PAID":
+            # Keep the exact listing link, but wait for explicit version
+            # resolution before materializing an order snapshot.
+            config_id = None
+            config = None
         payload = {
             "buyer": str(deal.get("buyer") or ""),
             "buyer_id": str(deal.get("buyer_id") or ""),
@@ -227,7 +246,7 @@ class PlayerokDealSyncService:
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT deal_id,is_historical,platform_status,listing_id,listing_resolution_status "
+                "SELECT deal_id,is_historical,platform_status,listing_id,config_version_id,listing_resolution_status "
                 "FROM gd_deals WHERE source_platform='playerok' AND playerok_account_id=? "
                 "AND external_deal_id=?",
                 (account_id, deal_id),
@@ -239,27 +258,26 @@ class PlayerokDealSyncService:
                 "AND external_listing_id=?", (listing_external_id,),
             ).fetchone()
             if listing is None:
-                raise KeyError("Точный listing_id ещё не зарегистрирован в ConfigVersion")
+                raise KeyError("Точный listing_id ещё не зарегистрирован в GameDelivery")
             listing_id = str(listing["listing_id"])
-            config = db.execute(
-                "SELECT config_version_id,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
-                "FROM gd_config_versions WHERE listing_id=? ORDER BY version_number DESC LIMIT 1",
-                (listing_id,),
-            ).fetchone()
             if row["listing_id"] and str(row["listing_id"]) != listing_id:
                 raise ValueError("Сделка уже сопоставлена с другим объявлением")
-            config_id = str(config["config_version_id"]) if config else None
+            existing_order = db.execute(
+                "SELECT 1 FROM gd_orders WHERE deal_id=? LIMIT 1", (row["deal_id"],)
+            ).fetchone()
+            config_id = str(row["config_version_id"]) if existing_order and row["config_version_id"] else None
+            if config_id:
+                owner = db.execute(
+                    "SELECT listing_id FROM gd_config_versions WHERE config_version_id=?",
+                    (config_id,),
+                ).fetchone()
+                if owner is None or str(owner["listing_id"]) != listing_id:
+                    raise ValueError("Закреплённая ConfigVersion не принадлежит выбранному объявлению")
             db.execute(
                 "UPDATE gd_deals SET listing_id=?,config_version_id=?,listing_resolution_status='resolved', "
                 "source_listing_ref='' WHERE deal_id=? AND playerok_account_id=?",
                 (listing_id, config_id, row["deal_id"], account_id),
             )
-            if config:
-                self._maybe_create_order(
-                    db, str(row["deal_id"]), deal_id, account_id,
-                    str(row["platform_status"]), int(row["is_historical"]), listing_id,
-                    config_id, dict(config),
-                )
         return {"deal_id": deal_id, "listing_id": listing_external_id, "resolved": True}
 
     def _maybe_create_order(
@@ -270,21 +288,55 @@ class PlayerokDealSyncService:
             "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id=?",
             (account_id,),
         ).fetchone()
-        quantity = config.get("delivery_quantity_per_deal")
-        try:
-            bot_pool = json.loads(config.get("bot_pool_json") or "[]")
-        except (TypeError, ValueError):
-            bot_pool = []
         if (
-            not historical and baseline is not None and baseline[0] == 1
-            and listing_id is not None and config_id is not None and status == "PAID"
-            and type(quantity) is int and quantity > 0 and isinstance(bot_pool, list)
-            and any(isinstance(bot, str) and bot.strip() for bot in bot_pool)
+            historical or baseline is None or baseline[0] != 1
+            or listing_id is None or config_id is None or status != "PAID"
         ):
-            order_id = self._stable("playerok-order", account_id + "\x1f" + external_id)
-            db.execute(
-                "INSERT OR IGNORE INTO gd_orders(order_id,deal_id,status,total_quantity) "
-                "VALUES(?,?,'pending',?)", (order_id, normalized_id, quantity),
+            return
+        bound_version = db.execute(
+            "SELECT config_version_id FROM gd_deals WHERE deal_id=? AND listing_id=?",
+            (normalized_id, listing_id),
+        ).fetchone()
+        if bound_version is None or bound_version["config_version_id"] != config_id:
+            return
+        version = db.execute(
+            "SELECT recipe_schema_version,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
+            "FROM gd_config_versions WHERE config_version_id=?", (config_id,),
+        ).fetchone()
+        if version is None:
+            raise RuntimeError("ConfigVersion сохранённой сделки не найден")
+        typed_recipe = version["recipe_schema_version"] is not None
+        if typed_recipe:
+            recipe = DeliveryLedger.recipe_for_config_version(db, config_id, allow_legacy=False)
+            quantity = sum(item.quantity_per_order for item in recipe.items)
+        else:
+            quantity = version["delivery_quantity_per_deal"]
+            try:
+                bot_pool = json.loads(version["bot_pool_json"] or "[]")
+            except (TypeError, ValueError):
+                bot_pool = []
+            if (
+                type(quantity) is not int or quantity < 1
+                or not isinstance(bot_pool, list)
+                or not any(isinstance(bot, str) and bot.strip() for bot in bot_pool)
+            ):
+                return
+            try:
+                recipe = DeliveryLedger.recipe_for_config_version(db, config_id, allow_legacy=True)
+            except UnsupportedLegacyRecipeError:
+                # Preserve the old selector-driven path for configurations that
+                # are not a single unambiguous RecipeItem.
+                recipe = None
+        order_id = self._stable("playerok-order", account_id + "\x1f" + external_id)
+        inserted = db.execute(
+            "INSERT OR IGNORE INTO gd_orders(order_id,deal_id,status,total_quantity) "
+            "VALUES(?,?,'pending',?)", (order_id, normalized_id, quantity),
+        ).rowcount
+        if inserted == 1 and recipe is not None:
+            # The order and every line share the caller's transaction. A bad
+            # recipe or failed line insert rolls back the whole sync operation.
+            DeliveryLedger.materialize_recipe_order_lines_in_transaction(
+                db, order_id, config_id, allow_legacy=not typed_recipe
             )
 
     def _baseline(

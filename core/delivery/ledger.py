@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
 from core.database.db import Database
+from core.delivery.recipes import Recipe, RecipeValidationError, legacy_config_to_recipe
+from games.asset_ids import validate_asset_id
+from games.asset_ids import asset_id_key
 
 
 def _json(value: Any) -> str:
@@ -27,23 +31,27 @@ class DeliveryLedger:
         listing_id: str,
         source_platform: str,
         external_listing_id: str | None,
-        delivery_quantity_per_deal: int,
+        delivery_quantity_per_deal: int | None,
         item_selectors: dict[str, Any] | list[Any],
         bot_pool: list[str],
         title: str = "",
         auto_relist: bool = False,
+        recipe_items: Any = None,
     ) -> dict[str, Any]:
         listing = listing_id.strip()
         platform = source_platform.strip().lower()
         if not listing or not platform:
             raise ValueError("listing_id и source_platform обязательны")
-        if isinstance(delivery_quantity_per_deal, bool) or not isinstance(delivery_quantity_per_deal, int) or delivery_quantity_per_deal < 1:
+        recipe = Recipe.from_values(recipe_items) if recipe_items is not None else None
+        if delivery_quantity_per_deal is None:
+            if recipe is None:
+                raise ValueError("Без Recipe delivery_quantity_per_deal обязателен")
+        elif isinstance(delivery_quantity_per_deal, bool) or not isinstance(delivery_quantity_per_deal, int) or delivery_quantity_per_deal < 1:
             raise ValueError("delivery_quantity_per_deal должен быть положительным целым числом")
         if not isinstance(item_selectors, (dict, list)):
             raise ValueError("item_selectors должен быть объектом или списком")
         if not isinstance(bot_pool, list) or any(not isinstance(bot, str) or not bot.strip() for bot in bot_pool):
             raise ValueError("bot_pool должен содержать непустые имена ботов")
-
         normalized_pool: list[str] = []
         seen: set[str] = set()
         for raw_bot in bot_pool:
@@ -77,15 +85,29 @@ class DeliveryLedger:
                 (listing,),
             ).fetchone()[0])
             config_id = f"{listing}:config:{version_number}"
+            stored_recipe = [
+                {**item.to_dict(), "item_id": f"{config_id}:item:{item.item_id}"}
+                for item in recipe.items
+            ] if recipe is not None else []
+            if recipe is not None:
+                # Validate the final, version-qualified identities with the
+                # same contract used when ConfigVersion is later read.
+                validated = Recipe.from_values(stored_recipe)
+                stored_recipe = validated.to_list()
+                stored_ids = [item["item_id"] for item in stored_recipe]
+                if len(stored_ids) != len(set(stored_ids)):
+                    raise RecipeValidationError("Префиксованные RecipeItem.item_id повторяются")
             connection.execute(
                 """
                 INSERT INTO gd_config_versions
                     (config_version_id, listing_id, version_number,
-                     delivery_quantity_per_deal, item_selectors_json, bot_pool_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                     delivery_quantity_per_deal, item_selectors_json, bot_pool_json,
+                     recipe_schema_version,recipe_items_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (config_id, listing, version_number, delivery_quantity_per_deal,
-                 _json(item_selectors), _json(normalized_pool)),
+                 _json(item_selectors), _json(normalized_pool),
+                 1 if recipe is not None else None, _json(stored_recipe)),
             )
             row = connection.execute(
                 "SELECT * FROM gd_config_versions WHERE config_version_id=?", (config_id,)
@@ -97,7 +119,149 @@ class DeliveryLedger:
             "delivery_quantity_per_deal": row["delivery_quantity_per_deal"],
             "item_selectors": json.loads(row["item_selectors_json"]),
             "bot_pool": json.loads(row["bot_pool_json"]),
+            "recipe_items": stored_recipe,
         }
+
+    def create_recipe_config_version(
+        self,
+        *,
+        listing_id: str,
+        source_platform: str,
+        external_listing_id: str | None,
+        recipe_items: Any,
+        title: str = "",
+        auto_relist: bool = False,
+    ) -> dict[str, Any]:
+        """Persist a typed recipe without enabling a legacy executor for it."""
+        recipe = Recipe.from_values(recipe_items)
+        return self.create_listing_config_version(
+            listing_id=listing_id,
+            source_platform=source_platform,
+            external_listing_id=external_listing_id,
+            # Null keeps legacy scalar-based order creation fail-closed until
+            # typed recipes are explicitly connected to the order pipeline.
+            delivery_quantity_per_deal=None,
+            item_selectors={"recipe_schema_version": 1},
+            bot_pool=[],
+            title=title,
+            auto_relist=auto_relist,
+            recipe_items=recipe,
+        )
+
+    @staticmethod
+    def recipe_for_config_version(
+        connection, config_version_id: str, *, allow_legacy: bool = True
+    ) -> Recipe:
+        row = connection.execute(
+            "SELECT recipe_schema_version,recipe_items_json,delivery_quantity_per_deal,"
+            "item_selectors_json,bot_pool_json FROM gd_config_versions WHERE config_version_id=?",
+            (config_version_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"ConfigVersion {config_version_id} не найден")
+        if row["recipe_schema_version"] is not None:
+            if row["recipe_schema_version"] != 1:
+                raise ValueError("Версия схемы Recipe не поддерживается")
+            try:
+                raw_items = json.loads(row["recipe_items_json"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Recipe ConfigVersion содержит некорректный JSON") from exc
+            if not isinstance(raw_items, list):
+                raise ValueError("Recipe ConfigVersion должен содержать список RecipeItem")
+            return Recipe.from_values(raw_items)
+        if not allow_legacy:
+            raise KeyError(f"ConfigVersion {config_version_id} не содержит типизированный рецепт")
+        return legacy_config_to_recipe(dict(row))
+
+    def materialize_recipe_order_lines(
+        self, order_id: str, *, allow_legacy: bool = True
+    ) -> list[dict[str, Any]]:
+        """Create a version-pinned set of OrderLines once; does not reserve or send."""
+        order = str(order_id or "").strip()
+        if not order:
+            raise ValueError("order_id обязателен")
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT o.order_id,d.config_version_id FROM gd_orders o "
+                "JOIN gd_deals d ON d.deal_id=o.deal_id WHERE o.order_id=?",
+                (order,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Заказ {order} не найден")
+            config_version_id = str(row["config_version_id"] or "")
+            if not config_version_id:
+                raise ValueError("Заказ не закреплён за ConfigVersion")
+            return self.materialize_recipe_order_lines_in_transaction(
+                connection, order, config_version_id, allow_legacy=allow_legacy
+            )
+
+    @classmethod
+    def materialize_recipe_order_lines_in_transaction(
+        cls, connection, order_id: str, config_version_id: str, *, allow_legacy: bool = True
+    ) -> list[dict[str, Any]]:
+        """Expand the exact ConfigVersion using the caller's active transaction."""
+        if not connection.in_transaction:
+            raise RuntimeError("OrderLine materialization requires an active transaction")
+        order = str(order_id or "").strip()
+        config_id = str(config_version_id or "").strip()
+        if not order or not config_id:
+            raise ValueError("order_id и config_version_id обязательны")
+        ownership = connection.execute(
+            "SELECT d.config_version_id,d.listing_id,c.listing_id AS config_listing_id "
+            "FROM gd_orders o JOIN gd_deals d ON d.deal_id=o.deal_id "
+            "JOIN gd_config_versions c ON c.config_version_id=? WHERE o.order_id=?",
+            (config_id, order),
+        ).fetchone()
+        if ownership is None:
+            raise KeyError(f"Заказ {order} не найден или ConfigVersion {config_id} не существует")
+        if ownership["config_version_id"] != config_id:
+            raise ValueError("ConfigVersion не принадлежит сделке заказа")
+        if ownership["listing_id"] != ownership["config_listing_id"]:
+            raise ValueError("ConfigVersion не принадлежит объявлению сделки заказа")
+        recipe = cls.recipe_for_config_version(connection, config_id, allow_legacy=allow_legacy)
+        expected = []
+        for item in recipe.items:
+            line_id = cls._stable_recipe_line_id(order, config_id, item.item_id)
+            selector_snapshot = {
+                "config_version_id": config_id,
+                "recipe_item_id": item.item_id,
+                "recipe_item": item.to_dict(),
+            }
+            expected.append((item, line_id, _json(selector_snapshot)))
+        existing = connection.execute(
+            "SELECT * FROM gd_order_lines WHERE order_id=? ORDER BY line_number", (order,)
+        ).fetchall()
+        if existing:
+            existing_by_id = {str(line["order_line_id"]): line for line in existing}
+            if len(existing_by_id) != len(expected) or any(
+                line_id not in existing_by_id
+                or existing_by_id[line_id]["line_number"] != item.position
+                or existing_by_id[line_id]["item_type"] != item.kind
+                or existing_by_id[line_id]["quantity"] != item.quantity_per_order
+                or existing_by_id[line_id]["item_selector_json"] != selector_json
+                for item, line_id, selector_json in expected
+            ):
+                raise ValueError("В заказе уже есть OrderLine, не совпадающие с закреплённым рецептом")
+            return [dict(existing_by_id[line_id]) for _, line_id, _ in expected]
+        for item, line_id, selector_json in expected:
+            connection.execute(
+                "INSERT INTO gd_order_lines "
+                "(order_line_id,order_id,config_version_id,line_number,item_type,item_name,item_selector_json,quantity) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (line_id, order, config_id, item.position, item.kind, item.display_name,
+                 selector_json, item.quantity_per_order),
+            )
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM gd_order_lines WHERE order_id=? ORDER BY line_number", (order,)
+        ).fetchall()]
+
+    @staticmethod
+    def _stable_recipe_line_id(order_id: str, config_version_id: str, item_id: str) -> str:
+        digest = hashlib.sha256(
+            f"{order_id}\x1f{config_version_id}\x1f{item_id}".encode("utf-8")
+        ).hexdigest()[:24]
+        return f"recipe-line:{digest}"
 
     def create_deal(
         self, *, deal_id: str, source_platform: str, external_deal_id: str,
@@ -148,14 +312,21 @@ class DeliveryLedger:
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
             raise ValueError("quantity должен быть положительным целым числом")
         with self.database.connect() as connection:
+            owner = connection.execute(
+                "SELECT d.config_version_id FROM gd_orders o "
+                "JOIN gd_deals d ON d.deal_id=o.deal_id WHERE o.order_id=?",
+                (order_id.strip(),),
+            ).fetchone()
+            if owner is None or not owner["config_version_id"]:
+                raise ValueError("OrderLine требует заказа с ConfigVersion сделки")
             connection.execute(
                 """
                 INSERT INTO gd_order_lines
-                    (order_line_id, order_id, line_number, item_type, item_name,
+                    (order_line_id, order_id, config_version_id, line_number, item_type, item_name,
                      item_selector_json, quantity)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (order_line_id.strip(), order_id.strip(), line_number,
+                (order_line_id.strip(), order_id.strip(), owner["config_version_id"], line_number,
                  item_type.strip(), item_name.strip(), _json(item_selector), quantity),
             )
             row = connection.execute(
@@ -172,8 +343,8 @@ class DeliveryLedger:
             raise ValueError("leg_id, order_line_id и bot_name обязательны")
         if isinstance(app_id, bool) or not isinstance(app_id, int) or app_id <= 0:
             raise ValueError("app_id должен быть положительным целым числом")
-        assets = [str(value).strip() for value in asset_ids]
-        if not assets or any(not value for value in assets) or len(set(assets)) != len(assets):
+        assets = [validate_asset_id(value) for value in asset_ids]
+        if not assets or len({asset_id_key(value) for value in assets}) != len(assets):
             raise ValueError("asset_ids должен быть непустым списком без повторов")
         with self.database.connect() as connection:
             connection.execute(

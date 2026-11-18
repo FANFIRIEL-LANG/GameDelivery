@@ -12,7 +12,9 @@ from pathlib import Path
 
 from core.database.db import Database
 from core.delivery.dispatcher import DeliveryDispatcher
+from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
+from core.delivery.recipes import normalize_legacy_cs2_selector_options
 from integrations.playerok import browser_sales
 from integrations.playerok.browser_sales import BrowserSalesSnapshot, is_trusted_browser_sales_snapshot
 from integrations.playerok.listing_config import PlayerokListingConfigService
@@ -59,15 +61,66 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertEqual([r["delivery_quantity_per_deal"] for r in rows], [3, 5])
         self.assertEqual(first["config_version_id"], "playerok-listing:" + first["listing_id"].split(":")[-1] + ":config:1")
         self.assertNotEqual(first["config_version_id"], second["config_version_id"])
+        with self.db.connect() as conn:
+            recipe_row = conn.execute(
+                "SELECT recipe_items_json FROM gd_config_versions WHERE config_version_id=?",
+                (first["config_version_id"],)
+            ).fetchone()
+        stored_recipe = json.loads(recipe_row[0])
+        self.assertEqual(stored_recipe[0]["kind"], "steam_card_set")
+        self.assertEqual(stored_recipe[0]["quantity_per_order"], 3)
 
     def test_cs2_config_stores_selectors_and_730_2(self):
         result = PlayerokListingConfigService(self.db).save(
             external_listing_id="cs2-1", title="CS2", url="", mode="cs2_items",
             quantity=2, bot_pool=["BotA"], selectors=[{"market_hash_name": "Case"}],
         )
-        self.assertEqual(result["item_selectors"]["app_id"], 730)
-        self.assertEqual(result["item_selectors"]["context_id"], 2)
-        self.assertEqual(result["item_selectors"]["items"][0]["market_hash_name"], "Case")
+        self.assertEqual(result["item_selectors"], [{
+            "game_id": "cs2", "app_id": 730, "context_id": "2",
+            "market_hash_name": "Case",
+        }])
+        self.assertTrue(DeliveryOrderPipeline._is_cs2_config(
+            {"selectors": result["item_selectors"]}
+        ))
+        with self.db.connect() as conn:
+            recipe = conn.execute(
+                "SELECT recipe_items_json,recipe_schema_version FROM gd_config_versions WHERE config_version_id=?",
+                (result["config_version_id"],)
+            ).fetchone()
+        recipe_item = json.loads(recipe["recipe_items_json"])[0]
+        self.assertEqual(recipe_item["kind"], "steam_asset")
+        self.assertEqual(recipe_item["quantity_per_order"], 2)
+        self.assertEqual(recipe["recipe_schema_version"], 1)
+
+    def test_cs2_multi_selectors_remain_alternatives_and_old_wrapper_stays_readable(self):
+        result = PlayerokListingConfigService(self.db).save(
+            external_listing_id="cs2-many", title="CS2 alternatives", url="", mode="cs2_items",
+            quantity=2, bot_pool=["BotA"],
+            selectors=[{"market_hash_name": "Case A"}, {"name": "Case B"}],
+        )
+        self.assertEqual(len(result["item_selectors"]), 2)
+        self.assertTrue(DeliveryOrderPipeline._is_cs2_config(
+            {"selectors": result["item_selectors"]}
+        ))
+        with self.db.connect() as conn:
+            version = conn.execute(
+                "SELECT recipe_schema_version FROM gd_config_versions WHERE config_version_id=?",
+                (result["config_version_id"],),
+            ).fetchone()
+        self.assertIsNone(version[0], "ambiguous alternatives must not become one typed RecipeItem")
+
+        old_wrapper = {
+            "delivery_mode": "cs2_items", "app_id": 730, "context_id": 2,
+            "items": [{"market_hash_name": "Legacy case"}, {"name": "Legacy fallback"}],
+        }
+        self.assertTrue(DeliveryOrderPipeline._is_cs2_config({"selectors": old_wrapper}))
+        self.assertEqual(
+            normalize_legacy_cs2_selector_options(old_wrapper),
+            [
+                {"game_id": "cs2", "app_id": 730, "context_id": "2", "market_hash_name": "Legacy case"},
+                {"game_id": "cs2", "app_id": 730, "context_id": "2", "name": "Legacy fallback"},
+            ],
+        )
 
     def test_manual_mode_stores_messages_without_steam_bots(self):
         result = PlayerokListingConfigService(self.db).save(
@@ -77,6 +130,45 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertEqual(result["item_selectors"]["delivery_mode"], "manual")
         self.assertEqual(result["item_selectors"]["auto_messages"]["paid"], "Hello")
         self.assertEqual(result["bot_pool"], [])
+
+    def test_save_recipe_creates_new_typed_version_without_url_resolution(self):
+        service = PlayerokListingConfigService(self.db)
+        result = service.save_recipe(
+            external_listing_id="verified-item-id",
+            title="Mixed listing",
+            url="https://playerok.com/products/display-slug",
+            items=[
+                {"item_id": "codes", "position": 1, "kind": "digital_text_unit",
+                 "spec_version": 1, "quantity_per_order": 1, "required": True,
+                 "stock_source_id": "code-stock", "executor_key": "text_delivery",
+                 "spec": {"allocation": "one_unique_unit"}},
+            ],
+        )
+        self.assertEqual(result["version_number"], 1)
+        self.assertEqual(result["recipe_items"][0]["kind"], "digital_text_unit")
+        self.assertIsNone(result["delivery_quantity_per_deal"])
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT external_listing_id FROM gd_listings WHERE listing_id=?",
+                (result["listing_id"],),
+            ).fetchone()
+        self.assertEqual(row[0], "verified-item-id")
+
+    def test_capture_listing_url_never_populates_canonical_id_from_slug_or_query(self):
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        try:
+            for url in (
+                "https://playerok.com/products/pretty-product-slug",
+                "https://playerok.com/products/another-slug?id=possible-id",
+            ):
+                panel.listing_id.setText("stale-canonical-value")
+                panel.address.setText(url)
+                panel._capture_current_listing()
+                self.assertEqual(panel.listing_url.text(), url)
+                self.assertEqual(panel.listing_id.text(), "")
+                self.assertIn("canonical item.id", panel.browser_status.text())
+        finally:
+            panel.close()
 
     def test_controller_opens_exact_deal_and_chat_urls(self):
         opened = []

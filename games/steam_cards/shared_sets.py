@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from games.asset_ids import validate_asset_id
 from games.steam_cards.selection import CardCopy
 
 AssetKey = tuple[str, str]
@@ -18,6 +19,8 @@ class SharedGameSets:
     available_sets: int
     # Each inner tuple is one complete set of exact (bot_name, asset_id) pairs.
     sets: tuple[tuple[AssetKey, ...], ...]
+    # Ordered MarketHashNames for each position in every set above.
+    card_hash_names: tuple[str, ...] = ()
 
 
 def find_shared_game_sets(
@@ -56,7 +59,7 @@ def find_shared_game_sets(
         if not bot_name:
             continue
         for card in cards:
-            asset_id = str(card.asset_id).strip()
+            asset_id = validate_asset_id(card.asset_id)
             game_name = card.game_name.strip()
             card_name = card.card_name.strip()
             if not asset_id or not game_name or not card_name:
@@ -99,7 +102,7 @@ def find_shared_game_sets(
             tuple(per_card[name][set_index] for name in ordered_names)
             for set_index in range(available)
         )
-        results.append(SharedGameSets(game_name, len(ordered_names), available, sets))
+        results.append(SharedGameSets(game_name, len(ordered_names), available, sets, tuple(ordered_names)))
     return results
 
 

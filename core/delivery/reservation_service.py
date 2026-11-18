@@ -7,8 +7,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from core.database.db import Database
+from core.delivery.ledger import DeliveryLedger
 from core.delivery.playerok_eligibility import require_canonical_playerok_delivery_eligible
+from core.delivery.recipes import (
+    DigitalTextUnitSpec,
+    RecipeItem,
+    SteamAssetSpec,
+    SteamCardSetSpec,
+    normalize_legacy_cs2_selector_options,
+)
+from core.delivery.recipes import legacy_materialized_order_line
 from games.cs2.inventory_view import CS2InventoryInstance
+from games.asset_ids import asset_id_key, validate_asset_id
+from games.steam_cards.order_preflight import MultiGameOrderPreflight, has_verified_card_selection
 from games.steam_cards.owned_selection import select_owned_complete_sets
 from games.steam_cards.recipient_badge import RecipientBadge, evaluate_recipient_badge_capacity
 from games.steam_cards.selection import CardCopy
@@ -33,6 +44,7 @@ class PlannedLeg:
     app_id: int
     context_id: str
     asset_ids: tuple[str, ...]
+    order_line_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,30 @@ class OrderReservationResult:
     @property
     def reserved(self) -> bool:
         return self.status == "reserved"
+
+
+@dataclass(frozen=True)
+class PlannedResource:
+    """One physical resource selected outside the SQLite transaction."""
+
+    bot_name: str
+    asset_id: str
+    game_id: str
+    app_id: int
+    context_id: str
+    steam_cards_compatibility: bool = False
+    steam_card_hash_name: str | None = None
+
+@dataclass(frozen=True)
+class PlannedRecipeLine:
+    """Selected physical resources grouped by one logical RecipeItem unit."""
+
+    recipe_item_id: str
+    units: tuple[tuple[PlannedResource, ...], ...]
+    steam_card_count_per_set: int | None = None
+    # Exact verified selector output, retained so the ledger boundary can compare
+    # planned resources to the existing authoritative preflight result.
+    steam_card_preflight: MultiGameOrderPreflight | None = None
 
 
 class DeliveryReservationService:
@@ -80,6 +116,18 @@ class DeliveryReservationService:
     @staticmethod
     def _normal(value: Any) -> str:
         return str(value).strip().casefold()
+
+    @classmethod
+    def _snapshot_key_matches(cls, key: Any, snapshot: InventorySnapshot) -> bool:
+        bot = cls._normal(snapshot.bot_name)
+        if isinstance(key, str):
+            return cls._normal(key) == bot
+        return (
+            isinstance(key, tuple) and len(key) == 3
+            and cls._normal(key[0]) == bot
+            and key[1] == snapshot.app_id
+            and str(key[2]) == str(snapshot.context_id)
+        )
 
     @staticmethod
     def _aware(value: datetime) -> datetime:
@@ -166,21 +214,26 @@ class DeliveryReservationService:
     ) -> tuple[tuple[str, str, int, str], ...]:
         """Return all matching (bot, asset, app, context) candidates; caller enforces quantity."""
         allowed = {self._normal(bot): bot for bot in bot_pool}
-        fresh: dict[str, InventorySnapshot] = {}
+        fresh: dict[tuple[str, int, str], InventorySnapshot] = {}
         for key, snapshot in snapshots.items():
             bot = self._normal(snapshot.bot_name)
-            if bot not in allowed or self._normal(key) != bot:
+            raw_context = str(snapshot.context_id)
+            key_matches = self._snapshot_key_matches(key, snapshot)
+            if bot not in allowed or not key_matches:
                 continue
             if self._snapshot_is_fresh(snapshot, now):
-                fresh[bot] = snapshot
+                slot = (bot, snapshot.app_id, raw_context)
+                if slot in fresh and fresh[slot] is not snapshot:
+                    raise ValueError("Для одного бота и inventory context получено несколько снимков")
+                fresh[slot] = snapshot
 
         if self._card_selector(selectors):
             game_name = str(selectors.get("game_name") or selectors.get("name") or "").strip()
             if not game_name:
                 raise ValueError("Для Steam Card set selector требуется game_name")
             card_inventories: dict[str, list[CardCopy]] = {}
-            for bot, snapshot in fresh.items():
-                if snapshot.app_id != 753 or str(snapshot.context_id) != "6":
+            for (bot, app_id, context_id), snapshot in fresh.items():
+                if app_id != 753 or context_id != "6":
                     continue
                 cards = [
                     item for item in snapshot.items
@@ -211,13 +264,13 @@ class DeliveryReservationService:
         candidates: list[tuple[str, str, int, str]] = []
         seen: set[tuple[str, str]] = set()
         for bot in bot_pool:
-            snapshot = fresh.get(self._normal(bot))
-            if snapshot is None or snapshot.app_id != app_id or str(snapshot.context_id) != context_id:
+            snapshot = fresh.get((self._normal(bot), app_id, context_id))
+            if snapshot is None:
                 continue
             if self._normal(snapshot.game_id) != self._normal(game_id):
                 continue
             for item in snapshot.items:
-                asset_id = str(self._get(item, "asset_id", "")).strip()
+                asset_id = validate_asset_id(self._get(item, "asset_id"))
                 owner = str(self._get(item, "bot_name", snapshot.bot_name)).strip()
                 if not asset_id or self._normal(owner) != self._normal(snapshot.bot_name):
                     continue
@@ -230,7 +283,7 @@ class DeliveryReservationService:
                     or item_context != context_id
                 ):
                     continue
-                key = (self._normal(owner), asset_id)
+                key = (self._normal(owner), asset_id_key(asset_id))
                 if key in seen or not self._is_tradable(item):
                     continue
                 if not self._matches_selector(item, selectors, snapshot):
@@ -321,7 +374,9 @@ class DeliveryReservationService:
                 raise KeyError(f"ConfigVersion {config_id} не найден")
             selectors_raw = json.loads(config["item_selectors_json"])
             if isinstance(selectors_raw, dict):
-                selector_options = [selectors_raw]
+                selector_options = normalize_legacy_cs2_selector_options(selectors_raw)
+                if selector_options is None:
+                    selector_options = [selectors_raw]
             elif isinstance(selectors_raw, list) and selectors_raw and all(
                 isinstance(value, dict) for value in selectors_raw
             ):
@@ -384,25 +439,31 @@ class DeliveryReservationService:
                 pass
             else:
                 selectors_raw = selected_selector
-                line_id = f"{order}:line:1"
-                if connection.execute(
+                existing_lines = connection.execute(
                     "SELECT 1 FROM gd_order_lines WHERE order_id=?", (order,)
-                ).fetchone():
+                ).fetchone()
+                seed_line = legacy_materialized_order_line(
+                    connection, order, config_id
+                ) if existing_lines else None
+                if existing_lines and seed_line is None:
                     raise ValueError("Для заказа уже существуют строки; повторное планирование запрещено")
-                connection.execute(
-                    "INSERT INTO gd_order_lines "
-                    "(order_line_id, order_id, line_number, item_type, item_name, item_selector_json, quantity) "
-                    "VALUES (?, ?, 1, ?, ?, ?, ?)",
-                    (line_id, order, str(selectors_raw.get("item_type", selectors_raw.get("delivery_type", "item"))),
-                     str(selectors_raw.get("market_hash_name") or selectors_raw.get("game_name") or selectors_raw.get("name") or ""),
-                     json.dumps(selectors_raw, ensure_ascii=False, sort_keys=True), quantity),
-                )
+                line_id = str(seed_line["order_line_id"]) if seed_line else f"{order}:line:1"
+                if seed_line is None:
+                    connection.execute(
+                        "INSERT INTO gd_order_lines "
+                        "(order_line_id, order_id, config_version_id, line_number, item_type, item_name, item_selector_json, quantity) "
+                        "VALUES (?, ?, ?, 1, ?, ?, ?, ?)",
+                        (line_id, order, config_id,
+                         str(selectors_raw.get("item_type", selectors_raw.get("delivery_type", "item"))),
+                         str(selectors_raw.get("market_hash_name") or selectors_raw.get("game_name") or selectors_raw.get("name") or ""),
+                         json.dumps(selectors_raw, ensure_ascii=False, sort_keys=True), quantity),
+                    )
                 grouped: dict[str, list[tuple[str, int, str]]] = {}
                 for bot, asset_id, app_id, context_id in selected:
                     conflict = connection.execute(
-                        "SELECT 1 FROM gd_resource_reservations WHERE state='active' "
-                        "AND bot_name=? COLLATE NOCASE AND asset_id=?",
-                        (bot, asset_id),
+                    "SELECT 1 FROM gd_resource_reservations WHERE state IN ('active','legacy_conflict') "
+                    "AND bot_name=? COLLATE NOCASE AND asset_id_key=?",
+                    (bot, asset_id_key(asset_id)),
                     ).fetchone()
                     if conflict:
                         connection.rollback()
@@ -450,3 +511,326 @@ class DeliveryReservationService:
             order, order_row["chat_id"], config_id, reason, failure_status
         )
         return OrderReservationResult(order, failure_status, (), (), event_ids, reason)
+
+    def reserve_recipe_plan(
+        self,
+        *,
+        order_id: str,
+        config_version_id: str,
+        planned_by_line: Mapping[str, PlannedRecipeLine],
+    ) -> OrderReservationResult:
+        """Atomically commit every preplanned required Recipe resource and leg.
+
+        All inventory/card analysis is completed by the caller before this method
+        opens ``BEGIN IMMEDIATE``. The transaction rechecks order/version/line
+        ownership and global resource uniqueness before inserting anything.
+        """
+        order = str(order_id or "").strip()
+        config_id = str(config_version_id or "").strip()
+        if not order or not config_id or not isinstance(planned_by_line, Mapping):
+            raise ValueError("order_id, config_version_id и plan обязательны")
+        grouped: dict[tuple[str, str, int, str, str, bool], list[str]] = {}
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            require_canonical_playerok_delivery_eligible(connection, order)
+            order_row = connection.execute(
+                "SELECT o.status,d.config_version_id FROM gd_orders o "
+                "JOIN gd_deals d ON d.deal_id=o.deal_id WHERE o.order_id=?",
+                (order,),
+            ).fetchone()
+            if order_row is None:
+                raise KeyError(f"Заказ {order} не найден")
+            if str(order_row["config_version_id"] or "") != config_id:
+                raise ValueError("ConfigVersion изменилась после планирования")
+            if order_row["status"] == "reserved":
+                rows = connection.execute("""
+                    SELECT l.leg_id,l.order_line_id,l.bot_name,l.app_id,l.context_id,l.asset_ids_json
+                    FROM gd_delivery_legs l JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
+                    WHERE ol.order_id=? ORDER BY ol.line_number,l.bot_name COLLATE NOCASE
+                """, (order,)).fetchall()
+                legs = tuple(PlannedLeg(
+                    row["bot_name"], int(row["app_id"]), str(row["context_id"]),
+                    tuple(json.loads(row["asset_ids_json"])), str(row["order_line_id"]),
+                ) for row in rows)
+                assets = tuple((leg.bot_name, asset) for leg in legs for asset in leg.asset_ids)
+                return OrderReservationResult(order, "reserved", legs, assets, (), "Заказ уже зарезервирован.")
+            if order_row["status"] not in {"pending", "insufficient_stock", "preflight_blocked"}:
+                raise ValueError(f"Заказ имеет недопустимый статус для резерва: {order_row['status']}")
+
+            recipe = DeliveryLedger.recipe_for_config_version(
+                connection, config_id, allow_legacy=True
+            )
+            items_by_position = {item.position: item for item in recipe.items}
+            if len(items_by_position) != len(recipe.items):
+                raise ValueError("Recipe содержит повторяющиеся позиции")
+            lines = {
+                str(row["order_line_id"]): row
+                for row in connection.execute(
+                    "SELECT order_line_id,order_id,config_version_id,line_number,item_type,item_name,"
+                    "item_selector_json,quantity FROM gd_order_lines WHERE order_id=?",
+                    (order,),
+                ).fetchall()
+            }
+            if len(lines) != len(recipe.items):
+                raise ValueError("Набор OrderLine не совпадает с Recipe закреплённой ConfigVersion")
+            item_by_line: dict[str, RecipeItem] = {}
+            for line_id, line in lines.items():
+                item = items_by_position.get(int(line["line_number"]))
+                if (
+                    item is None
+                    or str(line["order_id"]) != order
+                    or str(line["config_version_id"] or "") != config_id
+                    or line["item_type"] != item.kind
+                    or line["item_name"] != item.display_name
+                    or line["quantity"] != item.quantity_per_order
+                ):
+                    raise ValueError("OrderLine не соответствует Recipe или ConfigVersion сделки")
+                try:
+                    snapshot = json.loads(line["item_selector_json"])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("OrderLine содержит некорректный Recipe snapshot") from exc
+                if not isinstance(snapshot, dict) or snapshot != {
+                    "config_version_id": config_id,
+                    "recipe_item_id": item.item_id,
+                    "recipe_item": item.to_dict(),
+                }:
+                    raise ValueError("RecipeItem snapshot OrderLine не совпадает с ConfigVersion")
+                item_by_line[line_id] = item
+
+            if set(planned_by_line) - set(lines):
+                raise ValueError("План ссылается на OrderLine другого заказа или неизвестную строку")
+            missing_required = {
+                line_id for line_id, item in item_by_line.items()
+                if item.required and line_id not in planned_by_line
+            }
+            if missing_required:
+                raise ValueError("План не содержит все обязательные RecipeItem")
+            config = connection.execute(
+                "SELECT bot_pool_json FROM gd_config_versions WHERE config_version_id=?",
+                (config_id,),
+            ).fetchone()
+            if config is None:
+                raise ValueError("ConfigVersion отсутствует")
+            try:
+                config_bot_pool = json.loads(config["bot_pool_json"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("ConfigVersion содержит некорректный bot_pool") from exc
+            if not isinstance(config_bot_pool, list) or any(
+                not isinstance(bot, str) or not bot.strip() for bot in config_bot_pool
+            ):
+                raise ValueError("ConfigVersion содержит некорректный bot_pool")
+
+            flattened: list[tuple[str, PlannedResource]] = []
+            seen: set[tuple[str, str]] = set()
+            for line_id, line_plan in planned_by_line.items():
+                if not isinstance(line_id, str) or not line_id.strip() or not isinstance(line_plan, PlannedRecipeLine):
+                    raise ValueError("План должен связывать каждую OrderLine с RecipeItem и его units")
+                item = item_by_line[line_id]
+                if line_plan.recipe_item_id != item.item_id or not isinstance(line_plan.units, tuple):
+                    raise ValueError("Планируемые ресурсы относятся к другому RecipeItem")
+                if item.required and not line_plan.units:
+                    raise ValueError("Обязательная RecipeItem не имеет ресурсов")
+                if line_plan.units and len(line_plan.units) != item.quantity_per_order:
+                    raise ValueError("Количество планируемых units не совпадает с RecipeItem.quantity")
+
+                allowed_bots = (
+                    item.spec.allowed_bot_pool
+                    if isinstance(item.spec, (SteamAssetSpec, SteamCardSetSpec))
+                    else ()
+                ) or tuple(config_bot_pool)
+                allowed_keys = {bot.strip().casefold() for bot in allowed_bots}
+                if line_plan.units and not allowed_keys:
+                    raise ValueError("RecipeItem не имеет допустимого bot_pool")
+                if isinstance(item.spec, SteamCardSetSpec):
+                    preflight = line_plan.steam_card_preflight
+                    if line_plan.units and (
+                        not isinstance(preflight, MultiGameOrderPreflight)
+                        or not has_verified_card_selection(preflight)
+                        or preflight.ready_for_manual_review is not True
+                        or preflight.order_id != order
+                        or preflight.requested_sets != len(line_plan.units)
+                        or len(preflight.selected_sets) != len(line_plan.units)
+                    ):
+                        raise ValueError("Steam Card plan требует успешный selector preflight с полным составом")
+                    if not line_plan.units and preflight is not None:
+                        raise ValueError("Пустой Steam Card plan не должен содержать selector preflight")
+                    if line_plan.steam_card_count_per_set is not None and (
+                        type(line_plan.steam_card_count_per_set) is not int
+                        or line_plan.steam_card_count_per_set < 1
+                    ):
+                        raise ValueError("Steam Card plan содержит некорректное количество карт")
+                    for unit_index, unit in enumerate(line_plan.units):
+                        selected_set = preflight.selected_sets[unit_index]
+                        expected_hashes = selected_set.card_hash_names
+                        if (
+                            not isinstance(expected_hashes, tuple)
+                            or not expected_hashes
+                            or not isinstance(selected_set.game_name, str)
+                            or not selected_set.game_name.strip()
+                            or (item.spec.game_name is not None
+                                and selected_set.game_name.strip().casefold() != item.spec.game_name.casefold())
+                            or any(not isinstance(value, str) or not value.strip() for value in expected_hashes)
+                            or len({value.strip() for value in expected_hashes}) != len(expected_hashes)
+                        ):
+                            raise ValueError("Steam Card preflight содержит некорректный состав набора")
+                        expected_hashes = tuple(value.strip() for value in expected_hashes)
+                        if (
+                            not isinstance(unit, tuple)
+                            or len(unit) != len(expected_hashes)
+                            or selected_set.cards_per_set != len(expected_hashes)
+                            or (line_plan.steam_card_count_per_set is not None
+                                and line_plan.steam_card_count_per_set != len(expected_hashes))
+                        ):
+                            raise ValueError("Steam Card unit не соответствует полному составу из preflight")
+                        unit_seen: set[tuple[str, str]] = set()
+                        unit_bots: set[str] = set()
+                        unit_hashes: list[str] = []
+                        planned_cards: set[tuple[str, str, str]] = set()
+                        for resource in unit:
+                            if not isinstance(resource, PlannedResource):
+                                raise ValueError("План содержит неподдерживаемый Steam Card ресурс")
+                            if (
+                                resource.game_id != "steam_cards"
+                                or resource.app_id != item.spec.app_id
+                                or str(resource.context_id) != item.spec.context_id
+                                or resource.steam_cards_compatibility is not True
+                            ):
+                                raise ValueError("Steam Card ресурс не соответствует RecipeItem")
+                            if not isinstance(resource.steam_card_hash_name, str) or not resource.steam_card_hash_name.strip():
+                                raise ValueError("Steam Card ресурс не связан с MarketHashName из preflight")
+                            bot = resource.bot_name.strip()
+                            asset = self._validated_asset_id(resource.asset_id)
+                            key = (bot.casefold(), asset_id_key(asset))
+                            if not bot or not asset or (allowed_keys and bot.casefold() not in allowed_keys):
+                                raise ValueError("Steam Card ресурс вне допустимого bot_pool")
+                            if key in seen or key in unit_seen:
+                                raise ValueError("Один физический asset выбран более чем для одной позиции")
+                            unit_seen.add(key)
+                            unit_bots.add(bot.casefold())
+                            unit_hashes.append(resource.steam_card_hash_name.strip())
+                            planned_cards.add((bot.casefold(), asset, resource.steam_card_hash_name.strip()))
+                            seen.add(key)
+                            flattened.append((line_id, PlannedResource(
+                                bot, asset, resource.game_id, resource.app_id,
+                                str(resource.context_id), True, resource.steam_card_hash_name.strip(),
+                            )))
+                        if len(unit_bots) != 1:
+                            raise ValueError("Steam Card unit должен принадлежать одному боту")
+                        if len(set(unit_hashes)) != len(unit_hashes) or set(unit_hashes) != set(expected_hashes):
+                            raise ValueError("Steam Card unit не содержит ровно по одной карте каждого типа preflight")
+                        selected_cards = {
+                            (asset.bot_name.strip().casefold(), self._validated_asset_id(asset.asset_id), asset.card_hash_name.strip())
+                            for asset in selected_set.asset_ids
+                            if isinstance(asset.card_hash_name, str) and asset.card_hash_name.strip()
+                        }
+                        if len(selected_cards) != len(selected_set.asset_ids) or planned_cards != selected_cards:
+                            raise ValueError("Steam Card plan не совпадает с assets успешного selector preflight")
+                elif isinstance(item.spec, SteamAssetSpec):
+                    if line_plan.steam_card_count_per_set is not None or line_plan.steam_card_preflight is not None:
+                        raise ValueError("Steam asset plan не должен содержать Steam Card метаданные")
+                    for unit in line_plan.units:
+                        if not isinstance(unit, tuple) or len(unit) != 1:
+                            raise ValueError("Каждая Steam asset quantity должна содержать один ресурс")
+                        resource = unit[0]
+                        if not isinstance(resource, PlannedResource):
+                            raise ValueError("План содержит неподдерживаемый Steam asset ресурс")
+                        bot = resource.bot_name.strip()
+                        asset = self._validated_asset_id(resource.asset_id)
+                        if (
+                            not bot or not asset or (allowed_keys and bot.casefold() not in allowed_keys)
+                            or resource.game_id.casefold() != item.spec.game_id.casefold()
+                            or type(resource.app_id) is not int or resource.app_id != item.spec.app_id
+                            or str(resource.context_id) != item.spec.context_id
+                            or resource.steam_cards_compatibility
+                        ):
+                            raise ValueError("Steam asset ресурс не соответствует RecipeItem или bot_pool")
+                        key = (bot.casefold(), asset_id_key(asset))
+                        if key in seen:
+                            raise ValueError("Один физический asset выбран более чем для одной позиции")
+                        seen.add(key)
+                        flattened.append((line_id, PlannedResource(
+                            bot, asset, resource.game_id, resource.app_id,
+                            str(resource.context_id), False,
+                        )))
+                elif isinstance(item.spec, DigitalTextUnitSpec):
+                    if line_plan.units or line_plan.steam_card_count_per_set is not None or line_plan.steam_card_preflight is not None:
+                        raise ValueError("Для DigitalTextUnit пока нет подтверждённого физического stock source")
+                else:
+                    raise ValueError("Для RecipeItem нет поддерживаемого валидатора ресурсов")
+            if not flattened:
+                raise ValueError("Recipe plan не содержит резервируемых физических ресурсов")
+
+            for line_id, resource in flattened:
+                conflicts = connection.execute("""
+                    SELECT owner_type AS conflict_owner FROM gd_resource_reservations
+                    WHERE state IN ('active','legacy_conflict') AND bot_name=? COLLATE NOCASE AND asset_id_key=?
+                    UNION ALL
+                    SELECT 'legacy' AS conflict_owner FROM steam_asset_reservations
+                    WHERE bot_name=? COLLATE NOCASE AND asset_id_key=?
+                      AND order_id<>?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM gd_legacy_order_map m
+                          WHERE m.legacy_table='delivery_orders'
+                            AND m.legacy_order_id=steam_asset_reservations.order_id
+                            AND m.order_id=?
+                      )
+                """, (
+                    resource.bot_name, asset_id_key(resource.asset_id),
+                    resource.bot_name, asset_id_key(resource.asset_id), order, order,
+                )).fetchall()
+                if conflicts:
+                    if all(str(row["conflict_owner"]) == "order" for row in conflicts):
+                        return OrderReservationResult(
+                            order, "preflight_blocked", (), (), (),
+                            "Один из выбранных ресурсов уже имеет активный резерв.",
+                        )
+                    raise ValueError("Один из выбранных ресурсов уже имеет активный резерв")
+                key = (
+                    line_id, resource.bot_name, resource.app_id, str(resource.context_id),
+                    str(resource.game_id), resource.steam_cards_compatibility,
+                )
+                grouped.setdefault(key, []).append(resource.asset_id)
+
+            legs: list[PlannedLeg] = []
+            assets: list[tuple[str, str]] = []
+            for (line_id, bot, app_id, context_id, game_id, card_compat), raw_assets in sorted(
+                grouped.items(), key=lambda entry: (lines[entry[0][0]]["line_number"], entry[0][1].casefold())
+            ):
+                asset_ids = tuple(dict.fromkeys(raw_assets))
+                if len(asset_ids) != len(raw_assets):
+                    raise ValueError("План содержит повтор asset_id внутри DeliveryLeg")
+                leg_id = self._stable_id("leg", f"{order}:{line_id}:{bot.casefold()}:{app_id}:{context_id}")
+                connection.execute("""
+                    INSERT INTO gd_delivery_legs
+                        (leg_id,order_line_id,bot_name,app_id,context_id,asset_ids_json,status)
+                    VALUES(?,?,?,?,?,?, 'reserved')
+                """, (leg_id, line_id, bot, app_id, context_id, json.dumps(asset_ids)))
+                for asset_id in asset_ids:
+                    reservation_id = self._stable_id(
+                        "reservation", f"{order}:{line_id}:{bot.casefold()}:{app_id}:{context_id}:{asset_id}"
+                    )
+                    connection.execute("""
+                        INSERT INTO gd_resource_reservations
+                            (reservation_id,owner_type,order_line_id,game_id,app_id,context_id,
+                             bot_name,asset_id,units,state)
+                        VALUES(?,'order',?,?,?,?,?,?,1,'active')
+                    """, (reservation_id, line_id, game_id, app_id, context_id, bot, asset_id))
+                    if card_compat:
+                        connection.execute("""
+                            INSERT INTO steam_asset_reservations(bot_name,asset_id,order_id)
+                            VALUES(?,?,?)
+                        """, (bot, asset_id, order))
+                    assets.append((bot, asset_id))
+                legs.append(PlannedLeg(bot, app_id, context_id, asset_ids, line_id))
+            connection.execute(
+                "UPDATE gd_orders SET status='reserved',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                (order,),
+            )
+        return OrderReservationResult(
+            order, "reserved", tuple(legs), tuple(assets), (),
+            "Все обязательные Recipe ресурсы атомарно зарезервированы.",
+        )
+
+    @staticmethod
+    def _validated_asset_id(value: Any) -> str:
+        return validate_asset_id(value)

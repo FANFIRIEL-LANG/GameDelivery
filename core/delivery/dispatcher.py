@@ -17,6 +17,7 @@ from core.delivery.playerok_freshness import (
     PlayerokOrderLease,
 )
 from core.delivery.send_policy import DeliverySendPolicy, ManualDispatchAuthorization
+from games.asset_ids import asset_id_key
 from integrations.asf.client import ASFClient, ASFError
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 
@@ -225,8 +226,8 @@ class DeliveryDispatcher:
                 for asset_id in asset_ids:
                     active_count = db.execute(
                         "SELECT COUNT(*) FROM gd_resource_reservations "
-                        "WHERE bot_name=? COLLATE NOCASE AND asset_id=? AND state='active'",
-                        (row["bot_name"], asset_id),
+                        "WHERE bot_name=? COLLATE NOCASE AND asset_id_key=? AND state IN ('active','legacy_conflict')",
+                        (row["bot_name"], asset_id_key(asset_id)),
                     ).fetchone()[0]
                     if active_count != 1:
                         return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "asset has conflicting active reservations"}}

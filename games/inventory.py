@@ -8,6 +8,7 @@ from typing import Any
 
 from integrations.asf.client import ASFError
 from core.database.connection import connect_sqlite
+from games.asset_ids import validate_asset_id
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,9 @@ class InventoryItem:
     rarity: str = ""
     exterior: str = ""
     tags: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "asset_id", validate_asset_id(self.asset_id))
 
 
 def _find_key(data: dict[str, Any], wanted: str) -> str | None:
@@ -111,7 +115,7 @@ def parse_game_inventory(payload: Any, game_id: str, bot_name: str) -> list[Inve
         asset_key, class_key = _find_key(asset, "assetid"), _find_key(asset, "classid")
         if asset_key is None or class_key is None:
             raise ASFError("Предмет ASF не содержит asset ID или class ID; снимок не обновлён")
-        asset_id = str(asset[asset_key]).strip()
+        asset_id = validate_asset_id(asset[asset_key])
         instance_key = _find_key(asset, "instanceid")
         if not asset_id or asset_id in seen:
             raise ASFError("ASF вернул пустой или повторяющийся asset ID; снимок не обновлён")
@@ -225,6 +229,8 @@ class GameInventoryStore:
             raise ValueError("Имя бота не должно быть пустым")
         if any(item.game_id != game.game_id or item.bot_name != bot for item in items):
             raise ValueError("Снимок содержит предметы другой игры или бота")
+        for item in items:
+            validate_asset_id(item.asset_id)
         if len({item.asset_id for item in items}) != len(items):
             raise ValueError("Снимок содержит повторяющиеся asset ID")
         timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
