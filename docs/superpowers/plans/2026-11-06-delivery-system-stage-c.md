@@ -1073,3 +1073,32 @@ Fix: commit d08b7e13ef49801b86624837c655922ec6d69259 направляет test-m
 Для устранения статической метки «вход не подтверждён» добавлена отдельная read-only проверка viewer, не запускающая загрузку продаж: пользователь нажимает отдельную кнопку, `BrowserViewerChecker` выполняет только GET `/rest-api/public/viewer` из контекста уже существующей `QWebEnginePage` с `credentials: include`. Новый page/profile не создаётся. Проверяются HTTP, JSON и непустой `viewer.id`; наружу передаётся только булев результат, viewer ID не сохраняется и не логируется. Классифицируются безопасные ошибки fetch/HTTP/JSON/viewer/JS bridge/request ID/poll/timeout/page destruction. MainWindow обновляет status label по сигналу панели.
 
 Целевой запуск `python -m unittest tests.test_playerok_browser_sales tests.test_playerok_browser_and_listing_config -q` — 49 tests OK; compileall затронутых Python-файлов и `git diff --check` прошли. Это mock-проверка, не live-acceptance: проверка на открытой авторизованной сессии ещё не запускалась. Просмотр продаж, sync, SQLite, заказов/резервов, Freshness proof, dispatcher, ASF и Steam не выполнялся. Live-результат должен быть зафиксирован отдельно и только после проверки пользователем.
+
+
+---
+
+## Task57 — дорожная карта Telegram и ASF game-item handlers (2026-11-20)
+
+Это добавление сохраняет прежние C.2–C.11 записи и их критерии; оно уточняет будущие зависимости, но не закрывает и не переоткрывает этапы. На checkpoint `work/local-sync` / `368c3dc85fa49f729feca7573d05f225bbfa846e` не объявлять C.3/C.4/C.5/C.6 завершёнными на основании наличия отдельных модулей.
+
+### T. Telegram для оператора — запланировано
+
+Переиспользовать внутренние delivery events и существующий durable Telegram outbox (`integrations/telegram/outbox.py`); не создавать второй источник состояния заказа. Полная интеграция должна включать UI-вкладку, защищённое хранение bot token/proxy credentials, target chat ID и operator allowlist, раздельную проверку подключения и тестовое сообщение, только проверенные HTTP/SOCKS proxy transports, получение updates, reconnect, дедупликацию, retry/backoff, журналирование без секретов и независимые per-event toggles/templates.
+
+Категории: новые и оплаченные deals; новые buyer messages и session loss/recovery; состав/доступность заказа; reservation и conflicts; начало/ход/результат DeliveryLeg и Steam offer; подтверждение, error, UNKNOWN, reconciliation и operator action; bump/restore listings; blacklist/refund; прочие утверждённые операционные события. Уведомления формируются из внутренних событий; Telegram outage не останавливает Playerok sync или delivery и не меняет статус заказа.
+
+Команды доступны только allowlist операторам и аудируются. Reply покупателю — отдельное действие: оно допустимо только при точной persisted связи marketplace account + Deal ID + Chat ID + Order ID и через проверенный Playerok adapter, соблюдая шаблоны, confirmation/send policy и ограничения платформы. Нельзя выводить адресата из имени, последнего открытого чата или последней сделки. Повтор update не повторяет send/action. Без этого identity contract replies остаются отключёнными.
+
+**Зависимости:** event/outbox contract и stable deal/chat identity; buyer replies — после подтверждения identity binding и безопасности Playerok message adapter. Уведомления можно проектировать параллельно с Playerok stabilization. Upstream ориентир pinned Playerok Universal `deabd093cdf2cc9fa936d8e6aa1d5dd665e548a6`: settings, aiogram polling, proxy-aware session и event handlers исследованы. Это не зависимость и код не переносился; любое будущее selective reuse сохраняет MIT notice. Acceptance: allowlist, secret redaction, toggles, duplicate/reconnect/retry, outage isolation, correct deal/chat routing, audit and no confirmation bypass.
+
+### G. Игровые предметы через ASF — запланировано после общих delivery gates
+
+Не считать существующий Steam Cards handler или видимый CS2 inventory достаточным для отправки произвольных игровых активов. Реализовывать отдельный handler и контракт по одной игре за раз (кандидаты: CS2, Dota 2, TF2, Rust), только после подтверждения transfer capability именно используемой версии ASF. Зависимости: C.3 canonical ledger/migrations, C.4 handler/attempt/reconcile contract и stable C.5 Steam Cards execution; названия C.3/C.4/C.5 приведены как зависимости плана, а их completion требует собственных acceptance evidence.
+
+Для каждой игры определить exact game/type identity и допустимые AppID/ContextID, сохранять исходный AssetID и доступные ClassID/InstanceID, variant, количество только при доказанной ASF stack semantics, snapshot version/freshness, tradable/restriction/trade-lock. Подбирать точные ресурсы только из разрешённого bot_pool. Перед отправкой handler сверяет актуальный inventory и manifest, не полагается на наличие в прежнем snapshot. Reservations проходят только через `gd_resource_reservations` и существующие delivery legs/audit/idempotency; глобально один физический asset закрепляется один раз. Не смешивать карточный 753/6 handler с игровым handler и не добавлять Steam Web API key.
+
+Смешанные заказы резервируются/подготавливаются атомарно по полному Recipe plan. Каждая leg сохраняет bot, точные asset IDs, игру/app/context, idempotency key, offer ID и attempt state. UNKNOWN блокирует автоматический повтор и release; accepted — consumed; release требует достоверного terminal result плюс свежего подтверждения владения/tradable. Любая частичная/неполная eligibility блокирует весь обязательный manifest. Acceptance включает per-game ASF contract tests, multi-bot and same-asset contention, stale/locked/non-tradable snapshots, mixed legs, restart/reconcile, duplicate events and safe release; никаких live offers без отдельного согласования.
+
+### Упаковка и последовательность
+
+Windows packaging acceptance остаётся downstream integration gate после включения нужных UI-функций, Telegram и соответствующих ASF game handlers; проверенные ранее runtime/упаковка не доказывают включение этих будущих функций. Полный Playerok automation, auto-send, Playerok status mutation, buyer messaging, Telegram command actions и реальные trade offers не включать без отдельных разрешений и завершённых policy gates.

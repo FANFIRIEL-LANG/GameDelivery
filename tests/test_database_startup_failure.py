@@ -55,6 +55,25 @@ class DatabaseStartupFailureTests(unittest.TestCase):
                     window.deleteLater()
                     self.app.processEvents()
 
+    def test_sqlite_migration_error_identifies_stage_and_preserves_safe_detail(self):
+        with patch("app.main.SteamTradeCredentialStore"), \
+             patch.object(
+                 MainWindow, "_ensure_delivery_order_schema",
+                 side_effect=sqlite3.OperationalError("no such table: gd_deals"),
+             ), \
+             patch("app.main.QMessageBox.critical") as critical:
+            window = MainWindow()
+            try:
+                title, message = critical.call_args.args[1:3]
+                self.assertIn("SQLite schema migration", title)
+                self.assertIn("no such table: gd_deals", message)
+                self.assertIn("OperationalError", message)
+                self.assertTrue(window.startup_error_label.text())
+            finally:
+                window.close()
+                window.deleteLater()
+                self.app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()

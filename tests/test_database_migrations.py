@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
@@ -26,7 +27,7 @@ class DatabaseMigrationTests(unittest.TestCase):
     def test_old_delivery_orders_schema_migrates_and_preserves_existing_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "legacy.sqlite3"
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db, db:
                 db.execute("""
                     CREATE TABLE delivery_orders (
                         order_id TEXT PRIMARY KEY,
@@ -48,7 +49,7 @@ class DatabaseMigrationTests(unittest.TestCase):
                 window = MainWindow()
                 try:
                     critical.assert_not_called()
-                    with sqlite3.connect(database) as db:
+                    with closing(sqlite3.connect(database)) as db, db:
                         row = db.execute(
                             "SELECT order_id, status, asset_count, created_at, source_platform, "
                             "source_order_id, trade_confirmation_status FROM delivery_orders "
@@ -74,7 +75,7 @@ class DatabaseMigrationTests(unittest.TestCase):
     def test_duplicate_external_order_prevents_migration_from_dropping_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "legacy-duplicate.sqlite3"
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db, db:
                 db.execute("""
                     CREATE TABLE delivery_orders (
                         order_id TEXT PRIMARY KEY,
@@ -102,14 +103,14 @@ class DatabaseMigrationTests(unittest.TestCase):
                 window = MainWindow()
                 try:
                     self.assertTrue(critical.called)
-                    self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
+                    self.assertIn("SQLite schema migration", critical.call_args.args[1])
                     self.assertTrue(window.startup_error_label.text())
                 finally:
                     window.close()
                     window.deleteLater()
                     self.app.processEvents()
             self.assertGreaterEqual(database.stat().st_size, original_size)
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db, db:
                 ids = [r[0] for r in db.execute("SELECT order_id FROM delivery_orders ORDER BY order_id")]
             self.assertEqual(ids, ["GD-ONE", "GD-TWO"])
 

@@ -24,7 +24,7 @@ def deal(deal_id: str, listing_id: str | None, status: str = "PAID", chat_id: st
         "buyer_id": "buyer-id",
         "status": status,
         "amount": "10",
-        "created_at": "2026-11-13T10:00:00Z",
+        "created_at": "2099-01-01T00:00:00Z",
         "deal_url": "https://playerok.com/deal/" + deal_id,
         "chat_url": "https://playerok.com/chats/" + (chat_id or "chat-" + deal_id),
         "url": "https://playerok.com/deal/" + deal_id,
@@ -491,6 +491,20 @@ class PlayerokDealSyncTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_sync_state").fetchone()[0], 0)
 
+    def test_stale_trusted_browser_snapshot_is_rejected_before_any_write(self):
+        from unittest.mock import patch
+        from tests.playerok_freshness_fixtures import reader_completed_snapshot
+
+        snapshot = reader_completed_snapshot(
+            "stale-seller", [deal("stale-deal", "listing-stale", "SENT")]
+        )
+        with patch("integrations.playerok.browser_sales.monotonic", return_value=10**9):
+            with self.assertRaisesRegex(ValueError, "stale"):
+                self.syncer.sync_browser_snapshot(snapshot)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_sync_state").fetchone()[0], 0)
+
     def test_browser_baseline_transaction_rolls_back_deals_and_state_on_write_error(self):
         snapshot = reader_completed_snapshot("browser-seller", [
             deal("browser-good", "listing-good"), deal("browser-fails", "listing-fails")
@@ -511,6 +525,37 @@ class PlayerokDealSyncTests(unittest.TestCase):
         with self.database.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_deals").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM playerok_sync_state").fetchone()[0], 0)
+
+    def test_browser_incremental_transaction_rolls_back_all_deals_on_write_error(self):
+        self.syncer.sync_browser_snapshot(reader_completed_snapshot("rollback-seller", []))
+        with self.database.connect() as db:
+            before = db.execute(
+                "SELECT last_sync_at FROM playerok_sync_state WHERE account_user_id='rollback-seller'"
+            ).fetchone()[0]
+        snapshot = reader_completed_snapshot("rollback-seller", [
+            deal("incremental-good", "listing-good", "SENT"),
+            deal("incremental-fails", "listing-fails", "SENT"),
+        ])
+        original = self.syncer._upsert_deal
+        calls = 0
+
+        def fail_second(db, row, account, historical):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError("injected incremental failure")
+            return original(db, row, account, historical)
+
+        with patch.object(self.syncer, "_upsert_deal", side_effect=fail_second):
+            with self.assertRaisesRegex(ValueError, "incremental failure"):
+                self.syncer.sync_browser_snapshot(snapshot)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_deals WHERE playerok_account_id='rollback-seller'"
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT last_sync_at FROM playerok_sync_state WHERE account_user_id='rollback-seller'"
+            ).fetchone()[0], before)
 
     def test_browser_snapshot_incremental_paid_deal_waits_without_version(self):
         self.configure_listing()
@@ -535,6 +580,33 @@ class PlayerokDealSyncTests(unittest.TestCase):
                 "SELECT config_version_id FROM gd_deals WHERE external_deal_id='browser-new'"
             ).fetchone()
             self.assertIsNone(row["config_version_id"])
+
+    def test_first_seen_pre_baseline_paid_deal_is_historical_and_unprepared(self):
+        self.configure_listing("listing-late-history")
+        baseline = reader_completed_snapshot("late-history-seller", [
+            deal("baseline-record", "listing-late-history", "SENT"),
+        ])
+        self.syncer.sync_browser_snapshot(baseline)
+        late_history = deal("late-paid-history", "listing-late-history", "PAID")
+        late_history["created_at"] = "2020-01-01T00:00:00Z"
+        missing_time = deal("missing-time-paid", "listing-late-history", "PAID")
+        missing_time["created_at"] = ""
+        malformed_time = deal("malformed-time-paid", "listing-late-history", "PAID")
+        malformed_time["created_at"] = "not-a-timestamp"
+        result = self.syncer.sync_browser_snapshot(reader_completed_snapshot(
+            "late-history-seller", [late_history, missing_time, malformed_time]
+        ))
+        self.assertEqual(result["new_deals"], 0)
+        self.assertEqual(result["historical_deals"], 3)
+        with self.database.connect() as db:
+            rows = db.execute(
+                "SELECT is_historical,config_version_id FROM gd_deals "
+                "WHERE external_deal_id IN ('late-paid-history','missing-time-paid','malformed-time-paid') "
+                "ORDER BY external_deal_id"
+            ).fetchall()
+            self.assertEqual([tuple(row) for row in rows], [(1, None)] * 3)
+            for table in ("gd_orders", "gd_order_lines", "gd_delivery_legs", "gd_resource_reservations"):
+                self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
 
     def test_unresolved_deals_complete_baseline_without_creating_delivery_rows(self):
         snapshot = reader_completed_snapshot("seller-unresolved", [

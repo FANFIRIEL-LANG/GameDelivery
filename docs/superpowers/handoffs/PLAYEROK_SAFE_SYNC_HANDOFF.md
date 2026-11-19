@@ -553,3 +553,187 @@ resolve_unresolved_deal() сейчас сам выбирает latest ConfigVers
 - Изменённые файлы: `integrations/playerok/browser_sales.py`, `tests/test_playerok_browser_sales.py`, этот handoff и `PROJECT_MASTER_LOG.md`. Исходный HEAD сохранился; статус содержит 43 entries. Пользовательская SQLite, реальные сделки, ASF, Steam и внешние операции не затрагивались; commit/push не было.
 
 **Следующий шаг:** ждать решения пользователя о read-only проверке GET persisted query в существующей сессии; не запускать её автоматически.
+
+## Задание №54 — автоматическое обнаружение сделок Playerok через polling (2026-11-18)
+
+**Контрольная точка до задания:** `work/local-sync`, HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e`. Предыдущие незакоммиченные изменения сохранены. Harness-файлы не затрагивались; `PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся.
+
+### Реализация
+
+- Добавлен `integrations/playerok/sales_polling.py` с внедряемыми timer/reader/sync/session зависимостями. Poller не допускает пересекающиеся циклы: следующий запуск планируется после завершения чтения и sync; при внешней занятости чтение откладывается. Ошибка сохраняет последнее успешное состояние и допускает retry; incomplete/untrusted snapshot не передаётся в sync. Остановка отменяет таймер и reader, а поздние callback игнорируются.
+- `app/platforms_panel.py` запускает poller только после успешной проверки уже открытой авторизованной browser session. Snapshot читает существующий `BrowserSalesReader`; существующий `PlayerokDealSyncService.sync_browser_snapshot()` вызывается через worker вне UI-потока. Используются настройки QSettings `playerok/auto_sales_sync_enabled` (default `true`) и `playerok/sales_poll_interval_minutes` (default 5, диапазон 1–60); отдельный settings backend не добавлялся.
+- Polling останавливается при закрытии приложения, уходе со страницы Playerok, очистке/потере browser session или ошибке авторизации. В `browser_sales.py` 401/403 и признаки потери viewer/session распознаются как потеря сессии; временные 5xx остаются retryable. В `app/playerok_browser.py` добавлена read-only проверка доступности существующей сессии.
+- Account-scoped дедупликация и обновление статусов остаются в sync по `(marketplace_account_id, deal_id)`. Fail-closed Task 52.1 сохранён: для PAID без доказанной ConfigVersion `config_version_id=NULL`, Order/OrderLines/DeliveryLegs/reservations не создаются. Polling не меняет сделки Playerok и не отправляет сообщения или Steam items.
+
+### Проверки и границы
+
+- `python -m unittest -q tests.test_playerok_sales_polling tests.test_playerok_browser_sales tests.test_playerok_sync tests.test_playerok_browser_and_listing_config` — **112 тестов PASS**. Проверены новый PAID deal без заказа при неизвестной ConfigVersion, идемпотентность и смена статуса, отклонение incomplete snapshot, сохранение последнего успеха/восстановление после ошибки, сериализация циклов, async sync, остановка/late callback, потеря сессии и account scoping.
+- `python -m compileall -q` для затронутых production-модулей и тестов — PASS. `git diff --check` — PASS; только предупреждения Git о LF/CRLF. Полный suite и CI не запускались.
+- Live Playerok, внешняя сеть, ASF, Steam, приложение, пользовательская SQLite и реальные сделки не задействовались. Коммитов и push нет.
+- Изменённые в задании файлы: `integrations/playerok/sales_polling.py`, `integrations/playerok/browser_sales.py`, `app/playerok_browser.py`, `app/platforms_panel.py`, `tests/test_playerok_sales_polling.py`, `tests/test_playerok_browser_sales.py`, `tests/test_playerok_browser_and_listing_config.py`, `PROJECT_MASTER_LOG.md` и этот handoff. Существовавшие `app/__main__.py`, `app/harness.py`, `tests/test_windows_harness.py` и `PLAYEROK_LOCAL_REVIEW.patch` сохранены; patch не читался.
+- Остаётся отдельно проверить live-совместимость browser session и длительное поведение polling с разрешённой проверкой. Постоянный WebSocket/listener не реализован.
+
+## Task 55 — промежуточная точка продолжения (2026-11-18)
+
+Контрольная точка: branch `work/local-sync`, HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e`. Текущий статус был проверен; прежние незакоммиченные изменения сохранены. Не открывать/изменять `PLAYEROK_LOCAL_REVIEW.patch`.
+
+### Подтверждённые требования и частичная реализация
+
+Пользователь подтвердил: ручное подтверждение один раз на весь заказ; при auto-send OFF разрешены приветствие и автоответ с просьбой прислать Steam Trade URL; поле заказа временно служит источником URL, позднее при пустом/невалидном поле URL должен искаться в чате. Сделка без доказанной ConfigVersion остаётся без заказа и резервов. Playerok `SENT` устанавливается только после успеха всех обязательных DeliveryLeg; `CONFIRMED` только наблюдается. Дополнительные модули Universal будут перечислены отдельно.
+
+Промежуточно в `core/delivery/send_policy.py` введена order-scoped авторизация точного набора DeliveryLeg, а `app/main.py` показывает один диалог на весь заказ, проверяет соответствие preview и legs и передаёт один grant последовательному исполнению. Целевые send-policy/send-flow проверки — 11 PASS; targeted `compileall` — PASS; `git diff --check` ранее проходил. Это не завершение Task 55.
+
+### Блокер чата и незавершённое
+
+Разрешённый read-only осмотр существующего чата выполнить не удалось: доступный CUA-инвентарь не содержит окна GameDelivery, локальные браузеры отключены в Work settings, а `http://127.0.0.1:9227/json/list` недоступен (connection refused); процесса GameDelivery нет. Приложение и новую браузерную сессию не запускали. Поэтому DOM/сообщения/ссылка на Trade URL не исследованы.
+
+Не реализованы обработка чата, приветствие/автоответы и извлечение ссылки; автоматический запуск подготовки/резервирования из polling; переход Playerok в `SENT` после доставки; auto-confirm и дополнительные модули Universal. Список этих модулей ожидает уточнения пользователя. Неизвестная ConfigVersion остаётся fail-closed по Task 52.1.
+
+**Следующий шаг:** предоставить доступ к уже открытому авторизованному окну GameDelivery для read-only осмотра существующего чата и перечислить дополнительные модули Universal, входящие в объём. До подтверждения DOM-контракта не добавлять парсер или действия отправки сообщений/смены статуса.
+
+В ходе этой проверки не выполнялись live Playerok/Steam/ASF операции, отправка, смена статусов, доступ к пользовательской БД, приложение, миграции, коммит или push.
+
+## Диагностика OperationalError при запуске (2026-11-18)
+
+### Причина
+
+По существующему `LOCALAPPDATA\GameDelivery\logs\gamedelivery.log` установлена конкретная ошибка в 2026-11-18 20:47:45: `app/main.py` запускает `_ensure_delivery_order_schema()`; в `migrate_delivery_ledger()` вызов `_apply_playerok_sync_migration()` падает на `ALTER TABLE gd_deals_v2 RENAME TO gd_deals`. SQLite сообщает: `error in trigger gd_orders_playerok_delivered: no such table: main.gd_deals`. Пока миграция удаляла старую таблицу и переименовывала новую, триггер на другой таблице ссылался на временно отсутствующую `gd_deals`. Это SQLite, не Windows Credential Manager.
+
+### Исправление и проверки
+
+`core/database/ledger_migrations.py` сохраняет SQL таких зависимых триггеров, временно снимает их на период замены таблицы и восстанавливает внутри той же транзакции. Rollback сохраняется. `app/main.py` показывает этап и очищенную SQLite-причину; остальные исключения не раскрывают сырой текст в диалоге, подробности остаются в редактируемом логе. Добавлены/обновлены тесты миграции, безопасного сообщения об ошибке и закрытия SQLite handle в тестовых фикстурах.
+
+`python -m unittest -q tests.test_playerok_sync_migration tests.test_database_startup_failure tests.test_database_migrations` — **11 PASS**. Целевой `compileall` — PASS; `git diff --check` — PASS, только предупреждения Git о LF/CRLF. Один предварительный прогон выявил WinError 32 из-за незакрытых SQLite handles в тестах; фикстуры исправлены. Остались две папки синтетических тестов `%LOCALAPPDATA%\Temp\tmp_lzkjskb` и `%LOCALAPPDATA%\Temp\tmpji2twt65` с тестовыми DB/backup-файлами; они не открывались и не удалялись.
+
+### Граница подтверждения
+
+Пользовательская SQLite, WAL/SHM и Windows Credential Manager не открывались; миграции пользовательских данных не выполнялись. Приложение не запускалось. Исправлен и протестирован конкретный migration path на временной БД; startup против пользовательского профиля и самой пользовательской БД остаётся непроверенным. Поэтому реальный безопасный запуск не подтверждён. `PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся.
+
+Изменения этой задачи: `core/database/ledger_migrations.py`, `app/main.py`, `tests/test_playerok_sync_migration.py`, `tests/test_database_startup_failure.py`, `tests/test_database_migrations.py`, Master Log и handoff. Следующий шаг — отдельное разрешение пользователя на контролируемый запуск с пользовательской БД; до такого разрешения обычный запуск не выполнять.
+
+## Контролируемый запуск после исправления OperationalError (2026-11-18)
+
+Перед стартом создана read-only source backup копия SQLite Backup API: `%LOCALAPPDATA%\GameDelivery\backups\gamedelivery-before-startup-20261118-212019-fad25c40.sqlite3`, размер 1,609,728 байт, SHA-256 `94A94FA5EC3EA65FFC106E0BED9B118EC3D25698F4E7A510B328DB2A191C299D`; её `integrity_check=ok`. Миграции стартовали только после успешной проверки backup.
+
+Обычная startup-функция `app.main.main()` запущена в контролируемом headless окружении: `QT_QPA_PLATFORM=offscreen`, изолированный ASF test endpoint. Лог подтвердил `Local delivery storage initialized`, `MainWindow initialized successfully`, `Main window shown`, затем штатное завершение exit code 0. Инициализированы все восемь вкладок локальной панели. WebEngine, Playerok browser session и автоматический ASF start/refresh были отключены; процесс закрыт до reconciliation timer. Проверена инициализация UI, но не визуальный desktop rendering.
+
+После запуска: `integrity_check=ok`, `foreign_key_check=0`. Маркеры миграций записаны, включая `2026-11-playerok-sync-v2`. По сравнению полных строк всех общих таблиц backup и текущей БД пользовательские строки не изменились. Схемные отличия — аддитивные колонки пустых gd ledger таблиц; migration markers добавлены. Inventory snapshot/cache данные сохранены (game inventory 1224, Steam inventory 546, CS2 price cache 287, proxy pool 18, proxy profiles 107 строк). До и после запуска заказные таблицы и резервы пустые (0 строк).
+
+Таким образом исправленная миграция прошла на пользовательской БД, и локальная панель успешно инициализировалась в headless controlled startup. БД не заменялась/не сбрасывалась; пользовательские данные сохранены, намеренно изменились только схема и migration metadata. Никаких Playerok, Steam или ASF операций не было. Приложение завершилось штатно и процессов GameDelivery не оставлено. Автоматическая отправка не включалась.
+
+`PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся. Обычный визуальный запуск с WebEngine не выполнялся ради запрета на реальные внешние обращения. До следующего разрешения не запускать отдельные бизнес-операции.
+
+## Task55 — одноразовое безопасное чтение структуры DOM (2026-11-18)
+
+### Реализация
+
+На контрольной точке `work/local-sync`, HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e`, в существующий `PlayerokBrowserPanel` добавлена ручная кнопка `Структура DOM (read-only)`. Чтение не запускается автоматически. Handler берёт текущий `self.web.page()` непосредственно перед вызовом, требует готовую страницу, запрещает чтение во время clear-session, проверяет HTTPS Playerok, отслеживает `page.destroyed` и отбрасывает callback после смены/уничтожения страницы.
+
+`runJavaScript()` выполняет локальный обход DOM. Он не использует `BrowserSalesReader`, `read_sales()`, fetch/XHR, навигацию, клики, изменение DOM или другие синхронизационные механизмы. JS возвращает JSON-строку ограниченной структуры; Python применяет второй allowlist. Диалог read-only отображает только очищенный JSON, результат не сохраняется в БД, файлы или постоянные логи.
+
+Возвращаются текущие origin/pathname без query/fragment, число просмотренных body-элементов и максимальная глубина (с явным truncation), кандидатные контейнеры/элементы сообщений, интерактивные типы, количество ссылок и до 100 hostname/pathname, SPA roots и динамические зоны. Текст DOM, outerHTML, поля input, query/fragment и сырые href не возвращаются. `aria-label` пропускается только для коротких общих названий; прочие потенциально текстовые `aria-*` редактируются. Data-атрибуты представлены именами, не значениями.
+
+### Проверки и границы
+
+- `python -m unittest -q tests.test_playerok_dom_diagnostic` — **7 PASS**.
+- `python -m unittest -q tests.test_playerok_browser_and_listing_config` — **40 PASS**.
+- `python -m compileall -q app/playerok_browser.py tests/test_playerok_dom_diagnostic.py` — PASS.
+- `git diff --check` — PASS; только предупреждения Git о преобразовании LF/CRLF.
+- Тесты используют fake QWebEngine page и синтетические данные. На текущей авторизованной странице диагностический вызов не запускался; live DOM контракт остаётся неподтверждённым. UI, код delivery pipeline, пользовательская БД и внешние сервисы в работе не запускались/не затрагивались. Полный suite/CI не запускались.
+
+Следующий шаг: оператор вручную нажимает `Структура DOM (read-only)` в панели Playerok на уже открытом нужном чате и передаёт отображённый безопасный структурный отчёт. Не запускать синхронизацию продаж и не копировать исходный текст чата или полный HTML.
+
+### Дополнение к Task55 — итоговая проверка санации (2026-11-18)
+
+Python allowlist ограничивает `role` стандартными ARIA-ролями, а `link_count` — пределом обхода DOM (12 000); добавлен регрессионный тест этих ограничений. Повторные целевые проверки: DOM-диагностика — 8 PASS, browser/listing tests — 40 PASS, compileall и `git diff --check` — PASS. Live DOM не читался.
+
+### Task55 — ограниченные DOM-контексты вокруг чата (2026-11-18)
+
+Переданный live-отчёт подтвердил `textarea.hidden-scrollbar.font-inter`, `input[type=file]` и три одинаковых deal-path, но не содержал родителей/соседей; контейнер сообщений и кнопка отправки остаются неустановленными. По этому отчету нельзя подтверждать авторство, message ID или время.
+
+Сборщик расширен: до двух textarea с четырьмя уровнями родителей и четырьмя соседями на уровень; до восьми anchor `/deal/{UUID}` с тремя уровнями родителей; ближайшая ограниченная область ввода с максимум 20 controls. Элементы controls получают только перечисление структурных признаков (`explicit-submit-type`, `generic-send-label`, `file-input`, `generic-attach-label`), без заключения о назначении, если признак не выражен явно. URL выдаётся только как проверенный hostname/pathname без query/fragment; тексты, href, значения полей и HTML исключены.
+
+Проверки: DOM-диагностика — 9 PASS; затронутые browser/listing tests — 40 PASS; compileall и `git diff --check` — PASS. Live-страница не перечитывалась после изменения. Следующее действие: на том же открытом чате в экземпляре приложения с загруженным обновлённым кодом вручную нажать `Структура DOM (read-only)` и передать JSON-отчёт. Не запускать sync, не нажимать controls; до получения отчёта не утверждать селекторы контейнера сообщений или send button.
+
+Детализированные ссылки в общей сводке теперь выдаются только для `playerok.com`/`www.playerok.com`; внешние hostname/path, включая Steam Trade Offer, отбрасываются. Счётчик ссылок возвращается только числом.
+
+## Task56 — read-only поиск повторяющихся структур DOM чата (2026-11-18)
+
+Диагностический JS в `app/playerok_browser.py` дополнен ограниченным поиском повторяющихся соседних структур вне области композера и явно посторонних областей: `nav`/navigation, header/footer/aside, типовых sidebar/menu и deal-link wrappers. Группирование структурное по tag/class/role/data-attribute names и форме прямых детей. Результат помечает каждую группу `structural-candidate`; код не объявляет её сообщением.
+
+Границы: scan до 12 000 узлов; максимум 10 групп и 4 примера на группу; потомки до глубины 2 и 3 детей на узел; родители до 3 уровней и максимум 4 соседей на уровень. ID выводятся только как `id_attribute_present`; стабильные атрибуты — только имена/признаки наличия; aria IDREF — `[present]`. В отчёте нет URL/path/hostname/href, deal ID, текста, имени, значений input, полного HTML или содержимого storage. `link_count` остаётся числом.
+
+Синтетические проверки покрывают повторяющиеся вложенные структуры, отсутствие повторов, сходные группы вне чата, отмеченные как исключённые nav-группы, ограничения и удаление содержимого: 12 DOM tests PASS, 40 browser/listing tests PASS, compileall PASS, `node --check` PASS, `git diff --check` PASS. Live DOM не запускался. Следующее действие — оператор вручную повторяет одноразовую диагностику на той же странице в экземпляре, загрузившем обновлённый код; оценивать только структурных кандидатов и не приписывать авторство/ID/time без атрибутов. Не запускать sync, не нажимать controls.
+
+## Task57 — устойчивые лимиты read-only DOM-диагностики (2026-11-18)
+
+Старое операторское сообщение об «некорректной или превышающей лимит структуре» показывалось общей веткой отказа sanitizer. В прежнем коде callback payload и точная причина не сохранялись, поэтому задним числом нельзя доказать, был ли первопричиной размер JSON, схема или иное условие. Текущую/live-страницу не использовали.
+
+JS ограничивает обход 12 000 DOM-узлами, кандидаты — 40 контейнерами, 100 message-like узлами, 100 interactive узлами и 40 динамическими областями. Дополнительные пределы: 2 textarea, 8 deal-link contexts, 20 controls, 10 повторяющихся групп × 4 примера, глубина дерева 2 × 3 ребёнка. Сериализованный JS JSON ограничен 192 KiB, callback — 256 KiB; Python allowlist/санация повторно ограничивает отображаемый JSON 192 KiB. При сокращении выставляются `truncated`, причины, section flags и найденные счётчики; при невозможности сформировать отчёт возвращается компактная ошибка в установленной JSON-схеме. В callback добавлена защита от исключения sanitizer.
+
+Проверки на synthetic данных/fake page: DOM tests 17 PASS; browser/listing tests 40 PASS; compileall и `node --check` PASS. Live DOM, пользовательская БД, внешние сервисы и приложение не использовались. Следующий минимальный шаг — только отдельное разрешённое ручное read-only нажатие диагностики на открытом чате в обновлённом экземпляре; при этом не читать содержимое переписки и не запускать sync. Совместимость с реальным DOM пока не подтверждена.
+
+
+## Task 55 — browser-backed GraphQL API и chat listener (2026-11-19)
+
+На `work/local-sync` / HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e` добавлены `integrations/playerok/universal_chat_contract.py`, `browser_chat_api.py` и `browser_chat_listener.py`. Использованы конкретные persisted-query hashes и GraphQL query documents из Playerok Universal commit `deabd093cdf2cc9fa936d8e6aa1d5dd665e548a6`; проект не подключён как dependency, в contract сохранён MIT notice.
+
+API выполняет GraphQL fetch в текущем QWebEngine page context с `credentials: include`, обрабатывает viewer/chats/chat/messages/deal, курсорную пагинацию и точную дедупликацию. Listener держит WS в том же browser context (`graphql-transport-ws`), следит за chat/message/user updates, ограничивает очередь, восстанавливает разрывы catch-up запросами и перепроверяет viewer при reconnect. Событие системного маркера само по себе не меняет состояние: deal перечитывается, а пара `deal.id` / `deal.chat.id` должна совпасть с ожидаемыми ID.
+
+В `app/playerok_browser.py` добавлена защита callback текущей страницы; `app/platforms_panel.py` запускает и останавливает listener по состоянию уже авторизованной страницы и предоставляет facade. Нет cookie/token export, отдельного HTTP-клиента, нового browser profile, ручного sync или автоматического вызова отправки. Явный API отправки текста определён, но UI и автоответы к нему не подключены; файловые вложения не реализованы. Статусы, заказы, резервы, Steam/ASF delivery и существующий auto-send не менялись.
+
+Проверки: chat API/listener/DOM — 34 PASS; browser-sales/browser-panel/sync regressions — 103 PASS; compileall — PASS; `node --check` для сгенерированных DOM, fetch и WS JavaScript — PASS. Live Playerok и пользовательская SQLite не использовались, реальных сетевых операций не было.
+
+Открытый риск: persisted-query hashes, WS handshake и payload совместимость с текущим Playerok live не подтверждены; никакая бизнес-операция не должна подключать это без отдельной контролируемой валидации. Автоответы/приветствие, парсинг Trade URL, запуск подготовки заказа, обновление SENT/CONFIRMED и прочие Universal-модули остаются вне текущей реализации. `PLAYEROK_LOCAL_REVIEW.patch` сохранён и не читался. Commit/push не выполнялись.
+
+## Task56 — live GraphQL / WebSocket verification (2026-11-19)
+
+Контрольная точка `work/local-sync` / HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e`. Авторизация в существующей WebEngine-сессии подтверждена. Разрешённый read-only sales poller получил HTTP 400 и показал, что данные не изменены; тестовый ASF IPC endpoint направлялся на localhost port 9.
+
+Live chat GET: `userChats`, `chat`, `chatMessages` — все HTTP 400 на первой странице; cursor pages 0. Список, сообщения, успешный разбор, пустой результат и пагинация live не подтверждены. Содержимое сообщений/сырые ответы не сохранялись. Безопасный allowlist GraphQL error code отсутствовал, точная причина 400 не установлена.
+
+Live WS: получен `connection_ack`, UI состояние `connected`; следовательно handshake/init подтверждены. Запросы subscriptions `chatUpdated` и `chatMessageCreated` отправлены для текущего чата, но событие не поступило (0/0), отдельного подтверждения принятия подписки контракт не предоставляет. События — **NOT OBSERVED**, успешная обработка подписок не доказана. Reconnect не вызывался и естественно не случился.
+
+Изменения Task56: безопасное отображение allowlist error code, независимая read-only диагностика трёх GET-запросов, поддержка непрозрачного chat route ID и диагностический WS-only старт без catch-up API. Тесты: 24 PASS; compileall и node syntax check PASS. Приложение закрыто штатно, процесс завершился с exit code 0. Сообщения не отправлялись; состояния сделок не менялись; заказы, резервы и доставка не запускались. Следующий шаг — определить safe category ошибки HTTP 400 и повторить только GET-проверку; затем проверить cursor pagination при успешном ответе. Не использовать chat API в бизнес-цикле до этого. `PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся; commit/push нет.
+
+#### Уточнение о SQLite при live-проверке Task56
+
+GameDelivery был перезапущен обычной командой приложения с существующим профилем пользователя; отдельный --harness не использовался. Read-only chat diagnostic сама не обращалась к SQLite, но обычная инициализация приложения может открыть настроенную БД/выполнить штатные startup migrations. Базу отдельно не осматривали и не сравнивали; поэтому результат Task56 не подтверждает, что SQLite не открывалась или осталась побайтно неизменной.
+
+### Task56 — устранение GraphQL HTTP 400 и live-повтор (2026-11-20)
+
+Контрольная точка остаётся `work/local-sync` / HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e`; существующие изменения сохранены. Причина HTTP 400 установлена точечным сравнением с pinned Playerok Universal `deabd093cdf2cc9fa936d8e6aa1d5dd665e548a6`: GameDelivery совпадал по endpoint, operation, persisted-query hash и variables, но пропускал GraphQL HTTP context headers (`apollo-require-preflight`, `apollographql-client-name`, `x-gql-op`, `x-gql-path`, `x-timezone-offset`, `x-apollo-operation-name`). Они добавлены в браузерный fetch; viewer endpoint не менялся. Live-запросы после этого успешны.
+
+Результаты через существующую авторизованную WebEngine session: auth **PASS**; `userChats` **PASS**, 335 чатов, 14 страниц (13 cursor pages); `chat` **PASS**; `chatMessages` **PASS**, 8 записей, 1 страница без cursor. Содержимое/API payload не показывались и не записывались. Пагинация списка чатов подтверждена; пагинация сообщений не проверена, так как ответ не содержал cursor.
+
+WS: состояние `caught_up`, `subscription_error` не наблюдался, счетчики событий 0/0. Предыдущий `connection_ack` подтверждён. Отдельного подтверждения принятия подписки протокол не предоставляет; поэтому принятие подписок не доказано и событий не наблюдали (**NOT OBSERVED**), что не классифицируется как сбой.
+
+Регрессии: browser chat API + listener — **22 PASS**; `compileall` — **PASS**; `git diff --check` — **PASS** с обычными LF/CRLF предупреждениями. Изменён GraphQL transport в `integrations/playerok/browser_chat_api.py`, тест `tests/test_playerok_browser_chat_api.py`; Master Log и handoff дополнены append-only. Commit/push нет. Сообщения, статусы и сделки не изменялись; заказы, доставка, резервы, Steam и ASF операции не запускались.
+
+Ограничение: использовался обычный запуск приложения с пользовательским профилем. Диагностический код отдельно не открывал SQLite, но стандартная инициализация могла открыть её или выполнить штатные migrations; БД не исследовалась и не сравнивалась. Не заявлять, что база осталась побайтно неизменной. Дальше не использовать chat API в бизнес-обработке без отдельного этапа; для WS дождаться естественного события или явного серверного отказа.
+
+
+## Task57 — плановые зависимости Telegram и игровых ASF-выдач (2026-11-20)
+
+На checkpoint `work/local-sync` / HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e` зафиксировано дальнейшее направление; это не implementation acceptance.
+
+- В проекте есть частичная Telegram credential/outbox инфраструктура, но нет основания считать готовыми Telegram UI, полный bot/update lifecycle, настройки proxy/operator allowlist и reply-to-buyer. Полную дорожную карту и acceptance criteria добавили в Master Log и stage C plan. Telegram строится поверх внутренних events/outbox, остаётся необязательным, его сбой не блокирует sync/delivery. Buyer reply не включать до устойчивой точной связи account + Deal ID + Chat ID + Order ID и проверки Playerok adapter/policy.
+- Текущие browser chat GraphQL reads проходят live; WS handshake подтверждён, но серверное принятие subscriptions и реальные события не подтверждены. Перенос полного chat API в бизнес-процесс требует отдельного согласования/этапа; deal/chat identity нельзя выводить из имени или текущего окна.
+- Универсальную ASF доставку игровых предметов не считать реализованной на основании карточного send path или CS2 inventory. Планировать отдельные per-game handlers (CS2, Dota 2, TF2, Rust) после подтверждения C.3 canonical ledger, C.4 dispatch/reconciliation и устойчивого C.5; точные resource identity, fresh inventory, tradability/locks, atomic multi-leg reservations, idempotency, UNKNOWN handling и safe release обязательны. Не смешивать Steam Cards 753/6 и обычные игровые app/context handlers.
+- Windows package acceptance — после требуемых UI, Telegram и game-handler функций. Не запускать реальные Telegram sends, Playerok messages/status changes, ASF/Steam offers или auto-send без отдельного разрешения.
+
+Pinned upstream review: `playerok-universal` commit `deabd093cdf2cc9fa936d8e6aa1d5dd665e548a6`; ориентир включает aiogram polling, proxy-aware `AiohttpSession`, настройки события/адресата и operator handlers. В GameDelivery на этом этапе upstream код не копировался и зависимость не добавлялась.
+
+
+## Task58 — checkpoint безопасного обнаружения и order preparation (2026-11-20)
+
+HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e`, branch `work/local-sync`.
+
+- `BrowserSalesReader` использует текущий WebEngine session и persisted-query cursor pagination; добавлен проверенный по Task56 GraphQL request context для deals GET и запрет redirect. Синтетический request-contract тест PASS; live sales query после изменения не запускался.
+- Snapshot ограничен 5 минутами от начала pagination до принятия sync. Provenance, viewer match, cursor/total validation и duplicate conflict gates сохранены. Sync повторно проверяет baseline account marker под `BEGIN IMMEDIATE`; baseline/incremental сделки и marker/last-sync пишутся транзакционно. Stale/incomplete snapshots отклоняются до записи; polling сохраняет last-good state.
+- Для новых after-baseline rows `createdAt` не позже/equal baseline, отсутствующий или malformed timestamp ведёт к fail-closed `is_historical=1`. Это может консервативно пропустить ранее созданную сделку, которая стала PAID после baseline; `createdAt` не используется как paid timestamp и не выбирает ConfigVersion.
+- Canonical `listing_id` — только Playerok `item.id`; deal/chat/listing IDs раздельны, slug — только unresolved source reference. Идемпотентность account + exact external deal ID сохранена.
+- PAID без доказанной исторической ConfigVersion остаётся `config_version_id=NULL`, без Order, OrderLines, DeliveryLegs и reservations. Это соответствует Task52.1. Поскольку доступный Playerok `createdAt` не доказывает переход в PAID и отдельный paid timestamp/history не получен, автоматическая подготовка новых PAID заказов сейчас намеренно заблокирована; Task58 не объявлять полностью завершённой по этому критерию.
+- Целевые проверки: 96 sync/sales/polling/import tests PASS; два pinned Recipe materialization tests PASS; compileall PASS. Только временные SQLite и fake responses; пользовательская БД и live/external services не использовались. Commit/push нет.
+
+Дальше: для разрешённой подготовки PAID сначала согласовать/получить authoritative payment-time или иной доказуемый ConfigVersion binding. До этого не назначать latest version и не создавать заказ/резервы. `PLAYEROK_LOCAL_REVIEW.patch` не открывался.

@@ -9,7 +9,12 @@ from uuid import uuid4
 class ManualDispatchAuthorization:
     order_id: str
     authorization_id: str
-    leg_id: str
+    leg_ids: tuple[str, ...]
+
+    @property
+    def leg_id(self) -> str:
+        """Compatibility accessor for older single-leg callers."""
+        return self.leg_ids[0] if len(self.leg_ids) == 1 else ""
 
 
 class DeliverySendPolicy:
@@ -20,7 +25,7 @@ class DeliverySendPolicy:
     def __init__(self, settings) -> None:
         self._settings = settings
         self._lock = RLock()
-        self._manual_grants: dict[str, tuple[str, set[str]]] = {}
+        self._manual_grants: dict[str, tuple[str, frozenset[str], set[str]]] = {}
         self._storage_unhealthy = False
         self.reset_off_on_start()
 
@@ -94,10 +99,28 @@ class DeliverySendPolicy:
         leg = str(leg_id or "").strip()
         if not order or not leg:
             raise ValueError("Для ручного разрешения нужны order_id и конкретная DeliveryLeg.")
+        return self.issue_order_manual_authorization(order, (leg,))
+
+    def issue_order_manual_authorization(
+        self, order_id: str, leg_ids
+    ) -> ManualDispatchAuthorization:
+        """Issue one user confirmation scoped to all prepared legs of one order."""
+        order = str(order_id or "").strip()
+        if isinstance(leg_ids, (str, bytes)):
+            raise ValueError("Для подтверждения заказа требуется список DeliveryLeg.")
+        try:
+            legs = tuple(dict.fromkeys(str(value or "").strip() for value in leg_ids))
+        except TypeError as exc:
+            raise ValueError("Для подтверждения заказа требуется список DeliveryLeg.") from exc
+        if not order or not legs or any(not leg for leg in legs):
+            raise ValueError("Для ручного разрешения нужны order_id и все DeliveryLeg заказа.")
         authorization_id = uuid4().hex
-        grant = ManualDispatchAuthorization(order, authorization_id, leg)
+        grant = ManualDispatchAuthorization(order, authorization_id, legs)
         with self._lock:
-            self._manual_grants[authorization_id] = (order, {leg})
+            authorized_legs = frozenset(legs)
+            self._manual_grants[authorization_id] = (
+                order, authorized_legs, set(authorized_legs)
+            )
         return grant
 
     def validate_manual_authorization(
@@ -118,8 +141,10 @@ class DeliverySendPolicy:
         return bool(
             registered
             and grant.order_id == order == registered[0]
-            and leg == grant.leg_id
-            and leg in registered[1]
+            and grant.leg_ids == tuple(dict.fromkeys(grant.leg_ids))
+            and frozenset(grant.leg_ids) == registered[1]
+            and leg in grant.leg_ids
+            and leg in registered[2]
         )
 
     def run_manual_dispatch_claim(self, grant, order_id: str, leg_id: str, claim):
@@ -135,8 +160,8 @@ class DeliverySendPolicy:
 
     def _consume_manual_locked(self, grant: ManualDispatchAuthorization, leg: str) -> None:
         registered = self._manual_grants[grant.authorization_id]
-        registered[1].remove(leg)
-        if not registered[1]:
+        registered[2].remove(leg)
+        if not registered[2]:
             self._manual_grants.pop(grant.authorization_id, None)
 
     def consume_manual_authorization(

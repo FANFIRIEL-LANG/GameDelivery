@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import weakref
 import shiboken6
 from pathlib import Path
@@ -33,6 +34,1156 @@ PLAYEROK_PROFILE_ROUTE_LABELS = (
     "Продажи: Завершённые (CONFIRMED)",
     "Продажи: Возврат средств",
 )
+
+
+_DOM_DIAGNOSTIC_SCRIPT = r"""(() => {
+  const MAX_SCAN = 12000;
+  const MAX_ATTR = 120;
+  const MAX_CONTAINERS = 40;
+  const MAX_MESSAGES = 100;
+  const MAX_INTERACTIVE = 100;
+  const MAX_DYNAMIC = 40;
+  const MAX_ATTRIBUTES_PER_NODE = 64;
+  const MAX_TEXTAREAS = 2;
+  const MAX_DEAL_LINKS = 8;
+  const MAX_CONTEXT_ANCESTORS = 4;
+  const MAX_CONTEXT_SIBLINGS = 4;
+  const MAX_COMPOSER_CONTROLS = 20;
+  const MAX_REPEAT_GROUPS = 10;
+  const MAX_REPEAT_EXAMPLES = 4;
+  const MAX_STRUCTURAL_CHILDREN = 3;
+  const MAX_STRUCTURAL_DEPTH = 2;
+  const MAX_REPORT_BYTES = 192 * 1024;
+  const MAX_INTERACTIVE_RECORDS = 1000;
+  const safeAttr = value => {
+    if (typeof value !== 'string' || !value) return null;
+    if (/https?:\/\/|steamcommunity|(?:^|[?&])[^=\s]+=[^&\s]+/i.test(value)) return null;
+    return value.length > MAX_ATTR ? value.slice(0, MAX_ATTR) : value;
+  };
+  const safeAria = (name, value) => {
+    const clean = safeAttr(value);
+    if (clean === null) return null;
+    if (name === 'aria-label') {
+      return /^(chat|message|messages|conversation|send|attach|чат|сообщения?|отправить|вложить)([ _-][a-zа-я0-9_-]+){0,2}$/i.test(clean)
+        ? clean : '[redacted-label]';
+    }
+    const states = {
+      'aria-live': ['off', 'polite', 'assertive'],
+      'aria-expanded': ['true', 'false'], 'aria-hidden': ['true', 'false'],
+      'aria-disabled': ['true', 'false'], 'aria-selected': ['true', 'false'],
+      'aria-checked': ['true', 'false', 'mixed'], 'aria-busy': ['true', 'false'],
+      'aria-current': ['page', 'step', 'location', 'date', 'time', 'true', 'false'],
+    };
+    if (states[name]) return states[name].includes(clean.toLowerCase()) ? clean.toLowerCase() : '[redacted]';
+    if (['aria-controls', 'aria-owns', 'aria-activedescendant', 'aria-describedby', 'aria-labelledby'].includes(name)) {
+      return /^[\w.:-]{1,120}(?:\s+[\w.:-]{1,120})*$/.test(clean) ? '[present]' : '[redacted]';
+    }
+    return '[redacted]';
+  };
+  const safeRole = value => {
+    const allowed = new Set('alert alertdialog application article banner blockquote button caption cell checkbox code columnheader combobox complementary contentinfo definition dialog directory document feed figure form grid gridcell group heading img link list listbox listitem log main marquee math menu menubar menuitem menuitemcheckbox menuitemradio meter navigation none note option paragraph presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar search searchbox separator slider spinbutton status switch tab table tablist tabpanel term textbox timer toolbar tooltip tree treegrid treeitem'.split(' '));
+    const role = safeAttr(value || '');
+    return role && allowed.has(role.toLowerCase()) ? role.toLowerCase() : null;
+  };
+  const describe = element => {
+    const aria = {};
+    const dataAttributes = [];
+    let ariaCount = 0;
+    const attributes = element.attributes || [];
+    for (let attributeIndex = 0;
+         attributeIndex < attributes.length && attributeIndex < MAX_ATTRIBUTES_PER_NODE;
+         attributeIndex++) {
+      const attribute = attributes[attributeIndex];
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith('aria-') && ariaCount < 6) {
+        aria[name] = safeAria(name, attribute.value);
+        ariaCount++;
+      } else if (name.startsWith('data-') && dataAttributes.length < 6) {
+        dataAttributes.push(name);
+      }
+    }
+    const classes = typeof element.className === 'string' ? element.className : '';
+    return {
+      tag: element.tagName.toLowerCase(),
+      idPresent: element.hasAttribute('id'),
+      class: safeAttr(classes),
+      role: safeRole(element.getAttribute('role') || ''),
+      aria,
+      dataAttributes,
+      childElementCount: Math.min(element.childElementCount || 0, MAX_SCAN),
+    };
+  };
+  const describeStructural = element => {
+    const summary = describe(element);
+    const structuralAria = {};
+    for (const [name, value] of Object.entries(summary.aria)) {
+      structuralAria[name] = [
+        'aria-controls', 'aria-owns', 'aria-activedescendant', 'aria-describedby', 'aria-labelledby',
+      ].includes(name) && value !== null ? '[present]' : value;
+    }
+    const stableAttributePresence = {};
+    const attributes = element.attributes || [];
+    for (let i = 0; i < attributes.length && i < MAX_ATTRIBUTES_PER_NODE; i++) {
+      const name = attributes[i].name.toLowerCase();
+      if (name === 'id' || /^(data-(message|chat|deal|item|record|entity|test|key)[-_]?(id|key|testid)?|data-testid)$/.test(name)) {
+        stableAttributePresence[name] = true;
+      }
+    }
+    return {
+      tag: summary.tag,
+      class: summary.class,
+      role: summary.role,
+      aria: structuralAria,
+      dataAttributes: summary.dataAttributes,
+      childElementCount: summary.childElementCount,
+      stableAttributePresence,
+    };
+  };
+  const structuralTree = (element, depth, excluded, scanned) => {
+    const children = [];
+    if (depth > 0) {
+      const elementChildren = element.children;
+      for (let i = 0; i < elementChildren.length && children.length < MAX_STRUCTURAL_CHILDREN; i++) {
+        if (scanned.has(elementChildren[i]) && !excluded(elementChildren[i])) {
+          children.push(structuralTree(elementChildren[i], depth - 1, excluded, scanned));
+        }
+      }
+    }
+    return {
+      node: describeStructural(element),
+      children,
+      childrenTruncated: Math.max(0, element.childElementCount - children.length) > 0,
+    };
+  };
+  const body = document.body;
+  const containers = [];
+  const messages = [];
+  const interactive = [];
+  const dynamic = [];
+  let elementCount = 0;
+  let maxDepth = 0;
+  let scanTruncated = false;
+  let linkCount = 0;
+  let linkCountExact = true;
+  const textareas = [];
+  const dealLinkElements = [];
+  const interactiveRecords = [];
+  const candidateCounts = {
+    containers: 0, messages: 0, interactive: 0, textareas: 0,
+    dealLinks: 0, repeatedSiblingGroups: 0, dynamicAreas: 0,
+  };
+  const allElements = [];
+  const summaries = new Map();
+  if (body) {
+    const stack = [{element: body, depth: 1}];
+    while (stack.length) {
+      if (elementCount >= MAX_SCAN) { scanTruncated = true; break; }
+      const current = stack.pop();
+      const element = current.element;
+      const depth = current.depth;
+      elementCount++;
+      allElements.push(element);
+      if (depth > maxDepth) maxDepth = depth;
+      const summary = describe(element);
+      summaries.set(element, summary);
+      const marker = `${element.id || ''} ${summary.class || ''} ${summary.role || ''}`.toLowerCase();
+      if (/chat|message|conversation|thread|inbox/.test(marker) &&
+          (element.childElementCount >= 2 || /^(main|section|ul|ol)$/.test(summary.tag))) {
+        candidateCounts.containers++;
+        if (containers.length < MAX_CONTAINERS) containers.push(summary);
+      }
+      if (/message|chat[-_ ]?item|bubble/.test(marker) ||
+          summary.role === 'article' || summary.role === 'listitem') {
+        candidateCounts.messages++;
+        if (messages.length < MAX_MESSAGES) messages.push(summary);
+      }
+      if (element.matches('button,input,textarea,select,a[href],[role="button"],[role="textbox"]')) {
+        candidateCounts.interactive++;
+        const control = summary;
+        if (/^(input|button)$/.test(summary.tag)) {
+          control.type = safeAttr(element.getAttribute('type') || '');
+        }
+        if (interactive.length < MAX_INTERACTIVE) interactive.push(control);
+        if (interactiveRecords.length < MAX_INTERACTIVE_RECORDS) {
+          interactiveRecords.push({element, summary: control});
+        }
+      }
+      if (summary.tag === 'textarea') {
+        candidateCounts.textareas++;
+        if (textareas.length < MAX_TEXTAREAS) textareas.push({element, summary});
+      }
+      if (element.matches('a[href]')) {
+        linkCount++;
+        try {
+          const url = new URL(element.href, location.href);
+          if (['playerok.com', 'www.playerok.com'].includes(url.hostname)) {
+            if (dealLinkElements.length < MAX_DEAL_LINKS &&
+                /^\/deal\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url.pathname)) {
+              dealLinkElements.push({element, summary, hostname: url.hostname, pathname: url.pathname});
+            }
+            if (/^\/deal\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url.pathname)) {
+              candidateCounts.dealLinks++;
+            }
+          }
+        } catch (_) {}
+      }
+      const ariaLive = element.getAttribute('aria-live');
+      if (element.id === 'root' || element.id === '__next' ||
+          element.hasAttribute('data-reactroot') || ariaLive !== null ||
+          summary.role === 'log') {
+        candidateCounts.dynamicAreas++;
+        if (dynamic.length < MAX_DYNAMIC) {
+          dynamic.push({kind: ariaLive !== null || summary.role === 'log' ? 'dynamic' : 'spa-root', ...summary});
+        }
+      }
+      const children = element.children;
+      const remaining = Math.max(0, MAX_SCAN - elementCount - stack.length);
+      if (children.length > remaining) scanTruncated = true;
+      for (let index = Math.min(children.length, remaining) - 1; index >= 0; index--) {
+        stack.push({element: children[index], depth: depth + 1});
+      }
+    }
+    if (stack.length) scanTruncated = true;
+  }
+  linkCountExact = !scanTruncated;
+  const scannedElements = new Set(allElements);
+  const context = (element, ancestorLimit) => {
+    const ancestors = [];
+    let branch = element;
+    let parent = element.parentElement;
+    let depth = 1;
+    while (parent && ancestors.length < ancestorLimit) {
+      const children = parent.children;
+      let childIndex = -1;
+      for (let i = 0; i < children.length; i++) {
+        if (children[i] === branch) { childIndex = i; break; }
+      }
+      const siblings = [];
+      if (childIndex >= 0) {
+        const start = Math.max(0, childIndex - Math.floor(MAX_CONTEXT_SIBLINGS / 2));
+        const end = Math.min(children.length, start + MAX_CONTEXT_SIBLINGS);
+        for (let i = start; i < end; i++) {
+          if (i !== childIndex) siblings.push({index: i, node: describe(children[i])});
+        }
+      }
+      ancestors.push({
+        depth,
+        node: describe(parent),
+        childIndex: childIndex < 0 ? null : childIndex,
+        childElementCount: Math.min(children.length, MAX_SCAN),
+        siblingsTruncated: Math.max(0, children.length - 1) > siblings.length,
+        siblings,
+      });
+      branch = parent;
+      parent = parent.parentElement;
+      depth++;
+    }
+    return ancestors;
+  };
+  const textareaContexts = textareas.map(({element, summary}) => ({
+    textarea: summary,
+    ancestors: context(element, MAX_CONTEXT_ANCESTORS),
+  }));
+  const composerScopes = [];
+  const composerScopeElements = [];
+  for (let textareaIndex = 0; textareaIndex < textareas.length; textareaIndex++) {
+    const textarea = textareas[textareaIndex].element;
+    let scope = textarea;
+    let scopeDepth = 0;
+    let cursor = textarea.parentElement;
+    while (cursor && scopeDepth < MAX_CONTEXT_ANCESTORS) {
+      const hasControl = interactiveRecords.some(record =>
+        record.element !== textarea && cursor.contains(record.element) &&
+        (record.element.matches('button,[role="button"]') ||
+         (record.element.matches('input') && record.element.type === 'file')));
+      if (hasControl) { scope = cursor; scopeDepth++; break; }
+      scope = cursor;
+      cursor = cursor.parentElement;
+      scopeDepth++;
+    }
+    composerScopeElements.push(scope);
+    const controls = [];
+    let controlsFound = 0;
+    for (const record of interactiveRecords) {
+      if (!scope.contains(record.element) || record.element === textarea) continue;
+      controlsFound++;
+      if (controls.length >= MAX_COMPOSER_CONTROLS) continue;
+      const type = (record.element.getAttribute('type') || '').toLowerCase();
+      const ariaLabel = record.summary.aria['aria-label'];
+      const signals = [];
+      if (record.element.tagName === 'BUTTON' && type === 'submit') signals.push('explicit-submit-type');
+      if (ariaLabel === 'send' || ariaLabel === 'отправить') signals.push('generic-send-label');
+      if (record.element.tagName === 'INPUT' && type === 'file') signals.push('file-input');
+      if (ariaLabel === 'attach' || ariaLabel === 'вложить') signals.push('generic-attach-label');
+      controls.push({node: record.summary, signals});
+    }
+    composerScopes.push({textareaIndex, scopeDepth, scope: describe(scope), controls, controlsFound,
+      controlsTruncated: controlsFound > controls.length});
+  }
+  const excludedRoots = new Set();
+  const addExclusionRoot = element => {
+    for (const root of excludedRoots) {
+      if (root === element || root.contains(element)) return;
+    }
+    for (const root of [...excludedRoots]) {
+      if (element.contains(root)) excludedRoots.delete(root);
+    }
+    excludedRoots.add(element);
+  };
+  for (const element of composerScopeElements) addExclusionRoot(element);
+  for (const element of allElements) {
+    const summary = summaries.get(element) || describe(element);
+    const role = (summary.role || '').toLowerCase();
+    const marker = `${element.id || ''} ${summary.class || ''}`.toLowerCase();
+    if (/^(nav|header|footer|aside)$/.test(summary.tag) ||
+        ['navigation', 'banner', 'complementary', 'contentinfo'].includes(role) ||
+        /(?:^|[-_\s])(site-nav|navbar|sidebar|site-menu)(?:$|[-_\s])/.test(marker)) {
+      addExclusionRoot(element);
+    }
+  }
+  for (const deal of dealLinkElements) {
+    addExclusionRoot(deal.element);
+    let ancestor = deal.element.parentElement;
+    for (let depth = 0; ancestor && depth < 2; depth++, ancestor = ancestor.parentElement) {
+      if (!textareas.some(item => ancestor.contains(item.element)) && ancestor.childElementCount <= 12) {
+        addExclusionRoot(ancestor);
+      }
+    }
+  }
+  const isExcluded = (() => {
+    const excludedElements = new Set();
+    for (const root of excludedRoots) {
+      if (!scannedElements.has(root)) continue;
+      const stack = [root];
+      while (stack.length && excludedElements.size < MAX_SCAN) {
+        const current = stack.pop();
+        if (excludedElements.has(current)) continue;
+        excludedElements.add(current);
+        const children = current.children;
+        for (let i = 0; i < children.length && i < MAX_SCAN; i++) {
+          if (scannedElements.has(children[i])) stack.push(children[i]);
+        }
+      }
+    }
+    return element => excludedElements.has(element);
+  })();
+  const structuralContext = (element, ancestorLimit) => {
+    const ancestors = [];
+    let branch = element;
+    let parent = element.parentElement;
+    let depth = 1;
+    while (parent && ancestors.length < ancestorLimit) {
+      const children = parent.children;
+      let childIndex = -1;
+      for (let i = 0; i < children.length; i++) {
+        if (children[i] === branch) { childIndex = i; break; }
+      }
+      const siblings = [];
+      if (childIndex >= 0) {
+        const start = Math.max(0, childIndex - 2);
+        const end = Math.min(children.length, start + 5);
+        for (let i = start; i < end; i++) {
+          if (i !== childIndex && scannedElements.has(children[i]) && !isExcluded(children[i])) {
+            siblings.push({index: i, node: describeStructural(children[i])});
+          }
+        }
+      }
+      ancestors.push({
+        depth,
+        node: describeStructural(parent),
+        childIndex: childIndex < 0 ? null : childIndex,
+        childElementCount: Math.min(children.length, MAX_SCAN),
+        siblingsTruncated: Math.max(0, children.length - 1) > siblings.length,
+        siblings,
+      });
+      branch = parent;
+      parent = parent.parentElement;
+      depth++;
+    }
+    return ancestors;
+  };
+  const structuralSignature = element => {
+    const summary = summaries.get(element) || describe(element);
+    const classTokens = (summary.class || '').split(/\s+/).filter(Boolean).sort();
+    const directChildren = [];
+    const children = element.children;
+    for (let i = 0; i < children.length && directChildren.length < MAX_STRUCTURAL_CHILDREN; i++) {
+      if (!scannedElements.has(children[i]) || isExcluded(children[i])) continue;
+      const child = summaries.get(children[i]) || describe(children[i]);
+      directChildren.push([child.tag, (child.class || '').split(/\s+/).filter(Boolean).sort(), child.role,
+        child.dataAttributes]);
+    }
+    return JSON.stringify([summary.tag, classTokens, summary.role, summary.dataAttributes, directChildren]);
+  };
+  const repeatedSiblingGroups = [];
+  for (const parent of allElements) {
+    if (isExcluded(parent)) continue;
+    const grouped = new Map();
+    const children = parent.children;
+    for (let i = 0; i < children.length && i < MAX_SCAN; i++) {
+      const child = children[i];
+      if (!scannedElements.has(child) || isExcluded(child)) continue;
+      const signature = structuralSignature(child);
+      if (!grouped.has(signature)) grouped.set(signature, []);
+      grouped.get(signature).push(child);
+    }
+    for (const [signature, matching] of grouped) {
+      if (matching.length < 2) continue;
+      candidateCounts.repeatedSiblingGroups++;
+      if (repeatedSiblingGroups.length < MAX_REPEAT_GROUPS) {
+        repeatedSiblingGroups.push({
+          count: matching.length,
+          parent: describeStructural(parent),
+          ancestors: structuralContext(parent, 3),
+          examples: matching.slice(0, MAX_REPEAT_EXAMPLES).map(element =>
+            structuralTree(element, MAX_STRUCTURAL_DEPTH, isExcluded, scannedElements)),
+          examplesTruncated: matching.length > MAX_REPEAT_EXAMPLES,
+        });
+      }
+    }
+  }
+  const sectionTruncated = {
+    body: scanTruncated,
+    candidateContainers: containers.length < candidateCounts.containers,
+    candidateMessages: messages.length < candidateCounts.messages,
+    interactiveElements: interactive.length < candidateCounts.interactive,
+    textareaContexts: textareas.length < candidateCounts.textareas ||
+      textareaContexts.some(item => item.ancestors.some(level => level.siblingsTruncated)),
+    dealLinks: dealLinkElements.length < candidateCounts.dealLinks,
+    repeatedSiblingGroups: repeatedSiblingGroups.length < candidateCounts.repeatedSiblingGroups ||
+      repeatedSiblingGroups.some(group => group.examplesTruncated ||
+        group.ancestors.some(level => level.siblingsTruncated) ||
+        group.examples.some(tree => tree.childrenTruncated)),
+    composerControls: composerScopes.some(scope => scope.controlsTruncated),
+    dynamicAreas: dynamic.length < candidateCounts.dynamicAreas,
+  };
+  const truncationReasons = [];
+  const addReason = (reason, section) => {
+    if (!truncationReasons.includes(reason)) truncationReasons.push(reason);
+    if (section) sectionTruncated[section] = true;
+  };
+  if (scanTruncated) addReason('dom-scan-limit', 'body');
+  if (sectionTruncated.candidateContainers) addReason('container-sample-limit', 'candidateContainers');
+  if (sectionTruncated.candidateMessages) addReason('message-sample-limit', 'candidateMessages');
+  if (sectionTruncated.interactiveElements) addReason('interactive-sample-limit', 'interactiveElements');
+  if (sectionTruncated.textareaContexts) addReason('textarea-sample-limit', 'textareaContexts');
+  if (sectionTruncated.dealLinks) addReason('deal-link-sample-limit', 'dealLinks');
+  if (sectionTruncated.repeatedSiblingGroups) addReason('repeat-group-limit', 'repeatedSiblingGroups');
+  if (sectionTruncated.dynamicAreas) addReason('dynamic-area-sample-limit', 'dynamicAreas');
+  if (sectionTruncated.composerControls) addReason('composer-control-sample-limit', 'composerControls');
+  const report = {
+    schema: 'playerok-dom-structure-v1',
+    status: 'ok',
+    page: {site: 'playerok'},
+    body: {elementCount, maxDepth, scanTruncated},
+    counts: {...candidateCounts, links: linkCount, scannedElements: elementCount},
+    candidateContainers: containers,
+    candidateMessages: messages,
+    textareaContexts,
+    composerScopes,
+    repeatedSiblingGroups,
+    repeatedSiblingGroupsTruncated: sectionTruncated.repeatedSiblingGroups,
+    interactiveElements: interactive,
+    linkCount,
+    linkCountExact,
+    dynamicAreas: dynamic,
+    candidateContainersTruncated: sectionTruncated.candidateContainers,
+    candidateMessagesTruncated: sectionTruncated.candidateMessages,
+    interactiveElementsTruncated: sectionTruncated.interactiveElements,
+    dynamicAreasTruncated: sectionTruncated.dynamicAreas,
+    truncation: {truncated: truncationReasons.length > 0, reasons: truncationReasons, sections: sectionTruncated},
+  };
+  const encodedSize = text => {
+    try { return new TextEncoder().encode(text).length; }
+    catch (_) { return text.length * 2; }
+  };
+  const markJsonTruncation = section => {
+    addReason('total-json-byte-limit', section);
+    report.truncation.truncated = true;
+    report.truncation.reasons = truncationReasons;
+    report.truncation.sections = sectionTruncated;
+  };
+  const shrinkArray = (array, max, section) => {
+    if (!Array.isArray(array) || array.length <= max) return;
+    array.length = max;
+    markJsonTruncation(section);
+  };
+  const shrinkTree = (tree, depth, childLimit) => {
+    if (!tree || !Array.isArray(tree.children)) return;
+    if (depth <= 0) {
+      if (tree.children.length) tree.childrenTruncated = true;
+      tree.children = [];
+      return;
+    }
+    if (tree.children.length > childLimit) {
+      tree.children.length = childLimit;
+      tree.childrenTruncated = true;
+    }
+    for (const child of tree.children) shrinkTree(child, depth - 1, childLimit);
+  };
+  const stages = [
+    () => shrinkArray(report.dynamicAreas, 12, 'dynamicAreas'),
+    () => shrinkArray(report.candidateContainers, 12, 'candidateContainers'),
+    () => shrinkArray(report.candidateMessages, 24, 'candidateMessages'),
+    () => shrinkArray(report.interactiveElements, 24, 'interactiveElements'),
+    () => {
+      for (const scope of report.composerScopes) {
+        const countBefore = scope.controls.length;
+        shrinkArray(scope.controls, 8, 'composerControls');
+        if (scope.controls.length < countBefore) scope.controlsTruncated = true;
+      }
+    },
+    () => {
+      for (const item of report.textareaContexts) {
+        shrinkArray(item.ancestors, 2, 'textareaContexts');
+        for (const ancestor of item.ancestors) shrinkArray(ancestor.siblings, 2, 'textareaContexts');
+      }
+    },
+    () => {
+      shrinkArray(report.repeatedSiblingGroups, 6, 'repeatedSiblingGroups');
+      for (const group of report.repeatedSiblingGroups) {
+        const examplesBefore = group.examples.length;
+        shrinkArray(group.examples, 2, 'repeatedSiblingGroups');
+        if (group.examples.length < examplesBefore) group.examplesTruncated = true;
+        shrinkArray(group.ancestors, 2, 'repeatedSiblingGroups');
+        for (const tree of group.examples) shrinkTree(tree, 1, 2);
+      }
+    },
+    () => shrinkArray(report.candidateMessages, 8, 'candidateMessages'),
+    () => shrinkArray(report.interactiveElements, 8, 'interactiveElements'),
+    () => shrinkArray(report.dynamicAreas, 0, 'dynamicAreas'),
+    () => shrinkArray(report.repeatedSiblingGroups, 0, 'repeatedSiblingGroups'),
+    () => shrinkArray(report.candidateContainers, 0, 'candidateContainers'),
+  ];
+  try {
+    let serialized = JSON.stringify(report);
+    for (const stage of stages) {
+      if (encodedSize(serialized) <= MAX_REPORT_BYTES) break;
+      stage();
+      report.truncation.truncated = true;
+      report.truncation.reasons = truncationReasons;
+      report.truncation.sections = sectionTruncated;
+      report.repeatedSiblingGroupsTruncated = sectionTruncated.repeatedSiblingGroups;
+      report.candidateContainersTruncated = sectionTruncated.candidateContainers;
+      report.candidateMessagesTruncated = sectionTruncated.candidateMessages;
+      report.interactiveElementsTruncated = sectionTruncated.interactiveElements;
+      report.dynamicAreasTruncated = sectionTruncated.dynamicAreas;
+      serialized = JSON.stringify(report);
+    }
+    if (encodedSize(serialized) <= MAX_REPORT_BYTES) return serialized;
+    return JSON.stringify({
+      schema: 'playerok-dom-structure-v1', status: 'error',
+      error: {code: 'json-byte-budget-unmet'},
+      counts: {...candidateCounts, links: linkCount, scannedElements: elementCount},
+      truncation: {truncated: true, reasons: ['total-json-byte-limit', 'json-byte-budget-unmet'], sections: sectionTruncated},
+    });
+  } catch (_) {
+    return JSON.stringify({
+      schema: 'playerok-dom-structure-v1', status: 'error',
+      error: {code: 'serialization-error'},
+      truncation: {truncated: true, reasons: ['serialization-error'], sections: {}},
+    });
+  }
+})()"""
+
+_DOM_DIAGNOSTIC_MAX_BYTES = 192 * 1024
+_DOM_DIAGNOSTIC_CALLBACK_MAX_BYTES = 256 * 1024
+_DOM_DIAGNOSTIC_ERROR_CODES = {
+    "callback-result-not-string", "callback-byte-limit", "invalid-json", "invalid-root",
+    "invalid-page-metadata", "invalid-body-metadata", "json-byte-budget-unmet",
+    "serialization-error", "javascript-evaluation-error", "sanitized-json-byte-limit",
+    "invalid-diagnostic-status",
+}
+
+
+def _dom_safe_attribute(value: object, *, limit: int = 120) -> str | None:
+    if type(value) is not str or not value:
+        return None
+    if "https://" in value.lower() or "http://" in value.lower() or "steamcommunity" in value.lower():
+        return None
+    if any(marker in value.lower() for marker in ("token=", "partner=", "cookie", "authorization")):
+        return None
+    return value[:limit]
+
+
+def _sanitize_dom_node(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    tag = value.get("tag")
+    if type(tag) is not str or not tag.isascii() or not tag.replace("-", "").isalnum():
+        return None
+    aria = {}
+    raw_aria = value.get("aria")
+    if isinstance(raw_aria, dict):
+        for name, attribute_value in list(raw_aria.items())[:8]:
+            if type(name) is not str or not name.startswith("aria-") or len(name) > 64:
+                continue
+            clean = _dom_safe_attribute(attribute_value)
+            if name == "aria-label" and clean is not None and not re.fullmatch(
+                r"(?i)(chat|message|messages|conversation|send|attach|чат|сообщения?|отправить|вложить)([ _-][a-zа-я0-9_-]+){0,2}", clean
+            ):
+                clean = "[redacted-label]"
+            elif name in {"aria-live", "aria-expanded", "aria-hidden", "aria-disabled", "aria-selected", "aria-checked", "aria-busy", "aria-current"}:
+                allowed = {
+                    "aria-live": {"off", "polite", "assertive"},
+                    "aria-expanded": {"true", "false"},
+                    "aria-hidden": {"true", "false"},
+                    "aria-disabled": {"true", "false"},
+                    "aria-selected": {"true", "false"},
+                    "aria-checked": {"true", "false", "mixed"},
+                    "aria-busy": {"true", "false"},
+                    "aria-current": {"page", "step", "location", "date", "time", "true", "false"},
+                }
+                clean = clean.lower() if clean and clean.lower() in allowed[name] else "[redacted]"
+            elif name in {"aria-controls", "aria-owns", "aria-activedescendant", "aria-describedby", "aria-labelledby"}:
+                clean = "[present]" if clean is not None else None
+            else:
+                clean = "[redacted]" if clean is not None else None
+            aria[name] = clean
+    data_names = []
+    raw_data = value.get("dataAttributes")
+    if isinstance(raw_data, list):
+        data_names = [
+            name[:64] for name in raw_data[:8]
+            if type(name) is str and re.fullmatch(r"data-[a-z0-9_-]{1,60}", name)
+        ]
+    role = _dom_safe_attribute(value.get("role"), limit=64)
+    allowed_roles = {
+        "alert", "alertdialog", "application", "article", "banner", "blockquote", "button",
+        "caption", "cell", "checkbox", "code", "columnheader", "combobox", "complementary",
+        "contentinfo", "definition", "dialog", "directory", "document", "feed", "figure", "form",
+        "grid", "gridcell", "group", "heading", "img", "link", "list", "listbox", "listitem",
+        "log", "main", "marquee", "math", "menu", "menubar", "menuitem", "menuitemcheckbox",
+        "menuitemradio", "meter", "navigation", "none", "note", "option", "paragraph",
+        "presentation", "progressbar", "radio", "radiogroup", "region", "row", "rowgroup",
+        "rowheader", "scrollbar", "search", "searchbox", "separator", "slider", "spinbutton",
+        "status", "switch", "tab", "table", "tablist", "tabpanel", "term", "textbox", "timer",
+        "toolbar", "tooltip", "tree", "treegrid", "treeitem",
+    }
+    role = role.lower() if role and role.lower() in allowed_roles else None
+    result = {
+        "tag": tag[:32].lower(),
+        "id_attribute_present": value.get("idPresent") is True or (
+            type(value.get("id")) is str and bool(value.get("id"))
+        ),
+        "class": _dom_safe_attribute(value.get("class")),
+        "role": role,
+        "aria": aria,
+        "data_attribute_names": data_names,
+        "child_element_count": _dom_bounded_int(value.get("childElementCount"), 0, 12000),
+    }
+    if "type" in value:
+        result["type"] = _dom_safe_attribute(value.get("type"), limit=32)
+    if "kind" in value and value.get("kind") in {"dynamic", "spa-root"}:
+        result["kind"] = value["kind"]
+    return result
+
+
+def _dom_bounded_int(value: object, minimum: int, maximum: int) -> int:
+    if type(value) is not int:
+        return minimum
+    return max(minimum, min(value, maximum))
+
+
+def _sanitize_dom_context_chain(value: object, *, max_depth: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for level in value[:max_depth]:
+        if not isinstance(level, dict):
+            continue
+        node = _sanitize_dom_node(level.get("node"))
+        if node is None:
+            continue
+        siblings = []
+        raw_siblings = level.get("siblings")
+        if isinstance(raw_siblings, list):
+            for sibling in raw_siblings[:4]:
+                if not isinstance(sibling, dict):
+                    continue
+                sibling_node = _sanitize_dom_node(sibling.get("node"))
+                if sibling_node is not None:
+                    siblings.append({
+                        "index": _dom_bounded_int(sibling.get("index"), 0, 12000),
+                        "node": sibling_node,
+                    })
+        child_index = level.get("childIndex")
+        result.append({
+            "depth": _dom_bounded_int(level.get("depth"), 1, max_depth),
+            "node": node,
+            "child_index": _dom_bounded_int(child_index, 0, 12000) if type(child_index) is int else None,
+            "child_element_count": _dom_bounded_int(level.get("childElementCount"), 0, 12000),
+            "siblings_truncated": level.get("siblingsTruncated") is True,
+            "siblings": siblings,
+        })
+    return result
+
+
+def _sanitize_dom_structure_node(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized = _sanitize_dom_node({
+        "tag": value.get("tag"),
+        "class": value.get("class"),
+        "role": value.get("role"),
+        "aria": value.get("aria"),
+        "dataAttributes": value.get("dataAttributes"),
+        "childElementCount": value.get("childElementCount"),
+    })
+    if normalized is None:
+        return None
+    normalized.pop("id", None)
+    for name in ("aria-controls", "aria-owns", "aria-activedescendant", "aria-describedby", "aria-labelledby"):
+        if normalized.get("aria", {}).get(name) is not None:
+            normalized["aria"][name] = "[present]"
+    stable_presence = {}
+    raw_stable = value.get("stableAttributePresence")
+    if isinstance(raw_stable, dict):
+        for name, present in list(raw_stable.items())[:12]:
+            if type(name) is str and present is True and (
+                name == "id" or re.fullmatch(r"data-[a-z0-9_-]{1,60}", name)
+            ):
+                stable_presence[name] = True
+    normalized["stable_attribute_presence"] = stable_presence
+    normalized["id_attribute_present"] = stable_presence.get("id", False)
+    return normalized
+
+
+def _sanitize_dom_structure_tree(value: object, *, depth: int) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    node = _sanitize_dom_structure_node(value.get("node"))
+    if node is None:
+        return None
+    children = []
+    raw_children = value.get("children")
+    if depth > 0 and isinstance(raw_children, list):
+        for child in raw_children[:3]:
+            sanitized = _sanitize_dom_structure_tree(child, depth=depth - 1)
+            if sanitized is not None:
+                children.append(sanitized)
+    return {
+        "node": node,
+        "children": children,
+        "children_truncated": value.get("childrenTruncated") is True,
+    }
+
+
+def _dom_structure_signature(tree: dict[str, Any]) -> tuple[Any, ...]:
+    node = tree["node"]
+    class_tokens = tuple(sorted((node.get("class") or "").split()))
+    child_shapes = tuple(
+        (
+            child["node"].get("tag"),
+            tuple(sorted((child["node"].get("class") or "").split())),
+            child["node"].get("role"),
+            tuple(child["node"].get("data_attribute_names", [])),
+        )
+        for child in tree["children"]
+    )
+    return (
+        node.get("tag"), class_tokens, node.get("role"),
+        tuple(node.get("data_attribute_names", [])), child_shapes,
+    )
+
+
+def _sanitize_repeated_sibling_groups(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for group in value[:10]:
+        if not isinstance(group, dict) or group.get("excluded") is True:
+            continue
+        parent = _sanitize_dom_structure_node(group.get("parent"))
+        if parent is None:
+            continue
+        examples = []
+        raw_examples = group.get("examples")
+        if isinstance(raw_examples, list):
+            for example in raw_examples[:4]:
+                tree = _sanitize_dom_structure_tree(example, depth=2)
+                if tree is not None:
+                    examples.append(tree)
+        signatures = {_dom_structure_signature(example) for example in examples}
+        count = _dom_bounded_int(group.get("count"), 0, 12000)
+        if count < 2 or len(examples) < 2 or len(signatures) != 1:
+            continue
+        raw_ancestors = group.get("ancestors")
+        ancestors_truncated = isinstance(raw_ancestors, list) and any(
+            level.get("siblingsTruncated") is True for level in raw_ancestors if isinstance(level, dict)
+        )
+        result.append({
+            "classification": "structural-candidate",
+            "count": count,
+            "descendant_depth": 2,
+            "examples_truncated": group.get("examplesTruncated") is True,
+            "siblings_truncated": ancestors_truncated,
+            "parent": parent,
+            "ancestors": _sanitize_dom_structure_context_chain(group.get("ancestors"), max_depth=3),
+            "examples": examples,
+        })
+    return result
+
+
+def _sanitize_dom_structure_context_chain(value: object, *, max_depth: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result = []
+    for level in value[:max_depth]:
+        if not isinstance(level, dict):
+            continue
+        node = _sanitize_dom_structure_node(level.get("node"))
+        if node is None:
+            continue
+        siblings = []
+        raw_siblings = level.get("siblings")
+        if isinstance(raw_siblings, list):
+            for sibling in raw_siblings[:4]:
+                if not isinstance(sibling, dict):
+                    continue
+                sibling_node = _sanitize_dom_structure_node(sibling.get("node"))
+                if sibling_node is not None:
+                    siblings.append({
+                        "index": _dom_bounded_int(sibling.get("index"), 0, 12000),
+                        "node": sibling_node,
+                    })
+        result.append({
+            "depth": _dom_bounded_int(level.get("depth"), 1, max_depth),
+            "node": node,
+            "child_index": _dom_bounded_int(level.get("childIndex"), 0, 12000)
+                if type(level.get("childIndex")) is int else None,
+            "child_element_count": _dom_bounded_int(level.get("childElementCount"), 0, 12000),
+            "siblings_truncated": level.get("siblingsTruncated") is True,
+            "siblings": siblings,
+        })
+    return result
+
+
+def _dom_error_summary(reason: str, counts: object = None) -> dict[str, Any]:
+    if reason not in _DOM_DIAGNOSTIC_ERROR_CODES:
+        reason = "serialization-error"
+    raw_counts = counts if isinstance(counts, dict) else {}
+    safe_counts = {
+        key: _dom_bounded_int(raw_counts.get(key), 0, 12000)
+        for key in (
+            "containers", "messages", "interactive", "textareas", "dealLinks",
+            "repeatedSiblingGroups", "dynamicAreas", "links", "scannedElements",
+        )
+    }
+    return {
+        "schema": "playerok-dom-structure-v1",
+        "status": "error",
+        "page": {"site": "playerok"},
+        "body": {"element_count_scanned": safe_counts["scannedElements"], "scan_truncated": True},
+        "counts": safe_counts,
+        "candidate_containers": [],
+        "candidate_messages": [],
+        "interactive_elements": [],
+        "textarea_contexts": [],
+        "composer_scopes": [],
+        "repeated_sibling_candidates": [],
+        "dynamic_areas": [],
+        "error": {"code": reason},
+        "truncated": {"occurred": True, "reasons": [reason], "sections": {}},
+    }
+
+
+def _dom_summary_size(value: dict[str, Any]) -> int:
+    rendered = json.dumps(value, ensure_ascii=False, indent=2)
+    return len(rendered.encode("utf-8"))
+
+
+def _fit_dom_summary(value: dict[str, Any], *, max_bytes: int = _DOM_DIAGNOSTIC_MAX_BYTES) -> dict[str, Any]:
+    """Trim secondary details until the exact displayed JSON fits its byte budget."""
+    summary = value
+    truncation = summary.setdefault("truncated", {"occurred": False, "reasons": [], "sections": {}})
+    reasons = truncation.setdefault("reasons", [])
+    sections = truncation.setdefault("sections", {})
+
+    def mark(section: str) -> None:
+        truncation["occurred"] = True
+        if "total-json-byte-limit" not in reasons:
+            reasons.append("total-json-byte-limit")
+        sections[section] = True
+
+    def trim_list(items: object, limit: int, section: str) -> None:
+        if isinstance(items, list) and len(items) > limit:
+            del items[limit:]
+            mark(section)
+
+    def trim_tree(tree: object, depth: int, child_limit: int) -> None:
+        if not isinstance(tree, dict):
+            return
+        children = tree.get("children")
+        if not isinstance(children, list):
+            return
+        if depth <= 0:
+            if children:
+                tree["children_truncated"] = True
+                children.clear()
+                mark("repeated_sibling_candidates")
+            return
+        trim_list(children, child_limit, "repeated_sibling_candidates")
+        for child in children:
+            trim_tree(child, depth - 1, child_limit)
+
+    def stages() -> list[tuple[str, Any]]:
+        return [
+            ("dynamic_areas", lambda: trim_list(summary.get("dynamic_areas"), 12, "dynamic_areas")),
+            ("candidate_containers", lambda: trim_list(summary.get("candidate_containers"), 12, "candidate_containers")),
+            ("candidate_messages", lambda: trim_list(summary.get("candidate_messages"), 24, "candidate_messages")),
+            ("interactive_elements", lambda: trim_list(summary.get("interactive_elements"), 24, "interactive_elements")),
+            ("composer_scopes", lambda: [trim_list(scope.get("controls"), 8, "composer_scopes")
+                for scope in summary.get("composer_scopes", []) if isinstance(scope, dict)]),
+            ("textarea_contexts", lambda: [
+                (trim_list(item.get("ancestors"), 2, "textarea_contexts"),
+                 [trim_list(level.get("siblings"), 2, "textarea_contexts")
+                  for level in item.get("ancestors", []) if isinstance(level, dict)])
+                for item in summary.get("textarea_contexts", []) if isinstance(item, dict)]),
+            ("repeated_sibling_candidates", lambda: [
+                (trim_list(summary.get("repeated_sibling_candidates"), 6, "repeated_sibling_candidates"),
+                 trim_list(group.get("examples"), 2, "repeated_sibling_candidates"),
+                 trim_list(group.get("ancestors"), 2, "repeated_sibling_candidates"),
+                 [trim_tree(tree, 1, 2) for tree in group.get("examples", [])])
+                for group in summary.get("repeated_sibling_candidates", []) if isinstance(group, dict)]),
+            ("candidate_messages", lambda: trim_list(summary.get("candidate_messages"), 8, "candidate_messages")),
+            ("interactive_elements", lambda: trim_list(summary.get("interactive_elements"), 8, "interactive_elements")),
+            ("dynamic_areas", lambda: trim_list(summary.get("dynamic_areas"), 0, "dynamic_areas")),
+            ("repeated_sibling_candidates", lambda: trim_list(summary.get("repeated_sibling_candidates"), 0, "repeated_sibling_candidates")),
+            ("candidate_containers", lambda: trim_list(summary.get("candidate_containers"), 0, "candidate_containers")),
+        ]
+
+    try:
+        for _section, stage in stages():
+            if _dom_summary_size(summary) <= max_bytes:
+                break
+            stage()
+        if _dom_summary_size(summary) <= max_bytes:
+            return summary
+    except (TypeError, ValueError, RecursionError, UnicodeError):
+        return _dom_error_summary("serialization-error", summary.get("counts"))
+    return _dom_error_summary("sanitized-json-byte-limit", summary.get("counts"))
+
+
+def _sanitize_dom_summary(value: object) -> dict[str, Any]:
+    """Return a bounded safe report or a compact structured diagnostic error."""
+    if type(value) is not str:
+        return _dom_error_summary("callback-result-not-string")
+    if len(value) > _DOM_DIAGNOSTIC_CALLBACK_MAX_BYTES:
+        return _dom_error_summary("callback-byte-limit")
+    try:
+        if len(value.encode("utf-8")) > _DOM_DIAGNOSTIC_CALLBACK_MAX_BYTES:
+            return _dom_error_summary("callback-byte-limit")
+        payload = json.loads(value)
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return _dom_error_summary("invalid-json")
+    if not isinstance(payload, dict):
+        return _dom_error_summary("invalid-root")
+    if payload.get("status") == "error":
+        raw_error = payload.get("error")
+        code = raw_error.get("code") if isinstance(raw_error, dict) else None
+        return _dom_error_summary(code if type(code) is str else "serialization-error", payload.get("counts"))
+
+    raw_page = payload.get("page")
+    if not isinstance(raw_page, dict):
+        return _dom_error_summary("invalid-page-metadata")
+    if raw_page.get("site") != "playerok":
+        origin = raw_page.get("origin")
+        path = raw_page.get("pathname")
+        try:
+            if type(origin) is not str or type(path) is not str:
+                return _dom_error_summary("invalid-page-metadata")
+            parsed_origin = urlsplit(origin)
+            if (
+                parsed_origin.scheme != "https"
+                or parsed_origin.hostname not in {"playerok.com", "www.playerok.com"}
+                or parsed_origin.username is not None
+                or parsed_origin.password is not None
+                or parsed_origin.port is not None
+                or not path.startswith("/")
+            ):
+                return _dom_error_summary("invalid-page-metadata")
+        except (TypeError, ValueError):
+            return _dom_error_summary("invalid-page-metadata")
+
+    raw_body = payload.get("body")
+    if not isinstance(raw_body, dict):
+        return _dom_error_summary("invalid-body-metadata", payload.get("counts"))
+
+    raw_counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    def found_count(key: str, fallback: int) -> int:
+        return _dom_bounded_int(raw_counts.get(key), 0, 12000) if type(raw_counts.get(key)) is int else fallback
+
+    truncation_reasons = []
+    known_reasons = {
+        "dom-scan-limit", "container-sample-limit", "message-sample-limit",
+        "interactive-sample-limit", "textarea-sample-limit", "deal-link-sample-limit",
+        "repeat-group-limit", "dynamic-area-sample-limit", "composer-control-sample-limit",
+        "total-json-byte-limit", "callback-byte-limit", "link-count-limit",
+    }
+    raw_truncation = payload.get("truncation")
+    if isinstance(raw_truncation, dict) and isinstance(raw_truncation.get("reasons"), list):
+        truncation_reasons.extend(
+            reason for reason in raw_truncation["reasons"][:20]
+            if type(reason) is str and reason in known_reasons
+        )
+    sections = {}
+    raw_sections = raw_truncation.get("sections") if isinstance(raw_truncation, dict) else None
+    if isinstance(raw_sections, dict):
+        section_map = {
+            "body": "body", "candidateContainers": "candidate_containers",
+            "candidateMessages": "candidate_messages", "interactiveElements": "interactive_elements",
+            "textareaContexts": "textarea_contexts", "dealLinks": "deal_links",
+            "repeatedSiblingGroups": "repeated_sibling_candidates",
+            "composerControls": "composer_scopes", "dynamicAreas": "dynamic_areas",
+        }
+        sections = {target: raw_sections.get(source) is True for source, target in section_map.items()}
+    else:
+        sections = {
+            "body": raw_body.get("scanTruncated") is True,
+            "candidate_containers": payload.get("candidateContainersTruncated") is True,
+            "candidate_messages": payload.get("candidateMessagesTruncated") is True,
+            "interactive_elements": payload.get("interactiveElementsTruncated") is True,
+            "repeated_sibling_candidates": payload.get("repeatedSiblingGroupsTruncated") is True,
+            "dynamic_areas": payload.get("dynamicAreasTruncated") is True,
+        }
+
+    def nodes(name: str, limit: int, section: str) -> list[dict[str, Any]]:
+        raw_nodes = payload.get(name)
+        if not isinstance(raw_nodes, list):
+            return []
+        if len(raw_nodes) > limit:
+            sections[section] = True
+            reason = f"{section.replace('_', '-')}-python-section-limit"
+            if reason not in truncation_reasons:
+                truncation_reasons.append(reason)
+        result = []
+        for item in raw_nodes[:limit]:
+            node = _sanitize_dom_node(item)
+            if node is not None:
+                result.append(node)
+        return result
+
+    textarea_contexts = []
+    raw_textareas = payload.get("textareaContexts")
+    if isinstance(raw_textareas, list):
+        if len(raw_textareas) > 2:
+            sections["textarea_contexts"] = True
+        for item in raw_textareas[:2]:
+            if not isinstance(item, dict):
+                continue
+            textarea = _sanitize_dom_node(item.get("textarea"))
+            if textarea is not None and textarea.get("tag") == "textarea":
+                ancestors = _sanitize_dom_context_chain(item.get("ancestors"), max_depth=4)
+                textarea_contexts.append({"textarea": textarea, "ancestors": ancestors})
+
+    composer_scopes = []
+    raw_scopes = payload.get("composerScopes")
+    if isinstance(raw_scopes, list):
+        if len(raw_scopes) > 2:
+            sections["composer_scopes"] = True
+        allowed_signals = {
+            "explicit-submit-type", "generic-send-label", "file-input", "generic-attach-label",
+        }
+        for item in raw_scopes[:2]:
+            if not isinstance(item, dict):
+                continue
+            scope = _sanitize_dom_node(item.get("scope"))
+            if scope is None:
+                continue
+            controls = []
+            raw_controls = item.get("controls")
+            if isinstance(raw_controls, list):
+                if len(raw_controls) > 20 or item.get("controlsTruncated") is True:
+                    sections["composer_scopes"] = True
+                for control in raw_controls[:20]:
+                    if not isinstance(control, dict):
+                        continue
+                    node = _sanitize_dom_node(control.get("node"))
+                    if node is None:
+                        continue
+                    raw_signals = control.get("signals")
+                    signals = [
+                        signal for signal in raw_signals[:4]
+                        if type(signal) is str and signal in allowed_signals
+                    ] if isinstance(raw_signals, list) else []
+                    controls.append({"node": node, "signals": signals})
+            composer_scopes.append({
+                "textarea_index": _dom_bounded_int(item.get("textareaIndex"), 0, 1),
+                "scope_depth": _dom_bounded_int(item.get("scopeDepth"), 0, 4),
+                "controls_found": _dom_bounded_int(item.get("controlsFound"), 0, 1_000_000),
+                "controls": controls,
+            })
+
+    counts = {
+        "containers": found_count("containers", len(payload.get("candidateContainers", []))
+            if isinstance(payload.get("candidateContainers"), list) else 0),
+        "messages": found_count("messages", len(payload.get("candidateMessages", []))
+            if isinstance(payload.get("candidateMessages"), list) else 0),
+        "interactive": found_count("interactive", len(payload.get("interactiveElements", []))
+            if isinstance(payload.get("interactiveElements"), list) else 0),
+        "textareas": found_count("textareas", len(raw_textareas) if isinstance(raw_textareas, list) else 0),
+        "deal_links": found_count("dealLinks", 0),
+        "repeated_sibling_groups": found_count("repeatedSiblingGroups",
+            len(payload.get("repeatedSiblingGroups", []))
+            if isinstance(payload.get("repeatedSiblingGroups"), list) else 0),
+        "dynamic_areas": found_count("dynamicAreas", len(payload.get("dynamicAreas", []))
+            if isinstance(payload.get("dynamicAreas"), list) else 0),
+        "links": found_count("links", _dom_bounded_int(payload.get("linkCount"), 0, 12000)),
+        "scanned_elements": _dom_bounded_int(raw_body.get("elementCount"), 0, 12000),
+    }
+    raw_link_count = payload.get("linkCount")
+    if type(raw_link_count) is int and raw_link_count > 12000:
+        sections["links"] = True
+        truncation_reasons.append("link-count-limit")
+    raw_groups = payload.get("repeatedSiblingGroups")
+    groups = _sanitize_repeated_sibling_groups(raw_groups)
+    if isinstance(raw_groups, list) and len(raw_groups) > 10:
+        sections["repeated_sibling_candidates"] = True
+    if groups and sum(len(group.get("examples", [])) for group in groups) < sum(
+        min(len(item.get("examples", [])), 4) for item in raw_groups[:10] if isinstance(item, dict)
+    ):
+        sections["repeated_sibling_candidates"] = True
+    if isinstance(raw_truncation, dict) and raw_truncation.get("truncated") is True:
+        pass
+    if raw_body.get("scanTruncated") is True:
+        sections["body"] = True
+    section_reasons = {
+        "body": "dom-scan-limit", "candidate_containers": "container-sample-limit",
+        "candidate_messages": "message-sample-limit", "interactive_elements": "interactive-sample-limit",
+        "textarea_contexts": "textarea-sample-limit", "deal_links": "deal-link-sample-limit",
+        "repeated_sibling_candidates": "repeat-group-limit", "composer_scopes": "composer-control-sample-limit",
+        "dynamic_areas": "dynamic-area-sample-limit",
+        "links": "link-count-limit",
+    }
+    for section, reason in section_reasons.items():
+        if sections.get(section) is True and reason not in truncation_reasons:
+            truncation_reasons.append(reason)
+    result = {
+        "schema": "playerok-dom-structure-v1",
+        "status": "ok",
+        "page": {"site": "playerok"},
+        "body": {
+            "element_count_scanned": _dom_bounded_int(raw_body.get("elementCount"), 0, 12000),
+            "max_depth_scanned": _dom_bounded_int(raw_body.get("maxDepth"), 0, 12000),
+            "scan_truncated": raw_body.get("scanTruncated") is True,
+        },
+        "counts": counts,
+        "candidate_containers": nodes("candidateContainers", 40, "candidate_containers"),
+        "candidate_messages": nodes("candidateMessages", 100, "candidate_messages"),
+        "interactive_elements": nodes("interactiveElements", 100, "interactive_elements"),
+        "textarea_contexts": textarea_contexts,
+        "composer_scopes": composer_scopes,
+        "repeated_sibling_candidates": groups,
+        "dynamic_areas": nodes("dynamicAreas", 40, "dynamic_areas"),
+        "link_count_exact": payload.get("linkCountExact") is True and not sections.get("links", False),
+        "truncated": {
+            "occurred": bool(truncation_reasons or any(sections.values())),
+            "reasons": list(dict.fromkeys(truncation_reasons)),
+            "sections": sections,
+        },
+    }
+    return _fit_dom_summary(result)
 
 
 def playerok_profile_root() -> Path:
@@ -120,6 +1271,7 @@ class PlayerokBrowserPanel(QWidget):
         self._clear_pending = False
         self._page_storage_clear_ok = False
         self._page_ready = False
+        self._dom_diagnostic_active = False
         self._viewer_checker = None
         self._profile_route_buttons: dict[str, QPushButton] = {}
         self._viewer_check_timeout = QTimer(self)
@@ -133,8 +1285,10 @@ class PlayerokBrowserPanel(QWidget):
         self.reload_button = QPushButton("Обновить")
         self.home_button = QPushButton("Домой")
         self.devtools_button = QPushButton("Открыть DevTools")
+        self.dom_diagnostic_button = QPushButton("Структура DOM (read-only)")
         self.clear_session_button = QPushButton("Очистить данные сайта")
         self.devtools_button.clicked.connect(self.open_devtools)
+        self.dom_diagnostic_button.clicked.connect(self._run_dom_diagnostic)
         for button in (
             self.back_button, self.forward_button, self.reload_button,
             self.home_button, self.devtools_button, self.clear_session_button,
@@ -158,6 +1312,7 @@ class PlayerokBrowserPanel(QWidget):
             button = QPushButton(label)
             button.clicked.connect(lambda checked=False, p=path: self.navigate(PLAYEROK_ORIGIN + p))
             quick.addWidget(button)
+        quick.addWidget(self.dom_diagnostic_button)
         root.addLayout(quick)
 
         split = QSplitter()
@@ -544,6 +1699,203 @@ class PlayerokBrowserPanel(QWidget):
         except Exception:
             complete(None)
 
+    def _run_current_page_javascript(self, script: str, finished) -> bool:
+        """Run a caller-supplied local script on the current authenticated Playerok page."""
+        if not callable(finished):
+            raise TypeError("finished должен быть вызываемым")
+        if type(script) is not str or not script or len(script) > 1_000_000:
+            finished(None)
+            return False
+        if self.web is None or not self._page_ready or self._clear_pending:
+            finished(None)
+            return False
+        try:
+            page = self.web.page()
+            if page is None or not shiboken6.isValid(page):
+                finished(None)
+                return False
+            current_url = urlsplit(page.url().toString())
+            if current_url.scheme != "https" or current_url.hostname not in {"playerok.com", "www.playerok.com"}:
+                finished(None)
+                return False
+        except (RuntimeError, TypeError, AttributeError):
+            finished(None)
+            return False
+        completed = [False]
+
+        def complete(value=None):
+            if completed[0]:
+                return
+            completed[0] = True
+            try:
+                page.destroyed.disconnect(on_destroyed)
+            except (RuntimeError, TypeError, AttributeError):
+                pass
+            if not page_is_current():
+                finished(None)
+                return
+            finished(value)
+
+        def page_is_current() -> bool:
+            if self._clear_pending or self.web is None:
+                return False
+            try:
+                return shiboken6.isValid(page) and self.web.page() is page
+            except (RuntimeError, TypeError, AttributeError):
+                return False
+
+        def on_destroyed(*_args):
+            complete(None)
+
+        try:
+            page.destroyed.connect(on_destroyed)
+            page.runJavaScript(script, complete)
+        except Exception:
+            complete(None)
+            return False
+        return True
+
+    def read_dom_structure(self, finished) -> bool:
+        """Read a bounded, allowlisted structure summary from the current page only."""
+        if not callable(finished):
+            raise TypeError("finished должен быть вызываемым")
+
+        def reject(message: str) -> bool:
+            self.browser_status.setText(message)
+            finished(None, message)
+            return False
+
+        if self.web is None or not self._page_ready or self._clear_pending:
+            return reject("DOM-диагностика недоступна: страница не готова или очищается.")
+        if self._dom_diagnostic_active:
+            return reject("DOM-диагностика уже выполняется.")
+        try:
+            page = self.web.page()
+            if page is None or not shiboken6.isValid(page):
+                return reject("DOM-диагностика недоступна: страница уничтожена.")
+            parsed_url = urlsplit(page.url().toString())
+        except (RuntimeError, TypeError, AttributeError):
+            return reject("DOM-диагностика недоступна: состояние страницы не подтверждено.")
+        if parsed_url.scheme != "https" or parsed_url.hostname not in {"playerok.com", "www.playerok.com"}:
+            return reject("DOM-диагностика разрешена только на текущей странице Playerok.")
+
+        completed = [False]
+        page_destroyed = [False]
+
+        def page_is_live() -> bool:
+            if page_destroyed[0] or self._clear_pending or self.web is None:
+                return False
+            try:
+                return shiboken6.isValid(page) and self.web.page() is page
+            except (RuntimeError, TypeError, AttributeError):
+                return False
+
+        def complete(summary=None, error: str | None = None) -> None:
+            if completed[0]:
+                return
+            completed[0] = True
+            if not page_destroyed[0]:
+                try:
+                    if shiboken6.isValid(page):
+                        page.destroyed.disconnect(on_page_destroyed)
+                except (RuntimeError, TypeError, AttributeError):
+                    pass
+            try:
+                if not shiboken6.isValid(self):
+                    return
+                self._dom_diagnostic_active = False
+                self.browser_status.setText(
+                    "Структура DOM прочитана; содержимое не сохранено."
+                    if error is None else error
+                )
+                finished(summary, error)
+            except (RuntimeError, TypeError, AttributeError):
+                return
+
+        def on_page_destroyed(*_args) -> None:
+            page_destroyed[0] = True
+            complete(None, "Страница браузера уничтожена до завершения DOM-диагностики.")
+
+        def decode_result(raw_value: str) -> None:
+            if completed[0]:
+                return
+            if not page_is_live():
+                complete(None, "Страница браузера изменилась до получения результата DOM.")
+                return
+            try:
+                summary = _sanitize_dom_summary(raw_value)
+            except (TypeError, ValueError, RecursionError, UnicodeError):
+                # Keep malformed or unexpectedly deep callback payloads inside the
+                # diagnostic schema instead of letting the UI fall back to a generic rejection.
+                summary = _dom_error_summary("serialization-error")
+            complete(summary, None)
+
+        def javascript_completed(value) -> None:
+            if completed[0]:
+                return
+            if not page_is_live():
+                complete(None, "Страница браузера уничтожена до получения результата DOM.")
+                return
+            if type(value) is not str:
+                complete(_dom_error_summary("callback-result-not-string"), None)
+                return
+            if len(value) > _DOM_DIAGNOSTIC_CALLBACK_MAX_BYTES:
+                complete(_dom_error_summary("callback-byte-limit"), None)
+                return
+            try:
+                if len(value.encode("utf-8")) > _DOM_DIAGNOSTIC_CALLBACK_MAX_BYTES:
+                    complete(_dom_error_summary("callback-byte-limit"), None)
+                    return
+            except UnicodeError:
+                complete(_dom_error_summary("invalid-json"), None)
+                return
+            # JSON decoding is deferred out of the WebEngine callback and remains bounded.
+            QTimer.singleShot(0, lambda raw=value: decode_result(raw))
+
+        try:
+            page.destroyed.connect(on_page_destroyed)
+        except (RuntimeError, TypeError, AttributeError):
+            return reject("DOM-диагностика не смогла отслеживать жизненный цикл страницы.")
+
+        self._dom_diagnostic_active = True
+        try:
+            page.runJavaScript(_DOM_DIAGNOSTIC_SCRIPT, javascript_completed)
+        except Exception:
+            complete(_dom_error_summary("javascript-evaluation-error"), None)
+            return False
+        return True
+
+    def _run_dom_diagnostic(self) -> None:
+        self.dom_diagnostic_button.setEnabled(False)
+
+        def completed(summary, error) -> None:
+            try:
+                if not shiboken6.isValid(self):
+                    return
+                self.dom_diagnostic_button.setEnabled(True)
+            except (RuntimeError, TypeError, AttributeError):
+                return
+            if error is not None:
+                self._show_dom_diagnostic_text(error)
+                return
+            self._show_dom_diagnostic_text(json.dumps(summary, ensure_ascii=False, indent=2))
+
+        self.read_dom_structure(completed)
+
+    def _show_dom_diagnostic_text(self, text: str) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Структура DOM текущей страницы Playerok")
+        dialog.resize(900, 700)
+        layout = QVBoxLayout(dialog)
+        output = QPlainTextEdit(dialog)
+        output.setReadOnly(True)
+        output.setPlainText(text)
+        layout.addWidget(output)
+        close_button = QPushButton("Закрыть", dialog)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        dialog.exec()
+
     def read_sales(self, finished, *, on_request_started=None) -> BrowserSalesReader:
         if self.web is None or not self._page_ready or self._clear_pending:
             raise RuntimeError("Сначала дождитесь загрузки сайта Playerok во встроенном браузере.")
@@ -575,6 +1927,22 @@ class PlayerokBrowserPanel(QWidget):
         page.destroyed.connect(page_destroyed)
         reader.start()
         return reader
+
+    def sales_session_available(self) -> bool:
+        """Whether the current WebEngine page is ready for a read-only sales pass."""
+        if self.web is None or not self._page_ready or self._clear_pending:
+            return False
+        try:
+            page = self.web.page()
+            if page is None or not shiboken6.isValid(page):
+                return False
+            current_url = urlsplit(page.url().toString())
+        except (RuntimeError, TypeError, AttributeError):
+            return False
+        return (
+            current_url.scheme == "https"
+            and current_url.hostname in {"playerok.com", "www.playerok.com"}
+        )
 
     def clear_browser_session(self) -> bool:
         if self._profile is None:

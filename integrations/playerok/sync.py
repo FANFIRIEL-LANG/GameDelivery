@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any
 
 from integrations.playerok.browser_sales import (
     BrowserSalesSnapshot,
-    is_trusted_browser_sales_snapshot,
+    is_fresh_trusted_browser_sales_snapshot,
 )
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.recipes import UnsupportedLegacyRecipeError
@@ -84,6 +85,27 @@ class PlayerokDealSyncService:
     @staticmethod
     def _status(deal: dict[str, Any]) -> str:
         return str(deal.get("status") or "UNKNOWN").strip().upper()
+
+    @staticmethod
+    def _is_historical_relative_to_baseline(
+        deal: dict[str, Any], baseline_completed_at: object
+    ) -> bool:
+        """Fail closed for first-seen deals without a trustworthy post-baseline createdAt."""
+        created_at = deal.get("created_at")
+        if type(created_at) is not str or not created_at.strip():
+            return True
+        if type(baseline_completed_at) is not str or not baseline_completed_at.strip():
+            return True
+        try:
+            created = datetime.fromisoformat(created_at.strip().replace("Z", "+00:00"))
+            baseline = datetime.fromisoformat(
+                baseline_completed_at.strip().replace("Z", "+00:00")
+            )
+            if created.tzinfo is None or baseline.tzinfo is None:
+                return True
+            return created.astimezone(timezone.utc) <= baseline.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            return True
 
     def _listing_config(
         self, db: sqlite3.Connection, deal: dict[str, Any], *, include_config: bool = True
@@ -494,8 +516,8 @@ class PlayerokDealSyncService:
 
     def sync_browser_snapshot(self, snapshot: BrowserSalesSnapshot) -> dict[str, Any]:
         """Persist only a complete snapshot registered by BrowserSalesReader."""
-        if not isinstance(snapshot, BrowserSalesSnapshot) or not is_trusted_browser_sales_snapshot(snapshot):
-            raise ValueError("Playerok snapshot is incomplete or lacks trusted reader provenance.")
+        if not isinstance(snapshot, BrowserSalesSnapshot) or not is_fresh_trusted_browser_sales_snapshot(snapshot):
+            raise ValueError("Playerok snapshot is incomplete, stale, or lacks trusted reader provenance.")
         account_id = str(snapshot.account_user_id or "").strip()
         deals = snapshot.deals
         if not account_id or not isinstance(deals, list):
@@ -508,16 +530,31 @@ class PlayerokDealSyncService:
             if not external_id or external_id in seen:
                 raise ValueError("Browser snapshot has a missing or duplicate deal_id.")
             seen.add(external_id)
+        # Re-read the account-scoped baseline marker after taking the write
+        # lock. A concurrent first snapshot must not commit a stale baseline
+        # decision separately from its deals.
         with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             state = db.execute(
-                "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id=?",
+                "SELECT baseline_completed,baseline_completed_at FROM playerok_sync_state "
+                "WHERE account_user_id=?",
                 (account_id,),
             ).fetchone()
-        if state is None or state["baseline_completed"] != 1:
-            with self.database.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                for deal in deals:
-                    self._upsert_deal(db, deal, account_id, historical=True)
+            baseline = state is None or state["baseline_completed"] != 1
+            new_count = 0
+            historical_count = 0
+            for deal in deals:
+                historical = baseline or self._is_historical_relative_to_baseline(
+                    deal, state["baseline_completed_at"] if state is not None else None
+                )
+                _deal_id, created = self._upsert_deal(
+                    db, deal, account_id, historical=historical
+                )
+                if created and historical:
+                    historical_count += 1
+                elif created:
+                    new_count += int(created)
+            if baseline:
                 db.execute("""
                     INSERT INTO playerok_sync_state
                         (account_user_id,baseline_completed,baseline_completed_at,last_sync_at)
@@ -527,12 +564,18 @@ class PlayerokDealSyncService:
                         baseline_completed_at=COALESCE(playerok_sync_state.baseline_completed_at,excluded.baseline_completed_at),
                         last_sync_at=excluded.last_sync_at
                 """, (account_id,))
+            else:
+                db.execute(
+                    "UPDATE playerok_sync_state SET last_sync_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    "WHERE account_user_id=?", (account_id,),
+                )
+        if baseline:
             return {
                 "baseline": True, "baseline_deals": len(deals), "deals": deals,
                 "new_deals": 0, "historical_deals": len(deals), "status_updates": 0,
             }
-        new_count = self._upsert_incremental(deals, account_id)
         return {
             "baseline": False, "baseline_deals": 0, "deals": deals,
-            "new_deals": new_count, "historical_deals": 0, "status_updates": 0,
+            "new_deals": new_count, "historical_deals": historical_count,
+            "status_updates": 0,
         }

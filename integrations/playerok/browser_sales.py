@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import weakref
 from threading import Lock
+from time import monotonic
 from typing import Any, Callable
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -15,6 +16,7 @@ _VIEWER_URL = "https://bff.playerok.com/rest-api/public/viewer"
 _GRAPHQL_URL = "https://playerok.com/graphql"
 _PAGE_SIZE = 24
 _MAX_PAGES = 10_000
+_MAX_SNAPSHOT_AGE_SECONDS = 300.0
 _DEALS_PERSISTED_QUERY_SHA256 = "591b0e6d036c2120c8f95b97dbfdf5635df3747cd901f4895e009935229417ef"
 _POLL_INTERVAL_MS = 50
 _SAFE_ERROR_CAUSES = frozenset({
@@ -97,8 +99,27 @@ def is_trusted_browser_sales_snapshot(value: object) -> bool:
     if not isinstance(value, BrowserSalesSnapshot):
         return False
     with _SNAPSHOT_LOCK:
-        token = _TRUSTED_SNAPSHOTS.get(value)
-        return token is not None and token is value._provenance_token
+        record = _TRUSTED_SNAPSHOTS.get(value)
+        return record is not None and record[0] is value._provenance_token
+
+
+def is_fresh_trusted_browser_sales_snapshot(
+    value: object, *, now: float | None = None
+) -> bool:
+    """Reject a reader snapshot when pagination or handoff has gone stale."""
+    if not is_trusted_browser_sales_snapshot(value):
+        return False
+    current = monotonic() if now is None else now
+    with _SNAPSHOT_LOCK:
+        record = _TRUSTED_SNAPSHOTS.get(value)
+        if record is None or record[0] is not value._provenance_token:
+            return False
+        _token, started_at, completed_at = record
+    return (
+        started_at <= completed_at <= current
+        and completed_at - started_at <= _MAX_SNAPSHOT_AGE_SECONDS
+        and current - completed_at <= _MAX_SNAPSHOT_AGE_SECONDS
+    )
 
 
 def _complete_browser_snapshot(account_user_id: str, deals: list[dict[str, Any]]) -> BrowserSalesSnapshot:
@@ -111,8 +132,8 @@ def consume_trusted_browser_sales_snapshot(value: object) -> dict[str, Any] | No
     if not isinstance(value, BrowserSalesSnapshot):
         return None
     with _SNAPSHOT_LOCK:
-        token = _TRUSTED_SNAPSHOTS.pop(value, None)
-        if token is None or token is not value._provenance_token:
+        record = _TRUSTED_SNAPSHOTS.pop(value, None)
+        if record is None or record[0] is not value._provenance_token:
             return None
     return {
         "complete": True,
@@ -127,7 +148,22 @@ def _start_fetch_script(
     *,
     result_kind: str = "deals",
 ) -> str:
-    options = {"method": "GET", "credentials": "include"}
+    options: dict[str, Any] = {
+        "method": "GET", "credentials": "include", "redirect": "error",
+    }
+    if result_kind == "deals":
+        # Match the non-secret GraphQL request context used by the working
+        # browser chat transport.
+        options["headers"] = {
+            "accept": "*/*",
+            "content-type": "application/json",
+            "apollo-require-preflight": "true",
+            "apollographql-client-name": "web",
+            "x-gql-op": "deals",
+            "x-gql-path": "/",
+            "x-timezone-offset": "-240",
+            "x-apollo-operation-name": "deals",
+        }
     diagnostic_guard = (
         "const diagnosticPayload=payload=>{if(payload===null||typeof payload!=='object'||"
         "!Object.prototype.hasOwnProperty.call(payload,'__diagnostic'))return {found:false};"
@@ -272,8 +308,10 @@ class BrowserSalesReader:
         self._pagination_complete = False
         self._initial_viewer_received = False
         self._viewer_matched: bool | None = None
+        self._session_lost = False
         self._last_graphql_http_status: int | None = None
         self._provenance_token = object()
+        self._started_at: float | None = None
 
     @property
     def active(self) -> bool:
@@ -304,6 +342,11 @@ class BrowserSalesReader:
         return self._viewer_matched
 
     @property
+    def session_lost(self) -> bool:
+        """True when viewer validation says the current browser session is unauthenticated."""
+        return self._session_lost
+
+    @property
     def last_graphql_http_status(self) -> int | None:
         """Validated status of the latest GraphQL Deals response, if available."""
         return self._last_graphql_http_status
@@ -312,6 +355,7 @@ class BrowserSalesReader:
         if self._active:
             raise RuntimeError("Playerok browser sales read is already active.")
         self._active = True
+        self._started_at = monotonic()
         self._fetch(_VIEWER_URL, self._on_viewer, result_kind="viewer")
 
     def cancel(self, *, stage: str = "cancelled") -> None:
@@ -459,7 +503,7 @@ class BrowserSalesReader:
             return "viewer_parse_error: структура viewer некорректна."
         if payload.get("__graphql_error") is True:
             return "GraphQL Playerok вернул ошибку; снимок продаж не сохранён."
-        if payload.get("errors"):
+        if payload.get("errors") or payload.get("__graphql_error") is True:
             return "GraphQL Playerok вернул ошибку; снимок продаж не сохранён."
         return None
 
@@ -468,12 +512,14 @@ class BrowserSalesReader:
             return
         error = self._response_error(payload)
         if error:
+            self._session_lost = self._viewer_failure_is_session_loss(payload)
             self._complete(None, error)
             return
         data = payload.get("data") if isinstance(payload, dict) else None
         viewer = data if isinstance(data, dict) else payload
         account_id = viewer.get("id") if isinstance(viewer, dict) else None
         if not isinstance(account_id, (str, int)) or isinstance(account_id, bool) or not str(account_id).strip():
+            self._session_lost = True
             self._complete(None, "viewer_parse_error: JSON не содержит корректный viewer.id.")
             return
         self._account_id = str(account_id).strip()
@@ -577,26 +623,52 @@ class BrowserSalesReader:
             return None
         return str(value).strip()
 
+    @staticmethod
+    def _viewer_failure_is_session_loss(payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("errors"):
+            return True
+        if payload.get("__diagnostic") == "viewer_parse_error":
+            return True
+        if payload.get("__diagnostic") == "http_error":
+            status = payload.get("status")
+            return type(status) is int and status in {401, 403}
+        return False
+
     def _on_final_viewer(self, payload: Any) -> None:
         if not self._active:
             return
         error = self._response_error(payload)
         if error:
+            self._session_lost = self._viewer_failure_is_session_loss(payload)
             self._complete(None, error)
             return
         viewer_id = self._viewer_id(payload)
         if viewer_id is None:
+            self._session_lost = True
             self._complete(None, "viewer_parse_error: JSON не содержит корректный viewer.id.")
             return
         if viewer_id != self._account_id:
             self._viewer_matched = False
+            self._session_lost = True
             self._complete(None, "Аккаунт Playerok изменился во время чтения продаж; снимок отклонён.")
+            return
+        completed_at = monotonic()
+        started_at = self._started_at if self._started_at is not None else completed_at
+        if (
+            completed_at < started_at
+            or completed_at - started_at > _MAX_SNAPSHOT_AGE_SECONDS
+        ):
+            self._complete(None, "Снимок продаж устарел во время чтения; повторите полный проход.")
             return
         self._viewer_matched = True
         snapshot = BrowserSalesSnapshot(self._account_id, self._deals)
         object.__setattr__(snapshot, "_provenance_token", self._provenance_token)
         with _SNAPSHOT_LOCK:
-            _TRUSTED_SNAPSHOTS[snapshot] = self._provenance_token
+            _TRUSTED_SNAPSHOTS[snapshot] = (
+                self._provenance_token, started_at, completed_at,
+            )
         self._complete(snapshot, None)
 
 

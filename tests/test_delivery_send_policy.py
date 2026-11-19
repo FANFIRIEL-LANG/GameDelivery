@@ -78,6 +78,32 @@ class DeliverySendPolicyTests(unittest.TestCase):
         self.assertFalse(policy.consume_manual_authorization(grant, "order-2", "leg-a"))
         self.assertFalse(policy.auto_send_enabled())
 
+    def test_single_order_confirmation_authorizes_all_exact_legs_once(self):
+        policy = DeliverySendPolicy(MemorySettings())
+        grant = policy.issue_order_manual_authorization(
+            "order-1", ("leg-a", "leg-b")
+        )
+
+        self.assertEqual(grant.leg_ids, ("leg-a", "leg-b"))
+        self.assertTrue(policy.validate_manual_authorization(grant, "order-1", "leg-a"))
+        self.assertTrue(policy.validate_manual_authorization(grant, "order-1", "leg-b"))
+        self.assertFalse(policy.validate_manual_authorization(grant, "order-1", "leg-c"))
+        self.assertFalse(policy.validate_manual_authorization(grant, "order-2", "leg-a"))
+        self.assertTrue(policy.consume_manual_authorization(grant, "order-1", "leg-a"))
+        self.assertFalse(policy.consume_manual_authorization(grant, "order-1", "leg-a"))
+        self.assertTrue(policy.validate_manual_authorization(grant, "order-1", "leg-b"))
+        self.assertTrue(policy.consume_manual_authorization(grant, "order-1", "leg-b"))
+        self.assertFalse(policy.validate_manual_authorization(grant, "order-1", "leg-b"))
+        self.assertFalse(policy.auto_send_enabled())
+
+    def test_order_confirmation_rejects_empty_or_malformed_leg_scope(self):
+        policy = DeliverySendPolicy(MemorySettings())
+        for order, legs in (("", ("leg-a",)), ("order-1", ()), ("order-1", "leg-a"),
+                            ("order-1", ("leg-a", ""))):
+            with self.subTest(order=order, legs=legs):
+                with self.assertRaises(ValueError):
+                    policy.issue_order_manual_authorization(order, legs)
+
     def test_auto_claim_is_linearized_and_new_claims_stop_after_off(self):
         policy = DeliverySendPolicy(MemorySettings())
         policy.set_auto_send_enabled(True)

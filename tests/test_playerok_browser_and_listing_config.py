@@ -50,6 +50,122 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 (listing_id,),
             ).fetchall()
 
+    def test_chat_api_diagnostic_accepts_opaque_chat_path_ids(self):
+        self.assertEqual(MarketplacePanel._chat_id_from_path("/chats/chat-id_opaque-123"), "chat-id_opaque-123")
+        self.assertEqual(
+            MarketplacePanel._chat_id_from_path("/chats/1f1e3494-1403-6240-6353-b8243fa6d62d/"),
+            "1f1e3494-1403-6240-6353-b8243fa6d62d",
+        )
+        self.assertIsNone(MarketplacePanel._chat_id_from_path("/chats"))
+        self.assertIsNone(MarketplacePanel._chat_id_from_path("/chats/a/b"))
+        self.assertIsNone(MarketplacePanel._chat_id_from_path("/chats/   "))
+
+    def test_chat_api_diagnostic_runs_chat_and_message_reads_when_chat_list_fails(self):
+        panel = MarketplacePanel(database=self.db)
+        calls = []
+
+        class FakeAPI:
+            def get_chats(self, user_id, callback, *, page_observer=None):
+                calls.append(("chats", user_id))
+                page_observer(False, "http_400")
+                callback(None, "http_400")
+
+            def get_chat(self, chat_id, callback):
+                calls.append(("chat", chat_id))
+                callback(None, "http_400")
+
+            def get_chat_messages(self, chat_id, callback, *, page_observer=None):
+                calls.append(("messages", chat_id))
+                page_observer(False, None)
+                callback((), None)
+
+        panel._chat_api = FakeAPI()
+        ws_calls = []
+        panel._chat_listener = SimpleNamespace(
+            account_user_id="account-safe", active=False,
+            start_for_read_only_diagnostic=lambda user_id, chat_id: ws_calls.append((user_id, chat_id)),
+        )
+        original_read_busy = panel._sales_read_busy
+        panel._sales_read_busy = lambda: False
+        original_update = panel._update_playerok_read_controls
+        panel._update_playerok_read_controls = lambda: None
+        try:
+            with patch.object(
+                panel.browser_panel,
+                "web",
+                SimpleNamespace(url=lambda: SimpleNamespace(
+                    toString=lambda: "https://playerok.com/chats/chat-id_opaque-123?private=value"
+                )),
+            ):
+                panel._diagnose_chat_api()
+            report = panel.chat_api_diagnostic_report.text()
+            self.assertEqual([item[0] for item in calls], ["chats", "chat", "messages"])
+            self.assertIn("chats=FAIL(http_400)", report)
+            self.assertIn("chat=FAIL(http_400)", report)
+            self.assertIn("messages=PASS(0)", report)
+            self.assertEqual(ws_calls, [("account-safe", "chat-id_opaque-123")])
+            self.assertNotIn("private", report)
+            self.assertNotIn("chat-id_opaque-123", report)
+        finally:
+            panel._sales_read_busy = original_read_busy
+            panel._update_playerok_read_controls = original_update
+            panel.close()
+
+    def test_chat_api_diagnostic_uses_confirmed_page_without_listener(self):
+        panel = MarketplacePanel(database=self.db)
+        calls = []
+
+        class FakeAPI:
+            def get_viewer(self, callback):
+                calls.append("viewer")
+                callback("account-safe", None)
+
+            def get_chats(self, user_id, callback, *, page_observer=None):
+                calls.append("chats")
+                page_observer(False, None)
+                callback((), None)
+
+            def get_chat(self, chat_id, callback):
+                calls.append("chat")
+                callback(SimpleNamespace(id=chat_id), None)
+
+            def get_chat_messages(self, chat_id, callback, *, page_observer=None):
+                calls.append("messages")
+                page_observer(False, None)
+                callback((), None)
+
+        original_read_busy = panel._sales_read_busy
+        original_update = panel._update_playerok_read_controls
+        panel._sales_read_busy = lambda: False
+        panel._update_playerok_read_controls = lambda: None
+        panel._playerok_auth_confirmed = True
+        try:
+            with (
+                patch.object(panel.browser_panel, "sales_session_available", return_value=True),
+                patch.object(
+                    panel.browser_panel,
+                    "web",
+                    SimpleNamespace(url=lambda: SimpleNamespace(
+                        toString=lambda: "https://playerok.com/chats/chat-id_opaque-123"
+                    )),
+                ),
+                patch.object(
+                    panel.browser_panel,
+                    "_run_current_page_javascript",
+                    side_effect=lambda _script, callback: callback(True),
+                ),
+                patch("app.platforms_panel.PlayerokBrowserChatAPI", return_value=FakeAPI()),
+            ):
+                panel._diagnose_chat_api()
+            self.assertEqual(calls, ["viewer", "chats", "chat", "messages"])
+            self.assertIn("chats=PASS (0)", panel.chat_api_diagnostic_report.text())
+            self.assertIn("messages=PASS(0)", panel.chat_api_diagnostic_report.text())
+            self.assertTrue(panel._chat_listener.active)
+        finally:
+            panel._sales_read_busy = original_read_busy
+            panel._update_playerok_read_controls = original_update
+            panel.close()
+
     def test_steam_cards_config_creates_immutable_versions(self):
         service = PlayerokListingConfigService(self.db)
         first = service.save(external_listing_id="cards-1", title="Cards", url="https://playerok.com/products/cards",
@@ -399,14 +515,15 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertIn("откройте Playerok", panel.browser_status.text())
         panel.close()
 
-    def test_marketplace_panel_has_browser_status_and_no_adapter_login_or_sync(self):
+    def test_marketplace_panel_has_browser_status_and_managed_polling(self):
         panel = MarketplacePanel(database=self.db)
         visible_text = " ".join(widget.text() for widget in panel.findChildren(QLabel))
         for legacy_label in ("Получить код", "Подтвердить код", "Подтвердить 2FA", "E-mail аккаунта"):
             self.assertNotIn(legacy_label, visible_text)
         self.assertNotIn("не подключён", visible_text.lower())
-        self.assertIn("не проверен", panel.status_label.text().lower())
-        self.assertIn("следующем этапе", panel.status_label.text().lower())
+        self.assertIn("read-only", panel.status_label.text().lower())
+        self.assertTrue(hasattr(panel, "_sales_poller"))
+        self.assertTrue(60_000 <= panel._sales_poller.interval_ms <= 60 * 60_000)
         self.assertTrue(panel.check_browser_auth_button.isEnabled())
         self.assertFalse(hasattr(panel, "_sync_timer"))
         self.assertFalse(hasattr(panel, "_pending_initial_sync"))

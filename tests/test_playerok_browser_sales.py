@@ -124,6 +124,40 @@ class BrowserSalesReaderTests(unittest.TestCase):
         )
         self.assertTrue(all("mutation" not in script.lower() for script in scripts))
 
+    def test_deals_fetch_uses_required_graphql_context_headers_and_no_redirects(self):
+        reader, requests, _scripts, _results, _scheduled = self.make_reader()
+        reader.start()
+        viewer_script = requests[0][0]
+        self.assertNotIn("apollo-require-preflight", viewer_script)
+        self.complete_fetch(requests, _scheduled, {"id": "seller-id"})
+        deals_script = requests[0][0]
+        for header in (
+            '"apollo-require-preflight":"true"',
+            '"apollographql-client-name":"web"',
+            '"x-gql-op":"deals"',
+            '"x-gql-path":"/"',
+            '"x-timezone-offset":"-240"',
+            '"x-apollo-operation-name":"deals"',
+        ):
+            self.assertIn(header, deals_script)
+        self.assertIn('"redirect":"error"', deals_script)
+
+    def test_reader_rejects_snapshot_when_paginated_read_exceeds_freshness_window(self):
+        from unittest.mock import patch
+
+        reader, requests, _scripts, results, scheduled = self.make_reader()
+        with patch("integrations.playerok.browser_sales.monotonic", side_effect=[10.0, 311.0]):
+            reader.start()
+            self.complete_fetch(requests, scheduled, {"id": "seller-id"})
+            self.complete_fetch(
+                requests, scheduled,
+                page([raw_deal("d1", "l1", "c1")], total=1),
+            )
+            self.complete_fetch(requests, scheduled, {"id": "seller-id"})
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0][0])
+        self.assertIn("устарел", results[0][1])
+
     def test_empty_terminal_page_is_accepted_when_unique_total_is_complete(self):
         reader, requests, _scripts, results, scheduled = self.make_reader()
         reader.start()
@@ -200,6 +234,17 @@ class BrowserSalesReaderTests(unittest.TestCase):
         self.assertIsNone(results[0][0])
         self.assertIn("HTTP 401", results[0][1])
         self.assertEqual(requests, [])
+
+    def test_viewer_auth_failure_marks_session_lost_but_server_error_is_retryable(self):
+        for status, expected_lost in ((401, True), (403, True), (503, False)):
+            with self.subTest(status=status):
+                reader, requests, _scripts, results, scheduled = self.make_reader()
+                reader.start()
+                self.complete_fetch(
+                    requests, scheduled, {"__diagnostic": "http_error", "status": status}
+                )
+                self.assertIsNone(results[0][0])
+                self.assertEqual(reader.session_lost, expected_lost)
 
     def test_unknown_diagnostic_marker_with_valid_viewer_is_rejected_without_snapshot(self):
         reader, requests, scripts, results, scheduled = self.make_reader()

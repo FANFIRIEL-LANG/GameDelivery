@@ -17,10 +17,11 @@ def reader_completed_snapshot(account_user_id: str, deals: list[dict]):
         source_listing_ref = str(deal.get("source_listing_ref") or "").strip()
         if source_listing_ref:
             item["slug"] = source_listing_ref
+        created_at = deal["created_at"] if "created_at" in deal else "2099-01-01T00:00:00Z"
         raw = {
             "id": deal["deal_id"],
             "status": deal["status"],
-            "createdAt": "2026-11-16T00:00:00Z",
+            "createdAt": str(created_at or ""),
             "item": item,
             "user": {"id": f"buyer-{index}", "username": f"buyer{index}"},
             "transaction": {"value": 1},

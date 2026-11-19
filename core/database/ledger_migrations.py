@@ -209,6 +209,11 @@ def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def _quote_sql_identifier(value: str) -> str:
+    """Quote an identifier read from sqlite_master before using it in DDL."""
+    return '"' + value.replace('"', '""') + '"'
+
+
 def _migration_applied(
     connection: sqlite3.Connection, migration_id: str = MIGRATION_ID
 ) -> bool:
@@ -722,6 +727,21 @@ def _apply_playerok_sync_migration(connection: sqlite3.Connection) -> bool:
                    CASE WHEN listing_id IS NULL THEN 'unresolved' ELSE 'resolved' END
             FROM gd_deals
         """)
+
+        # Some existing installations have application triggers on other
+        # tables that reference gd_deals. SQLite reparses those triggers during
+        # the rename and fails while gd_deals is temporarily absent. Preserve
+        # their exact SQL and restore them inside this same transaction.
+        dependent_triggers = connection.execute("""
+            SELECT name,sql FROM sqlite_master
+            WHERE type='trigger' AND sql IS NOT NULL
+              AND lower(sql) LIKE '%gd_deals%'
+            ORDER BY name
+        """).fetchall()
+        for trigger in dependent_triggers:
+            connection.execute(
+                f"DROP TRIGGER {_quote_sql_identifier(str(trigger[0]))}"
+            )
         connection.execute("DROP TABLE gd_deals")
         connection.execute("ALTER TABLE gd_deals_v2 RENAME TO gd_deals")
         connection.execute("""
@@ -738,6 +758,8 @@ def _apply_playerok_sync_migration(connection: sqlite3.Connection) -> bool:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_gd_deals_chat ON gd_deals(chat_id, created_at)"
         )
+        for trigger in dependent_triggers:
+            connection.execute(str(trigger[1]))
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise sqlite3.IntegrityError(

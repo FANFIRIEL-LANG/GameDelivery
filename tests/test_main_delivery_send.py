@@ -298,9 +298,60 @@ class DeliverySendFlowTests(unittest.TestCase):
                     "SELECT status FROM delivery_orders WHERE order_id=?", (self.ORDER_ID,)
                 ).fetchone()[0], "reserved — не отправлен")
 
+    def test_manual_delivery_asks_once_for_the_whole_multi_leg_order(self):
+        policy = DeliverySendPolicy(self.MemorySettings())
+        dispatched = []
+        completed = []
+
+        class Dispatcher:
+            def dispatch_leg(_self, **kwargs):
+                dispatched.append((kwargs["leg_id"], kwargs["manual_authorization"]))
+                self.assertTrue(policy.run_manual_dispatch_claim(
+                    kwargs["manual_authorization"], kwargs["order_id"], kwargs["leg_id"],
+                    lambda: {"_claimed": True},
+                )[0])
+                return {"dispatched": True, "status": "SENT_TO_STEAM"}
+
+        window = SimpleNamespace(
+            _delivery_send_policy=policy,
+            _trade_credentials=SimpleNamespace(store_trade_url=lambda order, url: "safe-url"),
+            _database_path=":temporary:",
+            _playerok_freshness_gate=None,
+            _finish_async_send_ui=MagicMock(),
+            _on_ledger_dispatch_complete=lambda order, result, error: completed.append(
+                (order, result, error)
+            ),
+            statusBar=lambda: MagicMock(),
+            _run_asf_call_async=lambda operation, callback: callback(operation(), None),
+        )
+        legs = [{"leg_id": "leg-a"}, {"leg_id": "leg-b"}]
+        previews = [
+            {"leg_id": "leg-a", "bot_name": "Bot A", "app_id": 753, "context_id": 6,
+             "asset_ids": ["asset-a"], "steam_id64": "7656119"},
+            {"leg_id": "leg-b", "bot_name": "Bot B", "app_id": 730, "context_id": 2,
+             "asset_ids": ["asset-b"], "steam_id64": "7656119"},
+        ]
+
+        with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as question, \
+             patch("app.main.Database"), \
+             patch("app.main.DeliveryDispatcher", return_value=Dispatcher()):
+            MainWindow._on_ledger_previews_ready(
+                window, "order-1", "https://steamcommunity.com/tradeoffer/new/",
+                legs, object(), previews, None, automatic=False,
+            )
+
+        question.assert_called_once()
+        self.assertEqual(question.call_args.args[1], "Подтвердить отправку всего заказа")
+        self.assertEqual([leg for leg, _grant in dispatched], ["leg-a", "leg-b"])
+        self.assertIs(dispatched[0][1], dispatched[1][1])
+        self.assertEqual(completed[0][0], "order-1")
+        self.assertEqual(len(completed[0][1]), 2)
+
     def test_canonical_playerok_flow_refreshes_each_leg_and_stops_after_second_check_fails(self):
         gate = PlayerokFreshnessGate()
         lease = gate.try_acquire_order("order-1")
+        policy = DeliverySendPolicy(self.MemorySettings())
+        grant = policy.issue_order_manual_authorization("order-1", ("leg-1", "leg-2"))
         checks = []
         dispatches = []
         completed = []
@@ -309,12 +360,15 @@ class DeliverySendFlowTests(unittest.TestCase):
 
         class Dispatcher:
             def dispatch_leg(self, **kwargs):
-                dispatches.append(kwargs["leg_id"])
+                dispatches.append((kwargs["leg_id"], kwargs["manual_authorization"]))
+                policy.consume_manual_authorization(
+                    kwargs["manual_authorization"], "order-1", kwargs["leg_id"]
+                )
                 return {"dispatched": True, "status": "SENT_TO_STEAM"}
 
         window = SimpleNamespace(
             _playerok_freshness_gate=gate,
-            _delivery_send_policy=DeliverySendPolicy(self.MemorySettings()),
+            _delivery_send_policy=policy,
             _request_playerok_freshness=None,
             _run_asf_call_async=lambda operation, callback: callback(operation(), None),
             statusBar=lambda: MagicMock(),
@@ -340,19 +394,21 @@ class DeliverySendFlowTests(unittest.TestCase):
         try:
             MainWindow._dispatch_playerok_legs_sequentially(
                 window, "order-1", "https://steamcommunity.com/tradeoffer/new/",
-                legs, Dispatcher(), "safe-url", identity, lease, {}, 0, [],
+                legs, Dispatcher(), "safe-url", identity, lease, grant, 0, [],
             )
         finally:
             gate.release_order(lease)
 
         self.assertEqual(checks, ["leg-1", "leg-2"])
-        self.assertEqual(dispatches, ["leg-1"])
+        self.assertEqual(dispatches, [("leg-1", grant)])
         self.assertEqual(completed[0][1][0]["status"], "SENT_TO_STEAM")
         self.assertEqual(completed[0][1][1]["status"], "PLAYEROK_FRESHNESS_REQUIRED")
 
     def test_canonical_playerok_flow_checks_each_successful_leg_separately(self):
         gate = PlayerokFreshnessGate()
         lease = gate.try_acquire_order("order-1")
+        policy = DeliverySendPolicy(self.MemorySettings())
+        grant = policy.issue_order_manual_authorization("order-1", ("leg-1", "leg-2"))
         checks = []
         dispatches = []
         completed = []
@@ -360,12 +416,15 @@ class DeliverySendFlowTests(unittest.TestCase):
 
         class Dispatcher:
             def dispatch_leg(self, **kwargs):
-                dispatches.append(kwargs["leg_id"])
+                dispatches.append((kwargs["leg_id"], kwargs["manual_authorization"]))
+                policy.consume_manual_authorization(
+                    kwargs["manual_authorization"], "order-1", kwargs["leg_id"]
+                )
                 return {"dispatched": True, "status": "SENT_TO_STEAM"}
 
         window = SimpleNamespace(
             _playerok_freshness_gate=gate,
-            _delivery_send_policy=DeliverySendPolicy(self.MemorySettings()),
+            _delivery_send_policy=policy,
             _run_asf_call_async=lambda operation, callback: callback(operation(), None),
             statusBar=lambda: MagicMock(),
             _on_ledger_dispatch_complete=lambda order, results, error: completed.append(results),
@@ -388,13 +447,13 @@ class DeliverySendFlowTests(unittest.TestCase):
             MainWindow._dispatch_playerok_legs_sequentially(
                 window, "order-1", "https://steamcommunity.com/tradeoffer/new/",
                 [{"leg_id": "leg-1"}, {"leg_id": "leg-2"}], Dispatcher(),
-                "safe-url", identity, lease, {}, 0, [],
+                "safe-url", identity, lease, grant, 0, [],
             )
         finally:
             gate.release_order(lease)
 
         self.assertEqual(checks, ["leg-1", "leg-2"])
-        self.assertEqual(dispatches, ["leg-1", "leg-2"])
+        self.assertEqual(dispatches, [("leg-1", grant), ("leg-2", grant)])
         self.assertEqual(len(completed[0]), 2)
 
     def test_browser_freshness_request_is_started_on_qt_gui_thread(self):

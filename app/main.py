@@ -51,7 +51,9 @@ from games.asset_ids import validate_asset_id
 from games.asset_ids import asset_id_key
 from games.steam_cards.recipient_diagnostics import normalize_recipient_card_diagnostics
 from core.database.ledger_migrations import ensure_pre_migration_backup, migrate_delivery_ledger
-from app.diagnostics import configure_logging, get_log_directory, get_logger, log_exception
+from app.diagnostics import (
+    configure_logging, get_log_directory, get_logger, log_exception, redact_sensitive_text,
+)
 
 
 logger = get_logger("ui")
@@ -95,10 +97,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         logger.info("MainWindow initialization started")
         self.setWindowTitle("GameDelivery — локальная панель")
+        startup_stage = "Windows Credential Manager initialization"
         try:
             self._trade_credentials = SteamTradeCredentialStore()
+            startup_stage = "SQLite schema migration"
             self._ensure_delivery_order_schema()
+            startup_stage = "SQLite interrupted-order recovery"
             self._recover_interrupted_delivery_orders()
+            startup_stage = "local delivery service initialization"
             self._delivery_send_policy = DeliverySendPolicy(
                 QSettings("FANFIRIEL-LANG", "GameDelivery")
             )
@@ -111,13 +117,17 @@ class MainWindow(QMainWindow):
             logger.info("Local delivery storage initialized")
         except (OSError, sqlite3.Error, ValueError) as exc:
             log_exception(logger, "local storage initialization", exc)
-            message = (
-                "GameDelivery не может безопасно открыть локальные заказы или системное хранилище "
-                "секретов. Исходные данные не сбрасывались. Проверь доступ к базе и хранилищу "
-                "учётных данных; перед восстановлением сделай резервную копию.\n\n"
-                f"Подробности: {type(exc).__name__}"
+            safe_detail = (
+                redact_sensitive_text(str(exc)).strip()
+                if isinstance(exc, sqlite3.Error)
+                else "подробная причина записана в журнал приложения"
             )
-            QMessageBox.critical(self, "Ошибка локальной базы данных", message)
+            message = (
+                f"GameDelivery не смог инициализировать этап: {startup_stage}. "
+                "Данные автоматически не сбрасывались и не восстанавливались.\n\n"
+                f"Подробности: {type(exc).__name__}: {safe_detail or 'причина не указана'}"
+            )
+            QMessageBox.critical(self, f"Ошибка запуска: {startup_stage}", message)
             self.startup_error_label = QLabel(message)
             self.startup_error_label.setWordWrap(True)
             self.startup_error_label.setMargin(24)
@@ -2090,9 +2100,18 @@ class MainWindow(QMainWindow):
                 f"{error}\n\nНи один Steam offer не отправлялся.",
             )
             return
-        manual_grant = None
-        manual_grants = {}
+        manual_authorization = None
         if not automatic:
+            if len(legs) != len(previews) or any(
+                str(leg.get("leg_id") or "") != str(preview.get("leg_id") or "")
+                for leg, preview in zip(legs, previews)
+            ):
+                self._finish_async_send_ui()
+                QMessageBox.warning(
+                    self, "Отправка заблокирована",
+                    "ASF preview не подтвердил весь состав DeliveryLeg заказа.",
+                )
+                return
             lines = [
                 f"Канонический заказ: {order_id}",
                 f"Получатель SteamID64: {previews[0].get('steam_id64') if previews else '—'}",
@@ -2104,31 +2123,19 @@ class MainWindow(QMainWindow):
                     f"{item['bot_name']} · AppID {item['app_id']}/{item['context_id']} · "
                     f"assets: {', '.join(item['asset_ids'])}"
                 )
-            for leg, item in zip(legs, previews):
-                leg_id = str(leg["leg_id"])
-                leg_lines = [
-                    f"Канонический заказ: {order_id}",
-                    f"DeliveryLeg: {leg_id}",
-                    f"Бот: {item['bot_name']} · AppID {item['app_id']}/{item['context_id']}",
-                    f"Assets: {', '.join(item['asset_ids'])}",
-                    "", "Это подтверждение разрешает отправку только этой DeliveryLeg.",
-                ]
-                answer = QMessageBox.question(
-                    self, "Подтвердить отправку одной DeliveryLeg", "\n".join(leg_lines),
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if answer != QMessageBox.StandardButton.Yes:
-                    for existing in manual_grants.values():
-                        self._delivery_send_policy.revoke_manual_authorization(existing)
-                    self._finish_async_send_ui()
-                    self.statusBar().showMessage(
-                        f"Отправка leg {leg_id} отменена; неподтверждённые legs не запускаются."
-                    )
-                    return
-                manual_grants[leg_id] = self._delivery_send_policy.issue_manual_authorization(
-                    order_id, leg_id
-                )
+            lines.extend(("", "Одно подтверждение разрешает отправку всего подготовленного заказа."))
+            answer = QMessageBox.question(
+                self, "Подтвердить отправку всего заказа", "\n".join(lines),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._finish_async_send_ui()
+                self.statusBar().showMessage(f"Отправка заказа {order_id} отменена пользователем.")
+                return
+            manual_authorization = self._delivery_send_policy.issue_order_manual_authorization(
+                order_id, tuple(str(leg["leg_id"]) for leg in legs)
+            )
         try:
             safe_url = self._trade_credentials.store_trade_url(order_id, trade_url)
             dispatcher = DeliveryDispatcher(
@@ -2140,7 +2147,7 @@ class MainWindow(QMainWindow):
             if playerok_identity is not None:
                 self._dispatch_playerok_legs_sequentially(
                     order_id, trade_url, legs, dispatcher, safe_url,
-                    playerok_identity, playerok_lease, manual_grants, 0, [],
+                    playerok_identity, playerok_lease, manual_authorization, 0, [],
                 )
                 return
 
@@ -2149,19 +2156,15 @@ class MainWindow(QMainWindow):
                 try:
                     for leg in legs:
                         leg_id = str(leg["leg_id"])
-                        grant = manual_grants.get(leg_id) if not automatic else None
                         results.append(dispatcher.dispatch_leg(
                             order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
-                            manual_authorization=grant,
+                            manual_authorization=manual_authorization,
                         ))
-                        if grant is not None:
-                            self._delivery_send_policy.revoke_manual_authorization(grant)
                         if not automatic and not results[-1].get("dispatched"):
                             break
                     return results
                 finally:
-                    for grant in manual_grants.values():
-                        self._delivery_send_policy.revoke_manual_authorization(grant)
+                    self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
 
             self._run_asf_call_async(
                 dispatch_all_legs,
@@ -2170,14 +2173,16 @@ class MainWindow(QMainWindow):
                 ),
             )
         except (OSError, sqlite3.Error, ValueError) as exc:
+            self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
             self._finish_async_send_ui()
             QMessageBox.warning(self, "Отправка не начата", str(exc))
 
     def _dispatch_playerok_legs_sequentially(
         self, order_id, trade_url, legs, dispatcher, safe_url, identity, lease,
-        manual_grants, index, results,
+        manual_authorization, index, results,
     ):
         if index >= len(legs):
+            self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
             self._on_ledger_dispatch_complete(order_id, results, None)
             return
         leg = legs[index]
@@ -2186,8 +2191,7 @@ class MainWindow(QMainWindow):
         def checked(proof, error):
             if error is not None:
                 self._playerok_freshness_gate.revoke(proof)
-                for grant in manual_grants.values():
-                    self._delivery_send_policy.revoke_manual_authorization(grant)
+                self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
                 results.append({
                     "dispatched": False,
                     "status": "PLAYEROK_FRESHNESS_REQUIRED",
@@ -2196,23 +2200,20 @@ class MainWindow(QMainWindow):
                 })
                 self._on_ledger_dispatch_complete(order_id, results, None)
                 return
-            grant = manual_grants.get(leg_id)
-
             def send_one():
                 return dispatcher.dispatch_leg(
                     order_id=order_id,
                     leg_id=leg_id,
                     stored_trade_url=safe_url,
-                    manual_authorization=grant,
+                    manual_authorization=manual_authorization,
                     playerok_freshness_authorization=proof,
                     playerok_order_lease=lease,
                 )
 
             def sent_one(_worker, result, send_error):
-                if grant is not None:
-                    self._delivery_send_policy.revoke_manual_authorization(grant)
                 if send_error is not None:
                     self._playerok_freshness_gate.revoke(proof)
+                    self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
                     results.append({
                         "dispatched": False,
                         "status": "UNKNOWN",
@@ -2225,12 +2226,11 @@ class MainWindow(QMainWindow):
                 if result.get("dispatched") is True:
                     self._dispatch_playerok_legs_sequentially(
                         order_id, trade_url, legs, dispatcher, safe_url, identity,
-                        lease, manual_grants, index + 1, results,
+                        lease, manual_authorization, index + 1, results,
                     )
                 else:
                     self._playerok_freshness_gate.revoke(proof)
-                    for pending in manual_grants.values():
-                        self._delivery_send_policy.revoke_manual_authorization(pending)
+                    self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
                     self._on_ledger_dispatch_complete(order_id, results, None)
 
             try:

@@ -5,9 +5,9 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import QObject, QRunnable, Qt, QSettings, Signal, QThreadPool, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from app.playerok_browser import PlayerokBrowserPanel
@@ -17,11 +17,45 @@ from integrations.playerok.browser_sales import (
     is_trusted_browser_sales_snapshot,
 )
 from integrations.playerok.sync import PlayerokDealSyncService
+from integrations.playerok.sales_polling import PlayerokSalesPoller
+from integrations.playerok.browser_chat_api import PlayerokBrowserChatAPI, WebEngineGraphQLTransport
+from integrations.playerok.browser_chat_listener import PlayerokBrowserChatListener
+
+
+class _SnapshotSyncSignals(QObject):
+    completed = Signal(object, object, object)
+
+
+class _SnapshotSyncWorker(QRunnable):
+    def __init__(self, sync_service, snapshot):
+        super().__init__()
+        self.sync_service = sync_service
+        self.snapshot = snapshot
+        self.account_user_id = snapshot.account_user_id
+        self.signals = _SnapshotSyncSignals()
+
+    def run(self):
+        try:
+            self.signals.completed.emit(
+                self.sync_service.sync_browser_snapshot(self.snapshot), None, self.account_user_id
+            )
+        except Exception as exc:
+            self.signals.completed.emit(None, type(exc).__name__, self.account_user_id)
 
 
 class MarketplacePanel(QWidget):
     order_import_requested = Signal(object)
     browser_auth_status_changed = Signal(bool)
+    playerok_chat_discovered = Signal(object)
+    playerok_chat_updated = Signal(object)
+    playerok_message_received = Signal(object)
+    playerok_system_event = Signal(object)
+    playerok_chat_connection_state = Signal(str)
+    playerok_chat_subscription_event = Signal(str)
+
+    PLAYEROK_AUTO_SYNC_KEY = "playerok/auto_sales_sync_enabled"
+    PLAYEROK_POLL_INTERVAL_KEY = "playerok/sales_poll_interval_minutes"
+    DEFAULT_POLL_INTERVAL_MINUTES = 5
 
     def __init__(
         self,
@@ -37,7 +71,7 @@ class MarketplacePanel(QWidget):
         heading.setStyleSheet("font-size: 20px; font-weight: 700;")
         root.addWidget(heading)
         self.status_label = QLabel(
-            "Статус входа Playerok не проверен. Синхронизация продаж через браузер будет реализована на следующем этапе."
+            "Ожидаю загрузку и проверку сессии Playerok для read-only автообновления сделок."
         )
         self.status_label.setWordWrap(True)
         self.status_label.setObjectName("muted")
@@ -45,7 +79,27 @@ class MarketplacePanel(QWidget):
         self.check_browser_auth_button = QPushButton("Проверить авторизацию Playerok")
         self.check_browser_auth_button.clicked.connect(self._check_browser_authentication)
         root.addWidget(self.check_browser_auth_button)
+        self.chat_api_diagnostic_button = QPushButton("Проверить API чатов (read-only)")
+        self.chat_api_diagnostic_button.clicked.connect(self._diagnose_chat_api)
+        self.chat_api_diagnostic_button.setEnabled(False)
+        root.addWidget(self.chat_api_diagnostic_button)
+        self.chat_api_diagnostic_report = QLabel("Проверка API чатов ещё не выполнялась.")
+        self.chat_api_diagnostic_report.setWordWrap(True)
+        self.chat_api_diagnostic_report.setObjectName("muted")
+        root.addWidget(self.chat_api_diagnostic_report)
+        self.chat_ws_diagnostic_report = QLabel("Chat WebSocket: не запущен.")
+        self.chat_ws_diagnostic_report.setWordWrap(True)
+        self.chat_ws_diagnostic_report.setObjectName("muted")
+        root.addWidget(self.chat_ws_diagnostic_report)
+        self._chat_ws_event_counts = {"chatUpdated": 0, "chatMessageCreated": 0}
+        self._chat_ws_last_state = "not_started"
+        self._chat_diagnostic_generation = 0
         self.sync_service = sync_service
+        self._chat_transport = None
+        self._chat_api = None
+        self._chat_listener = None
+        self._playerok_auth_confirmed = False
+        self._settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
         self._sales_reader = None
         self._diagnostic_sales_reader = None
         self._diagnostic_sales_starting = False
@@ -53,6 +107,9 @@ class MarketplacePanel(QWidget):
         self._diagnostic_page_hostname = "unknown"
         self._sales_result_callback = None
         self._sales_expected_account_id = None
+        self._poll_sync_worker_active = False
+        self._poll_sync_callback = None
+        self._poll_sync_worker = None
         self._sales_sync_timeout = QTimer(self)
         self._sales_sync_timeout.setSingleShot(True)
         self._sales_sync_timeout.setInterval(60_000)
@@ -64,6 +121,13 @@ class MarketplacePanel(QWidget):
 
         self.browser_panel = PlayerokBrowserPanel(database=database, parent=self)
         root.addWidget(self.browser_panel, 5)
+
+        auto_sync_enabled = self._settings.value(self.PLAYEROK_AUTO_SYNC_KEY, True, type=bool)
+        poll_interval = self._settings.value(
+            self.PLAYEROK_POLL_INTERVAL_KEY, self.DEFAULT_POLL_INTERVAL_MINUTES, type=int
+        )
+        if not 1 <= poll_interval <= 60:
+            poll_interval = self.DEFAULT_POLL_INTERVAL_MINUTES
 
         root.addWidget(QLabel("Заказы Playerok"))
         self.orders_table = QTableWidget(0, 8)
@@ -84,6 +148,15 @@ class MarketplacePanel(QWidget):
         self.sync_sales_button = QPushButton("Синхронизировать продажи из браузера")
         self.sync_sales_button.clicked.connect(self._sync_sales)
         actions.addWidget(self.sync_sales_button)
+        self.auto_sales_sync_checkbox = QCheckBox("Автоматически обновлять сделки")
+        self.auto_sales_sync_checkbox.setChecked(auto_sync_enabled)
+        actions.addWidget(self.auto_sales_sync_checkbox)
+        actions.addWidget(QLabel("Интервал, мин:"))
+        self.sales_poll_interval = QSpinBox()
+        self.sales_poll_interval.setRange(1, 60)
+        self.sales_poll_interval.setValue(poll_interval)
+        self.sales_poll_interval.setToolTip("Период полного read-only чтения списка сделок Playerok.")
+        actions.addWidget(self.sales_poll_interval)
         self.diagnostic_sales_button = QPushButton("Диагностически прочитать продажи")
         self.diagnostic_sales_button.clicked.connect(self._diagnostic_read_sales)
         actions.addWidget(self.diagnostic_sales_button)
@@ -97,11 +170,417 @@ class MarketplacePanel(QWidget):
         self.diagnostic_sales_report.setWordWrap(True)
         self.diagnostic_sales_report.setObjectName("muted")
         root.addWidget(self.diagnostic_sales_report)
+
+        self._sales_poll_timer = QTimer(self)
+        self._sales_poller = PlayerokSalesPoller(
+            timer=self._sales_poll_timer,
+            reader_factory=self._start_poll_reader,
+            sync_snapshot=self._dispatch_poll_snapshot_sync,
+            session_available=self.browser_panel.sales_session_available,
+            externally_busy=self._sales_read_busy,
+            status_changed=self._sales_poll_status_changed,
+            interval_ms=poll_interval * 60_000,
+        )
+        self.auto_sales_sync_checkbox.toggled.connect(self._set_auto_sales_sync_enabled)
+        self.sales_poll_interval.valueChanged.connect(self._set_sales_poll_interval)
+        self.browser_auth_status_changed.connect(self._on_browser_auth_status_changed)
+        self.playerok_chat_connection_state.connect(self._chat_ws_connection_changed)
+        self.playerok_chat_subscription_event.connect(self._chat_ws_event_received)
+        if self.browser_panel.web is not None:
+            self.browser_panel.web.loadStarted.connect(self._on_sales_page_load_started)
+            self.browser_panel.web.loadFinished.connect(self._on_sales_page_load_finished)
+            self.browser_panel.web.urlChanged.connect(self._on_sales_page_url_changed)
+            self.browser_panel.clear_session_button.clicked.connect(self._on_browser_session_clearing)
+        application = QApplication.instance()
+        if application is not None:
+            application.aboutToQuit.connect(self._stop_sales_polling)
         self._update_button_state()
         self._update_playerok_read_controls()
 
+    def _sales_read_busy(self) -> bool:
+        return bool(
+            self._sales_reader is not None
+            or self._diagnostic_sales_reader is not None
+            or self._diagnostic_sales_starting
+            or self.browser_panel.viewer_check_active
+            or self._poll_sync_worker_active
+        )
+
+    def _start_poll_reader(self, completed):
+        if self.sync_service is None:
+            raise RuntimeError("Playerok sync service is not configured.")
+
+        reader_ref = [None]
+
+        def reader_completed(snapshot, error):
+            self._sales_sync_timeout.stop()
+            if self._sales_reader is reader_ref[0]:
+                self._sales_reader = None
+            self._update_playerok_read_controls()
+            completed(snapshot, error)
+
+        reader = self.browser_panel.read_sales(
+            reader_completed,
+            on_request_started=self._sales_sync_timeout.start,
+        )
+        reader_ref[0] = reader
+        self._sales_reader = reader
+        self._update_playerok_read_controls()
+        return reader
+
+    def _dispatch_poll_snapshot_sync(self, snapshot, completed) -> None:
+        if self.sync_service is None:
+            completed(None, "SyncServiceUnavailable")
+            return
+        self._poll_sync_worker_active = True
+        self._poll_sync_callback = completed
+        worker = _SnapshotSyncWorker(self.sync_service, snapshot)
+        self._poll_sync_worker = worker
+        worker.signals.completed.connect(self._poll_snapshot_sync_completed)
+        self._update_playerok_read_controls()
+        QThreadPool.globalInstance().start(worker)
+
+    def _poll_snapshot_sync_completed(self, result, error, account_user_id) -> None:
+        self._poll_sync_worker_active = False
+        self._poll_sync_worker = None
+        callback, self._poll_sync_callback = self._poll_sync_callback, None
+        if error is None and isinstance(result, dict):
+            deals = result.get("deals", [])
+            self._show_orders([
+                {**deal, "account_user_id": str(account_user_id or "")}
+                for deal in deals if isinstance(deal, dict)
+            ])
+        if callable(callback):
+            callback(result, error)
+        self._update_playerok_read_controls()
+
+    def _set_auto_sales_sync_enabled(self, enabled: bool) -> None:
+        self._settings.setValue(self.PLAYEROK_AUTO_SYNC_KEY, bool(enabled))
+        if not enabled:
+            self._sales_sync_timeout.stop()
+            self._sales_poller.stop("disabled")
+            return
+        if self.sync_service is not None and self.browser_panel.sales_session_available():
+            self._check_browser_authentication()
+
+    def _set_sales_poll_interval(self, minutes: int) -> None:
+        if type(minutes) is not int or not 1 <= minutes <= 60:
+            return
+        self._settings.setValue(self.PLAYEROK_POLL_INTERVAL_KEY, minutes)
+        self._sales_poller.set_interval(minutes * 60_000)
+
+    def _on_browser_auth_status_changed(self, authorized: bool) -> None:
+        self._playerok_auth_confirmed = bool(authorized)
+        if not authorized:
+            self._stop_chat_listener()
+            if self._sales_poller.active:
+                self._sales_poller.stop("session_lost")
+            return
+        self._start_chat_listener()
+        if (
+            authorized and self.sync_service is not None
+            and self.auto_sales_sync_checkbox.isChecked()
+            and self.browser_panel.sales_session_available()
+        ):
+            self._sales_poller.start()
+
+    def _on_sales_page_load_finished(self, loaded: bool) -> None:
+        if not loaded:
+            self._sales_sync_timeout.stop()
+            self._sales_poller.stop("session_lost")
+            self._stop_chat_listener()
+            return
+        if self.browser_panel.sales_session_available() and (
+            self._chat_listener is None or not self._chat_listener.active
+            or (self.auto_sales_sync_checkbox.isChecked() and self.sync_service is not None
+                and not self._sales_poller.active)
+        ):
+            self._check_browser_authentication()
+
+    def _on_sales_page_load_started(self) -> None:
+        self._stop_chat_listener()
+
+    def _on_sales_page_url_changed(self, _url) -> None:
+        if self._sales_poller.active and not self.browser_panel.sales_session_available():
+            self._sales_sync_timeout.stop()
+            self._sales_poller.stop("session_lost")
+        if not self.browser_panel.sales_session_available():
+            self._stop_chat_listener()
+
+    def _on_browser_session_clearing(self) -> None:
+        self._sales_sync_timeout.stop()
+        self._sales_poller.stop("session_lost")
+        self._stop_chat_listener()
+
+    def _stop_sales_polling(self) -> None:
+        self._sales_sync_timeout.stop()
+        self._sales_poller.stop("stopped")
+        self._stop_chat_listener()
+
+    def _start_chat_listener(self) -> None:
+        if self._chat_listener is not None and self._chat_listener.active:
+            return
+        if not self.browser_panel.sales_session_available():
+            return
+        transport = WebEngineGraphQLTransport(
+            self.browser_panel._run_current_page_javascript,
+            schedule=lambda callback: QTimer.singleShot(50, callback),
+        )
+        api = PlayerokBrowserChatAPI(transport)
+        listener = PlayerokBrowserChatListener(
+            api, self.browser_panel._run_current_page_javascript, self,
+        )
+        listener.chat_discovered.connect(self.playerok_chat_discovered.emit)
+        listener.chat_updated.connect(self.playerok_chat_updated.emit)
+        listener.message_received.connect(self.playerok_message_received.emit)
+        listener.system_event.connect(self.playerok_system_event.emit)
+        listener.connection_state.connect(self.playerok_chat_connection_state.emit)
+        listener.subscription_event.connect(self.playerok_chat_subscription_event.emit)
+        self._chat_transport = transport
+        self._chat_api = api
+        self._chat_listener = listener
+        listener.start()
+
+    def _stop_chat_listener(self) -> None:
+        listener, self._chat_listener = self._chat_listener, None
+        if listener is not None:
+            listener.stop()
+        self._chat_api = None
+        self._chat_transport = None
+        self.chat_api_diagnostic_button.setEnabled(False)
+
+    @staticmethod
+    def _chat_page_counts():
+        return {"pages": 0, "cursor_pages": 0, "error": None}
+
+    @staticmethod
+    def _chat_page_observer(counts):
+        def observed(has_cursor, error):
+            counts["pages"] += 1
+            counts["cursor_pages"] += int(bool(has_cursor))
+            if error:
+                counts["error"] = error if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", str(error)) else "api_error"
+        return observed
+
+    @staticmethod
+    def _chat_id_from_path(path: str) -> str | None:
+        if type(path) is not str:
+            return None
+        match = re.fullmatch(r"/chats/([^/\s?#]{1,256})/?", path)
+        return match.group(1) if match else None
+
+    def _diagnose_chat_api(self) -> None:
+        api = self._chat_api
+        listener = self._chat_listener
+        if api is None and self._playerok_auth_confirmed and self.browser_panel.sales_session_available():
+            transport = WebEngineGraphQLTransport(
+                self.browser_panel._run_current_page_javascript,
+                schedule=lambda callback: QTimer.singleShot(50, callback),
+            )
+            api = PlayerokBrowserChatAPI(transport)
+            self._chat_transport = transport
+            self._chat_api = api
+        if api is None or not (
+            (listener is not None and listener.account_user_id)
+            or (self._playerok_auth_confirmed and self.browser_panel.sales_session_available())
+        ):
+            self.chat_api_diagnostic_report.setText("BLOCKED: авторизованный chat API недоступен.")
+            self.chat_api_diagnostic_button.setEnabled(False)
+            return
+        if self._sales_read_busy() or self._sales_poller.busy:
+            self.chat_api_diagnostic_report.setText("Ожидание завершения текущего чтения Playerok.")
+            return
+        if self.browser_panel.web is None:
+            self.chat_api_diagnostic_report.setText("BLOCKED: WebEngine-страница недоступна.")
+            return
+        path = urlsplit(self.browser_panel.web.url().toString()).path
+        chat_id = self._chat_id_from_path(path)
+        if not chat_id:
+            parts = tuple(part for part in path.split("/") if part)
+            if not parts:
+                shape = "root_path"
+            elif parts == ("chats",):
+                shape = "chats_collection_path"
+            elif parts[0] == "chats":
+                shape = "chat_path_id_unrecognized"
+            else:
+                shape = "non_chat_path"
+            self.chat_api_diagnostic_report.setText(
+                f"BLOCKED: откройте доступный чат в текущей вкладке (route={shape})."
+            )
+            return
+        self._chat_diagnostic_generation += 1
+        generation = self._chat_diagnostic_generation
+        chats_pages = self._chat_page_counts()
+        messages_pages = self._chat_page_counts()
+        self.chat_api_diagnostic_button.setEnabled(False)
+        self.chat_api_diagnostic_report.setText("Выполняется read-only проверка списка чатов и сообщений…")
+
+        def complete_if_current(text):
+            if generation != self._chat_diagnostic_generation:
+                return
+            self.chat_api_diagnostic_report.setText(text)
+            self._update_playerok_read_controls()
+
+        results = {"chats": None, "chat": None, "messages": None}
+        chat_count = 0
+
+        def render_if_complete():
+            if any(value is None for value in results.values()):
+                return
+            complete_if_current(
+                f"chats={results['chats']} ({chat_count}), pages={chats_pages['pages']}, "
+                f"cursor_pages={chats_pages['cursor_pages']}; chat={results['chat']}; "
+                f"messages={results['messages']}; pages={messages_pages['pages']}, "
+                f"cursor_pages={messages_pages['cursor_pages']}; content=not displayed"
+            )
+
+        def chats_ready(chats, error):
+            nonlocal chat_count
+            if error or chats is None:
+                results["chats"] = "FAIL(" + self._safe_chat_api_error(error) + ")"
+            else:
+                chat_count = len(chats)
+                results["chats"] = "PASS"
+            render_if_complete()
+
+        def chat_ready(chat, error):
+            if error or chat is None:
+                results["chat"] = "FAIL(" + self._safe_chat_api_error(error) + ")"
+            elif chat.id != chat_id:
+                results["chat"] = "FAIL(chat_identity_mismatch)"
+            else:
+                results["chat"] = "PASS"
+            render_if_complete()
+
+        def messages_ready(messages, error):
+            if error or messages is None:
+                results["messages"] = "FAIL(" + self._safe_chat_api_error(error) + ")"
+            elif not all(message.chat_id == chat_id for message in messages):
+                results["messages"] = f"FAIL(chat_id_mismatch,{len(messages)})"
+            else:
+                results["messages"] = f"PASS({len(messages)})"
+            render_if_complete()
+
+        def run_reads(user_id):
+            api.get_chats(
+                user_id,
+                chats_ready,
+                page_observer=self._chat_page_observer(chats_pages),
+            )
+            api.get_chat(chat_id, chat_ready)
+            api.get_chat_messages(
+                chat_id,
+                messages_ready,
+                page_observer=self._chat_page_observer(messages_pages),
+            )
+            self._start_chat_ws_diagnostic(api, user_id, chat_id)
+
+        account_id = listener.account_user_id if listener is not None else None
+        if account_id:
+            run_reads(account_id)
+        else:
+            api.get_viewer(lambda user_id, error: (
+                complete_if_current("BLOCKED: авторизованный viewer недоступен.")
+                if error or not user_id else run_reads(user_id)
+            ))
+
+    def _start_chat_ws_diagnostic(self, api, user_id: str, chat_id: str) -> None:
+        listener = self._chat_listener
+        if listener is None:
+            listener = PlayerokBrowserChatListener(
+                api, self.browser_panel._run_current_page_javascript, self,
+            )
+            listener.connection_state.connect(self.playerok_chat_connection_state.emit)
+            listener.subscription_event.connect(self.playerok_chat_subscription_event.emit)
+            self._chat_listener = listener
+        if not listener.active:
+            listener.start_for_read_only_diagnostic(user_id, chat_id)
+
+    @staticmethod
+    def _safe_chat_api_error(error) -> str:
+        if isinstance(error, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error):
+            return error
+        return "api_error"
+
+    def _chat_ws_connection_changed(self, state: str) -> None:
+        safe_state = state if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", state or "") else "unknown"
+        if safe_state != "stopped":
+            self._chat_ws_last_state = safe_state
+        displayed_state = (
+            f"stopped after {self._chat_ws_last_state}" if safe_state == "stopped" else safe_state
+        )
+        self.chat_ws_diagnostic_report.setText(
+            f"Chat WebSocket: {displayed_state}; chatUpdated events={self._chat_ws_event_counts['chatUpdated']}; "
+            f"chatMessageCreated events={self._chat_ws_event_counts['chatMessageCreated']}"
+        )
+
+    def _chat_ws_event_received(self, event_name: str) -> None:
+        if event_name not in self._chat_ws_event_counts:
+            return
+        self._chat_ws_event_counts[event_name] += 1
+        self._chat_ws_connection_changed("event_observed")
+
+    def read_playerok_chat_messages(self, chat_id: str, callback) -> None:
+        if self._chat_api is None or self._chat_listener is None or not self._chat_listener.active:
+            callback(None, "session_unavailable")
+            return
+        self._chat_api.get_chat_messages(chat_id, callback)
+
+    def read_playerok_chats(self, callback) -> None:
+        if self._chat_api is None or self._chat_listener is None or not self._chat_listener.active:
+            callback(None, "session_unavailable")
+            return
+        self._chat_api.get_chats(self._chat_listener.account_user_id, callback)
+
+    def read_playerok_chat(self, chat_id: str, callback) -> None:
+        if self._chat_api is None or self._chat_listener is None or not self._chat_listener.active:
+            callback(None, "session_unavailable")
+            return
+        self._chat_api.get_chat(chat_id, callback)
+
+    def send_playerok_chat_text(self, chat_id: str, text: str, callback) -> None:
+        if self._chat_api is None or self._chat_listener is None or not self._chat_listener.active:
+            callback(None, "session_unavailable")
+            return
+        self._chat_api.send_text_message(chat_id, text, callback)
+
+    def _sales_poll_status_changed(self, state: str, detail) -> None:
+        if state == "success" and isinstance(detail, dict):
+            if detail.get("baseline"):
+                message = f"Автосинхронизация: baseline сохранён ({detail.get('historical_deals', 0)} исторических сделок)."
+            else:
+                message = (
+                    f"Автосинхронизация: сделок {len(detail.get('deals', []))}, "
+                    f"новых {detail.get('new_deals', 0)}."
+                )
+            self.status_label.setText(message)
+        elif state == "read_error":
+            self.status_label.setText(
+                f"Автосинхронизация: чтение не завершено; данные не изменены. Следующая попытка через "
+                f"{self.sales_poll_interval.value()} мин. {detail or ''}"
+            )
+        elif state == "sync_error":
+            self.status_label.setText(
+                f"Автосинхронизация: снимок не сохранён ({detail}); последняя сохранённая выборка оставлена."
+            )
+        elif state == "session_lost":
+            self.status_label.setText("Автосинхронизация остановлена: страница или авторизация Playerok недоступна.")
+        elif state == "account_changed":
+            self.status_label.setText("Автосинхронизация остановлена: изменился аккаунт Playerok.")
+        elif state == "disabled":
+            self.status_label.setText("Автоматическое обновление сделок выключено.")
+        elif state == "started":
+            self.status_label.setText(
+                f"Автосинхронизация сделок включена; интервал {self.sales_poll_interval.value()} мин."
+            )
+        self._update_playerok_read_controls()
+
     def _check_browser_authentication(self) -> None:
-        if self._sales_reader is not None or self._diagnostic_sales_reader is not None or self._diagnostic_sales_starting:
+        if (
+            self._sales_reader is not None or self._diagnostic_sales_reader is not None
+            or self._diagnostic_sales_starting or self._poll_sync_worker_active
+        ):
             self.status_label.setText("Дождитесь завершения чтения продаж Playerok.")
             return
         self.check_browser_auth_button.setEnabled(False)
@@ -119,7 +598,7 @@ class MarketplacePanel(QWidget):
         self.check_browser_auth_button.setEnabled(True)
         if authorized:
             self.status_label.setText(
-                "Авторизация Playerok подтверждена. Синхронизация продаж через браузер будет подключена отдельно."
+                "Авторизация Playerok подтверждена. Используется текущая сессия встроенного браузера."
             )
         else:
             detail = error or "viewer_parse_error: ответ не подтвердил авторизацию."
@@ -132,11 +611,19 @@ class MarketplacePanel(QWidget):
             self._sales_reader is not None
             or self._diagnostic_sales_reader is not None
             or self._diagnostic_sales_starting
+            or self._poll_sync_worker_active
+            or (getattr(self, "_sales_poller", None) is not None and self._sales_poller.busy)
         )
         busy = sales_read_active or self.browser_panel.viewer_check_active
         self.check_browser_auth_button.setEnabled(not busy)
         self.sync_sales_button.setEnabled(not busy)
         self.diagnostic_sales_button.setEnabled(not busy)
+        chat_ready = bool(
+            (self._chat_api is not None and self._chat_listener is not None
+             and self._chat_listener.account_user_id)
+            or (self._playerok_auth_confirmed and self.browser_panel.sales_session_available())
+        )
+        self.chat_api_diagnostic_button.setEnabled(chat_ready and not busy)
 
     def _sync_sales(self) -> None:
         self._start_sales_sync()
@@ -147,6 +634,7 @@ class MarketplacePanel(QWidget):
             self._sales_reader is not None
             or self._diagnostic_sales_reader is not None
             or self._diagnostic_sales_starting
+            or self._poll_sync_worker_active
             or self.browser_panel.viewer_check_active
         ):
             self.diagnostic_sales_report.setText(
@@ -318,7 +806,7 @@ class MarketplacePanel(QWidget):
         if not expected_account:
             callback(None, "В заказе отсутствует подтверждённый Playerok account ID.")
             return
-        if self._sales_reader is not None:
+        if self._sales_reader is not None or self._poll_sync_worker_active:
             callback(None, "Синхронизация Playerok уже выполняется.")
             return
         self._start_sales_sync(callback, expected_account_id=expected_account)
@@ -336,7 +824,7 @@ class MarketplacePanel(QWidget):
             if callable(result_callback):
                 result_callback(None, message)
             return
-        if self._sales_reader is not None:
+        if self._sales_reader is not None or self._poll_sync_worker_active:
             if callable(result_callback):
                 result_callback(None, "Синхронизация Playerok уже выполняется.")
             return

@@ -85,7 +85,7 @@ class PlayerokImportGuardTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='delivery_orders'"
             ).fetchone()[0], 0)
 
-    def test_new_canonical_order_import_does_not_create_legacy_duplicate(self):
+    def test_paid_deal_without_proven_config_is_not_imported_as_canonical_or_legacy_order(self):
         config = self.ledger.create_listing_config_version(
             listing_id="configured-listing", source_platform="playerok",
             external_listing_id="canonical-item-id", delivery_quantity_per_deal=3,
@@ -103,12 +103,13 @@ class PlayerokImportGuardTests(unittest.TestCase):
             "status": "PAID",
         })
         with self.database.connect() as db:
-            order = db.execute(
-                "SELECT o.total_quantity,d.config_version_id FROM gd_orders o "
-                "JOIN gd_deals d ON d.deal_id=o.deal_id WHERE d.external_deal_id='new-paid' "
-                "AND d.playerok_account_id='seller-1'"
+            deal_row = db.execute(
+                "SELECT d.config_version_id FROM gd_deals d "
+                "WHERE d.external_deal_id='new-paid' AND d.playerok_account_id='seller-1'"
             ).fetchone()
-            self.assertEqual(tuple(order), (3, config["config_version_id"]))
+            self.assertIsNone(deal_row["config_version_id"])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_order_lines").fetchone()[0], 0)
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='delivery_orders'"
             ).fetchone()[0], 0)

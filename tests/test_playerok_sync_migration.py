@@ -64,6 +64,42 @@ def _legacy_schema(db: sqlite3.Connection, *, unique_external: bool = True) -> N
 
 
 class PlayerokSyncMigrationTests(unittest.TestCase):
+    def test_playerok_sync_migration_preserves_trigger_referencing_deals(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "trigger-migration.sqlite3"
+            with connect_sqlite(path) as db:
+                _legacy_schema(db)
+                db.execute("INSERT INTO gd_listings VALUES('listing-1')")
+                db.execute("INSERT INTO gd_config_versions VALUES('config-1')")
+                db.execute("""
+                    INSERT INTO gd_deals
+                    (deal_id,source_platform,external_deal_id,listing_id,config_version_id,
+                     platform_status,payload_json,created_at,playerok_account_id,is_historical)
+                    VALUES('deal-1','playerok','external-1','listing-1','config-1',
+                           'PAID','{}','now','seller-1',0)
+                """)
+                db.execute("INSERT INTO gd_orders VALUES('order-1','deal-1')")
+                db.execute("""
+                    CREATE TRIGGER gd_orders_playerok_delivered
+                    AFTER UPDATE OF deal_id ON gd_orders
+                    BEGIN
+                        SELECT deal_id FROM gd_deals WHERE deal_id=NEW.deal_id;
+                    END
+                """)
+                db.commit()
+
+                self.assertTrue(apply_delivery_ledger_migrations(db))
+                trigger = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='gd_orders_playerok_delivered'"
+                ).fetchone()
+                self.assertIsNotNone(trigger)
+                self.assertIn("FROM gd_deals", trigger[0])
+                db.execute("UPDATE gd_orders SET deal_id='deal-1' WHERE order_id='order-1'")
+                self.assertEqual(
+                    db.execute("SELECT deal_id FROM gd_deals").fetchone()[0], "deal-1"
+                )
+
     def test_v1_upgrade_preserves_rows_and_enables_account_scoped_unique_identity(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "migration.sqlite3"
