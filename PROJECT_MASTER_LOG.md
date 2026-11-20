@@ -6047,3 +6047,44 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 **Текущий активный блок:** 1 — C.2, доменная модель.  
 **Следующее действие:** только после отдельного согласования начать C.2 с чтения подробного плана и аудита C.1, затем подготовить модель и список открытых решений без изменения кода/БД до утверждения пользователем.
 
+## Блок 1 / C.2 — первичный аудит доменной модели на HEAD 6e1af4e (2026-11-20)
+
+### Что прочитано
+- `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`, раздел C.2.1–C.2.7.
+- `docs/superpowers/audits/2026-11-06-stage-c1-current-delivery-map.md`.
+- Текущие на `work/local-sync` исходники: `core/delivery/models.py`, `core/delivery/recipes.py`, `core/delivery/ledger.py`, `core/delivery/reservation_service.py`, `core/delivery/dispatcher.py`, `core/delivery/reconciliation.py`, `core/database/ledger_migrations.py`, `integrations/playerok/sync.py`, `games/steam_cards/order_preflight.py`, `games/steam_cards/badge_allocation.py`, `games/steam_cards/recipient_badge.py`, `games/steam_cards/shared_sets.py`, `games/steam_cards/selection.py`, `games/steam_cards/owned_selection.py`.
+
+### Подтверждено в коде — не создавать повторно
+- Уже существуют dataclass-модели Listing, ConfigVersion, Deal, Order, OrderLine, DeliveryLeg, DeliveryAttempt и ResourceReservation в `core/delivery/models.py`.
+- Уже существует SQLite ledger `gd_*`: listings, immutable config versions, deals, orders, order lines, delivery legs, delivery attempts, resource reservations и legacy order map.
+- ConfigVersion защищён SQLite triggers от UPDATE/DELETE. Для конфигурации уже есть versioned typed Recipe/RecipeItem с разными спецификациями Steam Card Set, Steam Asset и Digital Text Unit.
+- Listing-owned stock представлен строками `gd_resource_reservations` с `owner_type='listing'`, `listing_generation`, `config_version_id`, game/AppID/context, bot, asset и units. Отдельной таблицы `ListingStockAllocation` в проверенной схеме нет; возможная семантика — логический aggregate по listing + generation, без дублирования ресурсов.
+- Playerok sync создаёт внутренний Order только для PAID после baseline и при точной привязке к Listing/ConfigVersion. Количество берётся из `delivery_quantity_per_deal` либо из суммы `RecipeItem.quantity_per_order`; денежное `source_amount` не используется как quantity.
+- Уже реализован чистый детерминированный multi-game allocator `plan_badge_allocation`; tie-break C.2.7 отмечен как ранее утверждённый пользователем. Multi-game preflight пока остаётся отдельным opt-in методом.
+- Площадочный статус сделки хранится отдельно от внутренних order/leg/attempt статусов. Dispatcher и reconciliation различают dispatching, unknown, sent-to-Steam и accepted; созданный offer не считается принятым покупателем.
+
+### Расхождения модели/схемы, требующие спецификации
+1. Dataclass `Deal` требует непустые `listing_id` и `config_version_id`, но действующая Playerok migration разрешает оба NULL только для `listing_resolution_status='unresolved'`. В БД также есть `playerok_account_id`, `is_historical`, `source_listing_ref`, `listing_resolution_status`; dataclass их не отражает.
+2. Dataclass `ConfigVersion` не отражает уже существующие typed recipe fields (`recipe_schema_version`, `recipe_items_json`). Dataclass `OrderLine` не отражает DB `config_version_id`. Dataclass `ResourceReservation` не отражает DB `config_version_id`, `legacy_owner_id`, `listing_generation`. Необходимо решить, являются ли dataclasses каноническими domain DTO и синхронизировать их с реальной схемой, либо явно обозначить их как частичные projection types.
+3. Спецификация требует, чтобы DeliveryLeg фиксировала получателя. В проверенной таблице `gd_delivery_legs` и dataclass нет отдельного `recipient_steam_id`; dispatch получает сохранённый trade URL через credential store. Нужна явная модель безопасной связи leg → recipient, не сохраняя trade token/секретный URL в открытом виде.
+4. В SQL у status-полей в основном свободный TEXT, а dataclasses используют str. Реальные состояния распределены по sync/dispatcher/reconciliation. C.2 должен зафиксировать раздельные state machines и разрешённые переходы, не смешивая Playerok PAID/SENT/CONFIRMED с внутренними Order/DeliveryLeg/DeliveryAttempt.
+5. `Order.total_quantity` сейчас заполняется суммой количеств RecipeItem. Для заказа с позициями разных размерностей такая сумма может не иметь физического смысла. Требуется явно определить, является ли поле legacy aggregate, должно ли оно иметь значение только для однородных линий или должно быть заменено/дополнено суммами по OrderLine и единицами измерения.
+6. Отдельной таблицы ListingStockAllocation нет; проверить и формально определить, достаточно ли текущего набора listing-owned reservation rows + generation как агрегата stock allocation, включая атомарный перевод в order-owned reservations.
+
+### Обнаружено прямое противоречие в правилах Steam Cards
+- C.2.1 и C.2.6 говорят, что для покупателя используется только подтверждённый уровень обычного значка; buyer card inventory не запрашивается и не участвует в расчёте.
+- Но текущий `SteamCardOrderPreflight.prepare_multi_game()` требует `buyer_complete_sets_by_app_id` и `buyer_inventory_verified`, а затем вычитает buyer complete sets из remaining badge capacity.
+- Это несовместимо с указанным бизнес-правилом и с ASF-native путём C.2.6. Не считать этот opt-in preflight production-ready и не подключать его к рабочему пути до устранения противоречия. Требуется подтвердить, что приоритет остаётся за C.2.1/C.2.6: только badge level покупателя, без запроса/учёта его inventory; затем скорректировать контракт preflight и тесты.
+
+### Не закрытые технические gates (не проверялись live)
+- ASF-native методы session-aware HTTP и чтение badge info описаны в C.2.6, но реальные ответы badge endpoint на нескольких наших ботах и на публичном профиле покупателя не проверялись в этой сессии.
+- Не подтверждены live точный состав обычного набора, устойчивое сопоставление badge `markethash` ↔ seller `MarketHashName`, поведение privacy и корректное отличие level=0 от отсутствующих/скрытых данных.
+- Live Playerok/Steam/ASF, пользовательская SQLite и торговые операции не использовались.
+
+### Ограничения этой сессии
+- Код, тесты, миграции, UI и пользовательская БД не изменялись.
+- Тесты не запускались: выполнен только read-only аудит исходников и документации GitHub.
+- C.2 не закрыт. Следующая работа — разрешить противоречие buyer inventory, затем утвердить полную таблицу сущностей/полей/identity, quantity semantics и state transitions. До этого не менять dataclasses, schema, миграции или UI.
+
+**Статус блока 1 / C.2:** аудит текущего состояния выполнен; спецификация и согласование остаются в работе.
+
