@@ -252,6 +252,17 @@ class PlayerokBrowserGraphQLSalesReader:
         self._records: dict[str, PlayerokDealRecord] = {}
         self._expected_total: int | None = None
         self._pages = 0
+        self.initial_viewer_received = False
+        self.viewer_matched: bool | None = None
+        self.pagination_complete = False
+
+    @property
+    def pages_read(self) -> int:
+        return self._pages
+
+    @property
+    def deals_read(self) -> int:
+        return len(self._records)
 
     def start(self) -> "PlayerokBrowserGraphQLSalesReader":
         if self._completed:
@@ -289,8 +300,11 @@ class PlayerokBrowserGraphQLSalesReader:
             if type(viewer.get("id")) is not str or not viewer["id"].strip():
                 raise PlayerokGraphQLTransportError("invalid_viewer")
             account_id = _required_id(viewer["id"])
+            self.initial_viewer_received = True
             if self.expected_account_user_id and account_id != self.expected_account_user_id:
+                self.viewer_matched = False
                 raise PlayerokGraphQLTransportError("account_mismatch")
+            self.viewer_matched = True
             self._account_id = account_id
             self._fetch_next_page()
         except PlayerokGraphQLTransportError as exc:
@@ -305,9 +319,12 @@ class PlayerokBrowserGraphQLSalesReader:
         if self._pages > self.max_pages:
             self._finish(None, "page_limit")
             return
+        pagination = {"first": self.page_size}
+        if self._cursor is not None:
+            pagination["after"] = self._cursor
         variables = {
-            "pagination": {"first": self.page_size, "after": self._cursor},
-            "filter": {"userId": self._account_id, "direction": "Out", "status": None},
+            "pagination": pagination,
+            "filter": {"userId": self._account_id, "direction": "Out"},
             "showForbiddenImage": True,
         }
         request_cursor = self._cursor
@@ -341,6 +358,7 @@ class PlayerokBrowserGraphQLSalesReader:
             if not page_info["hasNextPage"]:
                 if self._expected_total is not None and self._expected_total != len(self._records):
                     raise PlayerokGraphQLTransportError("incomplete_snapshot")
+                self.pagination_complete = True
                 self._complete_snapshot()
                 return
             next_cursor = page_info.get("endCursor")

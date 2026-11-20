@@ -5,6 +5,7 @@ import json
 import re
 import tempfile
 import unittest
+from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -16,7 +17,7 @@ from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
 from core.delivery.recipes import normalize_legacy_cs2_selector_options
 from integrations.playerok import browser_sales
-from integrations.playerok.browser_sales import BrowserSalesSnapshot, is_trusted_browser_sales_snapshot
+from integrations.playerok.browser_sales import BrowserSalesSnapshot
 from integrations.playerok.listing_config import PlayerokListingConfigService
 import app.playerok_browser as playerok_browser
 from app.playerok_browser import (
@@ -26,8 +27,15 @@ from app.platforms_panel import MarketplacePanel
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QUrl, Qt
 from integrations.playerok.sync import PlayerokDealSyncService
-from tests.playerok_freshness_fixtures import reader_completed_snapshot
+from integrations.playerok.graphql_http import (
+    _issue_graphql_sales_snapshot,
+    is_fresh_trusted_graphql_sales_snapshot,
+)
 
+
+def trusted_graphql_snapshot(account_user_id, deals):
+    now = monotonic()
+    return _issue_graphql_sales_snapshot(account_user_id, deals, now, now)
 
 
 class PlayerokListingConfigTests(unittest.TestCase):
@@ -68,8 +76,8 @@ class PlayerokListingConfigTests(unittest.TestCase):
         calls = []
         outcomes = []
 
-        def read_from_browser(callback):
-            calls.append("browser-page")
+        def read_from_browser(callback, *, expected_account_user_id=None):
+            calls.append(("browser-page", expected_account_user_id))
             callback(expected_snapshot, None)
             return fake_reader
 
@@ -83,7 +91,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
             )
 
         self.assertIs(reader, fake_reader)
-        self.assertEqual(calls, ["browser-page"])
+        self.assertEqual(calls, [("browser-page", None)])
         self.assertEqual(outcomes, [(expected_snapshot, None)])
         self.assertIsNone(panel._graphql_read_worker)
         panel.close()
@@ -706,7 +714,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 )
                 callbacks = []
                 panel.browser_panel.read_page_hostname = lambda callback, value=page_hostname: callback(value)
-                panel.browser_panel.read_sales = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
+                panel.browser_panel.read_graphql_sales_snapshot = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
                 panel.diagnostic_sales_button.click()
                 callbacks[0](None, "http_error: private response detail")
                 report = panel.diagnostic_sales_report.text()
@@ -726,7 +734,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
         )
         callbacks = []
         panel.browser_panel.read_page_hostname = lambda callback: callback("playerok.com")
-        panel.browser_panel.read_sales = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
+        panel.browser_panel.read_graphql_sales_snapshot = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
         with patch.object(browser_sales, "_GRAPHQL_URL", endpoint):
             panel.diagnostic_sales_button.click()
             callbacks[0](None, "fetch_error: safe failure")
@@ -754,7 +762,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 )
                 callbacks = []
                 panel.browser_panel.read_page_hostname = lambda callback: callback("playerok.com")
-                panel.browser_panel.read_sales = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
+                panel.browser_panel.read_graphql_sales_snapshot = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
                 panel.diagnostic_sales_button.click()
                 callbacks[0](None, "http_error: private response detail token=secret")
                 report = panel.diagnostic_sales_report.text()
@@ -774,7 +782,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
 
         service = SyncService()
         panel = MarketplacePanel(database=self.db, sync_service=service)
-        snapshot = reader_completed_snapshot("private-account-id", [{
+        snapshot = trusted_graphql_snapshot("private-account-id", [{
             "deal_id": "private-deal-id", "listing_id": "private-listing-id",
             "chat_id": "private-chat-id", "status": "PAID", "buyer": "private-buyer",
         }])
@@ -786,14 +794,12 @@ class PlayerokListingConfigTests(unittest.TestCase):
         callbacks = []
         calls = []
 
-        def read_sales(callback, *, on_request_started=None):
+        def read_graphql_sales(callback, **_kwargs):
             calls.append(1)
-            if on_request_started is not None:
-                on_request_started()
             callbacks.append(callback)
             return reader
 
-        panel.browser_panel.read_sales = read_sales
+        panel.browser_panel.read_graphql_sales_snapshot = read_graphql_sales
         with (
             patch.object(self.db, "connect", side_effect=AssertionError("diagnostic must not open SQLite")),
             patch.object(panel, "_start_sales_sync", side_effect=AssertionError("diagnostic must bypass normal sync")) as normal_sync,
@@ -817,7 +823,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 "private-chat-id", "private-buyer",
             ):
                 self.assertNotIn(private_value, report)
-            self.assertTrue(is_trusted_browser_sales_snapshot(snapshot))
+            self.assertTrue(is_fresh_trusted_graphql_sales_snapshot(snapshot))
             self.assertEqual(service.calls, [])
             self.assertEqual(calls, [1])
             normal_sync.assert_not_called()
@@ -829,7 +835,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
 
     def test_saved_sales_rows_carry_browser_account_for_scoped_canonical_import(self):
         panel = MarketplacePanel(database=self.db, sync_service=PlayerokDealSyncService(self.db))
-        snapshot = reader_completed_snapshot("seller-account", [
+        snapshot = trusted_graphql_snapshot("seller-account", [
             {"deal_id": "deal-account-scoped", "listing_id": None, "status": "PAID"}
         ])
         panel._sales_read_completed(snapshot, None)
@@ -853,7 +859,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
             cancel=lambda **_kwargs: None,
         )
         callbacks = []
-        panel.browser_panel.read_sales = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
+        panel.browser_panel.read_graphql_sales_snapshot = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
         with patch.object(self.db, "connect", side_effect=AssertionError("diagnostic must not open SQLite")):
             panel.diagnostic_sales_button.click()
             callbacks[0](None, "http_error: private response details")
@@ -887,7 +893,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
                     cancel=lambda **_kwargs: None,
                 )
                 callbacks = []
-                panel.browser_panel.read_sales = lambda callback, **_kwargs: (
+                panel.browser_panel.read_graphql_sales_snapshot = lambda callback, **_kwargs: (
                     callbacks.append(callback) or reader
                 )
                 panel.diagnostic_sales_button.click()
@@ -921,7 +927,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
             with self.subTest(category=category):
                 panel = MarketplacePanel(database=self.db)
                 callbacks = []
-                panel.browser_panel.read_sales = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
+                panel.browser_panel.read_graphql_sales_snapshot = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
                 panel.diagnostic_sales_button.click()
                 callbacks[0](None, error)
                 report = panel.diagnostic_sales_report.text()
@@ -939,7 +945,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
             cancel=lambda **_kwargs: None,
         )
         callbacks = []
-        panel.browser_panel.read_sales = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
+        panel.browser_panel.read_graphql_sales_snapshot = lambda callback, **_kwargs: (callbacks.append(callback) or reader)
         panel.diagnostic_sales_button.click()
         callbacks[0](untrusted_snapshot, None)
         report = panel.diagnostic_sales_report.text()
@@ -960,12 +966,12 @@ class PlayerokListingConfigTests(unittest.TestCase):
         callbacks = []
         calls = []
 
-        def read_sales(callback, **_kwargs):
+        def read_graphql_sales(callback, **_kwargs):
             calls.append(1)
             callbacks.append(callback)
             return reader
 
-        panel.browser_panel.read_sales = read_sales
+        panel.browser_panel.read_graphql_sales_snapshot = read_graphql_sales
         panel.diagnostic_sales_button.click()
         panel.diagnostic_sales_button.click()
         self.assertEqual(calls, [1])
@@ -994,12 +1000,12 @@ class PlayerokListingConfigTests(unittest.TestCase):
             def cancel(self, _reason):
                 pass
 
-        panel.browser_panel.read_sales = lambda callback, on_request_started=None: (
+        panel.browser_panel.read_graphql_sales_snapshot = lambda callback, *, expected_account_user_id=None: (
             pending.append(callback) or Reader()
         )
         completed = []
         panel.read_sales_for_delivery("expected-account", lambda snapshot, error: completed.append((snapshot, error)))
-        snapshot = reader_completed_snapshot("other-account", [
+        snapshot = trusted_graphql_snapshot("other-account", [
             {"deal_id": "deal-1", "listing_id": "listing-1", "status": "PAID"}
         ])
         pending[0](snapshot, None)

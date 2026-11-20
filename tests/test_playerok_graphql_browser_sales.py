@@ -89,7 +89,15 @@ class PlayerokGraphQLBrowserSalesTests(unittest.TestCase):
         )
         self.assertEqual([call[0] for call in transport_calls_from_scripts(js_responses)], ["viewer", "deals", "deals"])
         self.assertIn('"credentials":"include"', "\n".join(js_responses))
-        self.assertIn('"after":"cursor-1"', unquote("\n".join(js_responses)))
+        decoded_scripts = unquote("\n".join(js_responses))
+        self.assertIn('"after":"cursor-1"', decoded_scripts)
+        self.assertNotIn('"after":null', decoded_scripts)
+        self.assertNotIn('"status":null', decoded_scripts)
+        self.assertEqual(reader.pages_read, 2)
+        self.assertEqual(reader.deals_read, 2)
+        self.assertTrue(reader.initial_viewer_received)
+        self.assertTrue(reader.viewer_matched)
+        self.assertTrue(reader.pagination_complete)
         for forbidden in ("document.cookie", "localStorage", "sessionStorage", "Authorization:"):
             self.assertNotIn(forbidden, "\n".join(js_responses))
 

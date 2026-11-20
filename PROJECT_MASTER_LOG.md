@@ -5946,3 +5946,56 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Текущий пользовательский GameDelivery процесс был уже открыт на известной странице чата, однако отображал выполняющуюся проверку авторизации; новая версия кода в этот процесс не подменялась. Приложение не перезапускалось. Поэтому transport и интеграция подтверждены mocks, но фактический read-only запрос новой версии, включая запрос эталонных `deal_id`/`chat_id`, live не выполнен. Не записывать live canonical listing/message results и не считать новую авторизацию live подтверждённой. Пользовательская БД и состояния Playerok не менялись.
 
 Следующий ограниченный шаг для live-подтверждения: после штатного запуска обновлённой локальной версии на уже разрешённой сессии выполнить только viewer → deal → chat → chatMessages GET и сохранить в отчёт безопасные идентификаторы/времена, не раскрывая Trade URL/token; не включать изменения статусов, обработку заказов, reservations или доставку. Commit/push не выполнялись.
+
+## Task68 — единый GraphQL-маршрут для диагностики и delivery preflight (2026-11-20)
+
+Исходная точка: локальные файлы, переданные пользователем в `playerok_patch_context.zip`. Изменения подготовлены как отдельный patch; пользовательская папка, SQLite и GitHub не изменялись.
+
+### Изменения в patch
+
+- Диагностическое чтение продаж переключено с legacy `BrowserSalesReader` на `PlayerokBrowserGraphQLSalesReader`; диагностический отчёт проверяет GraphQL snapshot и его provenance.
+- Delivery preflight (`read_sales_for_delivery` → `_start_sales_sync`) переведён на тот же GraphQL reader, с передачей ожидаемого `account_user_id` непосредственно в reader. Сохранение выполняется через `sync_graphql_snapshot`.
+- Таймаут preflight отменяет активный GraphQL reader; busy-check учитывает GraphQL reader, чтобы не запускать конкурирующие чтения.
+- Reader публикует безопасные диагностические метрики: число страниц и сделок, факт получения viewer, совпадение viewer и завершение пагинации.
+- Первая deals-страница не отправляет пустые `after:null` и `status:null`; cursor добавляется только для последующих страниц. Полная пагинация и fail-closed проверки сохранены.
+- Тест GraphQL browser sales расширен проверками начального запроса и диагностических метрик.
+
+### Проверки и ограничения
+
+- Patch сформирован относительно точных файлов из архива пользователя; проверка применимости выполняется на копии этих же файлов перед выдачей.
+- До применения пользователем тесты проекта не запускались; live Playerok, браузерная сессия, SQLite, Steam и ASF не использовались.
+- Commit/push и любые изменения GitHub не выполнялись.
+
+### Task68 follow-up — исправление контрактов Playerok GraphQL-тестов (2026-11-20)
+
+- Разобраны все 28 ошибок и 2 провала из полного Playerok-набора: трассировки указывают на устаревшие тестовые заглушки, которые продолжали подменять legacy `read_sales`, тогда как диагностический и delivery-потоки уже используют `read_graphql_sales_snapshot`.
+- Тестовые заглушки диагностического чтения и delivery preflight приведены к GraphQL reader API; mock для reader factory принимает `expected_account_user_id`.
+- Для проверок trusted GraphQL snapshot используется объект, выпущенный штатным внутренним issuer, а не legacy `BrowserSalesSnapshot`. Это позволяет тестировать `sync_graphql_snapshot` и freshness/provenance gate по актуальному контракту.
+- Изменения ограничены тестовыми контрактами; production-поведение `MarketplacePanel` не ослабляется и legacy snapshot не допускается в GraphQL sync.
+- После применения patch необходимо повторить полный набор `python -m unittest discover -s tests -p test_playerok*.py -v`. Результат заранее не заявляется: patch подготовлен по traceback и статической проверке загруженных файлов, запуск тестов в окружении пользователя не выполнялся.
+
+### Task68 follow-up — исправление оставшихся ошибок Playerok GraphQL (2026-11-20)
+
+- По результату `tests.test_playerok_browser_and_listing_config`: 42/44 теста прошли; оставшиеся сбои были связаны с использованием `.get()` у типизированного `PlayerokGraphQLSalesSnapshot` и проверкой его доверенности legacy-предикатом `is_trusted_browser_sales_snapshot`.
+- Delivery account guard теперь читает `snapshot.account_user_id` — типизированное свойство GraphQL snapshot; данные снимка остаются объектом, передаваемым в `sync_graphql_snapshot`.
+- Диагностический тест проверяет GraphQL snapshot через `is_fresh_trusted_graphql_sales_snapshot`; legacy `BrowserSalesSnapshot` больше не используется как положительный trusted fixture.
+- Изменения не ослабляют проверку provenance/freshness и не разрешают legacy snapshot для GraphQL sync.
+
+### Task68 — итоговая проверка Playerok GraphQL unification (2026-11-20)
+
+#### Результаты тестирования
+- `python -m unittest tests.test_playerok_browser_and_listing_config -v` — 44 теста, OK.
+- `python -m unittest discover -s tests -p test_playerok*.py -v` — 258 тестов, OK, без ошибок и падений.
+- Предупреждения Qt о шрифтах и `raise()` не повлияли на результаты тестов.
+
+#### Подтверждённые исправления
+- `app/platforms_panel.py` использует типизированное свойство `snapshot.account_user_id`, а не `.get()`.
+- Для проверки доверенности GraphQL snapshot используется `is_fresh_trusted_graphql_sales_snapshot`.
+- Legacy `BrowserSalesSnapshot` не используется как положительный trusted fixture для GraphQL sync.
+
+#### Границы проверки
+- Подтверждены автоматизированные тесты Playerok.
+- Живое чтение Playerok, изменение статусов сделок, импорт реальных заказов, отправка сообщений и Steam/ASF-доставка не выполнялись.
+- Реальная SQLite-база пользователя не затрагивалась.
+- Изменения применены локально. Коммит и push не выполнялись.
+- Следующий шаг — проверить итоговый локальный diff и состояние ветки `work/local-sync`. К следующему этапу автоматизации полного цикла Playerok не переходить до завершения упаковки Windows.
