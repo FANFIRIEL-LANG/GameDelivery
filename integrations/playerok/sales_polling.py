@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from integrations.playerok.browser_sales import is_fresh_trusted_browser_sales_snapshot
+from integrations.playerok.graphql_http import is_fresh_trusted_graphql_sales_snapshot
 
 
 class PlayerokSalesPoller:
@@ -130,7 +131,10 @@ class PlayerokSalesPoller:
             return
         if self._reader is reader:
             self._reader = None
-        if error or not is_fresh_trusted_browser_sales_snapshot(snapshot):
+        if error or not (
+            is_fresh_trusted_browser_sales_snapshot(snapshot)
+            or is_fresh_trusted_graphql_sales_snapshot(snapshot)
+        ):
             self._read_failed(
                 generation,
                 reader,

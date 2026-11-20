@@ -20,6 +20,7 @@ from integrations.playerok.sync import PlayerokDealSyncService
 from integrations.playerok.sales_polling import PlayerokSalesPoller
 from integrations.playerok.browser_chat_api import PlayerokBrowserChatAPI, WebEngineGraphQLTransport
 from integrations.playerok.browser_chat_listener import PlayerokBrowserChatListener
+from integrations.playerok.graphql_http import PlayerokBrowserGraphQLSalesReader
 
 
 class _SnapshotSyncSignals(QObject):
@@ -36,9 +37,11 @@ class _SnapshotSyncWorker(QRunnable):
 
     def run(self):
         try:
-            self.signals.completed.emit(
-                self.sync_service.sync_browser_snapshot(self.snapshot), None, self.account_user_id
-            )
+            if isinstance(self.snapshot, BrowserSalesSnapshot):
+                result = self.sync_service.sync_browser_snapshot(self.snapshot)
+            else:
+                result = self.sync_service.sync_graphql_snapshot(self.snapshot)
+            self.signals.completed.emit(result, None, self.account_user_id)
         except Exception as exc:
             self.signals.completed.emit(None, type(exc).__name__, self.account_user_id)
 
@@ -110,6 +113,7 @@ class MarketplacePanel(QWidget):
         self._poll_sync_worker_active = False
         self._poll_sync_callback = None
         self._poll_sync_worker = None
+        self._graphql_read_worker = None
         self._sales_sync_timeout = QTimer(self)
         self._sales_sync_timeout.setSingleShot(True)
         self._sales_sync_timeout.setInterval(60_000)
@@ -145,7 +149,7 @@ class MarketplacePanel(QWidget):
         root.addWidget(self.orders_table, 1)
 
         actions = QHBoxLayout()
-        self.sync_sales_button = QPushButton("Синхронизировать продажи из браузера")
+        self.sync_sales_button = QPushButton("Синхронизировать сделки через GraphQL")
         self.sync_sales_button.clicked.connect(self._sync_sales)
         actions.addWidget(self.sync_sales_button)
         self.auto_sales_sync_checkbox = QCheckBox("Автоматически обновлять сделки")
@@ -174,9 +178,11 @@ class MarketplacePanel(QWidget):
         self._sales_poll_timer = QTimer(self)
         self._sales_poller = PlayerokSalesPoller(
             timer=self._sales_poll_timer,
-            reader_factory=self._start_poll_reader,
+            reader_factory=self._start_graphql_poll_reader,
             sync_snapshot=self._dispatch_poll_snapshot_sync,
-            session_available=self.browser_panel.sales_session_available,
+            session_available=lambda: (
+                self._playerok_auth_confirmed and self.browser_panel.sales_session_available()
+            ),
             externally_busy=self._sales_read_busy,
             status_changed=self._sales_poll_status_changed,
             interval_ms=poll_interval * 60_000,
@@ -200,6 +206,7 @@ class MarketplacePanel(QWidget):
     def _sales_read_busy(self) -> bool:
         return bool(
             self._sales_reader is not None
+            or self._graphql_read_worker is not None
             or self._diagnostic_sales_reader is not None
             or self._diagnostic_sales_starting
             or self.browser_panel.viewer_check_active
@@ -227,6 +234,41 @@ class MarketplacePanel(QWidget):
         self._sales_reader = reader
         self._update_playerok_read_controls()
         return reader
+
+    def _start_graphql_poll_reader(self, completed):
+        if self.sync_service is None:
+            raise RuntimeError("Playerok sync service is not configured.")
+        if self._graphql_read_worker is not None:
+            raise RuntimeError("GraphQL sales read is already running.")
+        holder: dict[str, Any] = {"reader": None, "pending": None}
+
+        def reader_completed(snapshot, error):
+            reader = holder["reader"]
+            if reader is None:
+                holder["pending"] = (snapshot, error)
+                return
+            self._graphql_sales_read_completed(reader, snapshot, error, completed)
+
+        try:
+            reader = self.browser_panel.read_graphql_sales_snapshot(reader_completed)
+        except RuntimeError as exc:
+            raise RuntimeError(str(exc) if str(exc) in {
+                "browser_session_unavailable", "browser_profile_unavailable"
+            } else "browser_session_unavailable") from None
+        holder["reader"] = reader
+        self._graphql_read_worker = reader
+        self._update_playerok_read_controls()
+        pending = holder["pending"]
+        if pending is not None:
+            self._graphql_sales_read_completed(reader, *pending, completed)
+        return reader
+
+    def _graphql_sales_read_completed(self, reader, snapshot, error, completed):
+        if self._graphql_read_worker is not reader:
+            return
+        self._graphql_read_worker = None
+        self._update_playerok_read_controls()
+        completed(snapshot, error)
 
     def _dispatch_poll_snapshot_sync(self, snapshot, completed) -> None:
         if self.sync_service is None:
@@ -609,6 +651,7 @@ class MarketplacePanel(QWidget):
     def _update_playerok_read_controls(self) -> None:
         sales_read_active = (
             self._sales_reader is not None
+            or self._graphql_read_worker is not None
             or self._diagnostic_sales_reader is not None
             or self._diagnostic_sales_starting
             or self._poll_sync_worker_active
@@ -626,7 +669,55 @@ class MarketplacePanel(QWidget):
         self.chat_api_diagnostic_button.setEnabled(chat_ready and not busy)
 
     def _sync_sales(self) -> None:
-        self._start_sales_sync()
+        if self._sales_read_busy():
+            self.status_label.setText("Синхронизация Playerok уже выполняется.")
+            return
+        self.status_label.setText("Читаю все страницы сделок Playerok через GraphQL…")
+        try:
+            self._start_graphql_poll_reader(self._manual_graphql_snapshot_ready)
+        except RuntimeError as exc:
+            messages = {
+                "browser_session_unavailable": "Откройте авторизованную страницу Playerok во встроенном браузере.",
+                "browser_profile_unavailable": "Профиль встроенного браузера Playerok недоступен.",
+            }
+            self.status_label.setText(
+                "GraphQL-синхронизация не запущена: "
+                + messages.get(str(exc), "не удалось подготовить браузерное чтение.")
+            )
+
+    def _manual_graphql_snapshot_ready(self, snapshot, error):
+        if error or snapshot is None:
+            if error == "session_expired":
+                message = "Сессия Playerok истекла. Проверь авторизацию и повтори синхронизацию."
+            elif error in {"page_lost", "timeout"}:
+                message = "Страница Playerok недоступна; данные не изменены. Откройте страницу и повторите чтение."
+            else:
+                message = f"GraphQL-снимок не получен полностью ({error or 'read_error'}); данные не изменены."
+            self.status_label.setText(message)
+            return
+
+        def synced(result, sync_error):
+            if sync_error or not isinstance(result, dict):
+                self.status_label.setText(
+                    f"Сделки не сохранены ({sync_error or 'sync_error'}); предыдущие данные сохранены."
+                )
+                return
+            deals = result.get("deals", [])
+            self._show_orders([
+                {**deal, "account_user_id": snapshot.account_user_id}
+                for deal in deals if isinstance(deal, dict)
+            ])
+            if result.get("baseline"):
+                self.status_label.setText(
+                    f"Baseline завершён: {result.get('historical_deals', 0)} исторических сделок."
+                )
+            else:
+                self.status_label.setText(
+                    f"GraphQL-синхронизация завершена: получено {len(deals)}, "
+                    f"новых {result.get('new_deals', 0)}."
+                )
+
+        self._dispatch_poll_snapshot_sync(snapshot, synced)
 
     def _diagnostic_read_sales(self) -> None:
         """Run BrowserSalesReader directly and report only safe aggregate diagnostics."""
@@ -806,7 +897,7 @@ class MarketplacePanel(QWidget):
         if not expected_account:
             callback(None, "В заказе отсутствует подтверждённый Playerok account ID.")
             return
-        if self._sales_reader is not None or self._poll_sync_worker_active:
+        if self._sales_reader is not None or self._graphql_read_worker is not None or self._poll_sync_worker_active:
             callback(None, "Синхронизация Playerok уже выполняется.")
             return
         self._start_sales_sync(callback, expected_account_id=expected_account)

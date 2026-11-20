@@ -737,3 +737,26 @@ HEAD `368c3dc85fa49f729feca7573d05f225bbfa846e`, branch `work/local-sync`.
 - Целевые проверки: 96 sync/sales/polling/import tests PASS; два pinned Recipe materialization tests PASS; compileall PASS. Только временные SQLite и fake responses; пользовательская БД и live/external services не использовались. Commit/push нет.
 
 Дальше: для разрешённой подготовки PAID сначала согласовать/получить authoritative payment-time или иной доказуемый ConfigVersion binding. До этого не назначать latest version и не создавать заказ/резервы. `PLAYEROK_LOCAL_REVIEW.patch` не открывался.
+
+## Task59 — background read-only GraphQL transport (2026-11-20)
+
+`integrations/playerok/graphql_http.py` добавляет `curl_cffi` HTTP transport и typed read-only client: viewer, deals (PAID/SENT/CONFIRMED) с полной cursor/totalCount проверкой, deal, listings, chats, chat details и message history. Существующий `PlayerokBrowserChatAPI`/typed normalizers/persisted query hashes переиспользуются; mutation names не проходят allowlist. `PlayerokAdapter.create_read_only_graphql_client()` использует текущий keyring session record. Новая версия keyring записи хранит token, User-Agent и allowlist cookies только через keyring; token-only записи читаются для обратной совместимости. В существующей панели есть явное действие для чтения allowlist cookies из текущего WebEngine profile; оно не запускается автоматически. Сброс профиля также пытается удалить keyring GraphQL context.
+
+Целевой тестовый набор — 183 PASS: новый GraphQL HTTP, keyring/session, GraphQL headers, HTTP errors, read-only sales, browser chat API/listener, browser/listing config, marketplace integrations, browser sales и sync. `compileall` — PASS; `git diff --check` — PASS с обычными LF/CRLF warnings. Тесты — только fake HTTP/keyring; не использовались GUI, live Playerok, пользовательская SQLite, ASF или Steam. `curl_cffi` не установлен в текущем Python interpreter, поэтому native Session import/упаковка не проверялись.
+
+Ограничения: новый HTTP transport не проверялся live. Qt `loadAllCookies()` асинхронен и не сообщает отдельный completion-сигнал; capture ограничен quiet window + timeout и требует token cookie, поэтому полнота cookie context пока не подтверждена. Результат GraphQL-запросов, текущая validity persisted contracts через новый транспорт, Cloudflare/session recovery и compatibility curl_cffi в упакованном Windows runtime остаются непроверенными. Новая загрузка не подключена к business sync/poller или delivery; Task52.1 ConfigVersion/baseline safeguards не изменены, никакие заказы/резервы/сообщения/статусы/offers не создаются.
+
+Task59 не коммитилась и не отправлялась. До следующего шага: проверить compile/diff, сохранить изменённые 4 исходных незакоммиченных Harness/patch entries; затем согласовать изолированную runtime-проверку curl_cffi и отдельно read-only live query. Не переводить результаты в обработку сделок без доказанной исторической ConfigVersion.
+
+## Task60 — checkpoint интеграции Playerok GraphQL sync (2026-11-20)
+
+HEAD до задания `5ee6e99af4764875ece85aad41369a69c258e4af`, branch `work/local-sync`; прежние 12 status entries сохранены, `PLAYEROK_LOCAL_REVIEW.patch` не открывался. Commit/push отсутствуют.
+
+- Ручное действие синхронизации и существующий poller теперь запрашивают сделки через background GraphQL HTTP client, полученный из текущего keyring auth context. Polling остаётся account-scoped и не пересекается; BrowserSalesReader сохранён для отдельной доставки freshness-check.
+- Snapshot выпускается только после viewer validation и полной unfiltered cursor pagination. Повтор курсора, неполная страница, totalCount mismatch, auth/session ошибка или account mismatch отклоняют снимок до sync. Смена аккаунта по-прежнему останавливает poller.
+- Snapshot нормализуется в существующий контракт; `deal_id`, `chat_id`, canonical `item.id` разделены; slug не становится listing ID. Один чат может содержать несколько независимых сделок.
+- Обработка использует общий `sync_graphql_snapshot` → общий транзакционный baseline/incremental writer (`BEGIN IMMEDIATE`) и текущие account-scoped таблицы. Baseline помечает всю первую полную выборку исторической; повторные и статусные обновления не создают новых deals.
+- GraphQL путь не создаёт listing ConfigVersion автоматически. PAID без доказанной исторической ConfigVersion остаётся с NULL и без Order/OrderLines/DeliveryLegs/reservations. Это ограничение Task52.1 сохранено.
+- Целевой набор: 98 PASS по GraphQL HTTP/sync, sync service, polling и browser/listing regressions; compileall PASS. Использованы только mock transport и временная SQLite. Live API и пользовательские данные не проверялись.
+
+Дальше: отдельно проверить read-only live GraphQL контракт с разрешённой сессией; если endpoint/operation contract не работает, показать безопасную ошибку и не делать baseline. Не включать резервирование или отправку без отдельного этапа и подтверждённой ConfigVersion.

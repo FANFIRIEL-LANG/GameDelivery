@@ -60,6 +60,34 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertIsNone(MarketplacePanel._chat_id_from_path("/chats/a/b"))
         self.assertIsNone(MarketplacePanel._chat_id_from_path("/chats/   "))
 
+    def test_graphql_sales_reader_is_created_from_current_browser_session(self):
+        service = PlayerokDealSyncService(self.db)
+        panel = MarketplacePanel(database=self.db, sync_service=service)
+        expected_snapshot = SimpleNamespace(account_user_id="seller-from-browser")
+        fake_reader = SimpleNamespace(cancel=lambda **_kwargs: None)
+        calls = []
+        outcomes = []
+
+        def read_from_browser(callback):
+            calls.append("browser-page")
+            callback(expected_snapshot, None)
+            return fake_reader
+
+        panel.browser_panel.read_graphql_sales_snapshot = read_from_browser
+        with patch(
+            "integrations.playerok.graphql_http.PlayerokReadOnlyGraphQLClient.from_keyring",
+            side_effect=AssertionError("browser sales sync must not read keyring"),
+        ):
+            reader = panel._start_graphql_poll_reader(
+                lambda snapshot, error: outcomes.append((snapshot, error))
+            )
+
+        self.assertIs(reader, fake_reader)
+        self.assertEqual(calls, ["browser-page"])
+        self.assertEqual(outcomes, [(expected_snapshot, None)])
+        self.assertIsNone(panel._graphql_read_worker)
+        panel.close()
+
     def test_chat_api_diagnostic_runs_chat_and_message_reads_when_chat_list_fails(self):
         panel = MarketplacePanel(database=self.db)
         calls = []

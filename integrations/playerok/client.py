@@ -215,6 +215,8 @@ class PlayerokAdapter(MarketplaceAdapter):
         # request_func is a test seam; production uses urllib.request directly.
         self._request_func = request_func
         self._session_token: str | None = None
+        self._session_user_agent = _USER_AGENT
+        self._session_cookies: dict[str, str] = {}
         self._account_user_id: str | None = None
         self._session_persisted = False
         self._keyring_read_failed = False
@@ -259,7 +261,7 @@ class PlayerokAdapter(MarketplaceAdapter):
         body = None
         headers = {
             "Accept": "application/json",
-            "User-Agent": _USER_AGENT,
+            "User-Agent": self._session_user_agent,
             "Origin": "https://playerok.com",
             "Referer": "https://playerok.com/",
         }
@@ -268,6 +270,9 @@ class PlayerokAdapter(MarketplaceAdapter):
             headers["Content-Type"] = "application/json"
         if url == _GRAPHQL:
             headers["apollo-require-preflight"] = "true"
+            headers["apollographql-client-name"] = "web"
+            headers["x-gql-path"] = "/"
+            headers["x-timezone-offset"] = "-240"
             operation_name = (
                 payload.get("operationName")
                 if isinstance(payload, dict)
@@ -277,7 +282,8 @@ class PlayerokAdapter(MarketplaceAdapter):
             if operation_name:
                 headers["x-apollo-operation-name"] = str(operation_name)
         if token:
-            headers["Cookie"] = "token=" + token
+            cookies = self._session_cookies or {"token": token}
+            headers["Cookie"] = "; ".join(f"{name}={value}" for name, value in cookies.items())
             if bearer:
                 headers["Authorization"] = "Bearer " + token
 
@@ -386,16 +392,63 @@ class PlayerokAdapter(MarketplaceAdapter):
 
         self._keyring_read_failed = False
         self._session_persisted = bool(token)
-        if token:
-            self._session_token = token
+        if not token:
+            return None
+        # Older installations stored the token as the whole keyring value.
+        # New values keep the matching User-Agent beside it, still only in keyring.
+        try:
+            record = json.loads(token)
+        except (TypeError, json.JSONDecodeError):
+            record = None
+        if isinstance(record, dict) and record.get("schema") == "gd-playerok-auth-context-v1":
+            saved_token = record.get("token")
+            saved_ua = record.get("user_agent")
+            if (
+                type(saved_token) is not str or not saved_token.strip()
+                or type(saved_ua) is not str or not saved_ua.strip()
+                or "\r" in saved_ua or "\n" in saved_ua
+            ):
+                self._keyring_read_failed = True
+                self._session_persisted = False
+                return None
+            self._session_user_agent = saved_ua
+            saved_cookies = record.get("cookies")
+            allowed = {"token", "__ddg5_", "__ddg3", "cf_clearance", "__cf_bm"}
+            if (
+                not isinstance(saved_cookies, dict)
+                or any(
+                    type(name) is not str or name not in allowed
+                    or type(value) is not str or not value or len(value) > 4096
+                    or any(ch in value for ch in "\r\n;")
+                    for name, value in saved_cookies.items()
+                )
+                or saved_cookies.get("token") != saved_token
+            ):
+                self._keyring_read_failed = True
+                self._session_persisted = False
+                return None
+            self._session_cookies = dict(saved_cookies)
+            token = saved_token
+        else:
+            self._session_user_agent = _USER_AGENT
+            self._session_cookies = {"token": token}
+        self._session_token = token
         return token
 
     def _save_token(self, token: str | None) -> bool:
         if not token:
             raise RuntimeError("Playerok не вернул токен сессии после входа.")
         self._session_token = token
+        self._session_user_agent = _USER_AGENT
+        self._session_cookies = {"token": token}
         try:
-            self._keyring().set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, token)
+            context = json.dumps({
+                "schema": "gd-playerok-auth-context-v1",
+                "token": token,
+                "user_agent": self._session_user_agent,
+                "cookies": self._session_cookies,
+            }, separators=(",", ":"), ensure_ascii=False)
+            self._keyring().set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, context)
             self._session_persisted = True
             self._keyring_read_failed = False
             return True
@@ -503,8 +556,10 @@ class PlayerokAdapter(MarketplaceAdapter):
 
         self._session_token = None
         self._session_persisted = False
+        self._session_cookies = {}
         self._account_user_id = None
         self._pending_second_factor_session = None
+        self._session_user_agent = _USER_AGENT
         keyring_error = False
         try:
             self._keyring().delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
@@ -534,6 +589,20 @@ class PlayerokAdapter(MarketplaceAdapter):
     def account_user_id(self) -> str | None:
         """Playerok seller account ID from the last successful profile check."""
         return self._account_user_id
+
+    def create_read_only_graphql_client(self, **transport_kwargs):
+        """Create a background read-only client from this adapter's keyring session."""
+        from integrations.playerok.graphql_http import (
+            PlayerokAuthContext,
+            PlayerokGraphQLHTTPTransport,
+            PlayerokReadOnlyGraphQLClient,
+        )
+
+        # Reload to pick up an operator-saved WebEngine context, never stale memory.
+        context = PlayerokAuthContext.from_keyring(self._keyring())
+        return PlayerokReadOnlyGraphQLClient(
+            PlayerokGraphQLHTTPTransport(context, **transport_kwargs)
+        )
 
     @staticmethod
     def _deal_status(deal: dict[str, Any]) -> str:

@@ -151,7 +151,15 @@ class PlayerokDealSyncService:
             }
         return listing_id, str(config["config_version_id"]), dict(config)
 
-    def _upsert_deal(self, db: sqlite3.Connection, deal: dict[str, Any], account_user_id: str, historical: bool):
+    def _upsert_deal(
+        self,
+        db: sqlite3.Connection,
+        deal: dict[str, Any],
+        account_user_id: str,
+        historical: bool,
+        *,
+        allow_config_creation: bool = True,
+    ):
         account_id = str(account_user_id or "").strip()
         external_id = str(deal.get("deal_id") or "").strip()
         if not account_id:
@@ -163,7 +171,9 @@ class PlayerokDealSyncService:
         ).strip()
         deal_status = self._status(deal)
         listing_id, config_id, config = self._listing_config(
-            db, deal, include_config=deal_status != "PAID"
+            db,
+            deal,
+            include_config=deal_status != "PAID" and allow_config_creation,
         )
         old = db.execute(
             "SELECT deal_id,is_historical,listing_id,config_version_id,listing_resolution_status "
@@ -520,8 +530,33 @@ class PlayerokDealSyncService:
             raise ValueError("Playerok snapshot is incomplete, stale, or lacks trusted reader provenance.")
         account_id = str(snapshot.account_user_id or "").strip()
         deals = snapshot.deals
+        return self._sync_complete_snapshot(account_id, deals, allow_config_creation=True)
+
+    def sync_graphql_snapshot(self, snapshot: Any) -> dict[str, Any]:
+        """Persist only a complete, fresh snapshot issued by the GraphQL client."""
+        from integrations.playerok.graphql_http import (
+            PlayerokGraphQLSalesSnapshot,
+            is_fresh_trusted_graphql_sales_snapshot,
+        )
+
+        if (
+            not isinstance(snapshot, PlayerokGraphQLSalesSnapshot)
+            or not is_fresh_trusted_graphql_sales_snapshot(snapshot)
+        ):
+            raise ValueError("Playerok GraphQL snapshot is incomplete, stale, or untrusted.")
+        return self._sync_complete_snapshot(
+            snapshot.account_user_id, snapshot.deals, allow_config_creation=False
+        )
+
+    def _sync_complete_snapshot(
+        self,
+        account_id: str,
+        deals: list[dict[str, Any]],
+        *,
+        allow_config_creation: bool,
+    ) -> dict[str, Any]:
         if not account_id or not isinstance(deals, list):
-            raise ValueError("Browser snapshot has an invalid account or deal list.")
+            raise ValueError("Playerok snapshot has an invalid account or deal list.")
         seen: set[str] = set()
         for deal in deals:
             if not isinstance(deal, dict):
@@ -547,9 +582,15 @@ class PlayerokDealSyncService:
                 historical = baseline or self._is_historical_relative_to_baseline(
                     deal, state["baseline_completed_at"] if state is not None else None
                 )
-                _deal_id, created = self._upsert_deal(
-                    db, deal, account_id, historical=historical
-                )
+                if allow_config_creation:
+                    _deal_id, created = self._upsert_deal(
+                        db, deal, account_id, historical=historical
+                    )
+                else:
+                    _deal_id, created = self._upsert_deal(
+                        db, deal, account_id, historical=historical,
+                        allow_config_creation=False,
+                    )
                 if created and historical:
                     historical_count += 1
                 elif created:

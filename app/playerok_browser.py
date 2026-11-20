@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QComboBox, QSpinBox, QPlainTextEdit, QSplitter, QMessageBox, QDialog,
 )
 from integrations.playerok.browser_sales import BrowserSalesReader, BrowserViewerChecker
+from integrations.playerok.browser_chat_api import WebEngineGraphQLTransport
+from integrations.playerok.graphql_http import PlayerokBrowserGraphQLSalesReader
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -1286,9 +1288,11 @@ class PlayerokBrowserPanel(QWidget):
         self.home_button = QPushButton("Домой")
         self.devtools_button = QPushButton("Открыть DevTools")
         self.dom_diagnostic_button = QPushButton("Структура DOM (read-only)")
+        self.graphql_context_button = QPushButton("Сохранить GraphQL-сессию")
         self.clear_session_button = QPushButton("Очистить данные сайта")
         self.devtools_button.clicked.connect(self.open_devtools)
         self.dom_diagnostic_button.clicked.connect(self._run_dom_diagnostic)
+        self.graphql_context_button.clicked.connect(self.save_graphql_session_context)
         for button in (
             self.back_button, self.forward_button, self.reload_button,
             self.home_button, self.devtools_button, self.clear_session_button,
@@ -1313,6 +1317,7 @@ class PlayerokBrowserPanel(QWidget):
             button.clicked.connect(lambda checked=False, p=path: self.navigate(PLAYEROK_ORIGIN + p))
             quick.addWidget(button)
         quick.addWidget(self.dom_diagnostic_button)
+        quick.addWidget(self.graphql_context_button)
         root.addLayout(quick)
 
         split = QSplitter()
@@ -1348,6 +1353,7 @@ class PlayerokBrowserPanel(QWidget):
             self.navigate(PLAYEROK_ORIGIN + "/")
         else:
             self.web = None
+            self.graphql_context_button.setEnabled(False)
             for button in (self.back_button, self.forward_button, self.reload_button):
                 button.setEnabled(False)
             self.home_button.clicked.connect(lambda: self.navigate(PLAYEROK_ORIGIN + "/"))
@@ -1355,7 +1361,10 @@ class PlayerokBrowserPanel(QWidget):
             self.browser_status.setText(
                 "QtWebEngine недоступен (headless/CI). Контроллер навигации и панель настроек доступны."
             )
-            split.addWidget(self.browser_status)
+        # Keep asynchronous browser/session diagnostics visible in both real
+        # WebEngine and headless layouts. Previously the label was only added
+        # in the headless branch, so capture results were invisible in normal UI.
+        root.addWidget(self.browser_status)
 
         editor = QWidget()
         form = QVBoxLayout(editor)
@@ -1928,6 +1937,48 @@ class PlayerokBrowserPanel(QWidget):
         reader.start()
         return reader
 
+    def read_graphql_sales_snapshot(
+        self, finished, *, expected_account_user_id: str | None = None
+    ) -> PlayerokBrowserGraphQLSalesReader:
+        """Read a complete GraphQL snapshot using this page's browser session."""
+        if not callable(finished):
+            raise TypeError("finished должен быть вызываемым")
+        if not self.sales_session_available():
+            raise RuntimeError("browser_session_unavailable")
+        page = self.web.page()
+        try:
+            if page is None or not shiboken6.isValid(page) or page.profile() != self._profile:
+                raise RuntimeError("browser_profile_unavailable")
+        except (RuntimeError, TypeError, AttributeError) as exc:
+            raise RuntimeError("browser_profile_unavailable") from None
+
+        transport = WebEngineGraphQLTransport(
+            self._run_current_page_javascript,
+            schedule=lambda callback: QTimer.singleShot(50, callback),
+        )
+        reader_ref: list[PlayerokBrowserGraphQLSalesReader | None] = [None]
+
+        def page_destroyed(*_args):
+            reader = reader_ref[0]
+            if reader is not None:
+                reader.cancel(stage="page_destroyed")
+
+        def completed(snapshot, error):
+            try:
+                page.destroyed.disconnect(page_destroyed)
+            except (RuntimeError, TypeError):
+                pass
+            finished(snapshot, error)
+
+        reader = PlayerokBrowserGraphQLSalesReader(
+            transport, completed,
+            expected_account_user_id=expected_account_user_id,
+        )
+        reader_ref[0] = reader
+        page.destroyed.connect(page_destroyed)
+        reader.start()
+        return reader
+
     def sales_session_available(self) -> bool:
         """Whether the current WebEngine page is ready for a read-only sales pass."""
         if self.web is None or not self._page_ready or self._clear_pending:
@@ -1944,6 +1995,250 @@ class PlayerokBrowserPanel(QWidget):
             and current_url.hostname in {"playerok.com", "www.playerok.com"}
         )
 
+    def save_graphql_session_context(self, _checked=False, finished=None) -> bool:
+        """Persist only allowlisted cookies from the current profile into keyring."""
+        if finished is not None and not callable(finished):
+            raise TypeError("finished должен быть вызываемым")
+        if not self.sales_session_available() or self._profile is None:
+            self.browser_status.setText(
+                "Контекст GraphQL неполный: страница или профиль WebEngine Playerok не готовы."
+            )
+            if callable(finished):
+                finished(False, "page_unavailable")
+            return False
+        if getattr(self, "_graphql_context_capture", None) is not None:
+            self.browser_status.setText(
+                "Ошибка сохранения GraphQL-контекста: capture_in_progress."
+            )
+            if callable(finished):
+                finished(False, "capture_in_progress")
+            return False
+
+        # Do not capture from a profile other than the one backing the page the
+        # operator is currently using.  This also makes an unexpected page
+        # replacement fail closed instead of silently reading another store.
+        try:
+            page = self.web.page()
+            if page is None or not shiboken6.isValid(page):
+                raise RuntimeError
+            page_profile = page.profile()
+            same_profile = page_profile is self._profile or page_profile == self._profile
+        except (RuntimeError, TypeError, AttributeError):
+            same_profile = False
+        if not same_profile:
+            self.browser_status.setText(
+                "Контекст GraphQL неполный: текущая страница использует другой профиль WebEngine."
+            )
+            if callable(finished):
+                finished(False, "profile_mismatch")
+            return False
+
+        cookie_store = self._profile.cookieStore()
+        quiet_timer = QTimer(self)
+        quiet_timer.setSingleShot(True)
+        quiet_timer.setInterval(350)
+        hard_timer = QTimer(self)
+        hard_timer.setSingleShot(True)
+        hard_timer.setInterval(4000)
+        state = {"cookies": {}, "cookie_metadata": [], "finished": False}
+        self._graphql_context_capture = state
+
+        def decode(value):
+            if type(value) is str:
+                return value
+            try:
+                return bytes(value).decode("utf-8")
+            except (TypeError, UnicodeDecodeError):
+                return ""
+
+        def cookie_added(cookie):
+            try:
+                domain = decode(cookie.domain()).lstrip(".").lower()
+                name = decode(cookie.name())
+            except (AttributeError, RuntimeError, TypeError):
+                return
+            allowed_domain = domain == "playerok.com" or domain.endswith(".playerok.com")
+            if allowed_domain:
+                def safe_metadata_text(raw, limit):
+                    text = decode(raw)
+                    if not text or any(ch in text for ch in "\r\n\x00"):
+                        return None
+                    return text[:limit]
+
+                try:
+                    expiry = cookie.expirationDate()
+                    expiry_utc = (
+                        expiry.toUTC().toString(Qt.DateFormat.ISODate)
+                        if expiry is not None and expiry.isValid()
+                        else None
+                    )
+                    metadata = {
+                        "name": safe_metadata_text(cookie.name(), 80),
+                        "domain": safe_metadata_text(cookie.domain(), 120),
+                        "path": safe_metadata_text(cookie.path(), 160),
+                        "secure": bool(cookie.isSecure()),
+                        "http_only": bool(cookie.isHttpOnly()),
+                        "session": bool(cookie.isSessionCookie()),
+                        "expires_utc": expiry_utc[:40] if expiry_utc else None,
+                        "cookie_type": type(cookie).__name__[:40],
+                    }
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    metadata = {"name": safe_metadata_text(cookie.name(), 80), "metadata_error": True}
+                # Keep a small bounded, value-free view for diagnosing why the
+                # required token cookie was not present in this profile.
+                if len(state["cookie_metadata"]) < 16 and metadata not in state["cookie_metadata"]:
+                    state["cookie_metadata"].append(metadata)
+            allowed_name = name in {"token", "__ddg5_", "__ddg3", "cf_clearance", "__cf_bm"}
+            if not allowed_domain:
+                return
+            if allowed_name:
+                try:
+                    value = decode(cookie.value())
+                except (AttributeError, RuntimeError, TypeError):
+                    value = ""
+                if value and len(value) <= 4096:
+                    state["cookies"][name] = value
+            # loadAllCookies() has no finished signal. Do not start the quiet
+            # window before the first Playerok cookie arrives: that used to
+            # fail an otherwise valid capture 350 ms after the request began.
+            quiet_timer.start()
+
+        def finish(outcome, reason=None):
+            if state["finished"]:
+                return
+            state["finished"] = True
+            quiet_timer.stop()
+            hard_timer.stop()
+            try:
+                cookie_store.cookieAdded.disconnect(cookie_added)
+            except (RuntimeError, TypeError):
+                pass
+            saved = False
+            if outcome == "save":
+                if "token" not in state["cookies"]:
+                    outcome, reason = "incomplete", "session_cookie_missing"
+                else:
+                    try:
+                        from integrations.playerok.graphql_http import (
+                            PlayerokGraphQLTransportError,
+                            PlayerokReadOnlyGraphQLClient,
+                        )
+                        PlayerokReadOnlyGraphQLClient.save_browser_context(
+                            state["cookies"], self._profile.httpUserAgent()
+                        )
+                        saved = True
+                    except PlayerokGraphQLTransportError as exc:
+                        outcome, reason = "error", exc.code
+                    except Exception as exc:
+                        # Exception text may contain sensitive data; expose only
+                        # its safe class name for unexpected local failures.
+                        outcome, reason = "error", f"unexpected_{type(exc).__name__}"
+            self._graphql_context_capture = None
+            quiet_timer.deleteLater()
+            hard_timer.deleteLater()
+            if not self._clear_pending:
+                self.graphql_context_button.setEnabled(True)
+                self.clear_session_button.setEnabled(True)
+            if saved:
+                self.browser_status.setText(
+                    "GraphQL-контекст сохранён и подтверждён чтением из keyring. "
+                    "Действительность сессии отдельно проверяется запросом viewer."
+                )
+            elif outcome == "incomplete":
+                reason_text = {
+                    "session_cookie_missing": "cookie сессии Playerok не получена",
+                    "cookie_store_timeout": "чтение cookies не завершилось в отведённое время",
+                }.get(reason, reason or "неизвестная причина")
+                diagnosis = ""
+                if reason == "session_cookie_missing":
+                    page_host = "unknown"
+                    try:
+                        page_host = urlsplit(self.web.page().url().toString()).hostname or "unknown"
+                    except (RuntimeError, TypeError, AttributeError):
+                        pass
+                    observed = state["cookie_metadata"]
+                    if observed:
+                        records = []
+                        for item in observed[:6]:
+                            if item.get("metadata_error"):
+                                records.append(f"name={item.get('name') or 'unnamed'} metadata=unavailable")
+                                continue
+                            records.append(
+                                "name={name} domain={domain} path={path} secure={secure} "
+                                "http_only={http_only} session={session} expires_utc={expires} type={cookie_type}".format(
+                                    name=item.get("name") or "unnamed",
+                                    domain=item.get("domain") or "unknown",
+                                    path=item.get("path") or "unknown",
+                                    secure=int(item["secure"]),
+                                    http_only=int(item["http_only"]),
+                                    session=int(item["session"]),
+                                    expires=item.get("expires_utc") or "session-cookie",
+                                    cookie_type=item.get("cookie_type") or "unknown",
+                                )
+                            )
+                        diagnosis = (
+                            f" Страница: {page_host}; first-party cookie metadata: ["
+                            + "; ".join(records)
+                            + (
+                                f"; ещё {len(observed) - 6} не показано" if len(observed) > 6 else ""
+                            )
+                            + "]; значения cookies скрыты."
+                        )
+                    else:
+                        diagnosis = (
+                            f" Страница: {page_host}; cookieAdded не вернул cookie "
+                            "домена Playerok за время capture."
+                        )
+                self.browser_status.setText(
+                    f"Контекст GraphQL неполный: {reason_text}; ничего не сохранено.{diagnosis}"
+                )
+            else:
+                reason_text = {
+                    "keyring_write_failed": "Windows keyring отклонил запись",
+                    "keyring_readback_failed": "не удалось прочитать запись обратно из keyring",
+                    "keyring_readback_mismatch": "прочитанный контекст не совпал с записанным",
+                    "invalid_session_context": "контекст не прошёл проверку полей",
+                    "unsupported_session_fingerprint": "User-Agent не поддерживается transport",
+                    "cookie_store_start_failed": "QtWebEngine не начал чтение cookie store",
+                    "profile_mismatch": "текущая страница использует другой профиль WebEngine",
+                }.get(reason, reason or "неизвестная причина")
+                self.browser_status.setText(
+                    f"Ошибка сохранения GraphQL-контекста: {reason_text}. Сохранение не подтверждено."
+                )
+            if callable(finished):
+                try:
+                    finished(saved, reason)
+                except Exception:
+                    pass
+
+        def cookie_store_timeout():
+            if "token" in state["cookies"]:
+                finish("incomplete", "cookie_store_timeout")
+            else:
+                finish("incomplete", "session_cookie_missing")
+
+        def quiet_period_finished():
+            # A first-party cookie event without the required session cookie is
+            # not proof the asynchronous enumeration is complete. Keep waiting
+            # for a later token event or the hard deadline.
+            if "token" not in state["cookies"]:
+                return
+            finish("save")
+
+        quiet_timer.timeout.connect(quiet_period_finished)
+        hard_timer.timeout.connect(cookie_store_timeout)
+        self.graphql_context_button.setEnabled(False)
+        self.clear_session_button.setEnabled(False)
+        self.browser_status.setText("Ожидаю cookies текущего профиля Playerok…")
+        try:
+            cookie_store.cookieAdded.connect(cookie_added)
+            cookie_store.loadAllCookies()
+            hard_timer.start()
+        except Exception:
+            finish("error", "cookie_store_start_failed")
+            return False
+        return True
+
     def clear_browser_session(self) -> bool:
         if self._profile is None:
             self.browser_status.setText("Профиль WebEngine недоступен в этом режиме.")
@@ -1957,6 +2252,14 @@ class PlayerokBrowserPanel(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return False
+        self._keyring_context_clear_ok = True
+        try:
+            import keyring
+            from integrations.playerok.client import KEYRING_ACCOUNT, KEYRING_SERVICE
+            if keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT) is not None:
+                keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        except Exception:
+            self._keyring_context_clear_ok = False
         self._clear_pending = True
         self.clear_session_button.setEnabled(False)
         self.browser_status.setText("Очищаю Web Storage и HTTP-кэш; отправляю запрос на удаление cookies…")
@@ -1994,6 +2297,10 @@ class PlayerokBrowserPanel(QWidget):
             self.browser_status.setText(
                 "Web Storage и HTTP-кэш очищены; запрос на удаление cookies отправлен. "
                 "Qt не подтверждает завершение удаления cookies/прочих persistent site data, поэтому полный выход не подтверждён."
+            )
+        if not getattr(self, "_keyring_context_clear_ok", True):
+            self.browser_status.setText(
+                self.browser_status.text() + " Не удалось очистить GraphQL-сессию из системного хранилища."
             )
 
     def _capture_current_listing(self):

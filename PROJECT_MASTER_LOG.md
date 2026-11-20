@@ -5780,3 +5780,169 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Все тесты использовали fake browser responses и временные SQLite DB. Не открывались пользовательская SQLite, приложение, Playerok session, ASF или Steam; сетевых запросов, сообщений, status mutations, reservations и offers не было.
 
 Изменены код: `integrations/playerok/browser_sales.py`, `integrations/playerok/sync.py`; тесты/fixtures: `integrations/playerok/sales_polling.py` использует fresh-snapshot validator, `tests/playerok_freshness_fixtures.py`, `tests/test_playerok_browser_sales.py`, `tests/test_playerok_sync.py`, `tests/test_playerok_sales_polling.py`, `tests/test_playerok_import_guard.py`. В документах добавляется этот append-only checkpoint и handoff. Следующий безопасный шаг для полной подготовки PAID — отдельное решение о достоверном payment-time/ConfigVersion evidence contract; до него сделки остаются без Order/reservation.
+
+## Task59 — Playerok Hybrid GraphQL Transport (2026-11-20)
+
+Контрольная точка до задачи: `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`; в worktree сохранялись четыре прежние status entries (`app/__main__.py`, `app/harness.py`, `tests/test_windows_harness.py`, `PLAYEROK_LOCAL_REVIEW.patch`). Защищённый patch не открывался. Commit/push не выполнялись.
+
+### Реализовано
+
+- Добавлен `integrations/playerok/graphql_http.py`: HTTP GraphQL transport на `curl_cffi` с TLS/browser impersonation, timeout, redirect deny, ограниченными повторами только разрешённых read-only запросов и типизированными безопасными ошибками. Allowlist не включает mutation operations. Ошибки не включают response body, URL, headers или credential values.
+- Поддержаны viewer, paginated deals (`PAID`, `SENT`, `CONFIRMED`), single deal, paginated seller listings, chats и paginated chat message history. Deals/listings проверяют cursor, `hasNextPage`, короткие/пустые продолжения, duplicate conflicts и `totalCount`; incomplete connection не возвращается как полный результат. `deal_id`, `chat_id`, canonical `listing_id` и slug reference остаются отдельными полями; slug никогда не заменяет listing ID.
+- Chat operations используют уже имеющиеся `PlayerokBrowserChatAPI`, `universal_chat_contract.py` hashes и typed normalizers. Добавлены hashes `deals`/`items` из pinned Playerok Universal contract; persisted-query documents не дублируются. `PlayerokAdapter.create_read_only_graphql_client()` строит background reader из существующего keyring контекста.
+- Сессия сохраняется в keyring в versioned JSON envelope с токеном, User-Agent и allowlisted first-party cookies. Старый keyring формат с одним token читается обратно. В `PlayerokBrowserPanel` добавлено явное действие «Сохранить GraphQL-сессию»: оно только перечисляет cookies текущего WebEngine profile и пишет подходящие значения в системный keyring; при очистке browser session ключ keyring также очищается. Действие не выполняется автоматически при старте. Никакие secrets не выводятся в UI.
+- Поддерживаемая curl fingerprint выбирается по Chrome major из сохранённого User-Agent (точный известный major либо ближайший предыдущий поддерживаемый профиль); unsupported/invalid context отклоняется. `curl_cffi>=0.17,<0.18` добавлен в requirements; официальный curl_cffi документирует Python 3.10+ и Windows wheels, а PlayerokAPI публикует MIT license. Мы переиспользовали только контракты/подходы, не копировали чужой транспортный код.
+
+### Проверки и ограничения
+
+- Новый тест и связанные регрессии: `python -m unittest -q tests.test_playerok_graphql_http tests.test_playerok_session tests.test_playerok_graphql_headers tests.test_playerok_http_errors tests.test_playerok_read_only_sales tests.test_playerok_browser_chat_api tests.test_playerok_browser_chat_listener tests.test_playerok_browser_and_listing_config tests.test_marketplace_integrations tests.test_playerok_browser_sales tests.test_playerok_sync` — **183 PASS**. `python -m compileall -q app/playerok_browser.py integrations/playerok/client.py integrations/playerok/graphql_http.py integrations/playerok/universal_chat_contract.py tests/test_playerok_graphql_http.py` — **PASS**. `git diff --check` — **PASS**; Git сообщил только стандартные LF→CRLF warnings.
+- Fake HTTP/keyring; никакой реальный токен, пользовательская БД, Playerok API, ASF, Steam или GUI не использовались. Live-контракт новых HTTP queries и фактический ответ/пагинация через новый transport не подтверждены.
+- Qt cookie store загружает cookies асинхронно и предоставляет `cookieAdded`, но не сигнал завершения `loadAllCookies`; операторский capture использует ограниченное quiet window и 4-секундный fail-closed timeout, требует token cookie, сохраняет только allowlist. Поэтому полнота cookie-набора не подтверждена для live-профиля; Cloudflare challenge классифицируется и требует отдельного штатного восстановления сессии. `curl_cffi` не установлен в текущий interpreter: поведение реальной native Session и упаковка Windows этим этапом не проверялись; transport/session seam покрыта mocks.
+- `PlayerokAdapter` уже поддерживает отдельный OTP/2FA token flow. Добавленная интеграция повторно использует keyring и не меняет auth endpoints. Новый HTTP reader пока не подключён к бизнес-sync/poller, delivery, автоответам или mutating operation. Order/ConfigVersion/baseline safeguards и Task52.1 остаются без изменений: одна только GraphQL загрузка не создаёт заказ/резерв.
+- Следующий конкретный шаг — локальная mock-валидация runtime `curl_cffi` в целевой Windows build environment, затем отдельное согласование/проверка read-only live query; не подключать fetch к business synchronization без подтверждения `paidAt`/исторического ConfigVersion и complete snapshot gates.
+
+## Task60 — GraphQL deals подключён к существующему Playerok sync (2026-11-20)
+
+Контрольная точка до задачи: `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`, worktree имел 12 status entries (7 modified, 5 untracked), включая прежние незакоммиченные Task59/Harness изменения и `PLAYEROK_LOCAL_REVIEW.patch`. Все они сохранены; patch не открывался. Commit/push не выполнялись.
+
+### Реализовано
+
+- `PlayerokReadOnlyGraphQLClient.fetch_sales_snapshot()` теперь получает viewer из keyring-backed transport, получает полный unfiltered `deals` cursor snapshot и проверяет все существующие page/cursor/totalCount условия до выдачи snapshot. Можно ограничить ожидаемый account ID; `viewer` mismatch отклоняется. Нормализация хранит exact `deal_id`, `chat_id` и canonical `item.id` отдельно; slug идёт только в `source_listing_ref`, никогда не используется как canonical listing ID.
+- Добавлен отдельный immutable GraphQL snapshot с внутренней provenance и 5-минутной свежестью. Публично сконструированный snapshot не принимается. Существующая доставка продолжает требовать свой BrowserSalesReader snapshot и её freshness gate не менялся.
+- `PlayerokDealSyncService.sync_graphql_snapshot()` направляет только доверенный полный GraphQL snapshot в общий account-scoped baseline/incremental writer. Сохранены `BEGIN IMMEDIATE`, идемпотентность по account + exact deal ID, неизменность исторических заказов и status updates для уже известных сделок. Неполная пагинация не выдаёт snapshot и не пишет данные.
+- Для GraphQL-created rows автоматически не создаются ConfigVersion. В частности, новый PAID с неизвестной исторической версией сохраняется только как deal, с `config_version_id=NULL`; Order, OrderLine, DeliveryLeg и reservations не создаются. Unknown `listing_id` остаётся unresolved; slug не подменяет ID. Ранее существующий Browser sync сохраняет прежний путь и поведение.
+- Существующая кнопка синхронизации на вкладке Playerok и тот же poller теперь используют GraphQL reader в worker thread; дублирующая панель не добавлялась. UI показывает завершение baseline, полученное и новое количество, истёкшую сессию или ошибку/неполные данные. Read-only freshness request для фактической отправки заказа по-прежнему использует текущий BrowserSalesReader путь. Никаких GraphQL mutation операций не добавлено.
+
+### Проверки и ограничения
+
+- `python -m unittest tests.test_playerok_graphql_http tests.test_playerok_graphql_sync tests.test_playerok_sync tests.test_playerok_sales_polling tests.test_playerok_browser_and_listing_config` — **99 PASS**. Набор включает fake GraphQL responses, pagination, baseline, repeat/no-duplicate, статусы PAID→SENT→CONFIRMED, same-chat distinct deals, missing canonical listing, unknown ConfigVersion, incomplete/repeated cursor rejection, synthetic SQLite, browser sync regressions и transactional rollback.
+- `python -m compileall -q` по затронутым модулям и новому тесту — **PASS**.
+- Live Playerok, приложение, пользовательская SQLite, ASF, Steam, сообщения, статусы и доставка не использовались. HTTP transport остаётся ранее заявленным private website GraphQL transport; достоверность live persisted-query контрактов и наличие `curl_cffi` в runtime этой задачи не проверялись. Поэтому завершение подтверждено синтетическими тестами, не live API.
+
+Изменены в рамках Task60: `app/platforms_panel.py`, `integrations/playerok/graphql_http.py`, `integrations/playerok/sales_polling.py`, `integrations/playerok/sync.py`, `tests/test_playerok_graphql_sync.py`, этот Master Log и handoff. Следующий необходимый шаг — отдельная разрешённая read-only проверка реального GraphQL списка/пагинации; до доказанной ConfigVersion нельзя автоматически материализовывать PAID order или резервировать ресурсы. Task60 не коммитилась и не отправлялась.
+
+## Task61 — поиск завершённой сделки для эталонного сценария (2026-11-20) — BLOCKED
+
+Проверена текущая рабочая копия: branch `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`. В worktree до проверки находились прежние незакоммиченные изменения; они сохранены. `PLAYEROK_LOCAL_REVIEW.patch` не открывался. Код, пользовательская БД и приложение не изменялись.
+
+Авторизованное окно GameDelivery было открыто. Текущая страница — чат; его карточка показывает состояние «В процессе», поэтому этот чат не подходит как подтверждённый сценарий успешно завершённой сделки. Содержимое переписки и секретные ссылки не сохранялись и в журнал не включены.
+
+Эталонную завершённую сделку выбрать не удалось. В `app/playerok_browser.py`, метод `PlayerokBrowserPanel._open_profile_route()`, быстрые кнопки профиля не строят маршрут: обработчик сообщает, что username текущего профиля из страницы не получен. При этом таблица Playerok в окне пуста, а статус автоматического sync показывает HTTP 400. Поэтому список CONFIRMED через доступные элементы интерфейса получить не удалось; не было оснований угадывать профиль или переходить к сделке из текущего чата.
+
+Результат Task61: фактическая хронология сделки не подтверждена; сообщения, Trade URL, проверки, отправка и подтверждение не анализировались. Автоматизация по эталону не проектировалась. Для продолжения нужен доступный в текущем интерфейсе список сделок CONFIRMED либо подтверждённый seller profile route, позволяющий открыть именно завершённую сделку и её связанный чат. До этого не делать выводов о последовательности и не реализовывать сообщения/выдачу.
+
+## Task61 — продолжение: завершённая Steam Cards сделка в авторизованном UI (2026-11-20)
+
+Пользователь открыл нужный чат; проверка продолжена в той же авторизованной сессии GameDelivery. Branch `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`. Существующие незакоммиченные изменения сохранены; `PLAYEROK_LOCAL_REVIEW.patch` не открывался. Читал только UI Playerok; сообщения не отправлялись, отзывы не оставлялись, статусы не менялись, пользовательская БД и внешние API/Steam/ASF не затрагивались.
+
+### Выбранная сделка и подтверждение связи
+
+- В списке `Профиль продавца → Продажи → Завершено` найдена карточка Steam Cards: 10 наборов / 50 карточек; выбранная карточка совпала с уже открытым чатом по заказу и покупателю.
+- Страница сделки показала ID с префиксом `1f1dec75` и суффиксом `b2294c1b2755`, заголовок «Завершенная продажа» и состояние «Завершено» с пояснением, что получение подтверждено покупателем. На странице сделки нажата только ссылка «Чат»; она открыла чат с префиксом `1f1dec78` и суффиксом `d4c7601f3e02`, тот же чат, ранее предоставленный пользователем. Так подтверждена связь сделки с чатом.
+- UI истории показывает оплату 12 ноября в 21:33, отметку «Вы выполнили заказ» в 21:47 и позднее системное событие автоматического подтверждения получения. Системный статус на странице сделки независимо подтверждает успешное завершение. Относительная дата последнего события в UI не позволяет надёжно установить его календарную дату.
+
+### Эталонная последовательность — только наблюдённые признаки
+
+| Этап | Фактическое событие | Источник | Следствие для GameDelivery |
+| --- | --- | --- | --- |
+| Оплата | В таймлайне сделки отображено событие оплаты, 12 ноября, 21:33 | Страница сделки | Принимать только подтверждённый PAID из синхронизации; отдельно доказывать историческую ConfigVersion |
+| Первое сообщение | В чате видны сообщения после оплаты; продавец сообщает, что приступает к отправке | История чата | Обрабатывать сообщение только после надёжной привязки к deal; авторство брать из подтверждённого контракта сообщения |
+| Trade URL | В истории присутствуют URL-only сообщения; значения исключены из журнала. По просмотренному UI нельзя надёжно классифицировать все URL как ссылку покупателя или ссылку предложения | История чата | Валидировать Steam URL и не считать произвольный URL подтверждённым Trade URL |
+| Проверки | Не установлено, какие профильные или inventory проверки выполнялись | UI не показывает подтверждение проверки | Не приписывать продавцу неподтверждённые проверки |
+| Подготовка | В карточке товара указаны 10 наборов Steam Cards / 50 карточек и бонус опыта; подтверждения внутренней подготовки GameDelivery нет | Карточка сделки | Планировать по закреплённой ConfigVersion и Recipe; UI Playerok не доказывает наличие резерва |
+| Выдача | Продавец просит проверить уведомления об обмене; затем таймлайн фиксирует выполнение заказа в 21:47. Фактическую Steam-операцию отдельно не проверяли | Чат и событие сделки | Не считать текст сообщения доказательством успешной Steam-передачи; результат подтверждать через штатную delivery leg |
+| Подтверждение | Таймлайн показывает автоматическое подтверждение получения; карточка сделки имеет состояние «Завершено» | Чат и страница сделки | CONFIRMED наблюдать как статус площадки; не инициировать подтверждение повторно |
+
+### Что осталось неизвестным и следующий шаг
+
+- Canonical `listing_id` не виден в карточке или таймлайне сделки и в рамках этого просмотра не подтверждён. Название товара и возможный slug не подменяют canonical ID. Поэтому сделка сопоставлена с чатом, но не является полным образцом для автоматического маппинга listing → ConfigVersion.
+- История содержит URL-only сообщения; их значения не сохранялись. Принадлежность каждого URL участнику, назначение URL и факт создания/принятия Steam offer не подтверждались отдельным источником. Не делать вывод, что предложение было успешно отправлено или принято.
+- Следующий read-only шаг — получить canonical listing ID из проверенного typed-ответа поддерживаемого источника и сопоставить его с ConfigVersion; старую сделку не импортировать и не резервировать. Только после подтверждения этой связи можно проектировать обработку аналогичной новой PAID-сделки.
+
+В продолжении Task61 изменён только этот append-only журнал. Handoff, код и тесты не изменялись; commit/push не выполнялись.
+
+### Task61 — уточнение записи
+
+В предыдущем addendum частичный суффикс chat ID был ошибочно переписан. Адрес чата, открытого ссылкой со страницы сделки, имеет префикс `1f1dec78` и окончание `c7601f3f1e02`; связь deal ↔ chat подтверждена переходом по ссылке «Чат». Другие выводы addendum не меняются. Canonical `listing_id` остаётся неподтверждённым.
+
+## Task62 — GraphQL-данные эталонной сделки — BLOCKED (2026-11-20)
+
+Контрольная точка: `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`. Применён существующий `PlayerokReadOnlyGraphQLClient.from_keyring()` из `integrations/playerok/graphql_http.py`; в текущем keyring контексте получена безопасная ошибка `session_missing`. HTTP-запросы `deal`, `chat` и `chatMessages` не отправлялись, поэтому canonical `item.id`, GraphQL `chat_id`, история/пагинация сообщений и message-level deal links этим запуском не подтверждены.
+
+`curl_cffi 0.17.0` (диапазон проекта `>=0.17,<0.18`) установлен только в `%TEMP%\GameDelivery-Task62-curl-cffi`, вне репозитория, для запуска существующего транспорта; код, зависимости проекта, пользовательская БД и пользовательская авторизация не менялись. Токены/куки не выводились. Не запускались альтернативный transport, приложение и внешние операции. Для продолжения требуется, чтобы оператор явно сохранил GraphQL-контекст через штатное действие приложения либо отдельно разрешил одноразовый read через уже открытую WebEngine-сессию; текущий запрос остановлен до появления такого контекста.
+
+### Task62 — продолжение: попытка штатного сохранения контекста (2026-11-20)
+
+Контрольная точка: branch `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`. Штатная кнопка `Сохранить GraphQL-сессию` в `app/playerok_browser.py` подключена к `save_graphql_session_context()`: она читает allowlisted cookies текущего WebEngine profile и при успешном capture сохраняет контекст в системный keyring. В коде не обнаружен отдельный IPC/командный интерфейс для вызова этого обработчика в уже работающем процессе.
+
+Через текущую сессию были проверены accessibility и координатный UI-путь. Accessibility action `Invoke` не поддерживается, а UI-автоматизация не смогла подтвердить завершение штатного сохранения. После попытки и ожидания `PlayerokAuthContext.from_keyring()` по-прежнему возвращает только `session_missing`. Успех сохранения не подтверждён; viewer, deal, chat и messages GraphQL-запросы не выполнялись. Cookies, токены и содержимое переписки в журнал не включены.
+
+Следующий конкретный шаг: оператору нажать штатную кнопку `Сохранить GraphQL-сессию` в открытом GameDelivery и убедиться, что приложение показало подтверждение сохранения. После этого можно повторно проверить keyring и продолжить только read-only GraphQL-запросы. До этого нельзя считать сессию доступной.
+
+В рамках этого продолжения код, тесты, handoff и пользовательская БД не изменялись; commit/push не выполнялись. `PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся.
+
+## Task65 — диагностика и исправление сохранения Playerok GraphQL-контекста (2026-11-20)
+
+Контрольная точка: branch `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`. Существующие незакоммиченные изменения сохранены; `PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся.
+
+### Найденные причины
+
+- `QWebEngineCookieStore.loadAllCookies()` не имеет отдельного completion-сигнала; прежний quiet timer запускался сразу после вызова, поэтому отсутствие `cookieAdded` в первые 350 мс ошибочно трактовалось как окончание capture и давало `session_cookie_missing`. Ошибки формирования/записи сводились к общей `session_context_unavailable`, а успешный `set_password()` объявлялся без чтения обратно.
+- В обычном WebEngine layout `browser_status` создавался, но не добавлялся ни в layout, ни в splitter; сообщения о capture в обычном режиме не отображались оператору. В headless ветке он отображался.
+
+### Исправлено
+
+- Quiet window теперь начинается после первого cookie Playerok; отсутствие token после quiet window ожидает hard deadline. При истечении лимита capture fail-closed и сообщает точную безопасную причину; ошибки запуска cookie store также завершают capture с восстановлением кнопок.
+- После записи `save_browser_context()` читает контекст через `PlayerokAuthContext.from_keyring()` и сверяет его с записанным. Несовпадение или ошибка readback не показываются как успех.
+- Для UI различаются и видны три исхода: подтверждённая чтением из keyring запись; неполный контекст с причиной; ошибка записи/readback с безопасной причиной. Тексты exception, значения cookie/token не показываются. Успешная запись явно не приравнивается к действительной авторизации: её надо отдельно подтвердить `viewer`.
+- `browser_status` размещён в основном layout, доступен и при включённом WebEngine.
+
+### Проверки и ограничения
+
+- `python -B -m unittest -q tests.test_playerok_graphql_session_capture tests.test_playerok_graphql_http` — **23 PASS**.
+- Точечные существующие тесты headless panel и marketplace browser status — **2 PASS**.
+- `compileall` по `app/playerok_browser.py`, `integrations/playerok/graphql_http.py` и затронутым тестам — **PASS**; `git diff --check` — **PASS** (только штатные предупреждения LF/CRLF).
+- Тесты используют synthetic cookies/timers и MemoryKeyring. Живые cookies, пользовательский keyring, приложение и пользовательская SQLite не использовались. Поэтому конкретная причина предыдущего `session_missing` в live-профиле по-прежнему не подтверждена; текущий процесс приложения также не проверялся на обновлённом коде. `PlayerokAuthContext` и keyring schema не содержат expiry-поля; активность сессии подтверждается только успешным read-only `viewer`.
+- Commit/push не выполнялись. Следующий шаг после отдельного штатного запуска обновлённого приложения — один capture и проверка readback, затем `viewer`; не считать одну только запись контекста подтверждением валидной сессии.
+
+### Task66 — источник Playerok auth cookie и безопасная диагностика (2026-11-20)
+
+Контрольная точка: branch `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`. Существующие незакоммиченные изменения сохранены; `PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся.
+
+#### Результат исследования
+
+- В `PlayerokBrowserPanel.__init__()` создаётся именованный `QWebEngineProfile`; основная `QWebEnginePage` получает именно этот объект через `QWebEnginePage(self._profile, self.web)`. Capture читает `self._profile.cookieStore()`. `clear_browser_session()` также создаёт новую страницу с тем же профилем. По реализации источник страницы и источник cookie store совпадают.
+- `save_graphql_session_context()` берёт актуальную `self.web.page()`, затем подписывается на `cookieAdded` и после этого вызывает `loadAllCookies()`. Qt API не предоставляет сигнал окончания `loadAllCookies()`. Capture допускает только cookie с точным именем `token` и доменом `playerok.com`/его поддоменом; прежнее сообщение `session_cookie_missing` не различало отсутствие cookie events, другое имя cookie и задержку загрузки.
+- GraphQL auth transport, `PlayerokAuthContext` и BFF клиент требуют именно `token`; иного источника токена (local/session storage или другой браузерный store) в существующей реализации не найдено. `BrowserViewerChecker` использует credentials браузера для read-only fetch, но не экспортирует auth-материал. Фактические live-домен и набор cookies работающего профиля не читались, поэтому конкретная live-причина остаётся неустановленной.
+
+#### Изменения
+
+- Перед чтением cookie store capture проверяет, что актуальная страница существует и использует тот же `QWebEngineProfile`; несовпадение завершается fail-closed с `profile_mismatch`.
+- При недостающем `token` status показывает ограниченные метаданные до 6 из максимум 16 first-party cookies: имя, домен, path, secure, httpOnly, session/expiration и тип объекта. Значения cookies не включаются. Если first-party события не пришли, UI сообщает об отсутствии наблюдавшихся событий за время capture, не утверждая, что token отсутствует во всём браузерном хранилище.
+- Значение cookie читается только для разрешённого домена и allowlist имён. Сохранение по-прежнему требует точное имя `token`, использует системный keyring и подтверждает обратное чтение; действительность сессии отдельно проверяется read-only `viewer`.
+
+#### Проверки и ограничения
+
+- Добавлены целевые проверки совпадения профиля/отказа при другом профиле и безопасного вывода metadata (domain/path/secure/httpOnly/session/expiration/type) без cookie values. `python -B -m unittest -q tests.test_playerok_graphql_session_capture tests.test_playerok_graphql_http` — **25 PASS**.
+- `python -B -m compileall -q app/playerok_browser.py tests/test_playerok_graphql_session_capture.py` — **PASS**; `git diff --check` — **PASS** (обычные предупреждения LF/CRLF для уже изменённых файлов).
+- Проверки использовали synthetic cookies и FakeProfile; живой браузерный профиль, keyring, приложение, пользовательская БД и Playerok не использовались. Точную live-причину можно установить только после штатного запуска этой версии и capture; до этого контекст не считается доступным. Commit/push не выполнялись.
+
+## Task67 — GraphQL sales sync через текущую WebEngine-сессию (2026-11-20)
+
+Контрольная точка: branch `work/local-sync`, HEAD `5ee6e99af4764875ece85aad41369a69c258e4af`. Прежние пользовательские изменения сохранены; `PLAYEROK_LOCAL_REVIEW.patch` не открывался и не изменялся.
+
+### Реализация
+
+- Добавлен `PlayerokBrowserGraphQLSalesReader` в `integrations/playerok/graphql_http.py`. Он проверяет `viewer`, ожидаемый account ID (если задан), получает все сделки через persisted-query `deals` с полной cursor/totalCount валидацией и формирует тот же доверенный `PlayerokGraphQLSalesSnapshot`, который принимает существующий sync service. Снимок не выпускается при auth ошибке, смене аккаунта, повторе курсора, конфликтующем дубликате, неполной странице/totalCount или потере страницы.
+- `PlayerokBrowserPanel.read_graphql_sales_snapshot()` создаёт существующий `WebEngineGraphQLTransport` для актуальной страницы/profile. Запросы выполняются через page `runJavaScript(fetch(..., credentials: include))`; cookies, token и отдельный HTTP клиент не извлекаются. При уничтожении страницы reader завершается безопасной ошибкой.
+- Ручная GraphQL-синхронизация и `PlayerokSalesPoller` теперь получают snapshot через этот callback reader. Сохранение/обработка остаётся прежней: тот же `PlayerokDealSyncService`, account-scoped baseline, idempotent sync и транзакционный DB worker. HTTP/keyring transport сохранён для других штатных сценариев, но больше не является зависимостью продажного poller.
+- Авторизационные ответы `UNAUTHENTICATED`, HTTP 401/403 и invalid viewer приводят к `session_expired`; poller помечает потерю сессии и останавливается. `page_lost`/timeout получает отдельный понятный статус. Повторы GraphQL запросов не выполняются автоматически.
+- Не менялись модели, sync writer, baseline, ConfigVersion gates, reservations, delivery, статусы Playerok и auto-send. PAID без подтверждённой ConfigVersion по-прежнему блокируется старым pipeline.
+
+### Проверки и live-ограничение
+
+- Добавлены тесты для WebEngine GraphQL viewer + двух deal pages, `credentials: include`, полного cursor перехода, разделённых deal/chat/listing IDs, account mismatch, повторного cursor, неполной пагинации, auth expiry и cancellation. Добавлена проверка, что MarketplacePanel создаёт reader от browser session и не вызывает `from_keyring()`.
+- `python -B -m unittest -q tests.test_playerok_graphql_browser_sales tests.test_playerok_graphql_http tests.test_playerok_graphql_sync tests.test_playerok_browser_chat_api tests.test_playerok_browser_chat_listener tests.test_playerok_sales_polling tests.test_playerok_browser_and_listing_config` — **101 PASS**. `compileall` для затронутых модулей/тестов и `git diff --check` — **PASS**.
+- Текущий пользовательский GameDelivery процесс был уже открыт на известной странице чата, однако отображал выполняющуюся проверку авторизации; новая версия кода в этот процесс не подменялась. Приложение не перезапускалось. Поэтому transport и интеграция подтверждены mocks, но фактический read-only запрос новой версии, включая запрос эталонных `deal_id`/`chat_id`, live не выполнен. Не записывать live canonical listing/message results и не считать новую авторизацию live подтверждённой. Пользовательская БД и состояния Playerok не менялись.
+
+Следующий ограниченный шаг для live-подтверждения: после штатного запуска обновлённой локальной версии на уже разрешённой сессии выполнить только viewer → deal → chat → chatMessages GET и сохранить в отчёт безопасные идентификаторы/времена, не раскрывая Trade URL/token; не включать изменения статусов, обработку заказов, reservations или доставку. Commit/push не выполнялись.
