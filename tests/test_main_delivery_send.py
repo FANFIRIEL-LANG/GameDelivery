@@ -265,7 +265,7 @@ class DeliverySendFlowTests(unittest.TestCase):
                 MainWindow._send_selected_order_with_asf(window)
 
             warning.assert_called_once()
-            self.assertIn("Синхронный путь Playerok отключён", warning.call_args.args[2])
+            self.assertIn("Legacy-путь Playerok отключён", warning.call_args.args[2])
             client.preview_trade_offer.assert_not_called()
             client.send_trade_offer.assert_not_called()
 
