@@ -6233,3 +6233,19 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Повторный локальный запуск после этого изменения ещё не получен; suite не считать полностью пройденным.
 
 **Следующий шаг:** выполнить `git pull --ff-only origin work/local-sync`, затем повторить три целевых модуля: `python -m unittest tests.test_delivery_dispatcher tests.test_delivery_ledger tests.test_main_delivery_send -v`.
+
+
+---
+
+## 2026-11-22 — локальные targeted tests пройдены после recipient snapshot guard
+
+- Локальная ветка обновлена пользователем fast-forward до `987b7af`.
+- Повторная команда: `python -m unittest tests.test_delivery_dispatcher tests.test_delivery_ledger tests.test_main_delivery_send -v`.
+- Результат: **43 tests OK**, 0 failures, 0 errors, 5.515 seconds.
+  - `tests.test_delivery_dispatcher`: 15 passed.
+  - `tests.test_delivery_ledger`: 6 passed.
+  - `tests.test_main_delivery_send`: 22 passed.
+- В частности, прошли проверки неизменяемости recipient snapshot, блокировки отсутствующего/изменённого Trade URL recipient, блокировки historical/non-paid Playerok deal, UNKNOWN/reconciliation без повторной отправки, а также canonical/legacy UI send guards.
+- Это подтверждает только три указанных локальных тестовых модуля. Не является подтверждением полного test suite, CI или live Steam/Playerok end-to-end; реальные обмены не выполнялись.
+
+**Следующий шаг:** проверить GitHub Actions для текущего HEAD `987b7af` и затем продолжить разбор оставшихся пунктов C.2, не закрывая этап только на основании этих targeted tests.
