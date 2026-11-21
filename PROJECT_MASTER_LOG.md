@@ -6203,3 +6203,19 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - На commit `f60c783` Windows build завершился success. На recipient implementation commit `d2c018b` ASF plugin build, Windows storage ACL smoke и Generic runtime smoke завершились success.
 - Полный unit suite и новые recipient regression tests не дошли до запуска из-за раннего timeout UI-модуля. Поэтому новые tests пока не объявляются прошедшими; требуется targeted запуск `test_delivery_dispatcher.py`, `test_delivery_ledger.py`, `test_main_delivery_send.py` локально после fast-forward.
 - Live Steam offers не создавались. Локальная копия пользователя пока не подтверждена как синхронизированная.
+
+
+---
+
+## 2026-11-22 — recipient snapshot: локальная targeted-проверка и корректировка тестовых fixtures
+
+**Статус:** локальный запуск целевых тестов после fast-forward до `d45f0a1` выявил проблемы тестового окружения/ожиданий; runtime-код в этой корректировке не менялся.
+
+- Команда: `python -m unittest tests.test_delivery_dispatcher tests.test_delivery_ledger tests.test_main_delivery_send -v`.
+- Результат исходного запуска: 43 теста, 9 failures и 1 error. Миграционные проверки и тесты recipient snapshot прошли.
+- Основная причина большинства сбоев dispatcher fixtures: тестовый helper создавал Playerok deal без завершённого baseline и без явного `listing_resolution_status='resolved'`/неисторического состояния. Новый fail-closed eligibility gate корректно останавливал сценарии раньше проверяемого поведения.
+- В `tests/test_delivery_dispatcher.py` helper `create_order` теперь задаёт разрешённое состояние сделки и завершённый baseline для тестового аккаунта. Специальный historical-тест по-прежнему явно переводит сделку в историческую.
+- В `tests/test_main_delivery_send.py` ожидание текста предупреждения синхронизировано с фактическим сообщением `Legacy-путь Playerok отключён`.
+- Изменения внесены в `work/local-sync`: `f0a20c0` и `4078e55`. Повторный локальный запуск после этих корректировок ещё не получен; не считать targeted suite пройденным.
+
+**Следующий шаг:** локально выполнить `git pull --ff-only origin work/local-sync`, затем повторить только три целевых модуля. Если останутся ошибки, разбирать их по фактическим traceback; не запускать весь UI-модуль, который ранее зависал в CI.
