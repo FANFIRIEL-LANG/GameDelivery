@@ -6249,3 +6249,11 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Это подтверждает только три указанных локальных тестовых модуля. Не является подтверждением полного test suite, CI или live Steam/Playerok end-to-end; реальные обмены не выполнялись.
 
 **Следующий шаг:** проверить GitHub Actions для текущего HEAD `987b7af` и затем продолжить разбор оставшихся пунктов C.2, не закрывая этап только на основании этих targeted tests.
+
+
+### GitHub Actions follow-up for recipient test-fixture fix (2026-11-22)
+
+- На коммите `987b7af` workflow **Build GameDelivery Windows executable** завершился успешно.
+- Workflow **Tests** завершился failure на шаге `Test complete Steam trade UI flow`, который выполнялся ровно 120 секунд; последующий полный unit suite был skipped. Шаги compile Python files и Steam trade credential storage/migration прошли.
+- Это тот же известный timeout в `tests.test_trade_delivery_ui.py::test_reimported_paid_status_cannot_unblock_historical_baseline_order`, который уже воспроизводился на родительском checkpoint до recipient changes; не считать его новым регрессом. Три локальных целевых модуля на текущей локальной копии при этом прошли: 43/43.
+- На момент проверки workflow для документационного коммита `8732e4d` ещё выполнялись; результаты не подтверждены.
