@@ -334,6 +334,54 @@ class DeliveryLedger:
             ).fetchone()
         return dict(row)
 
+    def bind_order_recipient(self, order_id: str, steam_id64: int | str) -> dict[str, str]:
+        """Bind one immutable Steam recipient after all required legs are reserved."""
+        order = str(order_id or "").strip()
+        if not order or isinstance(steam_id64, bool):
+            raise ValueError("order_id и корректный SteamID64 обязательны")
+        try:
+            recipient = int(steam_id64)
+        except (TypeError, ValueError):
+            raise ValueError("SteamID64 получателя имеет некорректный формат") from None
+        if not 76561197960265728 < recipient <= 76561197964560623:
+            raise ValueError("SteamID64 получателя находится вне диапазона индивидуальных Steam-аккаунтов")
+        normalized = str(recipient)
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT o.status,o.recipient_steam_id64,
+                       COUNT(l.leg_id) AS leg_count,
+                       SUM(CASE WHEN l.status='reserved' THEN 1 ELSE 0 END) AS reserved_count
+                FROM gd_orders o
+                LEFT JOIN gd_order_lines ol ON ol.order_id=o.order_id
+                LEFT JOIN gd_delivery_legs l ON l.order_line_id=ol.order_line_id
+                WHERE o.order_id=?
+                GROUP BY o.order_id
+                """,
+                (order,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Канонический заказ {order} не найден")
+            if row["status"] != "reserved":
+                raise ValueError("Получателя можно закрепить только для зарезервированного заказа")
+            leg_count = int(row["leg_count"] or 0)
+            reserved_count = int(row["reserved_count"] or 0)
+            if leg_count < 1 or reserved_count != leg_count:
+                raise ValueError("Нельзя закрепить получателя: не все обязательные DeliveryLeg зарезервированы")
+            existing = row["recipient_steam_id64"]
+            if existing is not None and str(existing) != normalized:
+                raise ValueError("Получатель уже закреплён за другим SteamID64; автоматическая перепривязка запрещена")
+            if existing is None:
+                changed = connection.execute(
+                    "UPDATE gd_orders SET recipient_steam_id64=? "
+                    "WHERE order_id=? AND recipient_steam_id64 IS NULL",
+                    (normalized, order),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("Получатель изменился параллельно; повтори ASF preview")
+        return {"order_id": order, "recipient_steam_id64": normalized}
+
     def add_delivery_leg(
         self, *, leg_id: str, order_line_id: str, bot_name: str,
         app_id: int, context_id: str | int, asset_ids: list[str],

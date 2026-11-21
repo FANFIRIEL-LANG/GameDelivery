@@ -26,6 +26,8 @@ ASSET_ID_KEY_MIGRATION_ID = "2026-11-asset-id-key-v1"
 ASSET_ID_KEY_BACKUP_SUFFIX = ".pre-gamedelivery-asset-id-key-v1.bak"
 ASSET_ID_BLOCKING_STATE_MIGRATION_ID = "2026-11-asset-id-blocking-state-v1"
 ASSET_ID_BLOCKING_STATE_BACKUP_SUFFIX = ".pre-gamedelivery-asset-id-blocking-state-v1.bak"
+RECIPIENT_SNAPSHOT_MIGRATION_ID = "2026-11-delivery-recipient-snapshot-v1"
+RECIPIENT_SNAPSHOT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-recipient-snapshot-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -781,6 +783,25 @@ def _apply_playerok_sync_migration(connection: sqlite3.Connection) -> bool:
     return True
 
 
+def _apply_recipient_snapshot_migration(connection: sqlite3.Connection) -> bool:
+    """Add a nullable recipient snapshot; historical orders remain unverified."""
+    if _migration_applied(connection, RECIPIENT_SNAPSHOT_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        if "recipient_steam_id64" not in _columns(connection, "gd_orders"):
+            connection.execute("ALTER TABLE gd_orders ADD COLUMN recipient_steam_id64 TEXT")
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (RECIPIENT_SNAPSHOT_MIGRATION_ID,),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     """Apply the canonical ledger, Playerok sync, recipe, and reservation migrations."""
     connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
@@ -820,7 +841,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_order_line_config_migration(connection) or changed
     changed = _apply_unified_reservation_migration(connection) or changed
     changed = _apply_asset_id_key_migration(connection) or changed
-    return _apply_asset_id_blocking_state_migration(connection) or changed
+    changed = _apply_asset_id_blocking_state_migration(connection) or changed
+    return _apply_recipient_snapshot_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
@@ -1594,6 +1616,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
         database_path,
         migration_id=ORDER_LINE_CONFIG_MIGRATION_ID,
         backup_suffix=ORDER_LINE_CONFIG_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=RECIPIENT_SNAPSHOT_MIGRATION_ID,
+        backup_suffix=RECIPIENT_SNAPSHOT_BACKUP_SUFFIX,
     )
     with connect_sqlite(database_path) as connection:
         return apply_delivery_ledger_migrations(connection)

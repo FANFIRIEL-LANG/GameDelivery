@@ -51,6 +51,7 @@ class DeliverySendFlowTests(unittest.TestCase):
                 CREATE TABLE delivery_orders (
                     order_id TEXT PRIMARY KEY,
                     recipient_trade_url TEXT NOT NULL,
+                    recipient_steam_id64 TEXT,
                     status TEXT NOT NULL,
                     source_platform TEXT NOT NULL DEFAULT 'manual',
                     source_order_id TEXT,
@@ -77,8 +78,8 @@ class DeliverySendFlowTests(unittest.TestCase):
             """)
             db.execute(
                 "INSERT INTO delivery_orders "
-                "(order_id, recipient_trade_url, status) VALUES (?, ?, ?)",
-                (self.ORDER_ID, self.SAFE_TRADE_URL, "reserved — не отправлен"),
+                "(order_id, recipient_trade_url, recipient_steam_id64, status) VALUES (?, ?, ?, ?)",
+                (self.ORDER_ID, self.SAFE_TRADE_URL, str(self.STEAM_ID64), "reserved — не отправлен"),
             )
             db.execute(
                 "INSERT INTO delivery_order_assets (order_id, bot_name, asset_id) VALUES (?, ?, ?)",
@@ -115,6 +116,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             _validate_trade_url=lambda value: value,
             _trade_credentials=SimpleNamespace(
                 load_trade_url=lambda order_id, stored_url: self.TRADE_URL,
+                recipient_steam_id64_from_url=lambda stored_url: self.STEAM_ID64,
                 delete_trade_url=lambda order_id: None,
             ),
             _delete_trade_credential_best_effort=lambda order_id: None,
@@ -124,6 +126,9 @@ class DeliverySendFlowTests(unittest.TestCase):
             send_offer_button=MagicMock(),
             statusBar=lambda: status_bar,
             _status_bar=status_bar,
+        )
+        window._bind_legacy_order_recipient_snapshot = MethodType(
+            MainWindow._bind_legacy_order_recipient_snapshot, window
         )
         window._claim_legacy_order_for_send = MethodType(
             MainWindow._claim_legacy_order_for_send, window

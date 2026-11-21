@@ -6173,3 +6173,16 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Legacy-заказы без snapshot не отправляются автоматически: для них требуется успешный повторный preview и безопасное закрепление получателя до dispatch.
 
 **Статус:** технический контракт выбран; реализация миграции, моделей, UI/dispatcher и тестов ещё не выполнена. C.2 остаётся открытым.
+
+
+## Реализация C.2: immutable Steam recipient snapshot (2026-11-21)
+
+- В canonical schema добавлена nullable колонка `gd_orders.recipient_steam_id64` отдельной миграцией `2026-11-delivery-recipient-snapshot-v1`. Для миграции добавлен pre-migration backup. Существующие/исторические заказы остаются с NULL и не получают выдуманного получателя.
+- `DeliveryLedger.bind_order_recipient()` закрепляет SteamID64 только у заказа в состоянии `reserved`, когда все его DeliveryLeg имеют состояние `reserved`. Повторная запись того же ID допустима; другой ID отклоняется.
+- `SteamTradeCredentialStore.recipient_steam_id64_from_url()` извлекает recipient из параметра `partner`; token не трактуется как доказательство личности и по-прежнему остаётся в системном хранилище.
+- Canonical ASF preview теперь сравнивает targetSteamId64 каждого DeliveryLeg с recipient из Trade URL. До manual/automatic dispatch проверяется полный набор legs и единый непустой recipient, после чего он сохраняется в Order.
+- `DeliveryDispatcher.dispatch_leg()` до создания DeliveryAttempt сравнивает recipient из safe Trade URL с сохранённым snapshot внутри транзакции. Отсутствующий snapshot и mismatch блокируют отправку до ASF.
+- Legacy UI-путь получил такую же фиксацию после успешного ASF preview и повторную сверку URL ↔ snapshot внутри claim до перехода заказа в sending.
+- Добавлены regression tests для отсутствующего snapshot, изменённого partner, immutable binding и обязательного reservation всех legs.
+- Playerok buyer identity не связывается со SteamID64; Steam Web API не используется. Механизм подтверждает только соответствие Trade URL и ASF recipient, но не владение Steam-аккаунтом покупателем.
+- На момент записи изменения подготовлены в Git-дереве ветки; локальные тесты и GitHub Actions ещё не запускались. Live ASF/Steam offers не выполнялись. C.2 остаётся открытым до зелёных тестов и проверки edge cases.

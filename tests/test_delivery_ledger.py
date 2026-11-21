@@ -199,6 +199,42 @@ class DeliveryLedgerMigrationTests(unittest.TestCase):
             with snapshot_store._connect() as connection:
                 self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
 
+    def test_order_recipient_snapshot_is_immutable_and_requires_reserved_legs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Database(Path(tmp) / "recipient.sqlite3")
+            ledger = DeliveryLedger(database)
+            config = ledger.create_listing_config_version(
+                listing_id="recipient-listing", source_platform="manual",
+                external_listing_id=None, delivery_quantity_per_deal=1,
+                item_selectors={"app_id": 730, "context_id": 2}, bot_pool=["Bot-A"],
+            )
+            ledger.create_deal(
+                deal_id="recipient-deal", source_platform="manual",
+                external_deal_id="recipient-deal", chat_id=None,
+                listing_id=config["listing_id"], config_version_id=config["config_version_id"],
+                platform_status="manual",
+            )
+            ledger.create_order(order_id="recipient-order", deal_id="recipient-deal", total_quantity=1)
+            ledger.add_order_line(
+                order_line_id="recipient-line", order_id="recipient-order", line_number=1,
+                item_type="cs2_item", item_name="Item",
+                item_selector={"app_id": 730, "context_id": 2}, quantity=1,
+            )
+            ledger.add_delivery_leg(
+                leg_id="recipient-leg", order_line_id="recipient-line", bot_name="Bot-A",
+                app_id=730, context_id=2, asset_ids=["123"], status="planned",
+            )
+            with database.connect() as db:
+                db.execute("UPDATE gd_orders SET status='reserved' WHERE order_id='recipient-order'")
+            with self.assertRaisesRegex(ValueError, "не все обязательные"):
+                ledger.bind_order_recipient("recipient-order", 76561197960265851)
+            with database.connect() as db:
+                db.execute("UPDATE gd_delivery_legs SET status='reserved' WHERE leg_id='recipient-leg'")
+            ledger.bind_order_recipient("recipient-order", 76561197960265851)
+            ledger.bind_order_recipient("recipient-order", "76561197960265851")
+            with self.assertRaisesRegex(ValueError, "уже закреплён"):
+                ledger.bind_order_recipient("recipient-order", 76561197960265852)
+
     def test_config_version_is_an_immutable_snapshot_and_new_changes_create_new_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             database = Database(Path(tmp) / "ledger.sqlite3")

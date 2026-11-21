@@ -147,6 +147,9 @@ class DeliveryDispatchTests(unittest.TestCase):
                      "2", bot, str(index * 100)),
                 )
             legs.append(leg_id)
+        with self.db.connect() as db:
+            db.execute("UPDATE gd_orders SET status='reserved' WHERE order_id=?", (order_id,))
+        self.ledger.bind_order_recipient(order_id, 76561197960265851)
         if order_id != "order-1":
             self.credentials.store_trade_url(
                 order_id, "https://steamcommunity.com/tradeoffer/new/?partner=123&token=secret_token"
@@ -292,6 +295,33 @@ class DeliveryDispatchTests(unittest.TestCase):
         audit = json.loads(attempt["result_json"])
         self.assertEqual(audit["dispatch_authorization"]["mode"], "manual")
         self.assertEqual(audit["dispatch_authorization"]["authorization_id"], grant.authorization_id)
+
+    def test_dispatch_blocks_missing_recipient_snapshot_before_creating_attempt(self):
+        leg = self.create_order()[0]
+        with self.db.connect() as db:
+            db.execute("UPDATE gd_orders SET recipient_steam_id64=NULL WHERE order_id='order-1'")
+        result = self.dispatch("order-1", leg)
+        self.assertEqual(result["status"], "RECIPIENT_NOT_BOUND")
+        self.assertEqual(self.asf.sent, [])
+        with self.db.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'").fetchone()[0], 0)
+
+    def test_dispatch_blocks_changed_trade_url_recipient_before_creating_attempt(self):
+        leg = self.create_order()[0]
+        freshness = self._freshness_arguments("order-1", leg)
+        try:
+            result = self.dispatcher.dispatch_leg(
+                order_id="order-1", leg_id=leg,
+                stored_trade_url="https://steamcommunity.com/tradeoffer/new/?partner=124",
+                **freshness,
+            )
+        finally:
+            if freshness.get("playerok_order_lease") is not None:
+                self.freshness_gate.release_order(freshness["playerok_order_lease"])
+        self.assertEqual(result["status"], "RECIPIENT_MISMATCH")
+        self.assertEqual(self.asf.sent, [])
+        with self.db.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'").fetchone()[0], 0)
 
     def test_dispatch_rejects_reservation_mismatch_before_creating_attempt(self):
         leg = self.create_order()[0]

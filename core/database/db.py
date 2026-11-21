@@ -15,6 +15,8 @@ from core.database.ledger_migrations import (
     ASSET_ID_KEY_MIGRATION_ID,
     ASSET_ID_BLOCKING_STATE_BACKUP_SUFFIX,
     ASSET_ID_BLOCKING_STATE_MIGRATION_ID,
+    RECIPIENT_SNAPSHOT_BACKUP_SUFFIX,
+    RECIPIENT_SNAPSHOT_MIGRATION_ID,
     RECIPE_BACKUP_SUFFIX,
     RECIPE_MIGRATION_ID,
     apply_delivery_ledger_migrations,
@@ -85,6 +87,11 @@ class Database:
             self.path,
             migration_id=ASSET_ID_BLOCKING_STATE_MIGRATION_ID,
             backup_suffix=ASSET_ID_BLOCKING_STATE_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=RECIPIENT_SNAPSHOT_MIGRATION_ID,
+            backup_suffix=RECIPIENT_SNAPSHOT_BACKUP_SUFFIX,
         )
         with self.connect() as connection:
             connection.executescript(SCHEMA)

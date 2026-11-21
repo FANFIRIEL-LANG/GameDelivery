@@ -571,6 +571,7 @@ class MainWindow(QMainWindow):
                 "source_url": "TEXT NOT NULL DEFAULT ''",
                 "trade_offer_id": "TEXT NOT NULL DEFAULT ''",
                 "trade_confirmation_status": "TEXT NOT NULL DEFAULT ''",
+                "recipient_steam_id64": "TEXT",
             }
             for name, definition in migrations.items():
                 if name not in columns:
@@ -772,6 +773,42 @@ class MainWindow(QMainWindow):
         ):
             raise ValueError("Укажи корректную HTTPS-ссылку Steam tradeoffer/new с partner и token.")
         return url
+
+    def _bind_legacy_order_recipient_snapshot(self, order_id, preview):
+        """Persist the recipient confirmed by ASF preview for this legacy order."""
+        if (
+            not isinstance(preview, dict) or preview.get("success") is not True
+            or preview.get("mode") != "preview-only" or preview.get("sendEnabled") is not False
+            or preview.get("orderId") != order_id
+        ):
+            raise ValueError("ASF preview не подтвердил получателя заказа; отправка заблокирована.")
+        target = preview.get("targetSteamId64")
+        if isinstance(target, bool) or not str(target or "").isdigit():
+            raise ValueError("ASF preview не вернул корректный SteamID64 получателя.")
+        target = str(int(target))
+        with connect_sqlite(self._database_path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT recipient_trade_url,recipient_steam_id64,status FROM delivery_orders WHERE order_id=?",
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Локальный заказ для закрепления Steam-получателя не найден.")
+            if row["status"] != "reserved — не отправлен":
+                raise ValueError("Получателя можно закрепить только до начала отправки.")
+            expected = str(self._trade_credentials.recipient_steam_id64_from_url(row["recipient_trade_url"]))
+            if expected != target:
+                raise ValueError("SteamID64 из ASF preview не совпадает с partner в Trade URL заказа.")
+            existing = row["recipient_steam_id64"]
+            if existing is not None and str(existing) != target:
+                raise ValueError("Для заказа уже закреплён другой SteamID64. Автоматическая замена запрещена.")
+            if existing is None:
+                changed = db.execute(
+                    "UPDATE delivery_orders SET recipient_steam_id64=? WHERE order_id=? AND recipient_steam_id64 IS NULL",
+                    (target, order_id),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("Получатель заказа изменился параллельно; повтори ASF preview.")
 
     def _prepare_delivery_order(self):
         try:
@@ -1180,6 +1217,7 @@ class MainWindow(QMainWindow):
                 or [str(item.get("assetId", "")) for item in preview.get("assets", []) if isinstance(item, dict)] != asset_ids
             ):
                 raise ASFError("ASF не подтвердил точное совпадение получателя, бота и состава активов. Отправка отменена.")
+            self._bind_legacy_order_recipient_snapshot(order_id, preview)
             if not automatic:
                 confirmation_lines = [
                     "Сейчас будет создано реальное предложение обмена Steam.", "",
@@ -1296,7 +1334,8 @@ class MainWindow(QMainWindow):
                         claim=lambda: True,
                     )
                 current = db.execute(
-                    "SELECT status FROM delivery_orders WHERE order_id = ?", (order_id,)
+                    "SELECT status,recipient_trade_url,recipient_steam_id64 FROM delivery_orders WHERE order_id = ?",
+                    (order_id,),
                 ).fetchone()
                 current_assets = db.execute(
                     "SELECT bot_name, asset_id FROM delivery_order_assets WHERE order_id = ? "
@@ -1306,8 +1345,11 @@ class MainWindow(QMainWindow):
                     "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ? "
                     "ORDER BY bot_name, asset_id", (order_id,),
                 ).fetchall()
-                if current is None or current[0] != "reserved — не отправлен":
+                if current is None or current["status"] != "reserved — не отправлен":
                     raise ValueError("Статус заказа изменился во время проверки. Обнови список.")
+                expected_recipient = str(self._trade_credentials.recipient_steam_id64_from_url(current["recipient_trade_url"]))
+                if current["recipient_steam_id64"] is None or str(current["recipient_steam_id64"]) != expected_recipient:
+                    raise ValueError("Steam-получатель не закреплён или Trade URL была изменена. Повтори ASF preview; отправка заблокирована.")
                 if current_assets != assets or current_reservations != assets:
                     raise ValueError("Состав заказа или резервы изменились после проверки. Отправка отменена.")
                 changed = db.execute(
@@ -2012,6 +2054,7 @@ class MainWindow(QMainWindow):
 
     def _preview_ledger_order(self, client, order_id, trade_url, legs):
         previews = []
+        expected_recipient = self._trade_credentials.recipient_steam_id64_from_url(trade_url)
         for leg in legs:
             asset_ids = json.loads(leg["asset_ids_json"])
             preview = client.preview_trade_offer(
@@ -2028,6 +2071,7 @@ class MainWindow(QMainWindow):
                 or str(preview.get("botName", "")).casefold() != str(leg["bot_name"]).casefold()
                 or preview.get("appId") != int(leg["app_id"])
                 or preview.get("contextId") != int(leg["context_id"])
+                or str(preview.get("targetSteamId64") or "") != str(expected_recipient)
                 or preview.get("assetCount") != len(asset_ids)
                 or [str(item.get("assetId", "")) for item in preview.get("assets", [])
                     if isinstance(item, dict)] != asset_ids
@@ -2100,9 +2144,29 @@ class MainWindow(QMainWindow):
                 f"{error}\n\nНи один Steam offer не отправлялся.",
             )
             return
+        if len(legs) != len(previews) or any(
+            str(leg.get("leg_id") or "") != str(preview.get("leg_id") or "")
+            for leg, preview in zip(legs, previews)
+        ):
+            self._finish_async_send_ui()
+            QMessageBox.warning(self, "Отправка заблокирована",
+                "ASF preview не подтвердил весь состав DeliveryLeg заказа.")
+            return
+        recipient_ids = {str(item.get("steam_id64") or "") for item in previews}
+        if len(recipient_ids) != 1 or not next(iter(recipient_ids), ""):
+            self._finish_async_send_ui()
+            QMessageBox.warning(self, "Отправка заблокирована",
+                "DeliveryLeg получили разные или пустые SteamID64. Ни один offer не отправлялся.")
+            return
+        try:
+            self.delivery_pipeline.ledger.bind_order_recipient(order_id, previews[0]["steam_id64"])
+        except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+            self._finish_async_send_ui()
+            QMessageBox.warning(self, "Получатель Steam не закреплён",
+                f"{exc}\n\nНи один Steam offer не отправлялся.")
+            return
         manual_authorization = None
         if not automatic:
-            if len(legs) != len(previews) or any(
                 str(leg.get("leg_id") or "") != str(preview.get("leg_id") or "")
                 for leg, preview in zip(legs, previews)
             ):

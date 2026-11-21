@@ -123,6 +123,7 @@ class DeliveryDispatcher:
         ):
             return {"dispatched": False, "status": "MANUAL_AUTHORIZATION_INVALID", "reason": "manual authorization is missing or expired"}
 
+        recipient_from_url = self.credentials.recipient_steam_id64_from_url(stored_trade_url)
         trade_url = self.credentials.load_trade_url(order, stored_trade_url)
         authorization = {
             "mode": "manual" if manual_authorization is not None else "automatic",
@@ -137,8 +138,9 @@ class DeliveryDispatcher:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
                     """
-                    SELECT l.*, o.status AS order_status, d.chat_id, ol.order_line_id,
-                           d.source_platform, d.external_deal_id, d.playerok_account_id
+                    SELECT l.*, o.status AS order_status, o.recipient_steam_id64,
+                           d.chat_id, ol.order_line_id, d.source_platform,
+                           d.external_deal_id, d.playerok_account_id
                     FROM gd_delivery_legs l
                     JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
                     JOIN gd_orders o ON o.order_id=ol.order_id
@@ -150,6 +152,19 @@ class DeliveryDispatcher:
                     if self.playerok_freshness_gate is not None:
                         self.playerok_freshness_gate.revoke(playerok_freshness_authorization)
                     raise KeyError("DeliveryLeg не найден в указанном заказе")
+                stored_recipient = row["recipient_steam_id64"]
+                if stored_recipient is None or not str(stored_recipient).strip():
+                    return {"_claimed": False, "response": {
+                        "dispatched": False,
+                        "status": "RECIPIENT_NOT_BOUND",
+                        "reason": "Для заказа не закреплён Steam-получатель; требуется полный ASF preview.",
+                    }}
+                if str(stored_recipient) != str(recipient_from_url):
+                    return {"_claimed": False, "response": {
+                        "dispatched": False,
+                        "status": "RECIPIENT_MISMATCH",
+                        "reason": "Steam Trade URL указывает на другого получателя; отправка заблокирована.",
+                    }}
                 is_playerok = str(row["source_platform"] or "").strip().casefold() == "playerok"
                 if (
                     is_playerok and self.playerok_freshness_gate is not None

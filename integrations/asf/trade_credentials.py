@@ -63,6 +63,12 @@ class SteamTradeCredentialStore:
             raise ValueError("Steam Trade URL содержит некорректный token.")
         return partner, token
 
+    @classmethod
+    def recipient_steam_id64_from_url(cls, trade_url: str) -> int:
+        """Resolve the recipient from partner; token is not identity proof."""
+        partner, _token = cls._parts(trade_url, require_token=False)
+        return 76561197960265728 + int(partner)
+
     @staticmethod
     def _safe_url(partner: str) -> str:
         query = urlencode({"partner": partner})
