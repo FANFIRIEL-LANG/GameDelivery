@@ -6219,3 +6219,17 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Изменения внесены в `work/local-sync`: `f0a20c0` и `4078e55`. Повторный локальный запуск после этих корректировок ещё не получен; не считать targeted suite пройденным.
 
 **Следующий шаг:** локально выполнить `git pull --ff-only origin work/local-sync`, затем повторить только три целевых модуля. Если останутся ошибки, разбирать их по фактическим traceback; не запускать весь UI-модуль, который ранее зависал в CI.
+
+
+---
+
+## 2026-11-22 — устранён повторный INSERT Playerok baseline в dispatcher test
+
+- После обновления локальной ветки до `f8d7c13` повторный запуск целевых модулей дал 43 теста: 42 passed, 1 error.
+- Единственная ошибка: `test_transport_failure_becomes_unknown_and_reconciliation_recovers_offer_without_resend` — `sqlite3.IntegrityError: UNIQUE constraint failed: playerok_sync_state.account_user_id`.
+- Причина: общий helper `create_order()` уже создаёт завершённый baseline и выставляет сделку неисторической/разрешённой; сам тест повторно вставлял ту же строку baseline.
+- Удалён дублирующий setup из этого теста. Сценарий по-прежнему использует общий корректный fixture и проверяет UNKNOWN/reconciliation без повторной отправки.
+- Коммит: `35ef10b` (`test: remove duplicate Playerok baseline fixture`). Runtime-код не менялся.
+- Повторный локальный запуск после этого изменения ещё не получен; suite не считать полностью пройденным.
+
+**Следующий шаг:** выполнить `git pull --ff-only origin work/local-sync`, затем повторить три целевых модуля: `python -m unittest tests.test_delivery_dispatcher tests.test_delivery_ledger tests.test_main_delivery_send -v`.
