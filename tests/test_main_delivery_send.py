@@ -319,7 +319,13 @@ class DeliverySendFlowTests(unittest.TestCase):
 
         window = SimpleNamespace(
             _delivery_send_policy=policy,
-            _trade_credentials=SimpleNamespace(store_trade_url=lambda order, url: "safe-url"),
+            _trade_credentials=SimpleNamespace(
+                store_trade_url=lambda order, url: "safe-url",
+                recipient_steam_id64_from_url=lambda url: 76561197960265728 + 12345,
+            ),
+            delivery_pipeline=SimpleNamespace(
+                ledger=SimpleNamespace(bind_order_recipient=MagicMock())
+            ),
             _database_path=":temporary:",
             _playerok_freshness_gate=None,
             _finish_async_send_ui=MagicMock(),
