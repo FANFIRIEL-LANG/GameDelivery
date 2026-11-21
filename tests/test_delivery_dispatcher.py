@@ -119,8 +119,13 @@ class DeliveryDispatchTests(unittest.TestCase):
         )
         with self.db.connect() as db:
             db.execute(
-                "UPDATE gd_deals SET playerok_account_id=? WHERE deal_id=?",
+                "UPDATE gd_deals SET playerok_account_id=?, is_historical=0, "
+                "listing_resolution_status='resolved' WHERE deal_id=?",
                 (f"account-{order_id}", f"deal-{order_id}"),
+            )
+            db.execute(
+                "INSERT INTO playerok_sync_state(account_user_id,baseline_completed) VALUES(?,1)",
+                (f"account-{order_id}",),
             )
         self.ledger.create_order(order_id=order_id, deal_id=f"deal-{order_id}", total_quantity=1)
         line_id = f"line-{order_id}"
