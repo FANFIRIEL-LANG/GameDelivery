@@ -6192,3 +6192,5 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 
 - Первый push recipient snapshot остановился на `compileall`: в canonical preview callback остался фрагмент старой вложенной проверки после переноса общей проверки всех DeliveryLeg.
 - Фрагмент удалён; общая проверка полного набора legs теперь выполняется один раз до ветвления manual/automatic. Тесты ещё не запускались до повторного CI.
+
+- CI follow-up: устранён SyntaxError в canonical preview callback; canonical UI test fixture дополнен mock binding для immutable recipient. Повторный CI запущен на актуальном HEAD.
