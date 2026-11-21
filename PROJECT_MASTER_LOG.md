@@ -6186,3 +6186,9 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Добавлены regression tests для отсутствующего snapshot, изменённого partner, immutable binding и обязательного reservation всех legs.
 - Playerok buyer identity не связывается со SteamID64; Steam Web API не используется. Механизм подтверждает только соответствие Trade URL и ASF recipient, но не владение Steam-аккаунтом покупателем.
 - На момент записи изменения подготовлены в Git-дереве ветки; локальные тесты и GitHub Actions ещё не запускались. Live ASF/Steam offers не выполнялись. C.2 остаётся открытым до зелёных тестов и проверки edge cases.
+
+
+### CI correction — 2026-11-21
+
+- Первый push recipient snapshot остановился на `compileall`: в canonical preview callback остался фрагмент старой вложенной проверки после переноса общей проверки всех DeliveryLeg.
+- Фрагмент удалён; общая проверка полного набора legs теперь выполняется один раз до ветвления manual/automatic. Тесты ещё не запускались до повторного CI.

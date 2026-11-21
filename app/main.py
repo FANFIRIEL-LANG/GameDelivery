@@ -2167,15 +2167,6 @@ class MainWindow(QMainWindow):
             return
         manual_authorization = None
         if not automatic:
-                str(leg.get("leg_id") or "") != str(preview.get("leg_id") or "")
-                for leg, preview in zip(legs, previews)
-            ):
-                self._finish_async_send_ui()
-                QMessageBox.warning(
-                    self, "Отправка заблокирована",
-                    "ASF preview не подтвердил весь состав DeliveryLeg заказа.",
-                )
-                return
             lines = [
                 f"Канонический заказ: {order_id}",
                 f"Получатель SteamID64: {previews[0].get('steam_id64') if previews else '—'}",
