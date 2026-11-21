@@ -6194,3 +6194,12 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Фрагмент удалён; общая проверка полного набора legs теперь выполняется один раз до ветвления manual/automatic. Тесты ещё не запускались до повторного CI.
 
 - CI follow-up: устранён SyntaxError в canonical preview callback; canonical UI test fixture дополнен mock binding для immutable recipient. Повторный CI запущен на актуальном HEAD.
+
+### CI result for recipient snapshot — 2026-11-21
+
+- `compileall` прошёл после исправления canonical preview callback.
+- Отдельный CI-набор `test_trade_credentials.py` прошёл: 8 tests OK.
+- Шаг `test_trade_delivery_ui.py` завершился timeout 120s на `test_reimported_paid_status_cannot_unblock_historical_baseline_order`. Сверка с родительским checkpoint `d59ff70` показала тот же timeout на том же тесте до recipient changes; это pre-existing CI failure, а не новый регресс recipient snapshot.
+- На commit `f60c783` Windows build завершился success. На recipient implementation commit `d2c018b` ASF plugin build, Windows storage ACL smoke и Generic runtime smoke завершились success.
+- Полный unit suite и новые recipient regression tests не дошли до запуска из-за раннего timeout UI-модуля. Поэтому новые tests пока не объявляются прошедшими; требуется targeted запуск `test_delivery_dispatcher.py`, `test_delivery_ledger.py`, `test_main_delivery_send.py` локально после fast-forward.
+- Live Steam offers не создавались. Локальная копия пользователя пока не подтверждена как синхронизированная.
