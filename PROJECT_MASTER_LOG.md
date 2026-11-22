@@ -6331,3 +6331,48 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 **Ограничения текущего шага:** решение зафиксировано как контракт. Код, dataclasses, SQLite schema, migrations, UI и delivery behavior не менялись; миграции и тесты не запускались.
 
 **Следующий шаг C.2:** read-only составить таблицу допустимых переходов для Marketplace Deal, Internal Order, DeliveryLeg/Attempt, ResourceReservation и Playerok status outbox; сопоставить фактические переходы в коде и существующие тесты. Отдельно отметить незащищённые/неоднозначные переходы и предложить контракт на согласование. До отдельного одобрения не менять реализацию или схему.
+
+
+### C.2 — read-only audit state machines and transition coverage (2026-11-22)
+
+**Проверенная база:** GitHub `work/local-sync`, HEAD перед этой записью: `8be2c94aaa28ccc3d1d4e8377b22ddf34510e6fb`. Прочитаны `core/delivery/dispatcher.py`, `reconciliation.py`, `order_pipeline.py`, `reservation_service.py`, `ledger.py`, `chat_commands.py`, `playerok_eligibility.py`, `integrations/playerok/sync.py`, `core/database/ledger_migrations.py` и связанные тесты. Код, схема, миграции и пользовательская БД не менялись.
+
+**Фактические переходы по реализации:**
+
+1. **Marketplace Deal (Playerok).** `platform_status` — наблюдаемое значение площадки, которое обновляется синхронизацией; отдельного внутреннего конечного автомата Deal нет. Историчность и разрешение объявления хранятся отдельно (`is_historical`, `listing_resolution_status`) и используются fail-closed eligibility gate. Первая baseline-загрузка маркирует сделки историческими и не создаёт доставку.
+2. **Internal Order.**
+   - Начальное состояние — `pending`.
+   - Подготовка/резервирование может закончиться `preflight_blocked` или `insufficient_stock`; успешное резервирование переводит в `reserved`.
+   - Claim отправки переводит в `PROCESSING`; исход ASF/отправки устанавливает `UNKNOWN`, `PRIVACY_WAIT`, `TRADE_RESTRICTED`, `FAILED` либо оставляет `PROCESSING` при `SENT_TO_STEAM`.
+   - `DELIVERED` выставляется только когда все legs заказа имеют `ACCEPTED`.
+   - `CANCELLED` разрешён только для `pending`, `preflight_blocked`, `insufficient_stock`, `reserved`, при отсутствии любой DeliveryAttempt и при legs только `planned/reserved`; в одной транзакции legs становятся `CANCELLED`, активные резервы — `released`.
+3. **DeliveryLeg.**
+   - Создаётся как `planned` или `reserved`; dispatch допускает только эти два состояния и переводит leg в `DISPATCHING`.
+   - После отправки leg становится `SENT_TO_STEAM`, `UNKNOWN`, `PRIVACY_WAIT`, `TRADE_RESTRICTED` или `FAILED`.
+   - Startup recovery переводит зависшие `DISPATCHING` legs в `UNKNOWN`. Reconciliation переводит `UNKNOWN` в `SENT_TO_STEAM` только после восстановления конкретного offer ID; затем Steam status переводит leg в `ACCEPTED` или `DECLINED`.
+   - Для `PRIVACY_WAIT` есть контролируемое восстановление: проверенная личность покупателя, отсутствие признаков уже созданного offer, совпадение активных резервов, свежий inventory и tradable=True для каждого asset; затем leg возвращается в `reserved` с новой retry_generation.
+4. **DeliveryAttempt.**
+   - Создаётся как `prepared`, затем становится `dispatching`; при ответе dispatcher сохраняет lower-case вариант состояния leg (`unknown`, `sent_to_steam`, `privacy_wait`, `trade_restricted`, `failed`).
+   - Reconciliation обновляет DeliveryLeg, но не обновляет соответствующую DeliveryAttempt до `accepted/declined`; после восстановления interrupted dispatch startup recovery также меняет только leg, а attempt может остаться `dispatching`. Это рассогласование следует отдельно решить в контракте.
+5. **ResourceReservation.** Создаётся как `active`; штатно переходит в `released` при безопасной отмене до ASF attempt или в `consumed` после `ACCEPTED`. `legacy_conflict` — блокирующее legacy/conflict состояние. При `UNKNOWN`, `SENT_TO_STEAM`, `PRIVACY_WAIT`, `TRADE_RESTRICTED`, `FAILED` и `DECLINED` активный резерв не снимается автоматически.
+6. **Playerok status outbox.**
+   - Trigger создаёт `pending` только при переходе внутреннего заказа в `DELIVERED` для неисторической Playerok сделки с account ID.
+   - Мутация: `pending → dispatching → sent/confirmed/unknown`; неожиданный удалённый статус переводит в `blocked`. Startup recovery меняет оставшийся `dispatching → unknown`.
+   - `unknown` и `sent` далее только сверяются с площадкой: повторная мутация не отправляется вслепую. Наблюдение `SENT`/`CONFIRMED` обновляет локальное состояние; штатная sync без разрешённой мутации остаётся read-only.
+
+**Пробелы контракта/риски, подтверждённые исходниками:**
+- При Steam `DECLINED` reconciliation меняет leg и отправляет уведомление/запрос обновления inventory, но не меняет Order status и не освобождает active reservation. Заказ может остаться `PROCESSING`; автоматического безопасного пути повторного резервирования/отправки после decline в проверенных путях не найдено.
+- Для `FAILED` leg/order не найден документированный retry/recovery workflow. Dispatcher принимает только `planned/reserved`; отмена после создания попытки запрещена.
+- После startup recovery leg становится `UNKNOWN`, но DeliveryAttempt остаётся `dispatching`; это консервативно блокирует рискованный повтор, но не отражает единое состояние операции.
+- DeliveryAttempt не получает terminal `accepted/declined` при reconciliation; история попытки и состояние leg расходятся.
+- Полный набор статусов и переходов не централизован: `gd_orders.status`, `gd_delivery_legs.status` и `gd_delivery_attempts.status` не имеют полного CHECK/trigger-контракта; часть переходов задаётся SQL в нескольких сервисах. CHECK есть у reservation state и Playerok outbox state.
+- Существующие тесты покрывают важные guards: UNKNOWN без повторной отправки и recovery, startup recovery leg, multi-bot completion только после всех ACCEPTED, privacy recovery, trade restriction, decline notification, pre-attempt cancellation/reservation safety, outbox idempotency/unknown/no-resend и исторические сделки. Но тесты не закрепляют единый полный граф переходов; отдельно не закреплены order/reservation/attempt результаты после DECLINED и FAILED.
+
+**Рекомендуемое направление для согласования (не принято автоматически):**
+- Сохранять fail-closed правило: UNKNOWN и любой возможный offer не позволяют освобождать резерв или повторно отправлять без reconciliation.
+- После DECLINED считать leg завершившимся неуспехом, Order переводить в отдельное состояние ожидания ручного решения (либо явно определённое `DECLINED`), резерв не освобождать автоматически; повторная доставка — только после отдельной проверки inventory, наличия assets и явного нового retry generation.
+- Для FAILED отличать доказанный отказ до создания offer от неопределённого результата; только доказанный отказ может допускать контролируемый повтор, UNKNOWN — никогда без reconciliation.
+- Startup recovery и reconciliation должны согласованно обновлять DeliveryAttempt и DeliveryLeg, сохраняя исходную историю попытки и не допуская автоматического повторного offer.
+- Отдельно определить ручное завершение/снятие резерва после DECLINED/FAILED; текущий безопасный cancel покрывает только этап до ASF.
+
+**Следующий шаг:** получить согласование пользователя по правилам DECLINED/FAILED, состояниям Order/Attempt и ручному освобождению резерва. До согласования не менять код, schema, миграции, UI или поведение доставки.
