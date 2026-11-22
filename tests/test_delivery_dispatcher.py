@@ -237,7 +237,11 @@ class DeliveryDispatchTests(unittest.TestCase):
             status = db.execute(
                 "SELECT status FROM gd_delivery_legs WHERE leg_id=?", (leg,)
             ).fetchone()[0]
+            attempt_status = db.execute(
+                "SELECT status FROM gd_delivery_attempts WHERE leg_id=?", (leg,)
+            ).fetchone()[0]
         self.assertEqual(status, "UNKNOWN")
+        self.assertEqual(attempt_status, "unknown")
         # Normal reconciliation may only read/recover; it must never create a new offer.
         result = self.reconciler.reconcile(order_id="order-1")
         self.assertEqual(result[0]["status"], "UNKNOWN")
