@@ -119,7 +119,20 @@ class ListingStockServiceTests(unittest.TestCase):
         self.assertEqual(order_units, 6)
         self.assertEqual(transfer_events, 1)
         self.assertEqual(self.ledger.free_units(self.a), 0)
-        self.assertEqual(self.ledger.free_units(self.b), 0)
+        # Bot-B had 5 units, of which only 3 were assigned to the listing.
+        # Transferring 1 to the order must preserve the other 2 as listing stock
+        # and leave the remaining 2 units of the physical stack free.
+        self.assertEqual(self.ledger.free_units(self.b), 2)
+        with self.database.connect() as db:
+            remainder_units = db.execute(
+                """
+                SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations
+                WHERE owner_type='listing' AND bot_name='Bot-B'
+                  AND listing_id='listing-1' AND config_version_id='config-1'
+                  AND state='active'
+                """
+            ).fetchone()[0]
+        self.assertEqual(remainder_units, 2)
 
     def test_insufficient_listing_stock_leaves_no_partial_batch_or_allocations(self):
         self.ledger.observe(self.a, 3)
