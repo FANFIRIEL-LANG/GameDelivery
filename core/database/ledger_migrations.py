@@ -1862,12 +1862,33 @@ def _apply_quantity_stock_transfer_migration(connection: sqlite3.Connection) -> 
     connection.execute("BEGIN IMMEDIATE")
     try:
         connection.execute("""
+            CREATE TABLE gd_stock_allocation_batches (
+                request_id TEXT PRIMARY KEY,
+                listing_id TEXT NOT NULL REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                requested_units INTEGER NOT NULL CHECK(requested_units > 0),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                UNIQUE(listing_id,config_version_id)
+            )
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_allocation_batches_no_update
+            BEFORE UPDATE ON gd_stock_allocation_batches
+            BEGIN SELECT RAISE(ABORT,'Stock allocation batches are immutable'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_allocation_batches_no_delete
+            BEFORE DELETE ON gd_stock_allocation_batches
+            BEGIN SELECT RAISE(ABORT,'Stock allocation batches are append-only'); END
+        """)
+        connection.execute("""
             CREATE TABLE gd_stock_transfers (
                 transfer_event_id TEXT PRIMARY KEY,
                 listing_id TEXT NOT NULL REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
                 config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
                 order_line_id TEXT NOT NULL REFERENCES gd_order_lines(order_line_id) ON DELETE RESTRICT,
                 units INTEGER NOT NULL CHECK(units > 0),
+                allocation_ids_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
             )
         """)
