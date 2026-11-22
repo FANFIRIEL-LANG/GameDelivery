@@ -37,3 +37,6 @@
 Добавлены регрессионные тесты: успешная отмена с освобождением полного набора, блокировка при неподтверждённом отсутствии offer, блокировка UNKNOWN/ACCEPTED, требование ACTION_REQUIRED и идемпотентная защита от повторной отмены.
 
 Проверка исполнения тестов и CI ещё не выполнена; не считать задачу закрытой до получения результатов.
+
+
+**Incremental Playerok historical-deal result contract (2026-11-22):** CI Tests #1887 (run 45048598855, job 137288699187) exposed a production result-contract bug in `PlayerokDealSyncService._upsert_incremental`: historical deals were persisted with `is_historical=1`, but every newly inserted row was counted as `new_deals`; the public sync result also hardcoded `historical_deals=0`. This contradicted the existing regression test for pre-baseline, missing, and malformed timestamps (expected `new_deals=0`, `historical_deals=3`; actual `new_deals=3`). Fixed the service to count newly inserted historical and non-historical deals separately and return both counts. The regression test was retained unchanged; no test was weakened. Commit: `28bdde811cddada7fdef37a47487e3f4752f6d5c`. CI verification is pending. Windows package build #1083 on the failing commit was green; the failure is isolated to the Tests workflow's `test_playerok_sync.py` module.
