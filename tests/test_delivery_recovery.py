@@ -106,6 +106,10 @@ class DeliveryRecoveryTests(unittest.TestCase):
                 "reserved",
             )
             self.assertEqual(
+                db.execute("SELECT status FROM gd_delivery_attempts WHERE retry_generation=1").fetchone()[0],
+                "prepared",
+            )
+            self.assertEqual(
                 db.execute("SELECT state FROM gd_resource_reservations WHERE reservation_id='reservation-recovery'").fetchone()[0],
                 "active",
             )

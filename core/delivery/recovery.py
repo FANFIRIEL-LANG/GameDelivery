@@ -47,6 +47,14 @@ class DeliveryRecoveryService:
             raise DeliveryRecoveryBlocked("Операторское восстановление доступно только для ACTION_REQUIRED")
         if result["status"] not in {"FAILED", "DECLINED"}:
             raise DeliveryRecoveryBlocked("Повтор или освобождение разрешены только для FAILED/DECLINED leg")
+        in_flight = connection.execute(
+            "SELECT 1 FROM gd_delivery_legs l "
+            "JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+            "WHERE ol.order_id=? AND l.status IN ('UNKNOWN','SENT_TO_STEAM','DISPATCHING') LIMIT 1",
+            (order_id,),
+        ).fetchone()
+        if in_flight:
+            raise DeliveryRecoveryBlocked("Сначала необходимо завершить reconciliation всех уже начатых offers")
         return result
 
     def _verify_no_offer(self, order_id: str, leg_id: str, bot_name: str) -> None:
@@ -124,9 +132,11 @@ class DeliveryRecoveryService:
             FROM gd_resource_reservations
             WHERE order_line_id=? AND bot_name=? COLLATE NOCASE
               AND owner_type='order' AND app_id=? AND context_id=? AND state='active'
+              AND asset_id IN (SELECT value FROM json_each(?))
             ORDER BY asset_id
         """, (target["order_line_id"], target["bot_name"],
-              int(target["app_id"]), str(target["context_id"]))).fetchall()
+              int(target["app_id"]), str(target["context_id"]),
+              target["asset_ids_json"])).fetchall()
         return [dict(row) for row in rows]
 
     @staticmethod
@@ -242,8 +252,10 @@ class DeliveryRecoveryService:
                     updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                 WHERE order_line_id=? AND bot_name=? COLLATE NOCASE
                   AND owner_type='order' AND app_id=? AND context_id=? AND state='active'
+                  AND asset_id IN (SELECT value FROM json_each(?))
             """, (current["order_line_id"], current["bot_name"],
-                  int(current["app_id"]), str(current["context_id"])))
+                  int(current["app_id"]), str(current["context_id"]),
+                  current["asset_ids_json"]))
             if cursor.rowcount != len(expected_assets):
                 raise DeliveryRecoveryBlocked("Не удалось атомарно освободить полный набор резервов")
         return {"action_id": action_id, "order_id": order, "leg_id": leg,
