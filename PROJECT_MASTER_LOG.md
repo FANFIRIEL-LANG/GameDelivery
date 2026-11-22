@@ -6271,3 +6271,21 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Live ASF/Steam/Playerok end-to-end не выполнялся; реальные trade offers не создавались. 43/43 — только локальная проверка трёх указанных модулей.
 
 **Следующий шаг внутри C.2:** продолжить read-only аудит согласованных доменных DTO и фактической SQLite-схемы (Deal, ConfigVersion, OrderLine, ResourceReservation), затем отдельно разобрать quantity semantics и независимые state machines. Не менять schema/dataclasses, не запускать миграции и не менять UI, пока аудит не завершён и контракт не согласован.
+
+
+### C.2 read-only audit — domain DTO vs SQLite schema (2026-11-22)
+
+**Объём:** прочитаны `core/delivery/models.py`, `core/delivery/ledger.py`, `core/database/ledger_migrations.py`, `core/delivery/recipes.py` и `core/delivery/reservation_service.py` на `work/local-sync`. Код, схема и пользовательская БД не менялись; миграции не запускались.
+
+Подтверждённые расхождения:
+
+- `Deal`: dataclass требует непустые `listing_id` и `config_version_id`, но актуальная Playerok sync migration разрешает оба поля NULL только при `listing_resolution_status='unresolved'`. В dataclass также отсутствуют `playerok_account_id`, `is_historical`, `source_listing_ref`, `listing_resolution_status` и `payload_json`.
+- `ConfigVersion`: SQLite после recipe migration содержит `recipe_schema_version` и `recipe_items_json`; dataclass их не отражает.
+- `OrderLine`: SQLite требует и migration trigger проверяет `config_version_id`, равный ConfigVersion сделки; dataclass поле не отражает.
+- `ResourceReservation`: SQLite содержит `config_version_id`, `legacy_owner_id`, `listing_generation` и после asset-key migration `asset_id_key`; dataclass отражает только часть этих полей. `config_version_id` nullable, а owner-specific CHECK связывает listing/order/legacy с разными полями владельца.
+- `Order`: после recipient snapshot migration SQLite содержит nullable `recipient_steam_id64`; dataclass поле не отражает.
+- Количественные ограничения неодинаковы на уровне слоёв: SQLite CHECK для `gd_orders.total_quantity` и `gd_order_lines.quantity` допускает 0; публичные методы ledger и RecipeItem валидируют строго положительное целое. `gd_resource_reservations.units` требует >0. Для typed recipe отдельные `RecipeItem.quantity_per_order` задают количество каждой позиции, тогда как legacy scalar `delivery_quantity_per_deal` может быть NULL.
+
+**Вывод:** принцип «dataclass как канонический DTO, отражающий текущую схему» ещё не реализован. Это drift контракта, но не доказательство runtime-дефекта: в проверенных путях ledger часто возвращает SQLite rows как dict и dataclasses пока не являются ORM/mapper. Нельзя механически сделать все поля обязательными или менять nullable поля без сохранения unresolved/historical сценариев.
+
+**Следующий read-only шаг C.2:** проверить реальные агрегаты количества и переходы состояний в ledger, dispatcher, reconciliation, Playerok sync и outbox: определить, что именно означает `Order.total_quantity` для смешанного Recipe, где хранится promised/reserved/delivered quantity, и какие переходы реально разрешены. После этого представить пользователю согласованный контракт. До отдельного подтверждения не менять dataclasses, schema, миграции, UI или delivery behavior.
