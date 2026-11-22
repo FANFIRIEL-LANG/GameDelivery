@@ -395,8 +395,19 @@ class DeliveryDispatcher:
                 "finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE attempt_id=?",
                 (leg_status.casefold(), encoded, attempt_id),
             )
+            effective_order_status = order_status
+            if order_status == "ACTION_REQUIRED":
+                in_flight = db.execute(
+                    "SELECT 1 FROM gd_delivery_legs l "
+                    "JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                    "WHERE ol.order_id=? AND l.leg_id<>? "
+                    "AND l.status IN ('UNKNOWN','SENT_TO_STEAM','DISPATCHING') LIMIT 1",
+                    (order_id, leg_id),
+                ).fetchone()
+                if in_flight:
+                    effective_order_status = "PROCESSING"
             db.execute(
                 "UPDATE gd_orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                 "WHERE order_id=?",
-                (order_status, order_id),
+                (effective_order_status, order_id),
             )
