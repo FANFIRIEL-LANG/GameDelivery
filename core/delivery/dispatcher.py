@@ -320,7 +320,7 @@ class DeliveryDispatcher:
                             (json.dumps({"reason": "idempotency key already exists; automatic retry prohibited"}), attempt["attempt_id"]),
                         )
                         db.execute(
-                            "UPDATE gd_orders SET status='UNKNOWN',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                            "UPDATE gd_orders SET status='PROCESSING',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=? AND status<>'CANCELLED'",
                             (order,),
                         )
                         return {"_claimed": False, "response": {"dispatched": False, "status": "UNKNOWN", "reason": "idempotency key already exists"}}
@@ -458,15 +458,15 @@ class DeliveryDispatcher:
                 (leg_status.casefold(), encoded, attempt_id),
             )
             effective_order_status = order_status
-            if order_status == "ACTION_REQUIRED":
+            if order_status in {"UNKNOWN", "ACTION_REQUIRED"}:
                 in_flight = db.execute(
                     "SELECT 1 FROM gd_delivery_legs l "
                     "JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
-                    "WHERE ol.order_id=? AND l.leg_id<>? "
+                    "WHERE ol.order_id=? "
                     "AND l.status IN ('UNKNOWN','SENT_TO_STEAM','DISPATCHING') LIMIT 1",
-                    (order_id, leg_id),
+                    (order_id,),
                 ).fetchone()
-                if in_flight:
+                if in_flight or order_status == "UNKNOWN":
                     effective_order_status = "PROCESSING"
             db.execute(
                 "UPDATE gd_orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
