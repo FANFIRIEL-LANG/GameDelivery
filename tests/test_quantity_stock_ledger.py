@@ -122,6 +122,19 @@ class QuantityStockLedgerTests(unittest.TestCase):
         self.assertEqual(self.ledger.free_units(self.resource), 0)
 
 
+
+    def test_stock_observation_identity_is_immutable_and_revision_is_monotonic(self):
+        self.ledger.observe(self.resource, 10)
+        with self.database.connect() as db:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "identity is immutable"):
+                db.execute(
+                    "UPDATE gd_stock_observations SET bot_name='Bot-B' WHERE game_id='cs2'"
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "revision must increase"):
+                db.execute(
+                    "UPDATE gd_stock_observations SET revision=1 WHERE game_id='cs2'"
+                )
+
     def test_stock_observation_rejects_noncanonical_asset_key(self):
         self.ledger.observe(self.resource, 10)
         with self.database.connect() as db:
