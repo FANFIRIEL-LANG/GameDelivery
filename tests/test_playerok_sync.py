@@ -608,6 +608,41 @@ class PlayerokDealSyncTests(unittest.TestCase):
             for table in ("gd_orders", "gd_order_lines", "gd_delivery_legs", "gd_resource_reservations"):
                 self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
 
+    def test_incremental_sync_keeps_first_seen_pre_baseline_paid_deal_historical(self):
+        self.configure_listing("listing-incremental-history")
+        adapter = FakePlayerok(
+            baseline=[deal("baseline-record", "listing-incremental-history", "SENT")],
+            active=[],
+        )
+        self.syncer.sync(adapter)
+        late_history = deal("late-paid-history", "listing-incremental-history", "PAID")
+        late_history["created_at"] = "2020-01-01T00:00:00Z"
+        missing_time = deal("missing-time-paid", "listing-incremental-history", "PAID")
+        missing_time["created_at"] = ""
+        malformed_time = deal("malformed-time-paid", "listing-incremental-history", "PAID")
+        malformed_time["created_at"] = "not-a-timestamp"
+        adapter.active = [late_history, missing_time, malformed_time]
+
+        result = self.syncer.sync(adapter)
+        self.assertEqual(result["new_deals"], 0)
+        self.assertEqual(result["historical_deals"], 3)
+        with self.database.connect() as db:
+            rows = db.execute(
+                "SELECT external_deal_id,is_historical,config_version_id FROM gd_deals "
+                "WHERE external_deal_id IN ('late-paid-history','missing-time-paid','malformed-time-paid') "
+                "ORDER BY external_deal_id"
+            ).fetchall()
+            self.assertEqual(
+                [tuple(row) for row in rows],
+                [
+                    ("late-paid-history", 1, None),
+                    ("malformed-time-paid", 1, None),
+                    ("missing-time-paid", 1, None),
+                ],
+            )
+            for table in ("gd_orders", "gd_order_lines", "gd_delivery_legs", "gd_resource_reservations"):
+                self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
+
     def test_unresolved_deals_complete_baseline_without_creating_delivery_rows(self):
         snapshot = reader_completed_snapshot("seller-unresolved", [
             deal("deal-no-listing", None, "PAID", "shared-chat"),
