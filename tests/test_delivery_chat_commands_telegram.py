@@ -110,6 +110,10 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
                      "stored_trade_url": "https://steamcommunity.com/tradeoffer/new/?partner=123"},
         )
         self.ledger.create_order(order_id="order-1", deal_id="deal-1", total_quantity=1, status=status)
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_orders SET recipient_steam_id64='76561197960265851' WHERE order_id='order-1'"
+            )
         self.ledger.add_order_line(
             order_line_id="line-1", order_id="order-1", line_number=1,
             item_type="cs2_item", item_name="Skin",

@@ -300,6 +300,9 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
                 "UPDATE gd_deals SET playerok_account_id='seller-1' WHERE deal_id='deal-reconcile'"
             )
             db.execute(
+                "UPDATE gd_orders SET recipient_steam_id64='76561197960265851' WHERE order_id='order-reconcile'"
+            )
+            db.execute(
                 "INSERT INTO gd_order_lines "
                 "(order_line_id,order_id,config_version_id,line_number,item_type,item_name,item_selector_json,quantity) "
                 "VALUES('line-reconcile','order-reconcile',?,1,'cs2_item','AK-47','{}',2)",
