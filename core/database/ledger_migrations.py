@@ -1105,7 +1105,7 @@ def _apply_quantity_stock_listing_adjustment_hardening_migration(connection: sql
         return False
     connection.execute("BEGIN IMMEDIATE")
     try:
-         connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_recipe_item_insert")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_recipe_item_insert")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_recipe_item_update")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_transfers_recipe_item_insert")
         if not _table_exists(connection, "gd_stock_listing_adjustments"):

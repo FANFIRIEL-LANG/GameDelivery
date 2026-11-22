@@ -122,3 +122,6 @@
 
 
 **C.3 migration syntax and return-flow correction (2026-11-22):** Исправлены некорректные отступы в hardening migration и гарантирован Boolean return из `apply_delivery_ledger_migrations()` даже на legacy DB, где Asset-ID-key migration намеренно не завершилась и quantity stock path поэтому пропускается. Stock triggers не создаются без завершённой физической Asset-ID нормализации.
+
+
+**C.3 hardening migration indentation correction (2026-11-22):** Исправлен первый `DROP TRIGGER` в hardening migration: в предыдущем commit текстовая замена не совпала с фактическим девятипробельным отступом. Остальной control flow уже проверен: `apply_delivery_ledger_migrations()` возвращает `changed` и в ветке с пропуском quantity stock migration.
