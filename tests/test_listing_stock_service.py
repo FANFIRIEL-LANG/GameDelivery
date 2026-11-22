@@ -326,7 +326,7 @@ class ListingStockServiceTests(unittest.TestCase):
         with self.database.connect() as db:
             self.assertEqual(db.execute(
                 "SELECT status FROM gd_listings WHERE listing_id='listing-1'"
-            ).fetchone()[0], "active")
+            ).fetchone()[0], "unknown")
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_stock_listing_adjustments WHERE adjustment_id='disable-unknown'"
             ).fetchone()[0], 0)

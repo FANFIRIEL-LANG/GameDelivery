@@ -897,6 +897,72 @@ def _apply_quantity_stock_identity_migration(connection: sqlite3.Connection) -> 
     return True
 
 
+def _create_quantity_stock_recipe_item_triggers(connection: sqlite3.Connection) -> None:
+    """Install fail-closed typed-recipe guards on both modern and partial legacy schemas."""
+    line_columns = _columns(connection, "gd_order_lines")
+    allocation_line_pin = (
+        "json_extract((SELECT item_selector_json FROM gd_order_lines "
+        "WHERE order_line_id=NEW.order_line_id),'$.recipe_item_id')=NEW.recipe_item_id"
+        if "item_selector_json" in line_columns else "0"
+    )
+    transfer_line_pin = (
+        "json_extract(line.item_selector_json,'$.recipe_item_id')=NEW.recipe_item_id"
+        if "item_selector_json" in line_columns else "0"
+    )
+    for operation in ("INSERT", "UPDATE"):
+        suffix = operation.lower()
+        connection.execute(f"""
+            CREATE TRIGGER gd_stock_allocations_recipe_item_{suffix}
+            BEFORE {operation} ON gd_stock_allocations
+            BEGIN
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM gd_config_versions c
+                    WHERE c.config_version_id=CASE
+                        WHEN NEW.owner_type='listing' THEN NEW.config_version_id
+                        ELSE (SELECT config_version_id FROM gd_order_lines
+                              WHERE order_line_id=NEW.order_line_id)
+                    END
+                      AND c.recipe_schema_version IS NOT NULL
+                ) AND NOT EXISTS (
+                    SELECT 1
+                    FROM gd_config_versions c, json_each(c.recipe_items_json) AS item
+                    WHERE c.config_version_id=CASE
+                        WHEN NEW.owner_type='listing' THEN NEW.config_version_id
+                        ELSE (SELECT config_version_id FROM gd_order_lines
+                              WHERE order_line_id=NEW.order_line_id)
+                    END
+                      AND c.recipe_schema_version=1
+                      AND json_extract(item.value,'$.item_id')=NEW.recipe_item_id
+                      AND json_extract(item.value,'$.kind')='steam_asset'
+                      AND (NEW.owner_type<>'order' OR ({allocation_line_pin}))
+                ) THEN RAISE(ABORT,'Typed recipe stock allocation requires its exact SteamAsset RecipeItem') END;
+            END
+        """)
+    connection.execute(f"""
+        CREATE TRIGGER gd_stock_transfers_recipe_item_insert
+        BEFORE INSERT ON gd_stock_transfers
+        BEGIN
+            SELECT CASE WHEN EXISTS (
+                SELECT 1 FROM gd_config_versions c
+                WHERE c.config_version_id=NEW.config_version_id
+                  AND c.recipe_schema_version IS NOT NULL
+            ) AND NOT EXISTS (
+                SELECT 1
+                FROM gd_order_lines line,
+                     gd_config_versions c,
+                     json_each(c.recipe_items_json) AS item
+                WHERE line.order_line_id=NEW.order_line_id
+                  AND line.config_version_id=NEW.config_version_id
+                  AND c.config_version_id=NEW.config_version_id
+                  AND c.recipe_schema_version=1
+                  AND json_extract(item.value,'$.item_id')=NEW.recipe_item_id
+                  AND json_extract(item.value,'$.kind')='steam_asset'
+                  AND ({transfer_line_pin})
+            ) THEN RAISE(ABORT,'Typed recipe stock transfer must match its exact OrderLine RecipeItem') END;
+        END
+    """)
+
+
 def _apply_quantity_stock_recipe_item_migration(connection: sqlite3.Connection) -> bool:
     """Pin quantity stock allocations and transfers to one typed SteamAsset RecipeItem."""
     if _migration_applied(connection, QUANTITY_STOCK_RECIPE_ITEM_MIGRATION_ID):
@@ -917,68 +983,7 @@ def _apply_quantity_stock_recipe_item_migration(connection: sqlite3.Connection) 
             "CREATE INDEX IF NOT EXISTS idx_gd_stock_transfers_recipe_item "
             "ON gd_stock_transfers(config_version_id,recipe_item_id,order_line_id)"
         )
-        # Typed recipe allocations must name an actual Steam Asset position.
-        # Order allocations must additionally agree with the RecipeItem snapshot
-        # already pinned into their OrderLine.
-        for operation in ("INSERT", "UPDATE"):
-            suffix = operation.lower()
-            connection.execute(f"""
-                CREATE TRIGGER gd_stock_allocations_recipe_item_{suffix}
-                BEFORE {operation} ON gd_stock_allocations
-                BEGIN
-                    SELECT CASE WHEN EXISTS (
-                        SELECT 1 FROM gd_config_versions c
-                        WHERE c.config_version_id=CASE
-                            WHEN NEW.owner_type='listing' THEN NEW.config_version_id
-                            ELSE (SELECT config_version_id FROM gd_order_lines
-                                  WHERE order_line_id=NEW.order_line_id)
-                        END
-                          AND c.recipe_schema_version IS NOT NULL
-                    ) AND NOT EXISTS (
-                        SELECT 1
-                        FROM gd_config_versions c, json_each(c.recipe_items_json) AS item
-                        WHERE c.config_version_id=CASE
-                            WHEN NEW.owner_type='listing' THEN NEW.config_version_id
-                            ELSE (SELECT config_version_id FROM gd_order_lines
-                                  WHERE order_line_id=NEW.order_line_id)
-                        END
-                          AND c.recipe_schema_version=1
-                          AND json_extract(item.value,'$.item_id')=NEW.recipe_item_id
-                          AND json_extract(item.value,'$.kind')='steam_asset'
-                          AND (
-                              NEW.owner_type<>'order'
-                              OR json_extract(
-                                  (SELECT item_selector_json FROM gd_order_lines
-                                   WHERE order_line_id=NEW.order_line_id),
-                                  '$.recipe_item_id'
-                              )=NEW.recipe_item_id
-                          )
-                    ) THEN RAISE(ABORT,'Typed recipe stock allocation requires its exact SteamAsset RecipeItem') END;
-                END
-            """)
-        connection.execute("""
-            CREATE TRIGGER gd_stock_transfers_recipe_item_insert
-            BEFORE INSERT ON gd_stock_transfers
-            BEGIN
-                SELECT CASE WHEN EXISTS (
-                    SELECT 1 FROM gd_config_versions c
-                    WHERE c.config_version_id=NEW.config_version_id
-                      AND c.recipe_schema_version IS NOT NULL
-                ) AND NOT EXISTS (
-                    SELECT 1
-                    FROM gd_order_lines line,
-                         gd_config_versions c,
-                         json_each(c.recipe_items_json) AS item
-                    WHERE line.order_line_id=NEW.order_line_id
-                      AND line.config_version_id=NEW.config_version_id
-                      AND c.config_version_id=NEW.config_version_id
-                      AND c.recipe_schema_version=1
-                      AND json_extract(item.value,'$.item_id')=NEW.recipe_item_id
-                      AND json_extract(item.value,'$.kind')='steam_asset'
-                      AND json_extract(line.item_selector_json,'$.recipe_item_id')=NEW.recipe_item_id
-                ) THEN RAISE(ABORT,'Typed recipe stock transfer must match its exact OrderLine RecipeItem') END;
-            END
-        """)
+        _create_quantity_stock_recipe_item_triggers(connection)
         connection.execute(
             "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
             (QUANTITY_STOCK_RECIPE_ITEM_MIGRATION_ID,),
@@ -1100,7 +1105,10 @@ def _apply_quantity_stock_listing_adjustment_hardening_migration(connection: sql
         return False
     connection.execute("BEGIN IMMEDIATE")
     try:
-        if not _table_exists(connection, "gd_stock_listing_adjustments"):
+         connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_recipe_item_insert")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_recipe_item_update")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_transfers_recipe_item_insert")
+       if not _table_exists(connection, "gd_stock_listing_adjustments"):
             raise sqlite3.OperationalError("Listing adjustment base migration is missing")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_update")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_delete")
@@ -1197,6 +1205,7 @@ def _apply_quantity_stock_listing_adjustment_hardening_migration(connection: sql
                     THEN RAISE(ABORT,'Stock allocation exceeds observed amount') END;
             END
         """)
+        _create_quantity_stock_recipe_item_triggers(connection)
         connection.execute(
             "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
             (QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_MIGRATION_ID,),
@@ -1255,14 +1264,19 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_asset_id_blocking_state_migration(connection) or changed
     changed = _apply_recipient_snapshot_migration(connection) or changed
     changed = _apply_operator_recovery_audit_migration(connection) or changed
-    changed = _apply_quantity_stock_migration(connection) or changed
-    changed = _apply_quantity_stock_audit_migration(connection) or changed
-    changed = _apply_quantity_stock_transfer_migration(connection) or changed
-    changed = _apply_quantity_stock_batch_migration(connection) or changed
-    changed = _apply_quantity_stock_identity_migration(connection) or changed
-    changed = _apply_quantity_stock_recipe_item_migration(connection) or changed
-    changed = _apply_quantity_stock_listing_adjustment_migration(connection) or changed
-    return _apply_quantity_stock_listing_adjustment_hardening_migration(connection) or changed
+    if (
+        _migration_applied(connection, ASSET_ID_KEY_MIGRATION_ID)
+        and "asset_id_key" in _columns(connection, "gd_resource_reservations")
+    ):
+        changed = _apply_quantity_stock_migration(connection) or changed
+        changed = _apply_quantity_stock_audit_migration(connection) or changed
+        changed = _apply_quantity_stock_transfer_migration(connection) or changed
+        changed = _apply_quantity_stock_batch_migration(connection) or changed
+        changed = _apply_quantity_stock_identity_migration(connection) or changed
+        changed = _apply_quantity_stock_recipe_item_migration(connection) or changed
+        changed = _apply_quantity_stock_listing_adjustment_migration(connection) or changed
+        return _apply_quantity_stock_listing_adjustment_hardening_migration(connection) or changed
+
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
