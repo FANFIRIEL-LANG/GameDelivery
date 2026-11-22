@@ -237,7 +237,16 @@ class DeliveryReconciliation:
                        SUM(CASE WHEN l.status IN ('UNKNOWN','SENT_TO_STEAM','DISPATCHING')
                                 THEN 1 ELSE 0 END) AS in_flight,
                        SUM(CASE WHEN l.status IN ('DECLINED','FAILED')
-                                THEN 1 ELSE 0 END) AS requires_action
+                                THEN 1 ELSE 0 END) AS requires_action,
+                       SUM((SELECT COUNT(*) FROM json_each(l.asset_ids_json))) AS expected_assets,
+                       SUM((
+                           SELECT COUNT(*) FROM json_each(l.asset_ids_json) a
+                           JOIN gd_resource_reservations r
+                             ON r.order_line_id=l.order_line_id
+                            AND r.bot_name=l.bot_name COLLATE NOCASE
+                            AND r.app_id=l.app_id AND r.context_id=l.context_id
+                            AND r.asset_id=a.value AND r.state='consumed'
+                       )) AS consumed_assets
                 FROM gd_delivery_legs l
                 JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
                 WHERE ol.order_id=?
@@ -245,7 +254,11 @@ class DeliveryReconciliation:
             if not counts or not counts["total"]:
                 return
             if counts["total"] == counts["accepted"]:
-                next_status = "DELIVERED"
+                next_status = (
+                    "DELIVERED"
+                    if counts["expected_assets"] == counts["consumed_assets"]
+                    else "ACTION_REQUIRED"
+                )
             elif counts["in_flight"]:
                 next_status = "PROCESSING"
             elif counts["requires_action"]:
