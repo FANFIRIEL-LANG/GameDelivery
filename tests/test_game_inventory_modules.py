@@ -18,7 +18,7 @@ def payload():
         "Result": {
             "Bot A": {
                 "Assets": [
-                    {"assetid": "1001", "classid": "2001", "instanceid": "0", "amount": "1"}
+                    {"assetid": "1001", "classid": "2001", "instanceid": "0", "amount": "100"}
                 ],
                 "Descriptions": [
                     {
@@ -63,6 +63,19 @@ class GameInventoryParserTests(unittest.TestCase):
         self.assertTrue(item.is_tradable)
         self.assertTrue(item.is_marketable)
         self.assertTrue(item.icon_url.startswith("https://"))
+
+    def test_stack_amount_is_parsed_and_must_be_positive_integer(self):
+        item = parse_game_inventory(payload(), "cs2", "Bot A")[0]
+        self.assertEqual(item.amount, 100)
+
+        data = payload()
+        data["Result"]["Bot A"]["Assets"][0]["amount"] = "0"
+        with self.assertRaises(ASFError):
+            parse_game_inventory(data, "cs2", "Bot A")
+
+        data["Result"]["Bot A"]["Assets"][0]["amount"] = "1.5"
+        with self.assertRaises(ASFError):
+            parse_game_inventory(data, "cs2", "Bot A")
 
     def test_unknown_tradability_is_not_promoted_to_true(self):
         data = payload()
@@ -148,6 +161,43 @@ class GameInventoryStoreTests(unittest.TestCase):
             )
             self.assertEqual(result["item_count"], 1)
             self.assertEqual(store.load("cs2", "Bot A")[0].asset_id, "1001")
+
+    def test_stack_amount_round_trips_through_snapshot_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
+            item = parse_game_inventory(payload(), "cs2", "Bot A")[0]
+            store.replace("cs2", "Bot A", [item])
+            loaded = store.load("cs2", "Bot A")
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].amount, 100)
+            self.assertEqual(store.load_all("cs2")[0].amount, 100)
+
+    def test_existing_snapshot_schema_is_migrated_with_default_amount(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "legacy.sqlite3"
+            with sqlite3.connect(database) as db:
+                db.execute("""
+                    CREATE TABLE game_inventory_snapshot (
+                        game_id TEXT NOT NULL, bot_name TEXT NOT NULL, asset_id TEXT NOT NULL,
+                        class_id TEXT NOT NULL, instance_id TEXT NOT NULL, name TEXT NOT NULL,
+                        item_type TEXT NOT NULL DEFAULT '', market_hash_name TEXT NOT NULL DEFAULT '',
+                        icon_url TEXT NOT NULL DEFAULT '', icon_url_large TEXT NOT NULL DEFAULT '',
+                        is_tradable INTEGER, is_marketable INTEGER, quality TEXT NOT NULL DEFAULT '',
+                        rarity TEXT NOT NULL DEFAULT '', exterior TEXT NOT NULL DEFAULT '',
+                        tags_json TEXT NOT NULL DEFAULT '[]',
+                        PRIMARY KEY (game_id, bot_name, asset_id)
+                    )
+                """)
+                db.execute("""
+                    INSERT INTO game_inventory_snapshot
+                    (game_id, bot_name, asset_id, class_id, instance_id, name)
+                    VALUES ('cs2', 'Bot A', '1001', '2001', '0', 'Legacy item')
+                """)
+            store = GameInventoryStore(database)
+            loaded = store.load("cs2", "Bot A")
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].amount, 1)
 
     def test_snapshot_meta_includes_empty_inventory_snapshots(self):
         with tempfile.TemporaryDirectory() as directory:
