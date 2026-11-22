@@ -30,6 +30,8 @@ RECIPIENT_SNAPSHOT_MIGRATION_ID = "2026-11-delivery-recipient-snapshot-v1"
 RECIPIENT_SNAPSHOT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-recipient-snapshot-v1.bak"
 OPERATOR_RECOVERY_AUDIT_MIGRATION_ID = "2026-11-delivery-operator-recovery-audit-v1"
 OPERATOR_RECOVERY_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-operator-recovery-audit-v1.bak"
+QUANTITY_STOCK_MIGRATION_ID = "2026-11-quantity-stock-ledger-v1"
+QUANTITY_STOCK_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-ledger-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -891,7 +893,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_asset_id_key_migration(connection) or changed
     changed = _apply_asset_id_blocking_state_migration(connection) or changed
     changed = _apply_recipient_snapshot_migration(connection) or changed
-    return _apply_operator_recovery_audit_migration(connection) or changed
+    changed = _apply_operator_recovery_audit_migration(connection) or changed
+    return _apply_quantity_stock_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
@@ -1642,6 +1645,176 @@ def _apply_order_line_config_migration(connection: sqlite3.Connection) -> bool:
             raise sqlite3.IntegrityError(
                 f"OrderLine ConfigVersion migration produced {len(violations)} foreign-key violation(s)"
             )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+
+def _apply_quantity_stock_migration(connection: sqlite3.Connection) -> bool:
+    """Add a guarded quantity ledger while preserving all legacy reservation semantics."""
+    if _migration_applied(connection, QUANTITY_STOCK_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE gd_stock_observations (
+                observation_id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL, app_id INTEGER NOT NULL CHECK(app_id>0),
+                context_id TEXT NOT NULL, bot_name TEXT NOT NULL COLLATE NOCASE,
+                asset_id TEXT NOT NULL, asset_id_key TEXT NOT NULL,
+                observed_amount INTEGER NOT NULL CHECK(observed_amount>0),
+                revision INTEGER NOT NULL CHECK(revision>0),
+                availability_state TEXT NOT NULL CHECK(availability_state IN
+                    ('usable','stale','conflict','unavailable')),
+                observed_at TEXT NOT NULL,
+                UNIQUE(game_id,app_id,context_id,bot_name,asset_id_key)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE gd_stock_allocations (
+                allocation_id TEXT PRIMARY KEY,
+                observation_id TEXT NOT NULL REFERENCES gd_stock_observations(observation_id) ON DELETE RESTRICT,
+                game_id TEXT NOT NULL, app_id INTEGER NOT NULL CHECK(app_id>0),
+                context_id TEXT NOT NULL, bot_name TEXT NOT NULL COLLATE NOCASE,
+                asset_id TEXT NOT NULL, asset_id_key TEXT NOT NULL,
+                owner_type TEXT NOT NULL CHECK(owner_type IN ('listing','order','legacy_blocker')),
+                listing_id TEXT REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                config_version_id TEXT REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                order_line_id TEXT REFERENCES gd_order_lines(order_line_id) ON DELETE RESTRICT,
+                legacy_owner_id TEXT, units INTEGER NOT NULL CHECK(units>0),
+                state TEXT NOT NULL CHECK(state IN
+                    ('active','pending','unknown','consumed','released','legacy_conflict')),
+                consumed_revision INTEGER CHECK(consumed_revision IS NULL OR consumed_revision>0),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                CHECK ((owner_type='listing' AND listing_id IS NOT NULL AND order_line_id IS NULL AND legacy_owner_id IS NULL)
+                    OR (owner_type='order' AND listing_id IS NULL AND order_line_id IS NOT NULL AND legacy_owner_id IS NULL)
+                    OR (owner_type='legacy_blocker' AND listing_id IS NULL AND order_line_id IS NULL AND legacy_owner_id IS NOT NULL)),
+                CHECK ((state='consumed' AND consumed_revision IS NOT NULL)
+                    OR (state<>'consumed' AND consumed_revision IS NULL))
+            )
+        """)
+        connection.execute("CREATE INDEX idx_gd_stock_allocations_resource ON gd_stock_allocations(observation_id,state)")
+        connection.execute("CREATE INDEX idx_gd_stock_allocations_listing ON gd_stock_allocations(listing_id,state)")
+        connection.execute("CREATE INDEX idx_gd_stock_allocations_order_line ON gd_stock_allocations(order_line_id,state)")
+
+        # Allocation writes are guarded in SQLite itself, not only by a Python service.
+        for operation, row_ref, exclude in (
+            ("INSERT", "NEW", ""),
+            ("UPDATE", "NEW", "AND a.allocation_id<>OLD.allocation_id"),
+        ):
+            trigger = "gd_stock_allocations_guard_" + operation.lower()
+            connection.execute(f"""
+                CREATE TRIGGER {trigger} BEFORE {operation} ON gd_stock_allocations
+                BEGIN
+                    SELECT CASE WHEN {row_ref}.asset_id_key<>gd_asset_id_key({row_ref}.asset_id)
+                        THEN RAISE(ABORT,'Stock allocation Asset ID key mismatch') END;
+                    SELECT CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM gd_stock_observations o
+                        WHERE o.observation_id={row_ref}.observation_id
+                          AND o.game_id={row_ref}.game_id AND o.app_id={row_ref}.app_id
+                          AND o.context_id={row_ref}.context_id
+                          AND o.bot_name={row_ref}.bot_name COLLATE NOCASE
+                          AND o.asset_id_key={row_ref}.asset_id_key
+                          AND o.availability_state='usable'
+                    ) THEN RAISE(ABORT,'Stock observation is missing or not usable') END;
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM gd_resource_reservations r
+                        WHERE r.state IN ('active','legacy_conflict')
+                          AND r.game_id={row_ref}.game_id AND r.app_id={row_ref}.app_id
+                          AND r.context_id={row_ref}.context_id
+                          AND r.bot_name={row_ref}.bot_name COLLATE NOCASE
+                          AND r.asset_id_key={row_ref}.asset_id_key
+                    ) OR ({row_ref}.game_id='steam_cards' AND {row_ref}.app_id=753 AND {row_ref}.context_id='6'
+                        AND EXISTS (SELECT 1 FROM steam_asset_reservations s
+                            WHERE s.bot_name={row_ref}.bot_name COLLATE NOCASE
+                              AND gd_asset_id_key(s.asset_id)={row_ref}.asset_id_key))
+                        THEN RAISE(ABORT,'Resource is blocked by a legacy reservation') END;
+                    SELECT CASE WHEN (
+                        SELECT COALESCE(SUM(a.units),0) FROM gd_stock_allocations a
+                        WHERE a.observation_id={row_ref}.observation_id {exclude}
+                          AND (a.state IN ('active','pending','unknown','legacy_conflict')
+                            OR (a.state='consumed' AND a.consumed_revision >=
+                                (SELECT revision FROM gd_stock_observations WHERE observation_id={row_ref}.observation_id)))
+                    ) + CASE WHEN {row_ref}.state IN ('active','pending','unknown','legacy_conflict')
+                        OR ({row_ref}.state='consumed' AND {row_ref}.consumed_revision >=
+                            (SELECT revision FROM gd_stock_observations WHERE observation_id={row_ref}.observation_id))
+                        THEN {row_ref}.units ELSE 0 END >
+                        (SELECT observed_amount FROM gd_stock_observations WHERE observation_id={row_ref}.observation_id)
+                        THEN RAISE(ABORT,'Stock allocation exceeds observed amount') END;
+                END
+            """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_observations_guard_usable_insert
+            BEFORE INSERT ON gd_stock_observations WHEN NEW.availability_state='usable'
+            BEGIN
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM gd_resource_reservations r
+                    WHERE r.state IN ('active','legacy_conflict') AND r.game_id=NEW.game_id
+                      AND r.app_id=NEW.app_id AND r.context_id=NEW.context_id
+                      AND r.bot_name=NEW.bot_name COLLATE NOCASE AND r.asset_id_key=NEW.asset_id_key
+                ) OR (NEW.game_id='steam_cards' AND NEW.app_id=753 AND NEW.context_id='6'
+                    AND EXISTS (SELECT 1 FROM steam_asset_reservations s
+                        WHERE s.bot_name=NEW.bot_name COLLATE NOCASE
+                          AND gd_asset_id_key(s.asset_id)=NEW.asset_id_key))
+                    THEN RAISE(ABORT,'Legacy reservation blocks usable stock observation') END;
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_observations_guard_usable_update
+            BEFORE UPDATE OF observed_amount,revision,availability_state ON gd_stock_observations
+            WHEN NEW.availability_state='usable'
+            BEGIN
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM gd_resource_reservations r
+                    WHERE r.state IN ('active','legacy_conflict') AND r.game_id=NEW.game_id
+                      AND r.app_id=NEW.app_id AND r.context_id=NEW.context_id
+                      AND r.bot_name=NEW.bot_name COLLATE NOCASE AND r.asset_id_key=NEW.asset_id_key
+                ) OR (NEW.game_id='steam_cards' AND NEW.app_id=753 AND NEW.context_id='6'
+                    AND EXISTS (SELECT 1 FROM steam_asset_reservations s
+                        WHERE s.bot_name=NEW.bot_name COLLATE NOCASE
+                          AND gd_asset_id_key(s.asset_id)=NEW.asset_id_key))
+                    THEN RAISE(ABORT,'Legacy reservation blocks usable stock observation') END;
+                SELECT CASE WHEN (
+                    SELECT COALESCE(SUM(a.units),0) FROM gd_stock_allocations a
+                    WHERE a.observation_id=NEW.observation_id
+                      AND (a.state IN ('active','pending','unknown','legacy_conflict')
+                        OR (a.state='consumed' AND a.consumed_revision>=NEW.revision))
+                )>NEW.observed_amount THEN RAISE(ABORT,'Observed stock is below blocking allocations') END;
+            END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_resource_reservations_guard_quantity_insert
+            BEFORE INSERT ON gd_resource_reservations
+            WHEN NEW.state IN ('active','legacy_conflict') AND EXISTS (
+                SELECT 1 FROM gd_stock_allocations a
+                WHERE a.state IN ('active','pending','unknown','legacy_conflict')
+                  AND a.game_id=NEW.game_id AND a.app_id=NEW.app_id AND a.context_id=NEW.context_id
+                  AND a.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND a.asset_id_key=gd_asset_id_key(NEW.asset_id)
+            )
+            BEGIN SELECT RAISE(ABORT,'Resource is blocked by a quantity stock allocation'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_resource_reservations_guard_quantity_update
+            BEFORE UPDATE OF state,game_id,app_id,context_id,bot_name,asset_id ON gd_resource_reservations
+            WHEN NEW.state IN ('active','legacy_conflict') AND EXISTS (
+                SELECT 1 FROM gd_stock_allocations a
+                WHERE a.state IN ('active','pending','unknown','legacy_conflict')
+                  AND a.game_id=NEW.game_id AND a.app_id=NEW.app_id AND a.context_id=NEW.context_id
+                  AND a.bot_name=NEW.bot_name COLLATE NOCASE
+                  AND a.asset_id_key=gd_asset_id_key(NEW.asset_id)
+            )
+            BEGIN SELECT RAISE(ABORT,'Resource is blocked by a quantity stock allocation'); END
+        """)
+        connection.execute("INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+                           (QUANTITY_STOCK_MIGRATION_ID,))
+        for table in ("gd_stock_observations","gd_stock_allocations","gd_resource_reservations"):
+            if connection.execute(f"PRAGMA foreign_key_check({table})").fetchall():
+                raise sqlite3.IntegrityError(f"Quantity stock migration produced FK violations in {table}")
         connection.commit()
     except Exception:
         connection.rollback()
