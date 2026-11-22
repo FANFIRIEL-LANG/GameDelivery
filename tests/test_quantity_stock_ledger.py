@@ -87,9 +87,10 @@ class QuantityStockLedgerTests(unittest.TestCase):
         self.assertEqual(observation["availability_state"], "conflict")
         self.assertEqual(self.ledger.free_units(self.resource), 0)
         with self.database.connect() as db:
-            self.assertEqual(db.execute(
+            row = db.execute(
                 "SELECT units,state FROM gd_stock_allocations WHERE allocation_id='allocation-1'"
-            ).fetchone(), (6, "active"))
+            ).fetchone()
+            self.assertEqual((row["units"], row["state"]), (6, "active"))
 
     def test_stale_observation_fails_closed(self):
         self.ledger.observe(self.resource, 10)
