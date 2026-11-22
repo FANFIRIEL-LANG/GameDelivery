@@ -73,7 +73,7 @@ class AppStartupSmokeTests(unittest.TestCase):
             try:
                 critical.assert_called_once()
                 title, message = critical.call_args.args[1:3]
-                self.assertEqual(title, "Ошибка локальной базы данных")
+                self.assertEqual(title, "Ошибка запуска: SQLite schema migration")
                 self.assertIn("не может безопасно открыть локальные заказы или системное хранилище секретов", message)
                 self.assertIn("резервную копию", message)
                 self.assertEqual(window.startup_error_label.text(), message)
@@ -96,7 +96,7 @@ class AppStartupSmokeTests(unittest.TestCase):
 
             try:
                 critical.assert_called_once()
-                self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
+                self.assertEqual(critical.call_args.args[1], "Ошибка запуска: SQLite schema migration")
                 self.assertEqual(window.startup_error_label.text(), critical.call_args.args[2])
                 self.assertIsNone(window.tabs if hasattr(window, "tabs") else None)
                 self.assertTrue(database.is_dir())
