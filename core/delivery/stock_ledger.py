@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.database.db import Database
-from games.asset_ids import asset_id_key
+from games.asset_ids import asset_id_key, validate_asset_id
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -28,7 +28,7 @@ class StockResource:
         game = str(self.game_id or "").strip()
         context = str(self.context_id or "").strip()
         bot = str(self.bot_name or "").strip()
-        asset = str(self.asset_id or "").strip()
+        asset = validate_asset_id(self.asset_id)
         if not game or not context or not bot or not asset:
             raise ValueError("Полный физический ключ ресурса обязателен")
         app = _positive_int(self.app_id, "app_id")
@@ -177,6 +177,9 @@ class QuantityStockLedger:
         resource = resource.normalized()
         observation_id = self._observation_id(resource)
         with self.database.connect() as connection:
+            # Pin both reads to one SQLite snapshot so concurrent writers cannot
+            # mix the observed amount and allocation sum from different revisions.
+            connection.execute("BEGIN")
             observation = connection.execute(
                 "SELECT observed_amount,revision,availability_state "
                 "FROM gd_stock_observations WHERE observation_id=?", (observation_id,)
