@@ -121,6 +121,32 @@ class QuantityStockLedgerTests(unittest.TestCase):
             )
         self.assertEqual(self.ledger.free_units(self.resource), 0)
 
+
+    def test_stock_observation_rejects_noncanonical_asset_key(self):
+        self.ledger.observe(self.resource, 10)
+        with self.database.connect() as db:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "key mismatch"):
+                db.execute(
+                    "UPDATE gd_stock_observations SET asset_id_key='wrong-key' WHERE game_id='cs2'"
+                )
+
+    def test_consumed_units_stop_blocking_after_new_inventory_revision(self):
+        self.ledger.observe(self.resource, 10)
+        self.ledger.allocate(
+            allocation_id="consumed-allocation", resource=self.resource, units=4,
+            owner_type="listing", listing_id="listing-a",
+        )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_stock_allocations SET state='consumed',consumed_revision=1 "
+                "WHERE allocation_id='consumed-allocation'"
+            )
+        self.assertEqual(self.ledger.free_units(self.resource), 6)
+        observation = self.ledger.observe(self.resource, 6)
+        self.assertEqual(observation["revision"], 2)
+        self.assertEqual(observation["availability_state"], "usable")
+        self.assertEqual(self.ledger.free_units(self.resource), 6)
+
     def test_legacy_reservation_blocks_new_quantity_stock(self):
         with self.database.connect() as db:
             db.execute(
