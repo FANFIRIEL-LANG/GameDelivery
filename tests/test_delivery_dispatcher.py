@@ -434,6 +434,12 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.reconciler.reconcile(order_id="order-1")
         with self.db.connect() as db:
             self.assertEqual(db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()[0], "DELIVERED")
+            reservation_states = {
+                row["state"] for row in db.execute(
+                    "SELECT state FROM gd_resource_reservations WHERE order_line_id='line-order-1'"
+                ).fetchall()
+            }
+            self.assertEqual(reservation_states, {"consumed"})
 
     def test_privacy_error_holds_reservation_and_queues_buyer_instruction(self):
         leg = self.create_order()[0]
