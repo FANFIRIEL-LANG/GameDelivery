@@ -220,6 +220,49 @@ class ListingStockServiceTests(unittest.TestCase):
         self.assertEqual((order_row["units"], order_row["state"]), (3, "active"))
         self.assertEqual(self.ledger.free_units(self.a), 7)
 
+    def test_release_listing_units_can_free_a_stale_inventory_observation(self):
+        self.ledger.observe(self.a, 8)
+        self.service.allocate_listing(
+            request_id="stale-release-base", listing_id="listing-1",
+            config_version_id="config-1", units=5, resources=[self.a],
+        )
+        self.ledger.observe_snapshot("cs2", "Bot-A", [])
+        with self.database.connect() as db:
+            state = db.execute(
+                "SELECT availability_state FROM gd_stock_observations WHERE observation_id=?",
+                (self.ledger._observation_id(self.a),),
+            ).fetchone()[0]
+        self.assertEqual(state, "unavailable")
+
+        released = self.service.release_listing_units(
+            adjustment_id="stale-release", listing_id="listing-1",
+            config_version_id="config-1", units=5,
+        )
+        self.assertEqual(len(released), 1)
+        self.assertEqual(released[0]["state"], "released")
+        with self.database.connect() as db:
+            active_listing_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND state='active' AND listing_id='listing-1'"
+            ).fetchone()[0]
+        self.assertEqual(active_listing_units, 0)
+
+    def test_disable_listing_with_no_listing_units_still_disables_generation(self):
+        result = self.service.disable_listing_stock(
+            adjustment_id="disable-empty-generation", listing_id="listing-1",
+            config_version_id="config-1",
+        )
+        self.assertEqual(result, [])
+        with self.database.connect() as db:
+            status, auto_relist = db.execute(
+                "SELECT status,auto_relist FROM gd_listings WHERE listing_id='listing-1'"
+            ).fetchone()
+            audit_units = db.execute(
+                "SELECT units FROM gd_stock_listing_adjustments "
+                "WHERE adjustment_id='disable-empty-generation'"
+            ).fetchone()[0]
+        self.assertEqual((status, auto_relist, audit_units), ("disabled", 0, 0))
+
     def test_disable_listing_fails_closed_when_listing_has_unknown_allocations(self):
         self.ledger.observe(self.a, 10)
         self.service.allocate_listing(

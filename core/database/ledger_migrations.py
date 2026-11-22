@@ -1005,7 +1005,7 @@ def _apply_quantity_stock_listing_adjustment_migration(connection: sqlite3.Conne
                 config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
                 operation TEXT NOT NULL CHECK(operation IN ('release_units','disable')),
                 recipe_item_id TEXT,
-                units INTEGER NOT NULL CHECK(units>0),
+                units INTEGER NOT NULL CHECK(units>=0),
                 allocation_ids_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
             )
@@ -1014,6 +1014,61 @@ def _apply_quantity_stock_listing_adjustment_migration(connection: sqlite3.Conne
             "CREATE INDEX idx_gd_stock_listing_adjustments_generation "
             "ON gd_stock_listing_adjustments(listing_id,config_version_id,created_at)"
         )
+        # Releasing a listing claim must remain possible when its last inventory
+        # observation is stale/unavailable. Any transition back into a blocking
+        # state still requires a current usable observation and respects Amount.
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_guard_update")
+        connection.execute("""
+            CREATE TRIGGER gd_stock_allocations_guard_update
+            BEFORE UPDATE ON gd_stock_allocations
+            BEGIN
+                SELECT CASE WHEN NEW.asset_id_key<>gd_asset_id_key(NEW.asset_id)
+                    THEN RAISE(ABORT,'Stock allocation Asset ID key mismatch') END;
+                SELECT CASE WHEN (
+                    NEW.state IN ('active','pending','unknown','legacy_conflict')
+                    OR (NEW.state='consumed' AND NEW.consumed_revision >=
+                        (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id))
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM gd_stock_observations o
+                    WHERE o.observation_id=NEW.observation_id
+                      AND o.game_id=NEW.game_id AND o.app_id=NEW.app_id
+                      AND o.context_id=NEW.context_id
+                      AND o.bot_name=NEW.bot_name COLLATE NOCASE
+                      AND o.asset_id_key=NEW.asset_id_key
+                      AND o.availability_state='usable'
+                ) THEN RAISE(ABORT,'Blocking stock allocation requires a usable observation') END;
+                SELECT CASE WHEN (
+                    NEW.state IN ('active','pending','unknown','legacy_conflict')
+                    OR (NEW.state='consumed' AND NEW.consumed_revision >=
+                        (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id))
+                ) AND (
+                    EXISTS (
+                        SELECT 1 FROM gd_resource_reservations r
+                        WHERE r.state IN ('active','legacy_conflict')
+                          AND r.game_id=NEW.game_id AND r.app_id=NEW.app_id
+                          AND r.context_id=NEW.context_id
+                          AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                          AND r.asset_id_key=NEW.asset_id_key
+                    ) OR (NEW.game_id='steam_cards' AND NEW.app_id=753 AND NEW.context_id='6'
+                        AND EXISTS (SELECT 1 FROM steam_asset_reservations s
+                            WHERE s.bot_name=NEW.bot_name COLLATE NOCASE
+                              AND gd_asset_id_key(s.asset_id)=NEW.asset_id_key))
+                ) THEN RAISE(ABORT,'Resource is blocked by a legacy reservation') END;
+                SELECT CASE WHEN (
+                    SELECT COALESCE(SUM(a.units),0) FROM gd_stock_allocations a
+                    WHERE a.observation_id=NEW.observation_id
+                      AND a.allocation_id<>OLD.allocation_id
+                      AND (a.state IN ('active','pending','unknown','legacy_conflict')
+                        OR (a.state='consumed' AND a.consumed_revision >=
+                            (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id)))
+                ) + CASE WHEN NEW.state IN ('active','pending','unknown','legacy_conflict')
+                    OR (NEW.state='consumed' AND NEW.consumed_revision >=
+                        (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id))
+                    THEN NEW.units ELSE 0 END >
+                    (SELECT observed_amount FROM gd_stock_observations WHERE observation_id=NEW.observation_id)
+                    THEN RAISE(ABORT,'Stock allocation exceeds observed amount') END;
+            END
+        """)
         connection.execute("""
             CREATE TRIGGER gd_stock_listing_adjustments_no_update
             BEFORE UPDATE ON gd_stock_listing_adjustments

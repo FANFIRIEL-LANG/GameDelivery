@@ -186,8 +186,10 @@ class ListingStockService:
         ).fetchall()
         available = sum(int(row["units"]) for row in sources)
         release_units = available if operation == "disable" else int(units or 0)
-        if release_units <= 0:
-            raise ValueError("Для listing operation нет активных listing-owned units")
+        if operation == "release_units" and release_units <= 0:
+            raise ValueError("Для partial release требуется положительное количество units")
+        if operation == "disable" and release_units < 0:
+            raise ValueError("Количество units для disable не может быть отрицательным")
         if release_units > available:
             raise InsufficientListingStock(release_units, available)
 
@@ -245,7 +247,7 @@ class ListingStockService:
         )
         if operation == "disable":
             connection.execute(
-                "UPDATE gd_listings SET status='disabled',"
+                "UPDATE gd_listings SET status='disabled',auto_relist=0,"
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE listing_id=?",
                 (listing_id,),
             )
