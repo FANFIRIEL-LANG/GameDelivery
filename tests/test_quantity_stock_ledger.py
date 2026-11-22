@@ -200,6 +200,24 @@ class QuantityStockLedgerTests(unittest.TestCase):
         self.assertCountEqual(outcomes, ["reserved", "blocked"])
         self.assertEqual(self.ledger.free_units(self.resource), 1)
 
+    def test_resource_rejects_non_string_asset_ids(self):
+        for invalid in (123456, None, "", "   "):
+            with self.assertRaises(ValueError):
+                StockResource("cs2", 730, "2", "Bot-A", invalid).normalized()
+
+    def test_allocation_rows_cannot_be_physically_deleted(self):
+        self.ledger.observe(self.resource, 10)
+        self.ledger.allocate(
+            allocation_id="protected-allocation", resource=self.resource, units=3,
+            owner_type="listing", listing_id="listing-a",
+        )
+        with self.database.connect() as db:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "cannot be deleted"):
+                db.execute(
+                    "DELETE FROM gd_stock_allocations WHERE allocation_id='protected-allocation'"
+                )
+        self.assertEqual(self.ledger.free_units(self.resource), 7)
+
     def test_invalid_amount_and_units_are_rejected(self):
         for amount in (0, -1, True, 1.5):
             with self.assertRaises(ValueError):
