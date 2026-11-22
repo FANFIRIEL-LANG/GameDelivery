@@ -6289,3 +6289,29 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 **Вывод:** принцип «dataclass как канонический DTO, отражающий текущую схему» ещё не реализован. Это drift контракта, но не доказательство runtime-дефекта: в проверенных путях ledger часто возвращает SQLite rows как dict и dataclasses пока не являются ORM/mapper. Нельзя механически сделать все поля обязательными или менять nullable поля без сохранения unresolved/historical сценариев.
 
 **Следующий read-only шаг C.2:** проверить реальные агрегаты количества и переходы состояний в ledger, dispatcher, reconciliation, Playerok sync и outbox: определить, что именно означает `Order.total_quantity` для смешанного Recipe, где хранится promised/reserved/delivered quantity, и какие переходы реально разрешены. После этого представить пользователю согласованный контракт. До отдельного подтверждения не менять dataclasses, schema, миграции, UI или delivery behavior.
+
+
+### C.2 read-only audit — quantity semantics and state machines (2026-11-22)
+
+**Объём:** прочитаны текущие реализации `PlayerokSyncService`, `DeliveryLedger`, `DeliveryReservationService`, `DeliveryDispatcher`, `DeliveryReconciliationService` и `DeliveryOrderPipeline`. Код и БД не менялись.
+
+**Количество:**
+- Для typed Recipe фактическое обязательство хранится построчно: `RecipeItem.quantity_per_order` копируется в `gd_order_lines.quantity`; selector/spec определяет тип единицы (Steam Card Set, Steam asset, digital text unit).
+- Playerok sync сейчас заполняет `gd_orders.total_quantity` суммой `quantity_per_order` всех RecipeItem. При смешанном рецепте (например, 1 набор карточек + 1 CS2 asset) это складывает разные единицы измерения. Это поле не должно использоваться как основание для резерва/подбора; фактический reservation pipeline планирует ресурсы отдельно по каждой OrderLine.
+- Legacy scalar `delivery_quantity_per_deal` остаётся для legacy config conversion; typed Recipe может иметь NULL в этом поле.
+- БД разрешает нулевые `total_quantity`/OrderLine.quantity, но рабочие методы и RecipeItem требуют положительные значения. Нужна явная политика для migrated legacy rows, где миграция сохраняет quantity=0, прежде чем ужесточать ограничения.
+- В текущей модели нет универсальных полей promised/reserved/delivered quantity aggregate. Физический резерв представлен строками `gd_resource_reservations.units` и состояниями active/released/consumed; подтверждённая выдача определяется DeliveryLeg/Steam offer reconciliation, а не отдельным числовым delivered counter.
+
+**Независимые состояния, фактически найденные в коде:**
+- Marketplace Deal: `platform_status` (PAID/SENT/CONFIRMED и другие наблюдаемые значения площадки), плюс отдельные `is_historical` и `listing_resolution_status`.
+- Internal Order: pending, preflight_blocked, insufficient_stock, reserved, PROCESSING, UNKNOWN, PRIVACY_WAIT, TRADE_RESTRICTED, FAILED, DELIVERED, CANCELLED.
+- DeliveryLeg: planned/reserved, DISPATCHING, UNKNOWN, SENT_TO_STEAM, PRIVACY_WAIT, TRADE_RESTRICTED, FAILED, CANCELLED, ACCEPTED, DECLINED.
+- DeliveryAttempt: prepared/dispatching и итоговые значения, записываемые как lower-case leg status.
+- ResourceReservation: active, released, consumed, legacy_conflict.
+- Playerok status outbox: pending, dispatching, unknown, sent, confirmed, blocked.
+
+Переходы сейчас задаются SQL в dispatcher/reconciliation/sync/pipeline и защитными проверками в сервисах; единого центрального state-transition contract или CHECK/trigger для полного набора допустимых статусов нет. Reconciliation переводит UNKNOWN в SENT_TO_STEAM только после восстановления единственного offer ID; ACCEPTED потребляет резервы, DECLINED не завершает заказ; Order становится DELIVERED только когда все его legs ACCEPTED. Playerok status outbox отдельно наблюдает SENT/CONFIRMED и в штатном режиме не меняет статус сделки.
+
+**Открытый вопрос для согласования:** для typed Recipe считать ли `gd_order_lines.quantity` единственным авторитетным количеством каждой товарной позиции, а `gd_orders.total_quantity` оставить только legacy/display compatibility aggregate (сумма чисел без права участвовать в подборе, резервировании или завершении)? Это не смешивает единицы разных товаров в бизнес-расчётах и не требует немедленной миграции. До ответа ничего не менять.
+
+**Следующий шаг:** согласовать семантику quantity; затем составить отдельную таблицу допустимых переходов состояний и сравнить её с тестами/реализацией. Не менять код, схему или UI до утверждения контракта.
