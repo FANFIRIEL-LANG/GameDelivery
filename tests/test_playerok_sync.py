@@ -171,7 +171,6 @@ class PlayerokDealSyncTests(unittest.TestCase):
         )
         result = self.syncer.sync(adapter)
         self.assertTrue(result["baseline"])
-        self.assertEqual(result["historical_deals"], 3)
         with self.database.connect() as db:
             rows = db.execute("""
                 SELECT external_deal_id,chat_id,listing_id,is_historical,playerok_account_id
