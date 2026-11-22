@@ -8,6 +8,7 @@ from threading import Barrier
 from pathlib import Path
 
 from core.database.db import Database
+from core.database.connection import connect_sqlite
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
 
 
@@ -31,7 +32,6 @@ class QuantityStockLedgerTests(unittest.TestCase):
         from core.database.ledger_migrations import (
             QUANTITY_STOCK_BACKUP_SUFFIX, QUANTITY_STOCK_MIGRATION_ID,
         )
-        self.assertTrue(Path(str(self.path) + QUANTITY_STOCK_BACKUP_SUFFIX).exists())
         with self.database.connect() as db:
             self.assertIsNotNone(db.execute(
                 "SELECT 1 FROM gd_schema_migrations WHERE migration_id=?",
@@ -43,6 +43,20 @@ class QuantityStockLedgerTests(unittest.TestCase):
             self.assertIsNotNone(db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gd_stock_allocations'"
             ).fetchone())
+
+
+    def test_existing_database_is_backed_up_before_quantity_migration(self):
+        path = Path(self.tmp.name) / "legacy-stock.sqlite3"
+        with connect_sqlite(path) as db:
+            db.execute("CREATE TABLE legacy_marker(value TEXT)")
+            db.execute("INSERT INTO legacy_marker(value) VALUES('preserve')")
+        database = Database(path)
+        database.initialize()
+        from core.database.ledger_migrations import QUANTITY_STOCK_BACKUP_SUFFIX
+        backup = Path(str(path) + QUANTITY_STOCK_BACKUP_SUFFIX)
+        self.assertTrue(backup.exists())
+        with connect_sqlite(backup) as db:
+            self.assertEqual(db.execute("SELECT value FROM legacy_marker").fetchone()[0], "preserve")
 
     def test_multiple_allocations_share_one_stack_without_exceeding_amount(self):
         self.ledger.observe(self.resource, 10)
