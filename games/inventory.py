@@ -19,6 +19,7 @@ class InventoryItem:
     class_id: str
     instance_id: str
     name: str
+    amount: int = 1
     item_type: str = ""
     market_hash_name: str = ""
     icon_url: str = ""
@@ -32,6 +33,8 @@ class InventoryItem:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "asset_id", validate_asset_id(self.asset_id))
+        if isinstance(self.amount, bool) or not isinstance(self.amount, int) or self.amount < 1:
+            raise ValueError("Количество предмета должно быть положительным целым числом")
 
 
 def _find_key(data: dict[str, Any], wanted: str) -> str | None:
@@ -165,10 +168,19 @@ def parse_game_inventory(payload: Any, game_id: str, bot_name: str) -> list[Inve
                 if category == "rarity" and not rarity:
                     rarity = localized or internal
 
+        amount_key = _find_key(asset, "amount")
+        raw_amount = asset.get(amount_key, 1) if amount_key else 1
+        try:
+            amount = int(raw_amount)
+        except (TypeError, ValueError) as exc:
+            raise ASFError(f"Некорректное количество у предмета {asset_id}") from exc
+        if isinstance(raw_amount, bool) or amount < 1 or str(raw_amount).strip() != str(amount):
+            raise ASFError(f"Некорректное количество у предмета {asset_id}")
+
         items.append(InventoryItem(
             game_id=game.game_id, bot_name=bot, asset_id=asset_id,
             class_id=class_id, instance_id=instance_id,
-            name=value("name") or f"Unknown item {asset_id}",
+            name=value("name") or f"Unknown item {asset_id}", amount=amount,
             item_type=value("type"), market_hash_name=value("market_hash_name"),
             icon_url=image("icon_url"), icon_url_large=image("icon_url_large"),
             is_tradable=_flag(description, "tradable", asset_id),
@@ -204,9 +216,15 @@ class GameInventoryStore:
                     rarity TEXT NOT NULL DEFAULT '',
                     exterior TEXT NOT NULL DEFAULT '',
                     tags_json TEXT NOT NULL DEFAULT '[]',
+                    amount INTEGER NOT NULL DEFAULT 1 CHECK(amount > 0),
                     PRIMARY KEY (game_id, bot_name, asset_id)
                 )
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(game_inventory_snapshot)")}
+            if "amount" not in columns:
+                db.execute(
+                    "ALTER TABLE game_inventory_snapshot ADD COLUMN amount INTEGER NOT NULL DEFAULT 1 CHECK(amount > 0)"
+                )
             db.execute("""
                 CREATE TABLE IF NOT EXISTS game_inventory_snapshot_meta (
                     game_id TEXT NOT NULL,
@@ -239,13 +257,17 @@ class GameInventoryStore:
             db.execute("DELETE FROM game_inventory_snapshot WHERE game_id = ? AND bot_name = ?", (game.game_id, bot))
             db.executemany("""
                 INSERT INTO game_inventory_snapshot
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (game_id, bot_name, asset_id, class_id, instance_id, name, item_type,
+                     market_hash_name, icon_url, icon_url_large, is_tradable, is_marketable,
+                     quality, rarity, exterior, tags_json, amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [(
                 item.game_id, item.bot_name, item.asset_id, item.class_id, item.instance_id,
                 item.name, item.item_type, item.market_hash_name, item.icon_url, item.icon_url_large,
                 None if item.is_tradable is None else int(item.is_tradable),
                 None if item.is_marketable is None else int(item.is_marketable),
                 item.quality, item.rarity, item.exterior, json.dumps(item.tags, ensure_ascii=False),
+                item.amount,
             ) for item in items])
             db.execute("""
                 INSERT INTO game_inventory_snapshot_meta (game_id, bot_name, updated_at, item_count)
@@ -264,7 +286,7 @@ class GameInventoryStore:
             rows = db.execute("""
                 SELECT game_id, bot_name, asset_id, class_id, instance_id, name, item_type,
                        market_hash_name, icon_url, icon_url_large, is_tradable, is_marketable,
-                       quality, rarity, exterior, tags_json
+                       quality, rarity, exterior, tags_json, amount
                 FROM game_inventory_snapshot WHERE game_id=? ORDER BY bot_name, name, asset_id
             """, (game.game_id,)).fetchall()
         return [InventoryItem(
@@ -273,6 +295,7 @@ class GameInventoryStore:
             is_tradable=None if r[10] is None else bool(r[10]),
             is_marketable=None if r[11] is None else bool(r[11]),
             quality=r[12], rarity=r[13], exterior=r[14], tags=tuple(json.loads(r[15])),
+            amount=int(r[16]),
         ) for r in rows]
 
     def load_snapshot_meta(self, game_id: str) -> dict[str, int]:
