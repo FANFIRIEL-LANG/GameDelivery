@@ -337,4 +337,9 @@ def refresh_game_inventory(client, store: GameInventoryStore, game_id: str, bot_
         bot_name, app_id=game.app_id, context_id=game.context_id, language="english"
     )
     items = parse_game_inventory(payload, game.game_id, bot_name)
+    stock_ledger = getattr(store, "_stock_ledger", None)
+    if stock_ledger is not None:
+        if game.item_domain == "trading_cards":
+            raise ValueError("Steam Cards не используют quantity stock ledger")
+        stock_ledger.observe_snapshot(game.game_id, bot_name, items)
     return store.replace(game.game_id, bot_name, items)

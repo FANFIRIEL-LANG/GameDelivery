@@ -103,11 +103,17 @@ class _GameInventoryRefreshTask(QRunnable):
             self.signals.finished.emit(0, ["Неизвестная игра."], {})
             return
         stock_ledger = None
-        if game.item_domain != "trading_cards":
+        # The literal SQLite :memory: database is connection-scoped in this
+        # application wrapper. It is used by UI unit tests only and cannot host
+        # a durable stock ledger across the worker's independent connections.
+        if game.item_domain != "trading_cards" and self.database_path != ":memory:":
             try:
                 stock_database = Database(self.database_path)
                 stock_database.initialize()
                 stock_ledger = QuantityStockLedger(stock_database)
+                # Keep the established generic-game refresh API and its single
+                # ASF request while making its persistence stock-aware.
+                setattr(store, "_stock_ledger", stock_ledger)
             except Exception as exc:
                 detail = _safe_test_asf_error(exc) if self.test_mode else str(exc)
                 self.signals.finished.emit(
@@ -117,6 +123,14 @@ class _GameInventoryRefreshTask(QRunnable):
         for index, bot_name in enumerate(self.bot_names, 1):
             self.signals.progress.emit(index, len(self.bot_names), bot_name)
             try:
+                if self.game_id != "cs2":
+                    # Preserve the existing path used by every non-CS2 game.
+                    # refresh_game_inventory parses the complete response and,
+                    # when _stock_ledger is attached, commits it before the
+                    # display snapshot is replaced.
+                    refresh_game_inventory(self.client, store, self.game_id, bot_name)
+                    succeeded += 1
+                    continue
                 payload = self.client.get_bot_inventory(
                     bot_name, app_id=game.app_id, context_id=game.context_id,
                     language="english",

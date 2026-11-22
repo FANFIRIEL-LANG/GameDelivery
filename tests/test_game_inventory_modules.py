@@ -198,6 +198,22 @@ class GameInventoryStoreTests(unittest.TestCase):
             self.assertEqual(result["item_count"], 1)
             self.assertEqual(store.load("cs2", "Bot A")[0].asset_id, "1001")
 
+    def test_generic_refresh_commits_stock_snapshot_before_display_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
+            ledger = Mock()
+            store._stock_ledger = ledger
+            client = Mock()
+            client.get_bot_inventory.return_value = payload()
+
+            result = refresh_game_inventory(client, store, "dota2", "Bot A")
+
+            self.assertEqual(result["item_count"], 1)
+            observed_items = ledger.observe_snapshot.call_args.args[2]
+            self.assertEqual(observed_items[0].game_id, "dota2")
+            self.assertEqual(observed_items[0].is_tradable, True)
+            self.assertEqual(store.load("dota2", "Bot A"), observed_items)
+
     def test_stack_amount_round_trips_through_snapshot_store(self):
         with tempfile.TemporaryDirectory() as directory:
             store = GameInventoryStore(Path(directory) / "inventory.sqlite3")
