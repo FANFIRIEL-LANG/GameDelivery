@@ -205,7 +205,7 @@ class DeliveryDispatcher:
                         "status": "PLAYEROK_FRESHNESS_REQUIRED",
                         "reason": "Перед отправкой требуется свежая проверка Playerok через браузер.",
                     }}
-                if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "FAILED", "ACTION_REQUIRED", "DELIVERED"}:
+                if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "FAILED", "ACTION_REQUIRED", "DELIVERED", "CANCELLED"}:
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["order_status"], "reason": "order is locked"}}
                 if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED", "FAILED", "PRIVACY_WAIT", "TRADE_RESTRICTED"}:
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "leg is already locked"}}
