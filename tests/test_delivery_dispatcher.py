@@ -479,6 +479,48 @@ class DeliveryDispatchTests(unittest.TestCase):
             }
             self.assertEqual(reservation_states, {"consumed"})
 
+    def test_stale_declined_reconciliation_cannot_overwrite_concurrent_acceptance(self):
+        leg = self.create_order()[0]
+        self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["95001"]}
+        self.assertEqual(self.dispatch("order-1", leg)["status"], "SENT_TO_STEAM")
+
+        def stale_declined_status(bot_name, offer_id):
+            # Simulate another reconciliation worker committing ACCEPTED after
+            # this worker loaded SENT_TO_STEAM but before its stale response.
+            self.assertTrue(self.reconciler._update_leg(
+                leg, "ACCEPTED", trade_offer_id=offer_id
+            ))
+            return {
+                "success": True, "mode": "trade-status", "found": True,
+                "tradeOfferId": offer_id, "botName": bot_name, "status": "Declined",
+            }
+
+        self.reconciler._status = stale_declined_status
+        result = self.reconciler.reconcile(order_id="order-1")
+
+        self.assertEqual(result[0]["status"], "STATE_CHANGED")
+        self.assertFalse(result[0]["reconciled"])
+        with self.db.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_delivery_legs WHERE leg_id=?", (leg,)).fetchone()[0],
+                "ACCEPTED",
+            )
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_delivery_attempts WHERE leg_id=?", (leg,)).fetchone()[0],
+                "accepted",
+            )
+            self.assertEqual(
+                db.execute("SELECT state FROM gd_resource_reservations WHERE order_line_id='line-order-1'").fetchone()[0],
+                "consumed",
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_delivery_events "
+                    "WHERE order_id='order-1' AND event_type='telegram_notification'"
+                ).fetchone()[0],
+                0,
+            )
+
     def test_reconciliation_preserves_privacy_wait_when_another_leg_is_accepted(self):
         legs = self.create_order(bots=("Bot-A", "Bot-B"))
         self.asf.send_result["Bot-B"] = {"success": True, "offerIds": ["94002"]}
