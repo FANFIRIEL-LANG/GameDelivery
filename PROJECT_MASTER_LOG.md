@@ -6425,3 +6425,34 @@ I. Запустить только целевые тесты, затем пол�
 
 **Ограничения текущего шага:** зафиксировано решение и план. Runtime-код, тесты, dataclasses, SQLite schema, migrations, UI, пользовательская БД и поведение доставки не менялись; тесты и миграции не запускались. Следующий шаг — сверить точные схемы/переходы и подготовить минимальный patch scope по файлам; перед изменением кода показать diff scope и критерии, затем дождаться отдельного разрешения на реализацию.
 
+
+
+### C.2 — точный patch scope после проверки schema и тестов (2026-11-22)
+
+**Проверенная база:** GitHub work/local-sync, HEAD перед этой записью: 3e6679b2eac42d7f1e782be6015488da20186a4a. Read-only повторно проверены schema definitions в core/database/ledger_migrations.py, DeliveryDispatcher, DeliveryReconciliation, DeliveryLedger, DeliveryOrderPipeline, DeliveryReservationService, models.py и текущие delivery tests. Никакие исходники, тесты или БД не менялись; тесты и миграции не запускались.
+
+**Уточнения по фактической реализации:**
+
+- В базовой SQLite-схеме gd_orders.status, gd_delivery_legs.status и gd_delivery_attempts.status — TEXT без полного CHECK-набора допустимых состояний. У gd_resource_reservations.state уже есть CHECK для active/released/consumed/legacy_conflict. Поэтому ACTION_REQUIRED не требует немедленного ALTER TABLE только ради значения статуса; любые новые DB guards нужно проектировать после инвентаризации всех writers и legacy rows.
+- gd_delivery_attempts уже хранит retry_generation, UNIQUE(order_id,leg_id,retry_generation), уникальный idempotency_key и result_json. DeliveryLeg не хранит retry_generation/current_attempt_id; связь с текущей попыткой должна быть однозначной по активной незавершённой попытке и её generation либо потребовать минимального явного FK-поля, если реализация докажет неоднозначность. Старые attempt rows и их offer IDs должны сохраняться.
+- Dispatcher в claim блокирует order statuses UNKNOWN/PRIVACY_WAIT/TRADE_RESTRICTED/DECLINED/DELIVERED, но не FAILED; отдельная leg блокируется по UNKNOWN/SENT_TO_STEAM/ACCEPTED/DECLINED/PRIVACY_WAIT/TRADE_RESTRICTED, а FAILED не входит в этот список, хотя ниже dispatch допускает только reserved/planned. Подтверждённый FAILED order поэтому не блокирует другую planned/reserved leg.
+- Dispatcher при доказанном ответе ASF failure вызывает _set_state(leg=FAILED, order=FAILED, attempt=failed). Исключение/timeout и resultUnknown уже консервативно переводятся в UNKNOWN.
+- Startup recovery сейчас обновляет только DeliveryLeg DISPATCHING → UNKNOWN; DeliveryAttempt остаётся dispatching.
+- Reconciliation сейчас обновляет только DeliveryLeg для ACCEPTED/DECLINED; DeliveryAttempt остаётся в sent_to_steam. При ACCEPTED резерв становится consumed и заказ может стать DELIVERED; при DECLINED заказ остаётся без пересчёта статуса, резерв active. Повторный poll по terminal leg не выбирает её снова, поскольку query ограничен UNKNOWN/SENT_TO_STEAM.
+- gd_delivery_events имеет UNIQUE(order_id,event_type), поэтому фиксированный event_type вроде telegram_notification не годится как журнал множества независимых действий/попыток. gd_reservation_events уже аудитирует только переходы reservation state, но не actor/reason/evidence.
+- В существующих tests/test_delivery_dispatcher.py есть проверки UNKNOWN recovery, startup recovery, multi-bot acceptance, privacy/trade restriction и decline notification. Startup test проверяет только leg; decline test проверяет leg + refresh + Telegram, но не attempt/order/reservation. Нет отдельного теста для подтверждённого FAILED и его влияния на вторую leg. DeliveryAttempt idempotency покрывается tests/test_delivery_ledger.py.
+
+**Предлагаемый минимальный patch scope (только после отдельного разрешения на реализацию):**
+
+1. core/delivery/dispatcher.py — централизовать order-level dispatch guard; блокировать ACTION_REQUIRED и другие недопустимые состояния; перестать трактовать отказ одной leg как терминальный FAILED всего заказа; сохранять UNKNOWN при любом неоднозначном результате. Не ломать существующие Playerok freshness/recipient guards и ручную авторизацию.
+2. core/delivery/reconciliation.py — в транзакциях обновлять актуальные attempt + leg вместе; startup recovery переводит оба состояния в UNKNOWN; recovery найденного offer и ACCEPTED/DECLINED обновляют attempt result/finished_at, offer ID и leg атомарно; повторный poll идемпотентен; агрегатный Order пересчитывается с учётом уже отправленных multi-bot legs и ACTION_REQUIRED.
+3. Новый core/delivery/recovery.py — узкий операторский workflow retry/release: свежая inventory proof, проверка recipient и отсутствия неопределённого/активного offer, новая retry_generation, неизменяемая история прошлых attempts; отдельное явное решение для release. Не добавлять автоматический retry из reconciliation.
+4. core/database/ledger_migrations.py — добавить отдельную миграцию аудита операторских решений (action ID, order/leg, действие retry/release, generation, actor, reason, evidence metadata, timestamp). Сохранить текущие reservation triggers и backup-before-migration порядок. Не вводить широкие CHECK/trigger на статусы без полного анализа всех legacy writers.
+5. tests/test_delivery_dispatcher.py — усилить startup recovery и ACCEPTED/DECLINED assertions на обеих сущностях; добавить тесты multi-bot: одна leg declined/failed, другая уже sent/unknown/accepted; доказанный FAILED блокирует новые dispatch, но reconciliation уже отправленного offer продолжает работать; UNKNOWN никогда не открывает retry/release.
+6. Новый tests/test_delivery_recovery.py — explicit retry generation, отказ retry без свежего inventory/recipient proof, отказ при неизвестном offer, release guard, audit record, атомарный rollback и сохранение старых attempt rows.
+7. tests/test_delivery_ledger.py и tests/test_delivery_reservation_service.py — проверить уникальность generations, блокировку повторного резервирования, свежесть/ownership/tradable и отсутствие пересечения активных reservation.
+8. Playerok sync/outbox тесты — регрессия независимости platform_status и запрет создания/изменения Playerok status outbox до внутреннего DELIVERED. Изменения integrations/playerok/sync.py не планируются, если тесты не обнаружат прямой конфликт.
+
+**Важное ограничение:** точный способ доказать отсутствие активного Steam offer и формат inventory evidence для ручного release нужно реализовать через уже имеющиеся ASF inventory/status contracts, а не через предположение о результате. Если ASF не может доказать отсутствие offer, операция остаётся заблокированной. UI/chat-команды в первый patch не включать: сначала закрыть service/API и тесты; интерфейс отдельно после проверки.
+
+**Следующий шаг:** подготовить короткую карту методов/транзакций и финальный перечень файлов для первого кода patch, не менять реализацию без отдельного разрешения. Текущий этап остаётся documentation + read-only audit; пользовательскую машину, ASF и Steam пока не трогать.
