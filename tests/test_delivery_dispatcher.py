@@ -180,7 +180,7 @@ class DeliveryDispatchTests(unittest.TestCase):
         )
         return {"playerok_freshness_authorization": proof, "playerok_order_lease": lease}
 
-    def dispatch(self, order_id, leg_id, *, manual_authorization=None):
+    def dispatch(self, order_id, leg_id, *, manual_authorization=None, retry_generation=0):
         safe_url = self.trade_url if order_id == "order-1" else (
             "https://steamcommunity.com/tradeoffer/new/?partner=123"
         )
@@ -188,6 +188,7 @@ class DeliveryDispatchTests(unittest.TestCase):
         try:
             return self.dispatcher.dispatch_leg(
                 order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
+                retry_generation=retry_generation,
                 manual_authorization=manual_authorization, **freshness,
             )
         finally:
@@ -547,6 +548,30 @@ class DeliveryDispatchTests(unittest.TestCase):
                 db.execute("SELECT status FROM gd_delivery_attempts WHERE leg_id=?", (legs[1],)).fetchone()[0],
                 "accepted",
             )
+
+
+
+    def test_expired_operator_retry_proof_is_rejected_before_asf_boundary(self):
+        leg = self.create_order()[0]
+        with self.db.connect() as db:
+            self.ledger.create_delivery_attempt(
+                order_id="order-1", leg_id=leg, retry_generation=1,
+                status="prepared",
+                result={
+                    "operator_retry_action_id": "action-expired",
+                    "recovery_evidence": {"inventory": {"expires_at": "2020-01-01T00:00:00+00:00"}},
+                },
+                connection=db,
+            )
+            db.execute("UPDATE gd_orders SET status='PROCESSING' WHERE order_id='order-1'")
+        sent_before = len(self.asf.sent)
+        result = self.dispatch("order-1", leg, retry_generation=1)
+        self.assertEqual(result["status"], "RECOVERY_PROOF_EXPIRED")
+        self.assertEqual(len(self.asf.sent), sent_before)
+        with self.db.connect() as db:
+            self.assertEqual(db.execute("SELECT status FROM gd_delivery_legs WHERE leg_id=?", (leg,)).fetchone()[0], "FAILED")
+            self.assertEqual(db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()[0], "ACTION_REQUIRED")
+            self.assertEqual(db.execute("SELECT status FROM gd_delivery_attempts WHERE retry_generation=1").fetchone()[0], "failed")
 
 
 

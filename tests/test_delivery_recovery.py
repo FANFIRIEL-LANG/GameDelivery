@@ -105,10 +105,13 @@ class DeliveryRecoveryTests(unittest.TestCase):
                 db.execute("SELECT status FROM gd_delivery_legs WHERE leg_id='leg-recovery'").fetchone()[0],
                 "reserved",
             )
-            self.assertEqual(
-                db.execute("SELECT status FROM gd_delivery_attempts WHERE retry_generation=1").fetchone()[0],
-                "prepared",
-            )
+            prepared = db.execute(
+                "SELECT status,result_json FROM gd_delivery_attempts WHERE retry_generation=1"
+            ).fetchone()
+            self.assertEqual(prepared["status"], "prepared")
+            import json
+            proof_expiry = json.loads(prepared["result_json"])["recovery_evidence"]["inventory"]["expires_at"]
+            self.assertTrue(proof_expiry)
             self.assertEqual(
                 db.execute("SELECT state FROM gd_resource_reservations WHERE reservation_id='reservation-recovery'").fetchone()[0],
                 "active",

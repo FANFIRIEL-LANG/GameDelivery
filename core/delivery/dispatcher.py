@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from core.database.db import Database
@@ -263,6 +264,45 @@ class DeliveryDispatcher:
                         and bool(prior_attempt_result.get("operator_retry_action_id"))
                     )
                     if approved_operator_retry:
+                        recovery_evidence = prior_attempt_result.get("recovery_evidence")
+                        inventory_evidence = (
+                            recovery_evidence.get("inventory")
+                            if isinstance(recovery_evidence, dict) else None
+                        )
+                        expires_at = (
+                            inventory_evidence.get("expires_at")
+                            if isinstance(inventory_evidence, dict) else None
+                        )
+                        try:
+                            proof_expiry = datetime.fromisoformat(str(expires_at))
+                            proof_is_fresh = (
+                                proof_expiry.tzinfo is not None
+                                and datetime.now(timezone.utc) < proof_expiry.astimezone(timezone.utc)
+                            )
+                        except (TypeError, ValueError, OverflowError):
+                            proof_is_fresh = False
+                        if not proof_is_fresh:
+                            prior_attempt_result["recovery_proof_expired"] = True
+                            db.execute(
+                                "UPDATE gd_delivery_attempts SET status='failed',result_json=?,"
+                                "finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE attempt_id=?",
+                                (json.dumps(prior_attempt_result, ensure_ascii=False, sort_keys=True),
+                                 attempt["attempt_id"]),
+                            )
+                            db.execute(
+                                "UPDATE gd_delivery_legs SET status='FAILED',"
+                                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
+                                (leg,),
+                            )
+                            db.execute(
+                                "UPDATE gd_orders SET status='ACTION_REQUIRED',"
+                                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                                (order,),
+                            )
+                            return {"_claimed": False, "response": {
+                                "dispatched": False, "status": "RECOVERY_PROOF_EXPIRED",
+                                "reason": "Свежесть ASF inventory proof истекла; требуется новый операторский retry.",
+                            }}
                         prior_attempt_result["dispatch_authorization"] = authorization
                         db.execute(
                             "UPDATE gd_delivery_attempts SET result_json=? WHERE attempt_id=?",

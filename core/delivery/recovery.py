@@ -134,6 +134,7 @@ class DeliveryRecoveryService:
             "context_id": context_id,
             "asset_ids": [str(value) for value in asset_ids],
             "refreshed_at": refreshed_at.astimezone(timezone.utc).isoformat(),
+            "expires_at": (refreshed_at.astimezone(timezone.utc) + self.max_inventory_age).isoformat(),
             "asf_verified": True,
         }
 

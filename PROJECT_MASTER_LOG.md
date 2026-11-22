@@ -6513,3 +6513,6 @@ I. Запустить только целевые тесты, затем пол�
 
 
 **Уточнение ASF proof для recovery (2026-11-22):** retry теперь дополнительно проверяет, что возвращённый ASF snapshot совпадает с запрошенными `app_id/context_id`, содержит список inventory items и что manifest leg состоит только из уникальных непустых строковых asset IDs. Добавлен regression test на snapshot другого app/context. Это усиливает fail-closed ownership/tradable gate; коммит включает код, тест и эту запись журнала.
+
+
+**Срок действия ASF proof (2026-11-22):** свежесть inventory snapshot теперь ограничена `max_inventory_age` (по умолчанию 2 минуты) и сохраняется как `expires_at` в prepared retry attempt. Dispatcher перед ASF boundary отклоняет истёкший/невалидный proof, помечает prepared attempt как доказанный `failed` и возвращает заказ в `ACTION_REQUIRED`; новый retry должен получить новое inventory proof и generation. Добавлены regression tests на наличие expiry и запрет ASF вызова после истечения proof.
