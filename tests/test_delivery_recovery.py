@@ -93,6 +93,83 @@ class DeliveryRecoveryTests(unittest.TestCase):
             offer_absence_verifier=lambda order, leg, bot: self.no_offer if no_offer is None else no_offer,
         )
 
+
+    def test_cancel_order_releases_all_proven_unsent_legs_atomically(self):
+        result = self.service.cancel_order(
+            order_id="order-recovery", actor="operator-1",
+            reason="Buyer cancelled before any Steam offer was sent",
+        )
+        self.assertEqual(result["status"], "CANCELLED")
+        self.assertEqual(result["released_legs"], 1)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_orders WHERE order_id='order-recovery'"
+            ).fetchone()[0], "CANCELLED")
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_delivery_legs WHERE leg_id='leg-recovery'"
+            ).fetchone()[0], "CANCELLED")
+            self.assertEqual(db.execute(
+                "SELECT state FROM gd_resource_reservations WHERE reservation_id='reservation-recovery'"
+            ).fetchone()[0], "released")
+            action = db.execute(
+                "SELECT action_type,actor,reason,evidence_json FROM gd_delivery_operator_actions"
+            ).fetchone()
+        self.assertEqual(action["action_type"], "release")
+        self.assertEqual(action["actor"], "operator-1")
+        self.assertTrue(__import__("json").loads(action["evidence_json"])["order_cancelled"])
+
+    def test_cancel_order_fails_closed_when_offer_absence_is_not_confirmed(self):
+        service = self.make_service(no_offer=False)
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            service.cancel_order(
+                order_id="order-recovery", actor="operator-1", reason="cancel",
+            )
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_orders WHERE order_id='order-recovery'"
+            ).fetchone()[0], "ACTION_REQUIRED")
+            self.assertEqual(db.execute(
+                "SELECT state FROM gd_resource_reservations WHERE reservation_id='reservation-recovery'"
+            ).fetchone()[0], "active")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_operator_actions"
+            ).fetchone()[0], 0)
+
+    def test_cancel_order_blocks_unknown_or_already_accepted_leg(self):
+        with self.database.connect() as db:
+            db.execute("UPDATE gd_delivery_legs SET status='UNKNOWN' WHERE leg_id='leg-recovery'")
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            self.service.cancel_order(
+                order_id="order-recovery", actor="operator-1", reason="cancel",
+            )
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT state FROM gd_resource_reservations WHERE reservation_id='reservation-recovery'"
+            ).fetchone()[0], "active")
+        with self.database.connect() as db:
+            db.execute("UPDATE gd_delivery_legs SET status='ACCEPTED' WHERE leg_id='leg-recovery'")
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            self.service.cancel_order(
+                order_id="order-recovery", actor="operator-1", reason="cancel",
+            )
+
+    def test_cancel_order_requires_action_required_and_rejects_second_cancel(self):
+        with self.database.connect() as db:
+            db.execute("UPDATE gd_orders SET status='PROCESSING' WHERE order_id='order-recovery'")
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            self.service.cancel_order(
+                order_id="order-recovery", actor="operator-1", reason="cancel",
+            )
+        with self.database.connect() as db:
+            db.execute("UPDATE gd_orders SET status='ACTION_REQUIRED' WHERE order_id='order-recovery'")
+        self.service.cancel_order(
+            order_id="order-recovery", actor="operator-1", reason="cancel",
+        )
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            self.service.cancel_order(
+                order_id="order-recovery", actor="operator-1", reason="second cancel",
+            )
+
     def test_retry_creates_new_generation_and_preserves_old_attempt_and_reservation(self):
         result = self.service.retry(
             order_id="order-recovery", leg_id="leg-recovery",
