@@ -304,12 +304,25 @@ class DeliveryReconciliation:
                     if counts["expected_assets"] == counts["consumed_assets"]
                     else "ACTION_REQUIRED"
                 )
-            elif counts["in_flight"]:
-                next_status = "PROCESSING"
-            elif counts["requires_action"]:
-                next_status = "ACTION_REQUIRED"
             else:
-                next_status = "PROCESSING"
+                blocked = db.execute("""
+                    SELECT
+                        SUM(CASE WHEN l.status='PRIVACY_WAIT' THEN 1 ELSE 0 END) AS privacy_wait,
+                        SUM(CASE WHEN l.status='TRADE_RESTRICTED' THEN 1 ELSE 0 END) AS trade_restricted
+                    FROM gd_delivery_legs l
+                    JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
+                    WHERE ol.order_id=?
+                """, (order_id,)).fetchone()
+                if blocked and blocked["privacy_wait"]:
+                    next_status = "PRIVACY_WAIT"
+                elif blocked and blocked["trade_restricted"]:
+                    next_status = "TRADE_RESTRICTED"
+                elif counts["in_flight"]:
+                    next_status = "PROCESSING"
+                elif counts["requires_action"]:
+                    next_status = "ACTION_REQUIRED"
+                else:
+                    next_status = "PROCESSING"
             db.execute(
                 "UPDATE gd_orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                 "WHERE order_id=? AND status<>'CANCELLED'",
