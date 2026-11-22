@@ -114,10 +114,53 @@ class DeliveryReconciliation:
                     results.append({"leg_id": leg["leg_id"], "status": "UNKNOWN", "recovered": False})
                     continue
                 with self.database.connect() as db:
-                    db.execute(
+                    db.execute("BEGIN IMMEDIATE")
+                    attempt = db.execute(
+                        "SELECT attempt_id,result_json,status FROM gd_delivery_attempts "
+                        "WHERE order_id=? AND leg_id=? ORDER BY retry_generation DESC LIMIT 1",
+                        (order, leg["leg_id"]),
+                    ).fetchone()
+                    if attempt is None or str(attempt["status"]).casefold() not in {
+                        "unknown", "dispatching", "sent_to_steam"
+                    }:
+                        results.append({
+                            "leg_id": leg["leg_id"], "status": "UNKNOWN",
+                            "recovered": False,
+                            "reason": "matching non-terminal DeliveryAttempt is missing",
+                        })
+                        continue
+                    try:
+                        evidence = json.loads(attempt["result_json"] or "{}")
+                    except (TypeError, ValueError):
+                        evidence = {}
+                    if not isinstance(evidence, dict):
+                        evidence = {"previous_result": evidence}
+                    evidence.update({
+                        "trade_offer_id": offer_id,
+                        "recovered_from_unknown": True,
+                    })
+                    cursor = db.execute(
                         "UPDATE gd_delivery_legs SET trade_offer_id=?, status='SENT_TO_STEAM', "
-                        "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=? AND status='UNKNOWN'",
+                        "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                        "WHERE leg_id=? AND status='UNKNOWN'",
                         (offer_id, leg["leg_id"]),
+                    )
+                    if cursor.rowcount != 1:
+                        results.append({
+                            "leg_id": leg["leg_id"], "status": "UNKNOWN",
+                            "recovered": False, "reason": "leg state changed during reconciliation",
+                        })
+                        continue
+                    db.execute(
+                        "UPDATE gd_delivery_attempts SET status='sent_to_steam',result_json=?,"
+                        "finished_at=NULL WHERE attempt_id=?",
+                        (json.dumps(evidence, ensure_ascii=False, sort_keys=True), attempt["attempt_id"]),
+                    )
+                    db.execute(
+                        "UPDATE gd_orders SET status='PROCESSING',"
+                        "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                        "WHERE order_id=? AND status<>'CANCELLED'",
+                        (order,),
                     )
                 leg["status"] = "SENT_TO_STEAM"
                 leg["trade_offer_id"] = offer_id
