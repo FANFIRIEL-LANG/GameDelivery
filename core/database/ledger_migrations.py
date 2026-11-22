@@ -1748,6 +1748,21 @@ def _apply_quantity_stock_migration(connection: sqlite3.Connection) -> bool:
                 END
             """)
         connection.execute("""
+            CREATE TRIGGER gd_stock_observations_identity_immutable
+            BEFORE UPDATE OF observation_id,game_id,app_id,context_id,bot_name,asset_id
+            ON gd_stock_observations
+            WHEN NEW.observation_id<>OLD.observation_id OR NEW.game_id<>OLD.game_id
+              OR NEW.app_id<>OLD.app_id OR NEW.context_id<>OLD.context_id
+              OR NEW.bot_name<>OLD.bot_name COLLATE NOCASE OR NEW.asset_id<>OLD.asset_id
+            BEGIN SELECT RAISE(ABORT,'Stock observation physical identity is immutable'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_observations_revision_monotonic
+            BEFORE UPDATE OF revision ON gd_stock_observations
+            WHEN NEW.revision<=OLD.revision
+            BEGIN SELECT RAISE(ABORT,'Stock observation revision must increase'); END
+        """)
+        connection.execute("""
             CREATE TRIGGER gd_stock_observations_key_insert
             BEFORE INSERT ON gd_stock_observations
             WHEN NEW.asset_id_key<>gd_asset_id_key(NEW.asset_id)
