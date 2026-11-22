@@ -53,10 +53,10 @@ class DeliveryRecoveryTests(unittest.TestCase):
         self.ledger.add_delivery_leg(
             leg_id="leg-recovery", order_line_id="line-recovery",
             bot_name="Bot-A", app_id=730, context_id=2,
-            asset_ids=["asset-1"], status="FAILED",
+            asset_ids=["asset-1"], status="reserved",
         )
-        self.ledger.bind_order_recipient("order-recovery", "76561197960265851")
         with self.database.connect() as db:
+            db.execute("UPDATE gd_orders SET status='reserved' WHERE order_id='order-recovery'")
             db.execute(
                 "INSERT INTO gd_resource_reservations "
                 "(reservation_id,owner_type,order_line_id,game_id,app_id,context_id,"

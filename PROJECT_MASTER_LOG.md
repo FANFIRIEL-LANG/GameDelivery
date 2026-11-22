@@ -6525,3 +6525,6 @@ I. Запустить только целевые тесты, затем пол�
 
 
 **Точность consume reservation (2026-11-22):** при ACCEPTED reservation теперь потребляется только при совпадении order line, bot, app/context, owner type и asset ID текущей DeliveryLeg. Order aggregation учитывает только соответствующие order-owned consumed reservations. Это исключает случайное потребление совместно принадлежащего ресурса из другого контекста.
+
+
+**CI failure follow-up (2026-11-22):** focused recovery CI exposed test-fixture ordering errors, not runtime failures: the recovery fixture attempted to bind a recipient while the order/leg were already FAILED/ACTION_REQUIRED, although the ledger contract permits binding only after all legs are reserved. The fixture now creates a reserved order/leg and active reservation, binds the recipient, then simulates the failed attempt and ACTION_REQUIRED state. The startup-recovery test now seeds the corresponding `dispatching` DeliveryAttempt before marking its leg DISPATCHING, matching the real interrupted-dispatch state. No production logic was changed for these fixture errors.

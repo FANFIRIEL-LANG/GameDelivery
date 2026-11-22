@@ -229,6 +229,10 @@ class DeliveryDispatchTests(unittest.TestCase):
     def test_startup_recovery_converts_interrupted_dispatch_to_unknown_before_polling(self):
         leg = self.create_order()[0]
         with self.db.connect() as db:
+            self.ledger.create_delivery_attempt(
+                order_id="order-1", leg_id=leg, retry_generation=0,
+                status="dispatching", result={"dispatch_started": True}, connection=db,
+            )
             db.execute(
                 "UPDATE gd_delivery_legs SET status='DISPATCHING' WHERE leg_id=?", (leg,)
             )
