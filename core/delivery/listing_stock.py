@@ -154,127 +154,156 @@ class ListingStockService:
         config_version_id: str,
         order_line_id: str,
         units: int,
+        connection=None,
     ) -> list[dict[str, Any]]:
         transfer_event_id = str(transfer_event_id or "").strip()
         if not all((transfer_event_id, listing_id, config_version_id, order_line_id)):
             raise ValueError("transfer_event_id, listing_id, config_version_id и order_line_id обязательны")
         units = _positive_int(units, "units")
-        with self.database.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            prior = connection.execute(
-                "SELECT * FROM gd_stock_transfers WHERE transfer_event_id=?",
-                (transfer_event_id,),
-            ).fetchone()
-            if prior is not None:
-                if (
-                    prior["listing_id"] != listing_id
-                    or prior["config_version_id"] != config_version_id
-                    or prior["order_line_id"] != order_line_id
-                    or int(prior["units"]) != units
-                ):
-                    raise ValueError("transfer_event_id уже использован с другими параметрами")
-                ids = json.loads(prior["allocation_ids_json"])
-                if not ids:
-                    return []
-                marks = ",".join("?" for _ in ids)
-                return [
-                    dict(row) for row in connection.execute(
-                        f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
-                        ids,
-                    ).fetchall()
-                ]
+        if connection is not None:
+            return self._transfer_to_order_in_transaction(
+                connection,
+                transfer_event_id=transfer_event_id,
+                listing_id=listing_id,
+                config_version_id=config_version_id,
+                order_line_id=order_line_id,
+                units=units,
+            )
+        with self.database.connect() as owned_connection:
+            owned_connection.execute("BEGIN IMMEDIATE")
+            return self._transfer_to_order_in_transaction(
+                owned_connection,
+                transfer_event_id=transfer_event_id,
+                listing_id=listing_id,
+                config_version_id=config_version_id,
+                order_line_id=order_line_id,
+                units=units,
+            )
 
-            line = connection.execute(
-                "SELECT quantity,config_version_id FROM gd_order_lines WHERE order_line_id=?",
-                (order_line_id,),
-            ).fetchone()
-            if line is None or line["config_version_id"] != config_version_id:
-                raise ValueError("OrderLine отсутствует или относится к другой ConfigVersion")
-            already_transferred = int(connection.execute(
-                "SELECT COALESCE(SUM(units),0) FROM gd_stock_transfers WHERE order_line_id=?",
-                (order_line_id,),
-            ).fetchone()[0])
-            if already_transferred + units > int(line["quantity"]):
-                raise ValueError("Перенос превышает количество OrderLine")
+    def _transfer_to_order_in_transaction(
+        self,
+        connection,
+        *,
+        transfer_event_id: str,
+        listing_id: str,
+        config_version_id: str,
+        order_line_id: str,
+        units: int,
+    ) -> list[dict[str, Any]]:
+        prior = connection.execute(
+            "SELECT * FROM gd_stock_transfers WHERE transfer_event_id=?",
+            (transfer_event_id,),
+        ).fetchone()
+        if prior is not None:
+            if (
+                prior["listing_id"] != listing_id
+                or prior["config_version_id"] != config_version_id
+                or prior["order_line_id"] != order_line_id
+                or int(prior["units"]) != units
+            ):
+                raise ValueError("transfer_event_id уже использован с другими параметрами")
+            ids = json.loads(prior["allocation_ids_json"])
+            if not ids:
+                return []
+            marks = ",".join("?" for _ in ids)
+            return [
+                dict(row) for row in connection.execute(
+                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
+                    ids,
+                ).fetchall()
+            ]
 
-            sources = connection.execute(
-                """
-                SELECT * FROM gd_stock_allocations
-                WHERE owner_type='listing' AND listing_id=? AND config_version_id=?
-                  AND state='active'
-                ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key,allocation_id
-                """,
-                (listing_id, config_version_id),
-            ).fetchall()
-            if sum(int(row["units"]) for row in sources) < units:
-                raise InsufficientListingStock(
-                    units, sum(int(row["units"]) for row in sources)
-                )
+        line = connection.execute(
+            "SELECT quantity,config_version_id FROM gd_order_lines WHERE order_line_id=?",
+            (order_line_id,),
+        ).fetchone()
+        if line is None or line["config_version_id"] != config_version_id:
+            raise ValueError("OrderLine отсутствует или относится к другой ConfigVersion")
+        already_transferred = int(connection.execute(
+            "SELECT COALESCE(SUM(units),0) FROM gd_stock_transfers WHERE order_line_id=?",
+            (order_line_id,),
+        ).fetchone()[0])
+        if already_transferred + units > int(line["quantity"]):
+            raise ValueError("Перенос превышает количество OrderLine")
 
-            remaining = units
-            transfer_ids: list[str] = []
-            event_hash = hashlib.sha256(transfer_event_id.encode()).hexdigest()
-            for index, source in enumerate(sources):
-                if remaining <= 0:
-                    break
-                source_units = int(source["units"])
-                take = min(source_units, remaining)
-                connection.execute(
-                    "UPDATE gd_stock_allocations SET state='released',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
-                    "WHERE allocation_id=? AND state='active'",
-                    (source["allocation_id"],),
-                )
-                if take < source_units:
-                    remainder_id = _stable_id("listing-remainder", transfer_event_id, source["allocation_id"])
-                    connection.execute(
-                        """
-                        INSERT INTO gd_stock_allocations
-                            (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
-                             asset_id,asset_id_key,owner_type,listing_id,config_version_id,
-                             order_line_id,legacy_owner_id,units,state)
-                        VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active')
-                        """,
-                        (
-                            remainder_id, source["observation_id"], source["game_id"],
-                            source["app_id"], source["context_id"], source["bot_name"],
-                            source["asset_id"], source["asset_id_key"], listing_id,
-                            config_version_id, source_units - take,
-                        ),
-                    )
-                order_id = f"order-transfer:{event_hash}:{index}"
+        sources = connection.execute(
+            """
+            SELECT * FROM gd_stock_allocations
+            WHERE owner_type='listing' AND listing_id=? AND config_version_id=?
+              AND state='active'
+            ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key,allocation_id
+            """,
+            (listing_id, config_version_id),
+        ).fetchall()
+        if sum(int(row["units"]) for row in sources) < units:
+            raise InsufficientListingStock(
+                units, sum(int(row["units"]) for row in sources)
+            )
+
+        remaining = units
+        transfer_ids: list[str] = []
+        event_hash = hashlib.sha256(transfer_event_id.encode()).hexdigest()
+        for index, source in enumerate(sources):
+            if remaining <= 0:
+                break
+            source_units = int(source["units"])
+            take = min(source_units, remaining)
+            connection.execute(
+                "UPDATE gd_stock_allocations SET state='released',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE allocation_id=? AND state='active'",
+                (source["allocation_id"],),
+            )
+            if take < source_units:
+                remainder_id = _stable_id("listing-remainder", transfer_event_id, source["allocation_id"])
                 connection.execute(
                     """
                     INSERT INTO gd_stock_allocations
                         (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
                          asset_id,asset_id_key,owner_type,listing_id,config_version_id,
                          order_line_id,legacy_owner_id,units,state)
-                    VALUES(?,?,?,?,?,?,?,?, 'order',NULL,NULL,?,NULL,?,'active')
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active')
                     """,
                     (
-                        order_id, source["observation_id"], source["game_id"],
+                        remainder_id, source["observation_id"], source["game_id"],
                         source["app_id"], source["context_id"], source["bot_name"],
-                        source["asset_id"], source["asset_id_key"], order_line_id, take,
+                        source["asset_id"], source["asset_id_key"], listing_id,
+                        config_version_id, source_units - take,
                     ),
                 )
-                transfer_ids.append(order_id)
-                remaining -= take
-            if remaining:
-                raise InsufficientListingStock(units, units - remaining)
+            order_id = f"order-transfer:{event_hash}:{index}"
             connection.execute(
                 """
-                INSERT INTO gd_stock_transfers
-                    (transfer_event_id,listing_id,config_version_id,order_line_id,units,allocation_ids_json)
-                VALUES(?,?,?,?,?,?)
+                INSERT INTO gd_stock_allocations
+                    (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                     asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                     order_line_id,legacy_owner_id,units,state)
+                VALUES(?,?,?,?,?,?,?,?, 'order',NULL,NULL,?,NULL,?,'active')
                 """,
                 (
-                    transfer_event_id, listing_id, config_version_id, order_line_id,
-                    units, json.dumps(transfer_ids, separators=(",", ":")),
+                    order_id, source["observation_id"], source["game_id"],
+                    source["app_id"], source["context_id"], source["bot_name"],
+                    source["asset_id"], source["asset_id_key"], order_line_id, take,
                 ),
             )
-            marks = ",".join("?" for _ in transfer_ids)
-            return [
-                dict(row) for row in connection.execute(
-                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
-                    transfer_ids,
-                ).fetchall()
-            ]
+            transfer_ids.append(order_id)
+            remaining -= take
+        if remaining:
+            raise InsufficientListingStock(units, units - remaining)
+        connection.execute(
+            """
+            INSERT INTO gd_stock_transfers
+                (transfer_event_id,listing_id,config_version_id,order_line_id,units,allocation_ids_json)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (
+                transfer_event_id, listing_id, config_version_id, order_line_id,
+                units, json.dumps(transfer_ids, separators=(",", ":")),
+            ),
+        )
+        marks = ",".join("?" for _ in transfer_ids)
+        return [
+            dict(row) for row in connection.execute(
+                f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
+                transfer_ids,
+            ).fetchall()
+        ]
