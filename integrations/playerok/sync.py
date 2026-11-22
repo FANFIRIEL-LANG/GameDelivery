@@ -401,8 +401,21 @@ class PlayerokDealSyncService:
         created = 0
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            state = db.execute(
+                "SELECT baseline_completed,baseline_completed_at FROM playerok_sync_state "
+                "WHERE account_user_id=?",
+                (account_user_id,),
+            ).fetchone()
+            if state is None or state["baseline_completed"] != 1:
+                raise RuntimeError("Playerok incremental sync requires a completed account baseline")
+            baseline_completed_at = state["baseline_completed_at"]
             for deal in deals:
-                _normalized_id, is_new = self._upsert_deal(db, deal, account_user_id, historical=False)
+                historical = self._is_historical_relative_to_baseline(
+                    deal, baseline_completed_at
+                )
+                _normalized_id, is_new = self._upsert_deal(
+                    db, deal, account_user_id, historical=historical
+                )
                 created += int(is_new)
             db.execute("""
                 UPDATE playerok_sync_state SET last_sync_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
