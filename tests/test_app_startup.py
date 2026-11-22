@@ -74,8 +74,9 @@ class AppStartupSmokeTests(unittest.TestCase):
                 critical.assert_called_once()
                 title, message = critical.call_args.args[1:3]
                 self.assertEqual(title, "Ошибка запуска: SQLite schema migration")
-                self.assertIn("не может безопасно открыть локальные заказы или системное хранилище секретов", message)
-                self.assertIn("резервную копию", message)
+                self.assertIn("не смог инициализировать этап: SQLite schema migration", message)
+                self.assertIn("Данные автоматически не сбрасывались и не восстанавливались", message)
+                self.assertIn("file is not a database", message)
                 self.assertEqual(window.startup_error_label.text(), message)
                 self.assertIsNone(window.tabs if hasattr(window, "tabs") else None)
                 self.assertEqual(database.read_bytes(), original)
