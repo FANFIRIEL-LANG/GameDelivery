@@ -1748,6 +1748,18 @@ def _apply_quantity_stock_migration(connection: sqlite3.Connection) -> bool:
                 END
             """)
         connection.execute("""
+            CREATE TRIGGER gd_stock_observations_key_insert
+            BEFORE INSERT ON gd_stock_observations
+            WHEN NEW.asset_id_key<>gd_asset_id_key(NEW.asset_id)
+            BEGIN SELECT RAISE(ABORT,'Stock observation Asset ID key mismatch'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_observations_key_update
+            BEFORE UPDATE OF asset_id,asset_id_key ON gd_stock_observations
+            WHEN NEW.asset_id_key<>gd_asset_id_key(NEW.asset_id)
+            BEGIN SELECT RAISE(ABORT,'Stock observation Asset ID key mismatch'); END
+        """)
+        connection.execute("""
             CREATE TRIGGER gd_stock_observations_guard_usable_insert
             BEFORE INSERT ON gd_stock_observations WHEN NEW.availability_state='usable'
             BEGIN
