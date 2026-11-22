@@ -262,6 +262,13 @@ class DeliveryDispatcher:
                         and isinstance(prior_attempt_result, dict)
                         and bool(prior_attempt_result.get("operator_retry_action_id"))
                     )
+                    if approved_operator_retry:
+                        prior_attempt_result["dispatch_authorization"] = authorization
+                        db.execute(
+                            "UPDATE gd_delivery_attempts SET result_json=? WHERE attempt_id=?",
+                            (json.dumps(prior_attempt_result, ensure_ascii=False, sort_keys=True),
+                             attempt["attempt_id"]),
+                        )
                     if not approved_operator_retry:
                         db.execute(
                             "UPDATE gd_delivery_legs SET status='UNKNOWN', "
@@ -392,8 +399,13 @@ class DeliveryDispatcher:
             except (TypeError, ValueError):
                 prior_result = {}
             merged_result = dict(result)
-            if isinstance(prior_result, dict) and "dispatch_authorization" in prior_result:
-                merged_result.setdefault("dispatch_authorization", prior_result["dispatch_authorization"])
+            if isinstance(prior_result, dict):
+                for key in (
+                    "dispatch_authorization", "operator_retry_action_id",
+                    "operator_actor", "operator_reason", "recovery_evidence",
+                ):
+                    if key in prior_result:
+                        merged_result.setdefault(key, prior_result[key])
             encoded = json.dumps(merged_result, ensure_ascii=False, sort_keys=True)
             db.execute(
                 "UPDATE gd_delivery_legs SET status=?, trade_offer_id=COALESCE(?,trade_offer_id), "
