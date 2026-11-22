@@ -479,6 +479,41 @@ class DeliveryDispatchTests(unittest.TestCase):
             }
             self.assertEqual(reservation_states, {"consumed"})
 
+    def test_reconciliation_preserves_privacy_wait_when_another_leg_is_accepted(self):
+        legs = self.create_order(bots=("Bot-A", "Bot-B"))
+        self.asf.send_result["Bot-B"] = {"success": True, "offerIds": ["94002"]}
+        self.assertEqual(self.dispatch("order-1", legs[1])["status"], "SENT_TO_STEAM")
+        self.asf.send_result["Bot-A"] = {
+            "success": False, "resultUnknown": False,
+            "error": "Recipient inventory is private",
+        }
+        self.assertEqual(self.dispatch("order-1", legs[0])["status"], "PRIVACY_WAIT")
+        self.asf.statuses[("Bot-B", "94002")] = {
+            "success": True, "mode": "trade-status", "found": True,
+            "tradeOfferId": "94002", "botName": "Bot-B", "status": "Accepted",
+        }
+
+        result = self.reconciler.reconcile(order_id="order-1")
+
+        self.assertEqual(result[0]["status"], "ACCEPTED")
+        with self.db.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()[0],
+                "PRIVACY_WAIT",
+            )
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_delivery_legs WHERE leg_id=?", (legs[0],)).fetchone()[0],
+                "PRIVACY_WAIT",
+            )
+            self.assertEqual(
+                db.execute("SELECT state FROM gd_resource_reservations WHERE bot_name='Bot-A'").fetchone()[0],
+                "active",
+            )
+            self.assertEqual(
+                db.execute("SELECT state FROM gd_resource_reservations WHERE bot_name='Bot-B'").fetchone()[0],
+                "consumed",
+            )
+
     def test_privacy_error_holds_reservation_and_queues_buyer_instruction(self):
         leg = self.create_order()[0]
         self.asf.send_result["Bot-A"] = {
