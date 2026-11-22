@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from core.database.db import Database
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource, _positive_int
+from core.delivery.stock_identity import StockItemIdentity
+from core.delivery.recipes import RecipeItem, SteamAssetSpec
 from games.asset_ids import asset_id_key
 
 
@@ -79,11 +81,16 @@ class ListingStockService:
                 return rows
 
             config = connection.execute(
-                "SELECT listing_id FROM gd_config_versions WHERE config_version_id=?",
+                "SELECT listing_id,recipe_schema_version FROM gd_config_versions WHERE config_version_id=?",
                 (config_version_id,),
             ).fetchone()
             if config is None or config["listing_id"] != listing_id:
                 raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+            if config["recipe_schema_version"] is not None:
+                raise ValueError(
+                    "Для типизированного Recipe используйте allocate_recipe_items: "
+                    "обычная аллокация не привязывает ресурсы к RecipeItem"
+                )
             if not ordered:
                 raise InsufficientListingStock(units, 0)
 
@@ -127,8 +134,8 @@ class ListingStockService:
                     INSERT INTO gd_stock_allocations
                         (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
                          asset_id,asset_id_key,owner_type,listing_id,config_version_id,
-                         order_line_id,legacy_owner_id,units,state)
-                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active')
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
                     """,
                     (
                         allocation_id, observation_id, resource.game_id, resource.app_id,
@@ -146,6 +153,215 @@ class ListingStockService:
                 ).fetchall()
             ]
 
+    def allocate_recipe_items(
+        self,
+        *,
+        request_id: str,
+        listing_id: str,
+        config_version_id: str,
+        units_by_recipe_item: Mapping[str, int],
+    ) -> list[dict[str, Any]]:
+        """Allocate exact tradable Steam assets to separate pinned RecipeItems."""
+        from core.delivery.ledger import DeliveryLedger
+
+        request_id = str(request_id or "").strip()
+        listing_id = str(listing_id or "").strip()
+        config_version_id = str(config_version_id or "").strip()
+        if not request_id or not listing_id or not config_version_id:
+            raise ValueError("request_id, listing_id и config_version_id обязательны")
+        if not isinstance(units_by_recipe_item, Mapping) or not units_by_recipe_item:
+            raise ValueError("units_by_recipe_item должен содержать хотя бы одну Steam Asset позицию")
+        normalized_units: dict[str, int] = {}
+        for raw_item_id, raw_units in units_by_recipe_item.items():
+            if not isinstance(raw_item_id, str) or not raw_item_id.strip():
+                raise ValueError("recipe_item_id должен быть непустой строкой")
+            item_id = raw_item_id.strip()
+            if item_id in normalized_units:
+                raise ValueError("units_by_recipe_item содержит повторяющийся recipe_item_id")
+            normalized_units[item_id] = _positive_int(raw_units, "units")
+
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            config = connection.execute(
+                "SELECT listing_id,recipe_schema_version FROM gd_config_versions "
+                "WHERE config_version_id=?",
+                (config_version_id,),
+            ).fetchone()
+            if config is None or config["listing_id"] != listing_id:
+                raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+            if config["recipe_schema_version"] != 1:
+                raise ValueError("Требуется ConfigVersion с типизированным Recipe v1")
+            recipe = DeliveryLedger.recipe_for_config_version(
+                connection, config_version_id, allow_legacy=False
+            )
+            item_by_id = {item.item_id: item for item in recipe.items}
+            steam_items = {
+                item_id: item for item_id, item in item_by_id.items()
+                if item.kind == "steam_asset" and isinstance(item.spec, SteamAssetSpec)
+            }
+            if not steam_items:
+                raise ValueError("В Recipe нет Steam Asset позиций для quantity stock allocation")
+            unknown_ids = set(normalized_units) - set(steam_items)
+            if unknown_ids:
+                raise ValueError(
+                    "Аллокация разрешена только для steam_asset RecipeItem; "
+                    f"неподдерживаемые IDs: {', '.join(sorted(unknown_ids))}"
+                )
+            missing_required = {
+                item_id for item_id, item in steam_items.items()
+                if item.required and item_id not in normalized_units
+            }
+            if missing_required:
+                raise ValueError(
+                    "Не заданы units для обязательных Steam Asset RecipeItem: "
+                    + ", ".join(sorted(missing_required))
+                )
+
+            batch_hash = hashlib.sha256(request_id.encode()).hexdigest()
+            allocation_prefix = f"listing-batch:{batch_hash}:"
+            prior = connection.execute(
+                "SELECT * FROM gd_stock_allocation_batches WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    prior["listing_id"] != listing_id
+                    or prior["config_version_id"] != config_version_id
+                    or int(prior["requested_units"]) != sum(normalized_units.values())
+                ):
+                    raise ValueError("request_id уже использован для другого recipe allocation")
+                rows = [
+                    dict(row) for row in connection.execute(
+                        "SELECT * FROM gd_stock_allocations WHERE allocation_id LIKE ? "
+                        "ORDER BY recipe_item_id,bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
+                        (allocation_prefix + "%",),
+                    ).fetchall()
+                ]
+                stored_units: dict[str, int] = {}
+                for row in rows:
+                    item_id = row["recipe_item_id"]
+                    if not item_id:
+                        raise RuntimeError("Recipe allocation содержит строку без recipe_item_id")
+                    stored_units[item_id] = stored_units.get(item_id, 0) + int(row["units"])
+                if stored_units != normalized_units:
+                    raise RuntimeError(
+                        "Сохранённый recipe allocation batch неполон или имеет другой состав; "
+                        "требуется ручная сверка"
+                    )
+                return rows
+
+            other_batch = connection.execute(
+                "SELECT request_id FROM gd_stock_allocation_batches "
+                "WHERE listing_id=? AND config_version_id=?",
+                (listing_id, config_version_id),
+            ).fetchone()
+            if other_batch is not None:
+                raise ValueError(
+                    "Для этой ConfigVersion уже создан allocation batch; "
+                    "изменение требует отдельной listing generation"
+                )
+
+            observations = connection.execute(
+                """
+                SELECT * FROM gd_stock_observations
+                WHERE availability_state='usable'
+                  AND identity_json IS NOT NULL
+                  AND is_tradable=1
+                ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key
+                """
+            ).fetchall()
+            parsed: list[tuple[Any, StockItemIdentity, StockResource]] = []
+            free_by_observation: dict[str, int] = {}
+            for observation in observations:
+                try:
+                    raw_identity = json.loads(observation["identity_json"])
+                    if not isinstance(raw_identity, dict):
+                        continue
+                    identity = StockItemIdentity(**raw_identity).normalized()
+                    resource = StockResource(
+                        observation["game_id"], int(observation["app_id"]),
+                        observation["context_id"], observation["bot_name"],
+                        observation["asset_id"],
+                    ).normalized()
+                    free = max(
+                        0,
+                        int(observation["observed_amount"])
+                        - QuantityStockLedger._blocking_units(
+                            connection, observation["observation_id"],
+                            int(observation["revision"]),
+                        ),
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if free <= 0:
+                    continue
+                parsed.append((observation, identity, resource))
+                free_by_observation[observation["observation_id"]] = free
+
+            plan: list[tuple[str, StockResource, str, int]] = []
+            requested_items = [
+                (key, value) for key, value in steam_items.items()
+                if key in normalized_units
+            ]
+            for item_id, recipe_item in requested_items:
+                spec = recipe_item.spec
+                required_units = normalized_units[item_id]
+                available_total = 0
+                remaining = required_units
+                for observation, identity, resource in parsed:
+                    observation_id = observation["observation_id"]
+                    free = free_by_observation.get(observation_id, 0)
+                    if free <= 0:
+                        continue
+                    if not identity.matches_spec(spec) or not identity.allows_bot(resource.bot_name, spec):
+                        continue
+                    available_total += free
+                    take = min(remaining, free)
+                    if take:
+                        plan.append((item_id, resource, observation_id, take))
+                        free_by_observation[observation_id] -= take
+                        remaining -= take
+                    if remaining == 0:
+                        break
+                if remaining:
+                    raise InsufficientListingStock(required_units, available_total)
+
+            connection.execute(
+                """
+                INSERT INTO gd_stock_allocation_batches
+                    (request_id,listing_id,config_version_id,requested_units)
+                VALUES(?,?,?,?)
+                """,
+                (request_id, listing_id, config_version_id, sum(normalized_units.values())),
+            )
+            allocation_ids = []
+            for index, (item_id, resource, observation_id, take) in enumerate(plan):
+                allocation_id = f"{allocation_prefix}{index}"
+                connection.execute(
+                    """
+                    INSERT INTO gd_stock_allocations
+                        (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                         asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
+                    """,
+                    (
+                        allocation_id, observation_id, resource.game_id, resource.app_id,
+                        resource.context_id, resource.bot_name, resource.asset_id,
+                        asset_id_key(resource.asset_id), listing_id, config_version_id,
+                        take, item_id,
+                    ),
+                )
+                allocation_ids.append(allocation_id)
+            placeholders = ",".join("?" for _ in allocation_ids)
+            return [
+                dict(row) for row in connection.execute(
+                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({placeholders}) "
+                    "ORDER BY recipe_item_id,bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
+                    allocation_ids,
+                ).fetchall()
+            ]
+
     def transfer_to_order(
         self,
         *,
@@ -154,6 +370,7 @@ class ListingStockService:
         config_version_id: str,
         order_line_id: str,
         units: int,
+        recipe_item_id: str | None = None,
         connection=None,
     ) -> list[dict[str, Any]]:
         transfer_event_id = str(transfer_event_id or "").strip()
@@ -168,6 +385,7 @@ class ListingStockService:
                 config_version_id=config_version_id,
                 order_line_id=order_line_id,
                 units=units,
+                recipe_item_id=recipe_item_id,
             )
         with self.database.connect() as owned_connection:
             owned_connection.execute("BEGIN IMMEDIATE")
@@ -178,6 +396,7 @@ class ListingStockService:
                 config_version_id=config_version_id,
                 order_line_id=order_line_id,
                 units=units,
+                recipe_item_id=recipe_item_id,
             )
 
     def _transfer_to_order_in_transaction(
@@ -189,7 +408,9 @@ class ListingStockService:
         config_version_id: str,
         order_line_id: str,
         units: int,
+        recipe_item_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        recipe_item_id = str(recipe_item_id).strip() if recipe_item_id is not None else None
         prior = connection.execute(
             "SELECT * FROM gd_stock_transfers WHERE transfer_event_id=?",
             (transfer_event_id,),
@@ -199,6 +420,7 @@ class ListingStockService:
                 prior["listing_id"] != listing_id
                 or prior["config_version_id"] != config_version_id
                 or prior["order_line_id"] != order_line_id
+                or prior["recipe_item_id"] != recipe_item_id
                 or int(prior["units"]) != units
             ):
                 raise ValueError("transfer_event_id уже использован с другими параметрами")
@@ -214,11 +436,47 @@ class ListingStockService:
             ]
 
         line = connection.execute(
-            "SELECT quantity,config_version_id FROM gd_order_lines WHERE order_line_id=?",
+            "SELECT quantity,config_version_id,item_type,item_selector_json "
+            "FROM gd_order_lines WHERE order_line_id=?",
             (order_line_id,),
         ).fetchone()
         if line is None or line["config_version_id"] != config_version_id:
             raise ValueError("OrderLine отсутствует или относится к другой ConfigVersion")
+
+        from core.delivery.ledger import DeliveryLedger
+        config = connection.execute(
+            "SELECT recipe_schema_version FROM gd_config_versions WHERE config_version_id=?",
+            (config_version_id,),
+        ).fetchone()
+        if config is None:
+            raise ValueError("ConfigVersion не найдена")
+        typed_recipe = config["recipe_schema_version"] is not None
+        selected_recipe_item = None
+        if typed_recipe:
+            if not recipe_item_id:
+                raise ValueError("Для typed Recipe transfer обязателен recipe_item_id")
+            recipe = DeliveryLedger.recipe_for_config_version(
+                connection, config_version_id, allow_legacy=False
+            )
+            selected_recipe_item = next(
+                (item for item in recipe.items if item.item_id == recipe_item_id), None
+            )
+            if selected_recipe_item is None or not isinstance(selected_recipe_item.spec, SteamAssetSpec):
+                raise ValueError("recipe_item_id не указывает на Steam Asset позицию этой ConfigVersion")
+            try:
+                line_snapshot = json.loads(line["item_selector_json"])
+                pinned_item = RecipeItem.from_dict(line_snapshot["recipe_item"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("OrderLine не содержит корректный pinned RecipeItem") from exc
+            if (
+                line_snapshot.get("config_version_id") != config_version_id
+                or line_snapshot.get("recipe_item_id") != recipe_item_id
+                or line["item_type"] != selected_recipe_item.kind
+                or pinned_item.to_dict() != selected_recipe_item.to_dict()
+            ):
+                raise ValueError("OrderLine не закреплена за указанным Steam Asset RecipeItem")
+        elif recipe_item_id is not None:
+            raise ValueError("Legacy ConfigVersion не поддерживает recipe_item_id")
         already_transferred = int(connection.execute(
             "SELECT COALESCE(SUM(units),0) FROM gd_stock_transfers WHERE order_line_id=?",
             (order_line_id,),
@@ -226,15 +484,38 @@ class ListingStockService:
         if already_transferred + units > int(line["quantity"]):
             raise ValueError("Перенос превышает количество OrderLine")
 
+        source_filter = (
+            "AND a.recipe_item_id=?" if typed_recipe else "AND a.recipe_item_id IS NULL"
+        )
+        source_params = (
+            (listing_id, config_version_id, recipe_item_id)
+            if typed_recipe else (listing_id, config_version_id)
+        )
         sources = connection.execute(
-            """
-            SELECT * FROM gd_stock_allocations
-            WHERE owner_type='listing' AND listing_id=? AND config_version_id=?
-              AND state='active'
-            ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key,allocation_id
+            f"""
+            SELECT a.*,o.identity_json,o.is_tradable,o.availability_state AS observation_state
+            FROM gd_stock_allocations a
+            JOIN gd_stock_observations o ON o.observation_id=a.observation_id
+            WHERE a.owner_type='listing' AND a.listing_id=? AND a.config_version_id=?
+              AND a.state='active' {source_filter}
+            ORDER BY a.bot_name COLLATE NOCASE,a.game_id,a.app_id,a.context_id,
+                     a.asset_id_key,a.allocation_id
             """,
-            (listing_id, config_version_id),
+            source_params,
         ).fetchall()
+        if typed_recipe:
+            for source in sources:
+                try:
+                    current_identity = StockItemIdentity(**json.loads(source["identity_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    raise ValueError("Текущая identity ресурса не подтверждена; transfer заблокирован") from None
+                if (
+                    source["observation_state"] != "usable"
+                    or source["is_tradable"] != 1
+                    or not current_identity.matches_spec(selected_recipe_item.spec)
+                    or not current_identity.allows_bot(source["bot_name"], selected_recipe_item.spec)
+                ):
+                    raise ValueError("Ресурс больше не соответствует SteamAsset RecipeItem; transfer заблокирован")
         if sum(int(row["units"]) for row in sources) < units:
             raise InsufficientListingStock(
                 units, sum(int(row["units"]) for row in sources)
@@ -267,7 +548,7 @@ class ListingStockService:
                         remainder_id, source["observation_id"], source["game_id"],
                         source["app_id"], source["context_id"], source["bot_name"],
                         source["asset_id"], source["asset_id_key"], listing_id,
-                        config_version_id, source_units - take,
+                        config_version_id, source_units - take, source["recipe_item_id"],
                     ),
                 )
             order_id = f"order-transfer:{event_hash}:{index}"
@@ -276,13 +557,14 @@ class ListingStockService:
                 INSERT INTO gd_stock_allocations
                     (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
                      asset_id,asset_id_key,owner_type,listing_id,config_version_id,
-                     order_line_id,legacy_owner_id,units,state)
-                VALUES(?,?,?,?,?,?,?,?, 'order',NULL,NULL,?,NULL,?,'active')
+                     order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                VALUES(?,?,?,?,?,?,?,?, 'order',NULL,NULL,?,NULL,?,'active',?)
                 """,
                 (
                     order_id, source["observation_id"], source["game_id"],
                     source["app_id"], source["context_id"], source["bot_name"],
                     source["asset_id"], source["asset_id_key"], order_line_id, take,
+                    recipe_item_id,
                 ),
             )
             transfer_ids.append(order_id)
@@ -292,12 +574,12 @@ class ListingStockService:
         connection.execute(
             """
             INSERT INTO gd_stock_transfers
-                (transfer_event_id,listing_id,config_version_id,order_line_id,units,allocation_ids_json)
-            VALUES(?,?,?,?,?,?)
+                (transfer_event_id,listing_id,config_version_id,order_line_id,units,allocation_ids_json,recipe_item_id)
+            VALUES(?,?,?,?,?,?,?)
             """,
             (
                 transfer_event_id, listing_id, config_version_id, order_line_id,
-                units, json.dumps(transfer_ids, separators=(",", ":")),
+                units, json.dumps(transfer_ids, separators=(",", ":")), recipe_item_id,
             ),
         )
         marks = ",".join("?" for _ in transfer_ids)

@@ -7,6 +7,11 @@ from pathlib import Path
 from core.database.db import Database
 from core.delivery.listing_stock import InsufficientListingStock, ListingStockService
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.ledger import DeliveryLedger
+from core.delivery.recipes import (
+    DigitalTextUnitSpec, RecipeItem, SteamAssetSpec,
+)
+from games.inventory import InventoryItem
 
 
 class ListingStockServiceTests(unittest.TestCase):
@@ -58,6 +63,210 @@ class ListingStockServiceTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def create_typed_recipe_order(self):
+        delivery = DeliveryLedger(self.database)
+        first = RecipeItem(
+            "redline", 1, "steam_asset", 1, 4, True, None,
+            "steam_trade_offer",
+            SteamAssetSpec(
+                "cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                ("Bot-A",),
+            ),
+        )
+        second = RecipeItem(
+            "dragon", 2, "steam_asset", 1, 2, True, None,
+            "steam_trade_offer",
+            SteamAssetSpec(
+                "cs2", 730, "2", {"market_hash_name": "AWP | Dragon Lore"},
+                ("Bot-B",),
+            ),
+        )
+        text_item = RecipeItem(
+            "text", 3, "digital_text_unit", 1, 1, True,
+            "text-stock", "text_delivery", DigitalTextUnitSpec(),
+        )
+        config = delivery.create_recipe_config_version(
+            listing_id="typed-listing", source_platform="manual",
+            external_listing_id="typed-external",
+            recipe_items=(first, second, text_item),
+        )
+        delivery.create_deal(
+            deal_id="typed-deal", source_platform="manual",
+            external_deal_id="typed-external", chat_id=None,
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            platform_status="manual",
+        )
+        delivery.create_order(order_id="typed-order", deal_id="typed-deal", total_quantity=7)
+        lines = delivery.materialize_recipe_order_lines("typed-order")
+        line_by_item = {
+            __import__("json").loads(line["item_selector_json"])["recipe_item_id"]: line
+            for line in lines
+        }
+        recipe_items = config["recipe_items"]
+        self.assertEqual([row["kind"] for row in recipe_items],
+                         ["steam_asset", "steam_asset", "digital_text_unit"])
+        return config, recipe_items, line_by_item
+
+    def observe_typed_inventory(self, *, include_dragon=True):
+        items = [
+            InventoryItem(
+                "cs2", "Bot-A", "1001", "class-redline", "0", "AK-47 | Redline",
+                item_type="Rifle", market_hash_name="AK-47 | Redline",
+                is_tradable=True, amount=5,
+            ),
+            # Matching name on a disallowed bot must never enter the first RecipeItem.
+            InventoryItem(
+                "cs2", "Bot-B", "1002", "class-redline-2", "0", "AK-47 | Redline",
+                item_type="Rifle", market_hash_name="AK-47 | Redline",
+                is_tradable=True, amount=9,
+            ),
+        ]
+        if include_dragon:
+            items.append(InventoryItem(
+                "cs2", "Bot-B", "2001", "class-dragon", "0", "AWP | Dragon Lore",
+                item_type="Sniper Rifle", market_hash_name="AWP | Dragon Lore",
+                is_tradable=True, amount=3,
+            ))
+        return self.ledger.observe_snapshot("cs2", "Bot-A", items[:1]) if False else [
+            self.ledger.observe(
+                StockResource("cs2", 730, "2", item.bot_name, item.asset_id),
+                item.amount,
+                identity=__import__(
+                    "core.delivery.stock_identity", fromlist=["StockItemIdentity"]
+                ).StockItemIdentity(
+                    "cs2", 730, "2", market_hash_name=item.market_hash_name,
+                    name=item.name, item_type=item.item_type, class_id=item.class_id,
+                    quality=item.quality, exterior=item.exterior, rarity=item.rarity,
+                ),
+                is_tradable=item.is_tradable,
+            )
+            for item in items
+        ]
+
+    def test_typed_recipe_allocation_and_transfer_are_pinned_to_exact_recipe_item(self):
+        config, recipe_items, lines = self.create_typed_recipe_order()
+        self.observe_typed_inventory()
+        first_id, second_id, text_id = [item["item_id"] for item in recipe_items]
+        rows = self.service.allocate_recipe_items(
+            request_id="typed-allocation-1",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={first_id: 4, second_id: 2},
+        )
+        self.assertEqual({row["recipe_item_id"] for row in rows}, {first_id, second_id})
+        self.assertEqual(
+            {row["recipe_item_id"]: sum(r["units"] for r in rows if r["recipe_item_id"] == row["recipe_item_id"])
+             for row in rows},
+            {first_id: 4, second_id: 2},
+        )
+        repeated = self.service.allocate_recipe_items(
+            request_id="typed-allocation-1",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={first_id: 4, second_id: 2},
+        )
+        self.assertEqual(
+            {row["allocation_id"] for row in repeated},
+            {row["allocation_id"] for row in rows},
+        )
+        with self.assertRaisesRegex(ValueError, "recipe_item_id"):
+            self.service.transfer_to_order(
+                transfer_event_id="typed-paid-missing-id",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                order_line_id=lines[first_id]["order_line_id"], units=4,
+            )
+        with self.assertRaisesRegex(ValueError, "OrderLine не закреплена"):
+            self.service.transfer_to_order(
+                transfer_event_id="typed-paid-cross-line",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                order_line_id=lines[first_id]["order_line_id"],
+                recipe_item_id=second_id, units=2,
+            )
+        first_transfer = self.service.transfer_to_order(
+            transfer_event_id="typed-paid-redline",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            order_line_id=lines[first_id]["order_line_id"],
+            recipe_item_id=first_id, units=4,
+        )
+        repeated_transfer = self.service.transfer_to_order(
+            transfer_event_id="typed-paid-redline",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            order_line_id=lines[first_id]["order_line_id"],
+            recipe_item_id=first_id, units=4,
+        )
+        self.assertEqual(
+            {row["allocation_id"] for row in first_transfer},
+            {row["allocation_id"] for row in repeated_transfer},
+        )
+        self.assertEqual({row["recipe_item_id"] for row in first_transfer}, {first_id})
+        second_transfer = self.service.transfer_to_order(
+            transfer_event_id="typed-paid-dragon",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            order_line_id=lines[second_id]["order_line_id"],
+            recipe_item_id=second_id, units=1,
+        )
+        self.assertEqual({row["recipe_item_id"] for row in second_transfer}, {second_id})
+        with self.database.connect() as db:
+            remaining = {
+                row["recipe_item_id"]: int(row["units"])
+                for row in db.execute(
+                    "SELECT recipe_item_id,SUM(units) AS units FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND state='active' AND config_version_id=? "
+                    "GROUP BY recipe_item_id",
+                    (config["config_version_id"],),
+                ).fetchall()
+            }
+            text_transfer_count = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_transfers WHERE order_line_id=?",
+                (lines[text_id]["order_line_id"],),
+            ).fetchone()[0]
+            first_order_ids = db.execute(
+                "SELECT DISTINCT recipe_item_id FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id=? AND state='active'",
+                (lines[first_id]["order_line_id"],),
+            ).fetchall()
+        self.assertEqual(remaining, {first_id: 1, second_id: 1})
+        self.assertEqual(text_transfer_count, 0)
+        self.assertEqual({row[0] for row in first_order_ids}, {first_id})
+
+    def test_typed_recipe_allocation_is_all_or_nothing_across_positions(self):
+        config, recipe_items, _ = self.create_typed_recipe_order()
+        self.observe_typed_inventory(include_dragon=False)
+        first_id, second_id = [item["item_id"] for item in recipe_items[:2]]
+        with self.assertRaises(InsufficientListingStock):
+            self.service.allocate_recipe_items(
+                request_id="typed-shortage",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                units_by_recipe_item={first_id: 4, second_id: 2},
+            )
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_stock_allocation_batches WHERE request_id='typed-shortage'"
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_stock_allocations WHERE config_version_id=?",
+                (config["config_version_id"],),
+            ).fetchone()[0], 0)
+
+    def test_generic_listing_allocator_rejects_typed_recipe_without_item_binding(self):
+        config, recipe_items, _ = self.create_typed_recipe_order()
+        self.observe_typed_inventory()
+        with self.assertRaisesRegex(ValueError, "allocate_recipe_items"):
+            self.service.allocate_listing(
+                request_id="typed-generic-forbidden",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                units=1,
+                resources=[self.a],
+            )
 
     def test_listing_allocation_is_exact_deterministic_and_transfer_is_idempotent(self):
         self.ledger.observe(self.a, 5)
