@@ -145,6 +145,133 @@ class ListingStockServiceTests(unittest.TestCase):
             for item in items
         ]
 
+    def test_release_listing_units_splits_only_listing_claim_and_is_idempotent(self):
+        self.ledger.observe(self.a, 10)
+        self.service.allocate_listing(
+            request_id="release-base", listing_id="listing-1",
+            config_version_id="config-1", units=8, resources=[self.a],
+        )
+        self.service.transfer_to_order(
+            transfer_event_id="release-order-transfer", listing_id="listing-1",
+            config_version_id="config-1", order_line_id="line-1", units=3,
+        )
+
+        first = self.service.release_listing_units(
+            adjustment_id="release-two", listing_id="listing-1",
+            config_version_id="config-1", units=2,
+        )
+        repeated = self.service.release_listing_units(
+            adjustment_id="release-two", listing_id="listing-1",
+            config_version_id="config-1", units=2,
+        )
+        self.assertEqual(
+            {row["allocation_id"] for row in first},
+            {row["allocation_id"] for row in repeated},
+        )
+        with self.database.connect() as db:
+            listing_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1' AND state='active'"
+            ).fetchone()[0]
+            order_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id='line-1' AND state='active'"
+            ).fetchone()[0]
+            adjustment_count = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_listing_adjustments WHERE adjustment_id='release-two'"
+            ).fetchone()[0]
+        self.assertEqual(listing_units, 3)
+        self.assertEqual(order_units, 3)
+        self.assertEqual(adjustment_count, 1)
+        self.assertEqual(self.ledger.free_units(self.a), 4)
+
+    def test_disable_listing_releases_only_listing_owned_units_and_marks_status(self):
+        self.ledger.observe(self.a, 10)
+        self.service.allocate_listing(
+            request_id="disable-base", listing_id="listing-1",
+            config_version_id="config-1", units=8, resources=[self.a],
+        )
+        self.service.transfer_to_order(
+            transfer_event_id="disable-order-transfer", listing_id="listing-1",
+            config_version_id="config-1", order_line_id="line-1", units=3,
+        )
+
+        released = self.service.disable_listing_stock(
+            adjustment_id="disable-generation", listing_id="listing-1",
+            config_version_id="config-1",
+        )
+        self.assertTrue(released)
+        with self.database.connect() as db:
+            status = db.execute(
+                "SELECT status FROM gd_listings WHERE listing_id='listing-1'"
+            ).fetchone()[0]
+            listing_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1' AND state='active'"
+            ).fetchone()[0]
+            order_row = db.execute(
+                "SELECT units,state FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id='line-1' AND state='active'"
+            ).fetchone()
+        self.assertEqual(status, "disabled")
+        self.assertEqual(listing_units, 0)
+        self.assertEqual((order_row["units"], order_row["state"]), (3, "active"))
+        self.assertEqual(self.ledger.free_units(self.a), 7)
+
+    def test_disable_listing_fails_closed_when_listing_has_unknown_allocations(self):
+        self.ledger.observe(self.a, 10)
+        self.service.allocate_listing(
+            request_id="disable-unknown-base", listing_id="listing-1",
+            config_version_id="config-1", units=5, resources=[self.a],
+        )
+        self.ledger.allocate(
+            allocation_id="listing-unknown", resource=self.b, units=2,
+            owner_type="listing", listing_id="listing-1", config_version_id="config-1",
+            state="unknown",
+        )
+        with self.assertRaisesRegex(ValueError, "pending/UNKNOWN/conflict"):
+            self.service.disable_listing_stock(
+                adjustment_id="disable-unknown", listing_id="listing-1",
+                config_version_id="config-1",
+            )
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_listings WHERE listing_id='listing-1'"
+            ).fetchone()[0], "active")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_stock_listing_adjustments WHERE adjustment_id='disable-unknown'"
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT state FROM gd_stock_allocations WHERE allocation_id='listing-unknown'"
+            ).fetchone()[0], "unknown")
+
+    def test_typed_release_is_scoped_to_one_steam_asset_recipe_item(self):
+        config, recipe_items, _ = self.create_typed_recipe_order()
+        self.observe_typed_inventory()
+        first_id, second_id = [item["item_id"] for item in recipe_items[:2]]
+        self.service.allocate_recipe_items(
+            request_id="typed-release-base", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={first_id: 4, second_id: 2},
+        )
+        self.service.release_listing_units(
+            adjustment_id="typed-release-redline", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"], recipe_item_id=first_id, units=2,
+        )
+        with self.database.connect() as db:
+            allocations = {
+                row["recipe_item_id"]: int(row["units"])
+                for row in db.execute(
+                    "SELECT recipe_item_id,SUM(units) AS units FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND listing_id=? AND config_version_id=? "
+                    "AND state='active' GROUP BY recipe_item_id",
+                    (config["listing_id"], config["config_version_id"]),
+                ).fetchall()
+            }
+        self.assertEqual(allocations, {first_id: 2, second_id: 2})
+
     def test_typed_recipe_allocation_and_transfer_are_pinned_to_exact_recipe_item(self):
         config, recipe_items, lines = self.create_typed_recipe_order()
         self.observe_typed_inventory()

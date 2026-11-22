@@ -31,6 +31,235 @@ class ListingStockService:
     def __init__(self, database: Database):
         self.database = database
 
+    def release_listing_units(
+        self,
+        *,
+        adjustment_id: str,
+        listing_id: str,
+        config_version_id: str,
+        units: int,
+        recipe_item_id: str | None = None,
+        connection=None,
+    ) -> list[dict[str, Any]]:
+        """Release only listing-owned units; order-owned and uncertain stock stays blocked."""
+        adjustment_id = str(adjustment_id or "").strip()
+        listing_id = str(listing_id or "").strip()
+        config_version_id = str(config_version_id or "").strip()
+        recipe_item_id = str(recipe_item_id).strip() if recipe_item_id is not None else None
+        if not adjustment_id or not listing_id or not config_version_id:
+            raise ValueError("adjustment_id, listing_id и config_version_id обязательны")
+        units = _positive_int(units, "units")
+        if connection is not None:
+            return self._release_listing_units_in_transaction(
+                connection, adjustment_id=adjustment_id, listing_id=listing_id,
+                config_version_id=config_version_id, units=units,
+                recipe_item_id=recipe_item_id, operation="release_units",
+            )
+        with self.database.connect() as owned:
+            owned.execute("BEGIN IMMEDIATE")
+            return self._release_listing_units_in_transaction(
+                owned, adjustment_id=adjustment_id, listing_id=listing_id,
+                config_version_id=config_version_id, units=units,
+                recipe_item_id=recipe_item_id, operation="release_units",
+            )
+
+    def disable_listing_stock(
+        self,
+        *,
+        adjustment_id: str,
+        listing_id: str,
+        config_version_id: str,
+        connection=None,
+    ) -> list[dict[str, Any]]:
+        """Disable one listing generation and release its remaining listing-owned stock.
+
+        Active order allocations are deliberately not selected. Pending, UNKNOWN,
+        and legacy-conflict listing allocations block the operation until reconciled.
+        """
+        adjustment_id = str(adjustment_id or "").strip()
+        listing_id = str(listing_id or "").strip()
+        config_version_id = str(config_version_id or "").strip()
+        if not adjustment_id or not listing_id or not config_version_id:
+            raise ValueError("adjustment_id, listing_id и config_version_id обязательны")
+        if connection is not None:
+            return self._release_listing_units_in_transaction(
+                connection, adjustment_id=adjustment_id, listing_id=listing_id,
+                config_version_id=config_version_id, units=None,
+                recipe_item_id=None, operation="disable",
+            )
+        with self.database.connect() as owned:
+            owned.execute("BEGIN IMMEDIATE")
+            return self._release_listing_units_in_transaction(
+                owned, adjustment_id=adjustment_id, listing_id=listing_id,
+                config_version_id=config_version_id, units=None,
+                recipe_item_id=None, operation="disable",
+            )
+
+    def _release_listing_units_in_transaction(
+        self,
+        connection,
+        *,
+        adjustment_id: str,
+        listing_id: str,
+        config_version_id: str,
+        units: int | None,
+        recipe_item_id: str | None,
+        operation: str,
+    ) -> list[dict[str, Any]]:
+        if not connection.in_transaction:
+            raise RuntimeError("Listing stock adjustment requires an active transaction")
+
+        prior = connection.execute(
+            "SELECT * FROM gd_stock_listing_adjustments WHERE adjustment_id=?",
+            (adjustment_id,),
+        ).fetchone()
+        if prior is not None:
+            if (
+                prior["listing_id"] != listing_id
+                or prior["config_version_id"] != config_version_id
+                or prior["operation"] != operation
+                or prior["recipe_item_id"] != recipe_item_id
+                or (units is not None and int(prior["units"]) != units)
+            ):
+                raise ValueError("adjustment_id уже использован для другой listing operation")
+            ids = json.loads(prior["allocation_ids_json"])
+            if not ids:
+                return []
+            marks = ",".join("?" for _ in ids)
+            return [
+                dict(row) for row in connection.execute(
+                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) "
+                    "ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key,allocation_id",
+                    ids,
+                ).fetchall()
+            ]
+
+        config = connection.execute(
+            "SELECT listing_id,recipe_schema_version FROM gd_config_versions WHERE config_version_id=?",
+            (config_version_id,),
+        ).fetchone()
+        if config is None or config["listing_id"] != listing_id:
+            raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+        typed_recipe = config["recipe_schema_version"] is not None
+        if typed_recipe:
+            if operation == "release_units":
+                from core.delivery.ledger import DeliveryLedger
+                recipe = DeliveryLedger.recipe_for_config_version(
+                    connection, config_version_id, allow_legacy=False
+                )
+                item = next((value for value in recipe.items if value.item_id == recipe_item_id), None)
+                if item is None or not isinstance(item.spec, SteamAssetSpec):
+                    raise ValueError("Для typed Recipe требуется точный Steam Asset recipe_item_id")
+        elif recipe_item_id is not None:
+            raise ValueError("Legacy ConfigVersion не поддерживает recipe_item_id")
+
+        unresolved = connection.execute(
+            """
+            SELECT COUNT(*) FROM gd_stock_allocations
+            WHERE owner_type='listing' AND listing_id=? AND config_version_id=?
+              AND state IN ('pending','unknown','legacy_conflict')
+            """,
+            (listing_id, config_version_id),
+        ).fetchone()[0]
+        if int(unresolved):
+            raise ValueError(
+                "У listing generation есть pending/UNKNOWN/conflict allocations; "
+                "сначала требуется reconciliation"
+            )
+
+        where_recipe = ""
+        params: tuple[Any, ...]
+        if typed_recipe and operation == "release_units":
+            where_recipe = " AND recipe_item_id=?"
+            params = (listing_id, config_version_id, recipe_item_id)
+        else:
+            params = (listing_id, config_version_id)
+        sources = connection.execute(
+            """
+            SELECT * FROM gd_stock_allocations
+            WHERE owner_type='listing' AND listing_id=? AND config_version_id=?
+              AND state='active'
+            """ + where_recipe + """
+            ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key,allocation_id
+            """,
+            params,
+        ).fetchall()
+        available = sum(int(row["units"]) for row in sources)
+        release_units = available if operation == "disable" else int(units or 0)
+        if release_units <= 0:
+            raise ValueError("Для listing operation нет активных listing-owned units")
+        if release_units > available:
+            raise InsufficientListingStock(release_units, available)
+
+        remaining = release_units
+        changed_ids: list[str] = []
+        for index, source in enumerate(sources):
+            if remaining <= 0:
+                break
+            source_units = int(source["units"])
+            take = min(source_units, remaining)
+            connection.execute(
+                "UPDATE gd_stock_allocations SET state='released',"
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE allocation_id=? AND state='active'",
+                (source["allocation_id"],),
+            )
+            changed_ids.append(source["allocation_id"])
+            keep = source_units - take
+            if keep:
+                remainder_id = _stable_id(
+                    "listing-adjustment-remainder", adjustment_id, source["allocation_id"]
+                )
+                connection.execute(
+                    """
+                    INSERT INTO gd_stock_allocations
+                        (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                         asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
+                    """,
+                    (
+                        remainder_id, source["observation_id"], source["game_id"],
+                        source["app_id"], source["context_id"], source["bot_name"],
+                        source["asset_id"], source["asset_id_key"], listing_id,
+                        config_version_id, keep, source["recipe_item_id"],
+                    ),
+                )
+                changed_ids.append(remainder_id)
+            remaining -= take
+
+        if remaining:
+            raise InsufficientListingStock(release_units, release_units - remaining)
+        connection.execute(
+            """
+            INSERT INTO gd_stock_listing_adjustments
+                (adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                 units,allocation_ids_json)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                adjustment_id, listing_id, config_version_id, operation,
+                recipe_item_id, release_units,
+                json.dumps(changed_ids, separators=(",", ":")),
+            ),
+        )
+        if operation == "disable":
+            connection.execute(
+                "UPDATE gd_listings SET status='disabled',"
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE listing_id=?",
+                (listing_id,),
+            )
+        if not changed_ids:
+            return []
+        marks = ",".join("?" for _ in changed_ids)
+        return [
+            dict(row) for row in connection.execute(
+                f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) "
+                "ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key,allocation_id",
+                changed_ids,
+            ).fetchall()
+        ]
+
     def allocate_listing(
         self,
         *,

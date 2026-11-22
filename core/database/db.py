@@ -29,6 +29,8 @@ from core.database.ledger_migrations import (
     QUANTITY_STOCK_IDENTITY_MIGRATION_ID,
     QUANTITY_STOCK_RECIPE_ITEM_BACKUP_SUFFIX,
     QUANTITY_STOCK_RECIPE_ITEM_MIGRATION_ID,
+    QUANTITY_STOCK_LISTING_ADJUSTMENT_BACKUP_SUFFIX,
+    QUANTITY_STOCK_LISTING_ADJUSTMENT_MIGRATION_ID,
     RECIPE_BACKUP_SUFFIX,
     RECIPE_MIGRATION_ID,
     apply_delivery_ledger_migrations,
@@ -134,6 +136,11 @@ class Database:
             self.path,
             migration_id=QUANTITY_STOCK_RECIPE_ITEM_MIGRATION_ID,
             backup_suffix=QUANTITY_STOCK_RECIPE_ITEM_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=QUANTITY_STOCK_LISTING_ADJUSTMENT_MIGRATION_ID,
+            backup_suffix=QUANTITY_STOCK_LISTING_ADJUSTMENT_BACKUP_SUFFIX,
         )
         with self.connect() as connection:
             connection.executescript(SCHEMA)
