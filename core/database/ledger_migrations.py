@@ -36,6 +36,8 @@ QUANTITY_STOCK_AUDIT_MIGRATION_ID = "2026-11-quantity-stock-audit-v1"
 QUANTITY_STOCK_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-audit-v1.bak"
 QUANTITY_STOCK_TRANSFER_MIGRATION_ID = "2026-11-quantity-stock-transfers-v1"
 QUANTITY_STOCK_TRANSFER_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-transfers-v1.bak"
+QUANTITY_STOCK_BATCH_MIGRATION_ID = "2026-11-quantity-stock-batches-v1"
+QUANTITY_STOCK_BATCH_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-batches-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -900,7 +902,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_operator_recovery_audit_migration(connection) or changed
     changed = _apply_quantity_stock_migration(connection) or changed
     changed = _apply_quantity_stock_audit_migration(connection) or changed
-    return _apply_quantity_stock_transfer_migration(connection) or changed
+    changed = _apply_quantity_stock_transfer_migration(connection) or changed
+    return _apply_quantity_stock_batch_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
@@ -1855,9 +1858,9 @@ def _apply_quantity_stock_migration(connection: sqlite3.Connection) -> bool:
     return True
 
 
-def _apply_quantity_stock_transfer_migration(connection: sqlite3.Connection) -> bool:
-    """Persist idempotent listing-to-order stock transfer events."""
-    if _migration_applied(connection, QUANTITY_STOCK_TRANSFER_MIGRATION_ID):
+def _apply_quantity_stock_batch_migration(connection: sqlite3.Connection) -> bool:
+    """Record one immutable exact-quantity allocation request per listing generation."""
+    if _migration_applied(connection, QUANTITY_STOCK_BATCH_MIGRATION_ID):
         return False
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -1881,6 +1884,25 @@ def _apply_quantity_stock_transfer_migration(connection: sqlite3.Connection) -> 
             BEFORE DELETE ON gd_stock_allocation_batches
             BEGIN SELECT RAISE(ABORT,'Stock allocation batches are append-only'); END
         """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (QUANTITY_STOCK_BATCH_MIGRATION_ID,),
+        )
+        if connection.execute("PRAGMA foreign_key_check(gd_stock_allocation_batches)").fetchall():
+            raise sqlite3.IntegrityError("Stock allocation batch migration produced foreign-key violations")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+def _apply_quantity_stock_transfer_migration(connection: sqlite3.Connection) -> bool:
+    """Persist idempotent listing-to-order stock transfer events."""
+    if _migration_applied(connection, QUANTITY_STOCK_TRANSFER_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
         connection.execute("""
             CREATE TABLE gd_stock_transfers (
                 transfer_event_id TEXT PRIMARY KEY,
