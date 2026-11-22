@@ -6257,3 +6257,17 @@ Task50 подтвердил, что доступный `createdAt` обозна�
 - Workflow **Tests** завершился failure на шаге `Test complete Steam trade UI flow`, который выполнялся ровно 120 секунд; последующий полный unit suite был skipped. Шаги compile Python files и Steam trade credential storage/migration прошли.
 - Это тот же известный timeout в `tests.test_trade_delivery_ui.py::test_reimported_paid_status_cannot_unblock_historical_baseline_order`, который уже воспроизводился на родительском checkpoint до recipient changes; не считать его новым регрессом. Три локальных целевых модуля на текущей локальной копии при этом прошли: 43/43.
 - На момент проверки workflow для документационного коммита `8732e4d` ещё выполнялись; результаты не подтверждены.
+
+
+---
+
+## 2026-11-22 — recipient snapshot: targeted tests 43/43 и CI status
+
+- Пользователь выполнил на локальной копии после fast-forward до `987b7af`: `python -m unittest tests.test_delivery_dispatcher tests.test_delivery_ledger tests.test_main_delivery_send -v`.
+- Результат: **43 tests OK**, 0 failures, 0 errors, 5.515 seconds (dispatcher 15, ledger 6, main delivery send 22).
+- Подтверждены regression cases для recipient snapshot: отказ при отсутствующем snapshot, блокировка изменённого Steam recipient/Trade URL до создания attempt, единый получатель всех legs; также UNKNOWN/reconciliation без повторной отправки.
+- GitHub branch `work/local-sync` сейчас на `f8d4e7785835d2b4ec3e88911ac125d7f455e668`; compare показывает, что относительно `987b7af` добавлены только два документационных коммита (24 строки в `PROJECT_MASTER_LOG.md`), runtime/test code не изменялся.
+- GitHub Actions для HEAD `f8d4e778`: Windows executable workflow `44951894816` — success; Tests workflow `44951894864` — failure на шаге `Test complete Steam trade UI flow`; compile и trade credential/migration tests прошли, полный unit suite skipped. Timeout в этом UI-тесте уже отмечен выше как воспроизводившийся на родительском checkpoint до recipient changes; не считать его доказанным регрессом recipient snapshot, но полный CI остаётся красным. Отдельного ASF Plugin workflow на этом HEAD в Actions list не найдено.
+- Live ASF/Steam/Playerok end-to-end не выполнялся; реальные trade offers не создавались. 43/43 — только локальная проверка трёх указанных модулей.
+
+**Следующий шаг внутри C.2:** продолжить read-only аудит согласованных доменных DTO и фактической SQLite-схемы (Deal, ConfigVersion, OrderLine, ResourceReservation), затем отдельно разобрать quantity semantics и независимые state machines. Не менять schema/dataclasses, не запускать миграции и не менять UI, пока аудит не завершён и контракт не согласован.
