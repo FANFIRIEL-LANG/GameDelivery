@@ -32,6 +32,8 @@ OPERATOR_RECOVERY_AUDIT_MIGRATION_ID = "2026-11-delivery-operator-recovery-audit
 OPERATOR_RECOVERY_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-operator-recovery-audit-v1.bak"
 QUANTITY_STOCK_MIGRATION_ID = "2026-11-quantity-stock-ledger-v1"
 QUANTITY_STOCK_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-ledger-v1.bak"
+QUANTITY_STOCK_AUDIT_MIGRATION_ID = "2026-11-quantity-stock-audit-v1"
+QUANTITY_STOCK_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-audit-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -894,7 +896,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_asset_id_blocking_state_migration(connection) or changed
     changed = _apply_recipient_snapshot_migration(connection) or changed
     changed = _apply_operator_recovery_audit_migration(connection) or changed
-    return _apply_quantity_stock_migration(connection) or changed
+    changed = _apply_quantity_stock_migration(connection) or changed
+    return _apply_quantity_stock_audit_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
@@ -1842,6 +1845,30 @@ def _apply_quantity_stock_migration(connection: sqlite3.Connection) -> bool:
         for table in ("gd_stock_observations","gd_stock_allocations","gd_resource_reservations"):
             if connection.execute(f"PRAGMA foreign_key_check({table})").fetchall():
                 raise sqlite3.IntegrityError(f"Quantity stock migration produced FK violations in {table}")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+def _apply_quantity_stock_audit_migration(connection: sqlite3.Connection) -> bool:
+    """Keep allocation history append-only; release must be an explicit state change."""
+    if _migration_applied(connection, QUANTITY_STOCK_AUDIT_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TRIGGER gd_stock_allocations_no_delete
+            BEFORE DELETE ON gd_stock_allocations
+            BEGIN
+                SELECT RAISE(ABORT,'Stock allocations cannot be deleted; transition their state');
+            END
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (QUANTITY_STOCK_AUDIT_MIGRATION_ID,),
+        )
         connection.commit()
     except Exception:
         connection.rollback()
