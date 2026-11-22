@@ -232,7 +232,13 @@ class ListingStockServiceTests(unittest.TestCase):
                 "WHERE owner_type='order' AND order_line_id=? AND state='active'",
                 (lines[first_id]["order_line_id"],),
             ).fetchall()
-        self.assertEqual(remaining, {first_id: 1, second_id: 1})
+        # All 4 Redline units allocated to the listing were transferred;
+        # one additional unit remains free in the physical stack, not listing-owned.
+        self.assertEqual(remaining, {second_id: 1})
+        self.assertEqual(
+            self.ledger.free_units(StockResource("cs2", 730, "2", "Bot-A", "1001")),
+            1,
+        )
         self.assertEqual(text_transfer_count, 0)
         self.assertEqual({row[0] for row in first_order_ids}, {first_id})
 

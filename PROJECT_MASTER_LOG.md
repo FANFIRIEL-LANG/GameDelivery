@@ -98,3 +98,6 @@
 
 
 **C.3 recipe-item SQL binding correction (2026-11-22):** Первый CI прогон `45067948768` точно локализовал четыре ошибки в одном test module: legacy listing allocation INSERT не передавал значение `NULL` для нового `recipe_item_id`; partial-transfer remainder INSERT передавал это значение, но колонка не была добавлена в SQL column list. Исправлены оба INSERT. Удалена неиспользуемая тестовая заглушка из helper; backup для recipe-item migration также добавлен в альтернативный `migrate_delivery_ledger()` путь. Остальные test modules прошли изоляцию; повторный полный CI обязателен.
+
+
+**C.3 typed recipe remainder assertion correction (2026-11-22):** CI run `45068224614` прошёл 995 из 996 тестов; единственное падение — неверное ожидание в новом тесте recipe transfer. Все 4 listing-owned Redline units были переведены в OrderLine, поэтому listing-owned остаток по Redline равен нулю; одна из пяти единиц физического стека остаётся свободной, но не принадлежит объявлению. Для Dragon Lore из двух listing units одна остаётся у объявления после частичного transfer. Исправлено: тест отдельно проверяет listing remainder `{dragon: 1}` и free physical Redline units `1`. Production logic не менялась. Повторный полный CI обязателен.
