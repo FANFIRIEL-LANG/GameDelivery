@@ -397,8 +397,11 @@ class PlayerokDealSyncService:
             ),
         }
 
-    def _upsert_incremental(self, deals: list[dict[str, Any]], account_user_id: str) -> int:
+    def _upsert_incremental(
+        self, deals: list[dict[str, Any]], account_user_id: str
+    ) -> tuple[int, int]:
         created = 0
+        historical_created = 0
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             state = db.execute(
@@ -416,12 +419,16 @@ class PlayerokDealSyncService:
                 _normalized_id, is_new = self._upsert_deal(
                     db, deal, account_user_id, historical=historical
                 )
-                created += int(is_new)
+                if is_new:
+                    if historical:
+                        historical_created += 1
+                    else:
+                        created += 1
             db.execute("""
                 UPDATE playerok_sync_state SET last_sync_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                 WHERE account_user_id=?
             """, (account_user_id,))
-        return created
+        return created, historical_created
 
     def _set_outbox(self, key: str, state: str, *, error_type: str = "", platform_status: str = ""):
         with self.database.connect() as db:
@@ -527,13 +534,13 @@ class PlayerokDealSyncService:
             return self._baseline(adapter, account_user_id, allow_status_mutation=allow_status_mutation)
 
         deals = adapter.fetch_sales(statuses=self.ACTIVE_STATUSES)
-        new_count = self._upsert_incremental(deals, account_user_id)
+        new_count, historical_count = self._upsert_incremental(deals, account_user_id)
         outbox_updates = self.process_status_outbox(
             adapter, account_user_id, allow_status_mutation=allow_status_mutation
         )
         return {
             "baseline": False, "baseline_deals": 0, "deals": deals,
-            "new_deals": new_count, "historical_deals": 0,
+            "new_deals": new_count, "historical_deals": historical_count,
             "status_updates": outbox_updates,
         }
 
