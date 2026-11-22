@@ -6516,3 +6516,6 @@ I. Запустить только целевые тесты, затем пол�
 
 
 **Срок действия ASF proof (2026-11-22):** свежесть inventory snapshot теперь ограничена `max_inventory_age` (по умолчанию 2 минуты) и сохраняется как `expires_at` в prepared retry attempt. Dispatcher перед ASF boundary отклоняет истёкший/невалидный proof, помечает prepared attempt как доказанный `failed` и возвращает заказ в `ACTION_REQUIRED`; новый retry должен получить новое inventory proof и generation. Добавлены regression tests на наличие expiry и запрет ASF вызова после истечения proof.
+
+
+**Reservation conflict gate (2026-11-22):** операторские retry/release дополнительно сверяют каждый точный asset с глобальным blocking reservation count (`active` + `legacy_conflict`) и блокируют операцию, если ресурс конфликтует или не имеет ровно одного блокирующего резерва владельца. Проверка выполняется до внешних доказательств и повторно внутри write-транзакции.

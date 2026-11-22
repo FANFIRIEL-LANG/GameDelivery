@@ -141,9 +141,13 @@ class DeliveryRecoveryService:
     @staticmethod
     def _active_reservations(connection, target: dict[str, Any]) -> list[dict[str, Any]]:
         rows = connection.execute("""
-            SELECT reservation_id,asset_id,state
-            FROM gd_resource_reservations
-            WHERE order_line_id=? AND bot_name=? COLLATE NOCASE
+            SELECT r.reservation_id,r.asset_id,r.state,
+                   (SELECT COUNT(*) FROM gd_resource_reservations blocking
+                    WHERE blocking.bot_name=r.bot_name COLLATE NOCASE
+                      AND blocking.asset_id_key=r.asset_id_key
+                      AND blocking.state IN ('active','legacy_conflict')) AS blocking_count
+            FROM gd_resource_reservations r
+            WHERE r.order_line_id=? AND r.bot_name=? COLLATE NOCASE
               AND owner_type='order' AND app_id=? AND context_id=? AND state='active'
               AND asset_id IN (SELECT value FROM json_each(?))
             ORDER BY asset_id
@@ -151,6 +155,15 @@ class DeliveryRecoveryService:
               int(target["app_id"]), str(target["context_id"]),
               target["asset_ids_json"])).fetchall()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def _assert_reservations_safe(
+        reservations: list[dict[str, Any]], expected_assets: list[str]
+    ) -> None:
+        if sorted(str(row["asset_id"]) for row in reservations) != expected_assets:
+            raise DeliveryRecoveryBlocked("Активные резервы не совпадают с manifest DeliveryLeg")
+        if any(int(row.get("blocking_count", 0)) != 1 for row in reservations):
+            raise DeliveryRecoveryBlocked("Для одного или нескольких assets обнаружен конфликтующий blocking reservation")
 
     @staticmethod
     def _assert_latest_attempt_is_terminal(connection, order_id: str, leg_id: str) -> int:
@@ -179,8 +192,7 @@ class DeliveryRecoveryService:
             generation = self._assert_latest_attempt_is_terminal(db, order, leg)
             reservations = self._active_reservations(db, target)
         expected_assets = sorted(str(value) for value in json.loads(target["asset_ids_json"]))
-        if sorted(row["asset_id"] for row in reservations) != expected_assets:
-            raise DeliveryRecoveryBlocked("Активные резервы не совпадают с manifest DeliveryLeg")
+        self._assert_reservations_safe(reservations, expected_assets)
         inventory_evidence = self._verify_inventory(target)
         recipient = self._verify_recipient(order, leg, target["recipient_steam_id64"])
         self._verify_no_offer(order, leg, str(target["bot_name"]))
@@ -198,8 +210,7 @@ class DeliveryRecoveryService:
             if current_generation != generation:
                 raise DeliveryRecoveryBlocked("История попыток изменилась во время проверки; повторите операцию")
             current_reservations = self._active_reservations(db, current)
-            if sorted(row["asset_id"] for row in current_reservations) != expected_assets:
-                raise DeliveryRecoveryBlocked("Резервы изменились во время проверки")
+            self._assert_reservations_safe(current_reservations, expected_assets)
             db.execute("""
                 INSERT INTO gd_delivery_operator_actions
                     (action_id,order_id,leg_id,action_type,retry_generation,actor,reason,evidence_json)
@@ -243,8 +254,7 @@ class DeliveryRecoveryService:
         self._verify_recipient(order, leg, target["recipient_steam_id64"])
         self._verify_no_offer(order, leg, str(target["bot_name"]))
         expected_assets = sorted(str(value) for value in json.loads(target["asset_ids_json"]))
-        if sorted(row["asset_id"] for row in reservations) != expected_assets:
-            raise DeliveryRecoveryBlocked("Активные резервы не совпадают с manifest DeliveryLeg")
+        self._assert_reservations_safe(reservations, expected_assets)
         action_id = "delivery-action:" + uuid.uuid4().hex
         evidence = {"offer_absence_confirmed": True, "released_asset_ids": expected_assets}
         with self.database.connect() as db:
@@ -252,8 +262,7 @@ class DeliveryRecoveryService:
             current = self._load_target(db, order, leg)
             self._assert_latest_attempt_is_terminal(db, order, leg)
             current_reservations = self._active_reservations(db, current)
-            if sorted(row["asset_id"] for row in current_reservations) != expected_assets:
-                raise DeliveryRecoveryBlocked("Резервы изменились во время проверки")
+            self._assert_reservations_safe(current_reservations, expected_assets)
             db.execute("""
                 INSERT INTO gd_delivery_operator_actions
                     (action_id,order_id,leg_id,action_type,retry_generation,actor,reason,evidence_json)
