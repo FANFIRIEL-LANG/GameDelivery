@@ -53,8 +53,8 @@ class StockItemIdentity:
 
     def matches_spec(self, spec: object) -> bool:
         """Fail-closed exact match for SteamAssetSpec-like objects."""
-        identity = self.normalized()
         try:
+            identity = self.normalized()
             game_id = _clean(getattr(spec, "game_id"), "spec.game_id")
             app_id = getattr(spec, "app_id")
             context_id = _clean(getattr(spec, "context_id"), "spec.context_id")
@@ -77,7 +77,10 @@ class StockItemIdentity:
     def allows_bot(self, bot_name: str, spec: object) -> bool:
         """Bot-pool policy is deliberately separate from item identity."""
         try:
-            pool = tuple(getattr(spec, "allowed_bot_pool"))
+            raw_pool = getattr(spec, "allowed_bot_pool")
+            if isinstance(raw_pool, (str, bytes)):
+                return False
+            pool = tuple(raw_pool)
         except (AttributeError, TypeError):
             return False
         if not pool:
