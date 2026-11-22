@@ -483,9 +483,64 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.assertEqual(self.asf.inventory_refreshes, [("Bot-A", 730, 2)])
         with self.db.connect() as db:
             self.assertEqual(db.execute("SELECT status FROM gd_delivery_legs WHERE leg_id=?", (leg,)).fetchone()[0], "DECLINED")
+            self.assertEqual(db.execute("SELECT status FROM gd_delivery_attempts WHERE leg_id=?", (leg,)).fetchone()[0], "declined")
+            self.assertEqual(db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()[0], "ACTION_REQUIRED")
+            self.assertEqual(db.execute("SELECT state FROM gd_resource_reservations WHERE order_line_id='line-order-1'").fetchone()[0], "active")
             self.assertIsNotNone(db.execute(
                 "SELECT 1 FROM gd_delivery_events WHERE order_id='order-1' AND event_type='telegram_notification'"
             ).fetchone())
+
+
+    def test_proven_failure_requires_operator_action_and_blocks_unstarted_legs(self):
+        legs = self.create_order(bots=("Bot-A", "Bot-B"))
+        self.asf.send_result["Bot-A"] = {
+            "success": False, "resultUnknown": False, "error": "invalid asset manifest",
+        }
+        result = self.dispatch("order-1", legs[0])
+        self.assertEqual(result["status"], "FAILED")
+        with self.db.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()[0],
+                "ACTION_REQUIRED",
+            )
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_delivery_attempts WHERE leg_id=?", (legs[0],)).fetchone()[0],
+                "failed",
+            )
+        blocked = self.dispatch("order-1", legs[1])
+        self.assertFalse(blocked["dispatched"])
+        self.assertEqual(blocked["status"], "ACTION_REQUIRED")
+        self.assertEqual(len(self.asf.sent), 0)
+
+    def test_sent_offer_continues_reconciliation_after_another_leg_fails(self):
+        legs = self.create_order(bots=("Bot-A", "Bot-B"))
+        self.asf.send_result["Bot-B"] = {"success": True, "offerIds": ["93002"]}
+        self.assertEqual(self.dispatch("order-1", legs[1])["status"], "SENT_TO_STEAM")
+        self.asf.send_result["Bot-A"] = {
+            "success": False, "resultUnknown": False, "error": "invalid asset manifest",
+        }
+        self.assertEqual(self.dispatch("order-1", legs[0])["status"], "FAILED")
+        with self.db.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()[0],
+                "PROCESSING",
+            )
+        self.asf.statuses[("Bot-B", "93002")] = {
+            "success": True, "mode": "trade-status", "found": True,
+            "tradeOfferId": "93002", "botName": "Bot-B", "status": "Accepted",
+        }
+        reconciled = self.reconciler.reconcile(order_id="order-1")
+        self.assertEqual(reconciled[0]["status"], "ACCEPTED")
+        with self.db.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id='order-1'").fetchone()[0],
+                "ACTION_REQUIRED",
+            )
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_delivery_attempts WHERE leg_id=?", (legs[1],)).fetchone()[0],
+                "accepted",
+            )
+
 
 
 if __name__ == "__main__":
