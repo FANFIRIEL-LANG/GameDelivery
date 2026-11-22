@@ -2208,6 +2208,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
     )
     ensure_pre_migration_backup(
         database_path,
+        migration_id=QUANTITY_STOCK_LISTING_ADJUSTMENT_MIGRATION_ID,
+        backup_suffix=QUANTITY_STOCK_LISTING_ADJUSTMENT_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
         migration_id=PLAYEROK_SYNC_MIGRATION_ID,
         backup_suffix=PLAYEROK_SYNC_BACKUP_SUFFIX,
     )

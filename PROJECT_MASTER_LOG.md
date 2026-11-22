@@ -107,3 +107,6 @@
 
 
 **C.3 listing release with stale observations and zero-stock disable (2026-11-22):** Review найденного SQLite guard выявил, что прежний `gd_stock_allocations_guard_update` запрещал любое изменение allocation, если последнее observation уже `stale/unavailable`; это мешало безопасно освободить listing-owned claim после полного snapshot, в котором asset исчез. В новой adjustment migration trigger заменяется fail-closed вариантом: released transition разрешён даже при stale/unavailable observation, но любой новый blocking state по-прежнему требует usable observation, отсутствия legacy reservation и соблюдения агрегатного Amount. Уточнено, что disable generation без listing-owned stock тоже должен фиксировать `status='disabled'`, `auto_relist=0` и audit event с нулевым units; partial release при этом по-прежнему требует положительное количество. Добавлены тесты на освобождение stale resource и disable пустого поколения.
+
+
+**C.3 listing adjustment migration backup path correction (2026-11-22):** Добавлен вызов `ensure_pre_migration_backup()` для `QUANTITY_STOCK_LISTING_ADJUSTMENT_MIGRATION_ID` также в альтернативный `migrate_delivery_ledger()` entry point; `Database.initialize()` уже содержит тот же backup. Оба штатных migration entry point теперь создают отдельную копию до применения новой схемы.
