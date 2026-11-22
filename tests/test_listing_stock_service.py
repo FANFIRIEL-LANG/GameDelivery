@@ -46,6 +46,13 @@ class ListingStockServiceTests(unittest.TestCase):
                 VALUES('line-1','order-1','config-1',1,'cs2','Test item','{}',6)
                 """
             )
+        with self.database.connect() as db:
+            self.assertIsNotNone(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gd_stock_transfers'"
+            ).fetchone())
+            self.assertIsNotNone(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gd_stock_allocation_batches'"
+            ).fetchone())
         self.a = StockResource("cs2", 730, "2", "Bot-A", "1001")
         self.b = StockResource("cs2", 730, "2", "Bot-B", "2002")
 
@@ -62,6 +69,14 @@ class ListingStockServiceTests(unittest.TestCase):
         self.assertEqual(sum(row["units"] for row in rows), 8)
         self.assertEqual([(row["bot_name"], row["units"]) for row in rows],
                          [("Bot-A", 5), ("Bot-B", 3)])
+        repeated_allocation = self.service.allocate_listing(
+            request_id="allocation-request-1", listing_id="listing-1",
+            config_version_id="config-1", units=8, resources=[self.a, self.b],
+        )
+        self.assertEqual(
+            {row["allocation_id"] for row in repeated_allocation},
+            {row["allocation_id"] for row in rows},
+        )
         with self.assertRaises(ValueError):
             self.service.allocate_listing(
                 request_id="allocation-request-1", listing_id="listing-1",
