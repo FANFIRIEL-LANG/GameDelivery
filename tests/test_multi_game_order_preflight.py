@@ -306,6 +306,16 @@ class DeliveryOrderPipelineTests(unittest.TestCase):
                 (config["config_version_id"],),
             )
             db.executemany(
+                "INSERT INTO gd_resource_reservations "
+                "(reservation_id,owner_type,order_line_id,game_id,app_id,context_id,"
+                "bot_name,asset_id,units,state) "
+                "VALUES(?,'order','line-reconcile','cs2',730,'2',?,?,1,'active')",
+                [
+                    ("reservation-a", "Bot-A", "1001"),
+                    ("reservation-b", "Bot-B", "2001"),
+                ],
+            )
+            db.executemany(
                 "INSERT INTO gd_delivery_legs "
                 "(leg_id,order_line_id,bot_name,app_id,context_id,asset_ids_json,trade_offer_id,status) "
                 "VALUES(?,?,?,?,?,?,?,'SENT_TO_STEAM')",
