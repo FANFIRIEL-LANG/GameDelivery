@@ -305,7 +305,14 @@ class ListingStockServiceTests(unittest.TestCase):
             request_id="disable-unknown-base", listing_id="listing-1",
             config_version_id="config-1", units=5, resources=[self.a],
         )
-        self.ledger.observe(self.b, 2)
+        from games.inventory import InventoryItem
+        self.ledger.observe_snapshot("cs2", "Bot-B", [
+            InventoryItem(
+                "cs2", "Bot-B", "2002", "class-unknown", "0",
+                "AWP | Unknown Listing Item", market_hash_name="AWP | Unknown Listing Item",
+                is_tradable=True, amount=2,
+            )
+        ])
         self.ledger.allocate(
             allocation_id="listing-unknown", resource=self.b, units=2,
             owner_type="listing", listing_id="listing-1", config_version_id="config-1",
