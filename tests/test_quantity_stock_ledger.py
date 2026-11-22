@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from pathlib import Path
 
 from core.database.db import Database
@@ -123,6 +125,27 @@ class QuantityStockLedgerTests(unittest.TestCase):
                 allocation_id="blocked-allocation", resource=self.resource, units=1,
                 owner_type="listing", listing_id="listing-a",
             )
+
+
+    def test_concurrent_allocations_cannot_overbook_one_stack(self):
+        self.ledger.observe(self.resource, 5)
+        barrier = Barrier(2)
+
+        def reserve(allocation_id: str) -> str:
+            barrier.wait()
+            try:
+                self.ledger.allocate(
+                    allocation_id=allocation_id, resource=self.resource, units=4,
+                    owner_type="listing", listing_id="listing-a",
+                )
+                return "reserved"
+            except sqlite3.IntegrityError:
+                return "blocked"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(reserve, ("concurrent-a", "concurrent-b")))
+        self.assertCountEqual(outcomes, ["reserved", "blocked"])
+        self.assertEqual(self.ledger.free_units(self.resource), 1)
 
     def test_invalid_amount_and_units_are_rejected(self):
         for amount in (0, -1, True, 1.5):
