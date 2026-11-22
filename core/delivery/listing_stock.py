@@ -44,9 +44,12 @@ class ListingStockService:
         if not request_id or not listing_id or not config_version_id:
             raise ValueError("request_id, listing_id и config_version_id обязательны")
         units = _positive_int(units, "units")
-        normalized = {r.normalized() for r in resources}
+        normalized_by_physical_id = {}
+        for candidate in resources:
+            resource = candidate.normalized()
+            normalized_by_physical_id[QuantityStockLedger._observation_id(resource)] = resource
         ordered = sorted(
-            normalized,
+            normalized_by_physical_id.values(),
             key=lambda r: (
                 r.bot_name.casefold(), r.game_id, r.app_id, r.context_id,
                 r.asset_id.casefold(),
@@ -65,12 +68,15 @@ class ListingStockService:
                     or int(existing["requested_units"]) != units
                 ):
                     raise ValueError("request_id уже использован для другого allocation")
-                return [
+                rows = [
                     dict(row) for row in connection.execute(
                         "SELECT * FROM gd_stock_allocations WHERE allocation_id LIKE ? ORDER BY allocation_id",
                         (f"listing-batch:{hashlib.sha256(request_id.encode()).hexdigest()}:%",),
                     ).fetchall()
                 ]
+                if sum(int(row["units"]) for row in rows) != units:
+                    raise RuntimeError("Сохранённый listing allocation batch неполон; требуется ручная сверка")
+                return rows
 
             config = connection.execute(
                 "SELECT listing_id FROM gd_config_versions WHERE config_version_id=?",
@@ -208,7 +214,7 @@ class ListingStockService:
             remaining = units
             transfer_ids: list[str] = []
             event_hash = hashlib.sha256(transfer_event_id.encode()).hexdigest()
-            for source in sources:
+            for index, source in enumerate(sources):
                 if remaining <= 0:
                     break
                 source_units = int(source["units"])
