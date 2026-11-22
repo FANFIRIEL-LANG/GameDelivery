@@ -226,6 +226,39 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.assertEqual((row["status"], row["trade_offer_id"]), ("ACCEPTED", "90001"))
         self.assertEqual(order["status"], "DELIVERED")
 
+    def test_recovered_offer_updates_attempt_and_keeps_order_processing_until_accepted(self):
+        leg = self.create_order()[0]
+        self.asf.send_error["Bot-A"] = TimeoutError("IPC timeout")
+        self.assertEqual(self.dispatch("order-1", leg)["status"], "UNKNOWN")
+        self.sent_offers.write_text(json.dumps({
+            "order-1": {
+                "OrderId": "order-1", "BotName": "Bot-A",
+                "AssetIds": ["100"], "OfferIds": ["90002"], "State": "sent",
+            }
+        }), encoding="utf-8")
+        self.asf.statuses[("Bot-A", "90002")] = {
+            "success": True, "mode": "trade-status", "found": True,
+            "tradeOfferId": "90002", "botName": "Bot-A", "status": "Active",
+        }
+
+        result = self.reconciler.reconcile(order_id="order-1")
+
+        self.assertEqual(result[0]["status"], "SENT_TO_STEAM")
+        with self.db.connect() as db:
+            leg_row = db.execute(
+                "SELECT status,trade_offer_id FROM gd_delivery_legs WHERE leg_id=?", (leg,)
+            ).fetchone()
+            attempt = db.execute(
+                "SELECT status,result_json FROM gd_delivery_attempts WHERE leg_id=?", (leg,)
+            ).fetchone()
+            order_status = db.execute(
+                "SELECT status FROM gd_orders WHERE order_id='order-1'"
+            ).fetchone()[0]
+        self.assertEqual((leg_row["status"], leg_row["trade_offer_id"]), ("SENT_TO_STEAM", "90002"))
+        self.assertEqual(attempt["status"], "sent_to_steam")
+        self.assertTrue(json.loads(attempt["result_json"])["recovered_from_unknown"])
+        self.assertEqual(order_status, "PROCESSING")
+
     def test_startup_recovery_converts_interrupted_dispatch_to_unknown_before_polling(self):
         leg = self.create_order()[0]
         with self.db.connect() as db:
