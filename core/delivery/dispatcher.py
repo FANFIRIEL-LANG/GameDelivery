@@ -205,9 +205,9 @@ class DeliveryDispatcher:
                         "status": "PLAYEROK_FRESHNESS_REQUIRED",
                         "reason": "Перед отправкой требуется свежая проверка Playerok через браузер.",
                     }}
-                if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "DELIVERED"}:
+                if row["order_status"] in {"UNKNOWN", "PRIVACY_WAIT", "TRADE_RESTRICTED", "DECLINED", "FAILED", "ACTION_REQUIRED", "DELIVERED"}:
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["order_status"], "reason": "order is locked"}}
-                if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED", "PRIVACY_WAIT", "TRADE_RESTRICTED"}:
+                if row["status"] in {"UNKNOWN", "SENT_TO_STEAM", "ACCEPTED", "DECLINED", "FAILED", "PRIVACY_WAIT", "TRADE_RESTRICTED"}:
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "leg is already locked"}}
                 if row["status"] not in {"reserved", "planned"}:
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "leg is not dispatchable"}}
@@ -364,7 +364,7 @@ class DeliveryDispatcher:
             })
             return {"dispatched": False, "status": "UNKNOWN"}
 
-        self._set_state(order, leg, "FAILED", "FAILED", attempt["attempt_id"], result)
+        self._set_state(order, leg, "FAILED", "ACTION_REQUIRED", attempt["attempt_id"], result)
         return {"dispatched": False, "status": "FAILED", "result": result}
 
     def _set_state(

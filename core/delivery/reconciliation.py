@@ -30,10 +30,26 @@ class DeliveryReconciliation:
     def recover_interrupted_dispatches(database: Database) -> int:
         """Run once during application startup, before any new dispatch begins."""
         with database.connect() as db:
-            return db.execute(
-                "UPDATE gd_delivery_legs SET status='UNKNOWN', "
-                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status='DISPATCHING'"
-            ).rowcount
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("""
+                SELECT l.leg_id, ol.order_id
+                FROM gd_delivery_legs l
+                JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
+                WHERE l.status='DISPATCHING'
+            """).fetchall()
+            for row in rows:
+                db.execute(
+                    "UPDATE gd_delivery_legs SET status='UNKNOWN', "
+                    "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    "WHERE leg_id=? AND status='DISPATCHING'",
+                    (row["leg_id"],),
+                )
+                db.execute(
+                    "UPDATE gd_delivery_attempts SET status='unknown' "
+                    "WHERE order_id=? AND leg_id=? AND status='dispatching'",
+                    (row["order_id"], row["leg_id"]),
+                )
+            return len(rows)
 
     def _sent_records(self) -> dict[str, Any]:
         try:
@@ -115,12 +131,12 @@ class DeliveryReconciliation:
                 continue
             steam_state = str(status.get("status", "")).casefold()
             if steam_state == "accepted":
-                self._update_leg(leg["leg_id"], "ACCEPTED")
-                self._consume_reservations(leg["leg_id"])
+                self._update_leg(leg["leg_id"], "ACCEPTED", trade_offer_id=offer_id)
                 self._complete_order_if_all_accepted(order)
                 results.append({"leg_id": leg["leg_id"], "status": "ACCEPTED", "trade_offer_id": offer_id})
             elif steam_state in {"declined", "canceled", "cancelled", "expired"}:
-                self._update_leg(leg["leg_id"], "DECLINED")
+                self._update_leg(leg["leg_id"], "DECLINED", trade_offer_id=offer_id)
+                self._complete_order_if_all_accepted(order)
                 self._event(order, "telegram_notification", {
                     "leg_id": leg["leg_id"], "trade_offer_id": offer_id,
                     "steam_status": steam_state, "message": "Steam отклонил или завершил предложение обмена.",
@@ -142,12 +158,59 @@ class DeliveryReconciliation:
                 results.append({"leg_id": leg["leg_id"], "status": "SENT_TO_STEAM", "steam_status": status.get("status")})
         return results
 
-    def _update_leg(self, leg_id: str, state: str) -> None:
+    def _update_leg(
+        self, leg_id: str, state: str, *, trade_offer_id: str | None = None
+    ) -> None:
         with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            leg = db.execute(
+                "SELECT ol.order_id FROM gd_delivery_legs l "
+                "JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                "WHERE l.leg_id=?", (leg_id,),
+            ).fetchone()
+            if leg is None:
+                return
             db.execute(
-                "UPDATE gd_delivery_legs SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
-                (state, leg_id),
+                "UPDATE gd_delivery_legs SET status=?, "
+                "trade_offer_id=COALESCE(?,trade_offer_id), "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
+                (state, trade_offer_id, leg_id),
             )
+            attempt = db.execute(
+                "SELECT attempt_id,result_json FROM gd_delivery_attempts "
+                "WHERE order_id=? AND leg_id=? ORDER BY retry_generation DESC LIMIT 1",
+                (leg["order_id"], leg_id),
+            ).fetchone()
+            if attempt is not None:
+                try:
+                    evidence = json.loads(attempt["result_json"] or "{}")
+                except (TypeError, ValueError):
+                    evidence = {}
+                if not isinstance(evidence, dict):
+                    evidence = {"previous_result": evidence}
+                if trade_offer_id:
+                    evidence["trade_offer_id"] = trade_offer_id
+                evidence["reconciled_state"] = state
+                terminal = state in {"ACCEPTED", "DECLINED"}
+                db.execute(
+                    "UPDATE gd_delivery_attempts SET status=?, result_json=?, "
+                    "finished_at=CASE WHEN ? THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    "ELSE finished_at END WHERE attempt_id=?",
+                    (state.casefold(), json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+                     int(terminal), attempt["attempt_id"]),
+                )
+            if state == "ACCEPTED":
+                db.execute("""
+                    UPDATE gd_resource_reservations SET state='consumed',
+                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    WHERE order_line_id=(SELECT order_line_id FROM gd_delivery_legs WHERE leg_id=?)
+                      AND bot_name=(SELECT bot_name FROM gd_delivery_legs WHERE leg_id=?)
+                      AND state='active' AND asset_id IN (
+                        SELECT value FROM json_each(
+                            (SELECT asset_ids_json FROM gd_delivery_legs WHERE leg_id=?)
+                        )
+                      )
+                """, (leg_id, leg_id, leg_id))
 
     def _consume_reservations(self, leg_id: str) -> None:
         with self.database.connect() as db:
@@ -170,16 +233,30 @@ class DeliveryReconciliation:
             db.execute("BEGIN IMMEDIATE")
             counts = db.execute("""
                 SELECT COUNT(*) AS total,
-                       SUM(CASE WHEN l.status='ACCEPTED' THEN 1 ELSE 0 END) AS accepted
+                       SUM(CASE WHEN l.status='ACCEPTED' THEN 1 ELSE 0 END) AS accepted,
+                       SUM(CASE WHEN l.status IN ('UNKNOWN','SENT_TO_STEAM','DISPATCHING')
+                                THEN 1 ELSE 0 END) AS in_flight,
+                       SUM(CASE WHEN l.status IN ('DECLINED','FAILED')
+                                THEN 1 ELSE 0 END) AS requires_action
                 FROM gd_delivery_legs l
                 JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
                 WHERE ol.order_id=?
             """, (order_id,)).fetchone()
-            if counts and counts["total"] > 0 and counts["total"] == counts["accepted"]:
-                db.execute(
-                    "UPDATE gd_orders SET status='DELIVERED', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
-                    "WHERE order_id=?", (order_id,)
-                )
+            if not counts or not counts["total"]:
+                return
+            if counts["total"] == counts["accepted"]:
+                next_status = "DELIVERED"
+            elif counts["in_flight"]:
+                next_status = "PROCESSING"
+            elif counts["requires_action"]:
+                next_status = "ACTION_REQUIRED"
+            else:
+                next_status = "PROCESSING"
+            db.execute(
+                "UPDATE gd_orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE order_id=? AND status<>'CANCELLED'",
+                (next_status, order_id),
+            )
 
     @staticmethod
     def _event_id(order_id: str, event_type: str) -> str:
