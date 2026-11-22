@@ -93,6 +93,11 @@ class Database:
             migration_id=RECIPIENT_SNAPSHOT_MIGRATION_ID,
             backup_suffix=RECIPIENT_SNAPSHOT_BACKUP_SUFFIX,
         )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=QUANTITY_STOCK_MIGRATION_ID,
+            backup_suffix=QUANTITY_STOCK_BACKUP_SUFFIX,
+        )
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             apply_delivery_ledger_migrations(connection)
