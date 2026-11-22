@@ -317,7 +317,7 @@ class GameInventoryStore:
             rows = db.execute("""
                 SELECT game_id, bot_name, asset_id, class_id, instance_id, name, item_type,
                        market_hash_name, icon_url, icon_url_large, is_tradable, is_marketable,
-                       quality, rarity, exterior, tags_json
+                       quality, rarity, exterior, tags_json, amount
                 FROM game_inventory_snapshot WHERE game_id=? AND bot_name=? ORDER BY name, asset_id
             """, (game.game_id, bot_name.strip())).fetchall()
         return [InventoryItem(
@@ -326,6 +326,7 @@ class GameInventoryStore:
             is_tradable=None if r[10] is None else bool(r[10]),
             is_marketable=None if r[11] is None else bool(r[11]),
             quality=r[12], rarity=r[13], exterior=r[14], tags=tuple(json.loads(r[15])),
+            amount=int(r[16]),
         ) for r in rows]
 
 
