@@ -128,6 +128,14 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             """)
         self.ledger.bind_order_recipient("order-1", "76561197960265851")
         with self.db.connect() as db:
+            db.execute(
+                "INSERT INTO playerok_sync_state(account_user_id,baseline_completed,baseline_completed_at) "
+                "VALUES('seller-1',1,'2026-01-01T00:00:00+00:00')"
+            )
+            db.execute(
+                "UPDATE gd_deals SET playerok_account_id='seller-1',listing_resolution_status='resolved',"
+                "is_historical=0 WHERE deal_id='deal-1'"
+            )
             db.execute("UPDATE gd_orders SET status=? WHERE order_id='order-1'", (status,))
             db.execute("UPDATE gd_delivery_legs SET status='PRIVACY_WAIT' WHERE leg_id='leg-1'")
         self.ledger.create_delivery_attempt(
