@@ -141,7 +141,7 @@ class ListingStockService:
                         allocation_id, observation_id, resource.game_id, resource.app_id,
                         resource.context_id, resource.bot_name, resource.asset_id,
                         asset_id_key(resource.asset_id),
-                        listing_id, config_version_id, take,
+                        listing_id, config_version_id, take, None,
                     ),
                 )
                 allocation_ids.append(allocation_id)
@@ -541,8 +541,8 @@ class ListingStockService:
                     INSERT INTO gd_stock_allocations
                         (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
                          asset_id,asset_id_key,owner_type,listing_id,config_version_id,
-                         order_line_id,legacy_owner_id,units,state)
-                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active')
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
                     """,
                     (
                         remainder_id, source["observation_id"], source["game_id"],

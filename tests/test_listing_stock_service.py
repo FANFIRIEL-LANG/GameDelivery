@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from core.delivery.recipes import (
     DigitalTextUnitSpec, RecipeItem, SteamAssetSpec,
 )
 from games.inventory import InventoryItem
+from core.delivery.stock_identity import StockItemIdentity
 
 
 class ListingStockServiceTests(unittest.TestCase):
@@ -101,7 +103,7 @@ class ListingStockServiceTests(unittest.TestCase):
         delivery.create_order(order_id="typed-order", deal_id="typed-deal", total_quantity=7)
         lines = delivery.materialize_recipe_order_lines("typed-order")
         line_by_item = {
-            __import__("json").loads(line["item_selector_json"])["recipe_item_id"]: line
+            json.loads(line["item_selector_json"])["recipe_item_id"]: line
             for line in lines
         }
         recipe_items = config["recipe_items"]
@@ -129,13 +131,11 @@ class ListingStockServiceTests(unittest.TestCase):
                 item_type="Sniper Rifle", market_hash_name="AWP | Dragon Lore",
                 is_tradable=True, amount=3,
             ))
-        return self.ledger.observe_snapshot("cs2", "Bot-A", items[:1]) if False else [
+        return [
             self.ledger.observe(
                 StockResource("cs2", 730, "2", item.bot_name, item.asset_id),
                 item.amount,
-                identity=__import__(
-                    "core.delivery.stock_identity", fromlist=["StockItemIdentity"]
-                ).StockItemIdentity(
+                identity=StockItemIdentity(
                     "cs2", 730, "2", market_hash_name=item.market_hash_name,
                     name=item.name, item_type=item.item_type, class_id=item.class_id,
                     quality=item.quality, exterior=item.exterior, rarity=item.rarity,
