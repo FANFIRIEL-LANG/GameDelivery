@@ -34,6 +34,8 @@ QUANTITY_STOCK_MIGRATION_ID = "2026-11-quantity-stock-ledger-v1"
 QUANTITY_STOCK_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-ledger-v1.bak"
 QUANTITY_STOCK_AUDIT_MIGRATION_ID = "2026-11-quantity-stock-audit-v1"
 QUANTITY_STOCK_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-audit-v1.bak"
+QUANTITY_STOCK_TRANSFER_MIGRATION_ID = "2026-11-quantity-stock-transfers-v1"
+QUANTITY_STOCK_TRANSFER_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-transfers-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -897,7 +899,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_recipient_snapshot_migration(connection) or changed
     changed = _apply_operator_recovery_audit_migration(connection) or changed
     changed = _apply_quantity_stock_migration(connection) or changed
-    return _apply_quantity_stock_audit_migration(connection) or changed
+    changed = _apply_quantity_stock_audit_migration(connection) or changed
+    return _apply_quantity_stock_transfer_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
@@ -1845,6 +1848,46 @@ def _apply_quantity_stock_migration(connection: sqlite3.Connection) -> bool:
         for table in ("gd_stock_observations","gd_stock_allocations","gd_resource_reservations"):
             if connection.execute(f"PRAGMA foreign_key_check({table})").fetchall():
                 raise sqlite3.IntegrityError(f"Quantity stock migration produced FK violations in {table}")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
+def _apply_quantity_stock_transfer_migration(connection: sqlite3.Connection) -> bool:
+    """Persist idempotent listing-to-order stock transfer events."""
+    if _migration_applied(connection, QUANTITY_STOCK_TRANSFER_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE gd_stock_transfers (
+                transfer_event_id TEXT PRIMARY KEY,
+                listing_id TEXT NOT NULL REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                order_line_id TEXT NOT NULL REFERENCES gd_order_lines(order_line_id) ON DELETE RESTRICT,
+                units INTEGER NOT NULL CHECK(units > 0),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("CREATE INDEX idx_gd_stock_transfers_order_line ON gd_stock_transfers(order_line_id)")
+        connection.execute("""
+            CREATE TRIGGER gd_stock_transfers_no_update
+            BEFORE UPDATE ON gd_stock_transfers
+            BEGIN SELECT RAISE(ABORT,'Stock transfer events are immutable'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_transfers_no_delete
+            BEFORE DELETE ON gd_stock_transfers
+            BEGIN SELECT RAISE(ABORT,'Stock transfer events are append-only'); END
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (QUANTITY_STOCK_TRANSFER_MIGRATION_ID,),
+        )
+        if connection.execute("PRAGMA foreign_key_check(gd_stock_transfers)").fetchall():
+            raise sqlite3.IntegrityError("Stock transfer migration produced foreign-key violations")
         connection.commit()
     except Exception:
         connection.rollback()
