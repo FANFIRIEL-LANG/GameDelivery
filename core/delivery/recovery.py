@@ -88,6 +88,11 @@ class DeliveryRecoveryService:
             raise DeliveryRecoveryBlocked("Инвентарь не подтверждён ASF")
         if str(getattr(snapshot, "bot_name", "")).casefold() != bot.casefold():
             raise DeliveryRecoveryBlocked("Инвентарь получен не от владельца зарезервированных предметов")
+        if (
+            getattr(snapshot, "app_id", None) != app_id
+            or str(getattr(snapshot, "context_id", "")) != context_id
+        ):
+            raise DeliveryRecoveryBlocked("ASF snapshot относится к другому app/context")
         refreshed_at = getattr(snapshot, "refreshed_at", None)
         if not isinstance(refreshed_at, datetime):
             raise DeliveryRecoveryBlocked("У снимка ASF отсутствует время успешного обновления")
@@ -100,10 +105,17 @@ class DeliveryRecoveryService:
             asset_ids = json.loads(target["asset_ids_json"])
         except (TypeError, ValueError) as exc:
             raise DeliveryRecoveryBlocked("Некорректный manifest DeliveryLeg") from exc
-        if not isinstance(asset_ids, list) or not asset_ids or len(set(asset_ids)) != len(asset_ids):
+        if (
+            not isinstance(asset_ids, list) or not asset_ids
+            or any(not isinstance(value, str) or not value.strip() for value in asset_ids)
+            or len(set(asset_ids)) != len(asset_ids)
+        ):
             raise DeliveryRecoveryBlocked("Некорректный manifest DeliveryLeg")
+        snapshot_items = getattr(snapshot, "items", None)
+        if not isinstance(snapshot_items, (list, tuple)):
+            raise DeliveryRecoveryBlocked("ASF snapshot не содержит полный список inventory items")
         available = {}
-        for item in getattr(snapshot, "items", ()):
+        for item in snapshot_items:
             asset_id = str(getattr(item, "asset_id", ""))
             if asset_id:
                 available[asset_id] = item

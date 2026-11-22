@@ -175,5 +175,19 @@ class DeliveryRecoveryTests(unittest.TestCase):
         self.assertEqual(tuple(action), ("release", "operator-2", "Order canceled after operator review"))
 
 
+    def test_retry_rejects_inventory_snapshot_for_another_app_context(self):
+        wrong_context = InventorySnapshot(
+            bot_name="Bot-A", game_id="cs2", app_id=753, context_id="6",
+            refreshed_at=datetime.now(timezone.utc),
+            items=(Item("asset-1", True),), asf_verified=True,
+        )
+        service = self.make_service(inventory=wrong_context)
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            service.retry(
+                order_id="order-recovery", leg_id="leg-recovery",
+                actor="operator-1", reason="retry",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
