@@ -1108,7 +1108,7 @@ def _apply_quantity_stock_listing_adjustment_hardening_migration(connection: sql
          connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_recipe_item_insert")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_recipe_item_update")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_transfers_recipe_item_insert")
-       if not _table_exists(connection, "gd_stock_listing_adjustments"):
+        if not _table_exists(connection, "gd_stock_listing_adjustments"):
             raise sqlite3.OperationalError("Listing adjustment base migration is missing")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_update")
         connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_delete")
@@ -1275,7 +1275,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
         changed = _apply_quantity_stock_identity_migration(connection) or changed
         changed = _apply_quantity_stock_recipe_item_migration(connection) or changed
         changed = _apply_quantity_stock_listing_adjustment_migration(connection) or changed
-        return _apply_quantity_stock_listing_adjustment_hardening_migration(connection) or changed
+        changed = _apply_quantity_stock_listing_adjustment_hardening_migration(connection) or changed
+    return changed
 
 
 
