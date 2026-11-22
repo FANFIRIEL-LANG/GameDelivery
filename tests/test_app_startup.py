@@ -583,12 +583,12 @@ class AppStartupSmokeTests(unittest.TestCase):
             self.app.processEvents()
 
 
-    def test_playerok_import_persists_deal_chat_and_listing_ids_separately(self):
+    def test_playerok_import_rejects_unbound_deal_without_creating_legacy_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
             with patch.object(
                 MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
-            ), patch("app.main.QMessageBox.information"), patch("app.main.QMessageBox.warning"):
+            ):
                 window = MainWindow()
                 try:
                     order = {
@@ -608,16 +608,16 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window._import_marketplace_order(order)
                     window._import_marketplace_order({**order, "status": "SENT"})
                     with sqlite3.connect(database) as db:
-                        rows = db.execute("""
-                            SELECT source_order_id,source_deal_id,source_chat_id,
-                                   source_listing_id,source_chat_url,source_status
-                            FROM delivery_orders WHERE source_platform='playerok'
-                        """).fetchall()
-                    self.assertEqual(rows, [(
-                        "deal-uuid-1", "deal-uuid-1", "chat-uuid-2",
-                        "listing-uuid-3", "https://playerok.com/chats/chat-uuid-2", "SENT",
-                    )])
-                    self.assertEqual(window.orders.rowCount(), 1)
+                        rows = db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders WHERE source_platform='playerok'"
+                        ).fetchone()[0]
+                        canonical_rows = db.execute(
+                            "SELECT COUNT(*) FROM gd_orders"
+                        ).fetchone()[0]
+                    self.assertEqual(rows, 0)
+                    self.assertEqual(canonical_rows, 0)
+                    self.assertEqual(window.orders.rowCount(), 0)
+                    self.assertIn("отсутствует подтверждённый аккаунт Playerok", window.statusBar().currentMessage())
                 finally:
                     window.close()
                     window.deleteLater()
