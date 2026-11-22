@@ -237,6 +237,12 @@ class TradeDeliveryUITests(unittest.TestCase):
                 chat_id="chat-baseline", listing_id=config["listing_id"],
                 config_version_id=config["config_version_id"], platform_status="PAID",
             )
+            # A historical Deal must be tested through its real canonical Order.
+            # Without this row, the UI cannot select the ledger order and the test
+            # accidentally falls through to the manual-order path and opens a modal.
+            ledger.create_order(
+                order_id="order-baseline", deal_id="deal-baseline", total_quantity=1,
+            )
             with ledger_database.connect() as db:
                 db.execute("UPDATE gd_deals SET playerok_account_id='seller-1',is_historical=1 WHERE deal_id='deal-baseline'")
                 db.execute(
@@ -254,15 +260,21 @@ class TradeDeliveryUITests(unittest.TestCase):
                     }
                     window._import_marketplace_order(order)
                     window._import_marketplace_order({**order, "status": "PAID"})
+                    self.assertEqual(window.orders.rowCount(), 1)
+                    selected_context = window.orders.item(0, 0).data(Qt.ItemDataRole.UserRole)
+                    self.assertEqual(selected_context["kind"], "ledger")
+                    self.assertEqual(selected_context["order_id"], "order-baseline")
                     window.orders.selectRow(0)
                     window.order_recipient.setText(
                         "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
                     )
                     window.order_assets.item(0).setSelected(True)
                     with patch("app.main.QMessageBox.warning") as warning, \
+                         patch("app.main.QMessageBox.information") as information, \
                          patch("app.main.ASFClient") as asf_client:
                         window._prepare_delivery_order()
                     warning.assert_called_once()
+                    information.assert_not_called()
                     asf_client.assert_not_called()
                     with connect_sqlite(database) as db:
                         self.assertEqual(db.execute(
