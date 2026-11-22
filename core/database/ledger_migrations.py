@@ -44,6 +44,8 @@ QUANTITY_STOCK_RECIPE_ITEM_MIGRATION_ID = "2026-11-quantity-stock-recipe-item-v1
 QUANTITY_STOCK_RECIPE_ITEM_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-recipe-item-v1.bak"
 QUANTITY_STOCK_LISTING_ADJUSTMENT_MIGRATION_ID = "2026-11-quantity-stock-listing-adjustment-v1"
 QUANTITY_STOCK_LISTING_ADJUSTMENT_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-adjustment-v1.bak"
+QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_MIGRATION_ID = "2026-11-quantity-stock-listing-adjustment-hardening-v1"
+QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-adjustment-hardening-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -1092,6 +1094,125 @@ def _apply_quantity_stock_listing_adjustment_migration(connection: sqlite3.Conne
     return True
 
 
+def _apply_quantity_stock_listing_adjustment_hardening_migration(connection: sqlite3.Connection) -> bool:
+    """Allow zero-stock disable audits and safe release of stale listing claims."""
+    if _migration_applied(connection, QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        if not _table_exists(connection, "gd_stock_listing_adjustments"):
+            raise sqlite3.OperationalError("Listing adjustment base migration is missing")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_update")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_delete")
+        connection.execute(
+            "ALTER TABLE gd_stock_listing_adjustments RENAME TO gd_stock_listing_adjustments_old"
+        )
+        connection.execute("""
+            CREATE TABLE gd_stock_listing_adjustments (
+                adjustment_id TEXT PRIMARY KEY,
+                listing_id TEXT NOT NULL REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                operation TEXT NOT NULL CHECK(operation IN ('release_units','disable')),
+                recipe_item_id TEXT,
+                units INTEGER NOT NULL CHECK(units>=0),
+                allocation_ids_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("""
+            INSERT INTO gd_stock_listing_adjustments
+                (adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                 units,allocation_ids_json,created_at)
+            SELECT adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                   units,allocation_ids_json,created_at
+            FROM gd_stock_listing_adjustments_old
+        """)
+        connection.execute("DROP TABLE gd_stock_listing_adjustments_old")
+        connection.execute(
+            "CREATE INDEX idx_gd_stock_listing_adjustments_generation "
+            "ON gd_stock_listing_adjustments(listing_id,config_version_id,created_at)"
+        )
+        connection.execute("""
+            CREATE TRIGGER gd_stock_listing_adjustments_no_update
+            BEFORE UPDATE ON gd_stock_listing_adjustments
+            BEGIN SELECT RAISE(ABORT,'Stock listing adjustments are immutable'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_listing_adjustments_no_delete
+            BEFORE DELETE ON gd_stock_listing_adjustments
+            BEGIN SELECT RAISE(ABORT,'Stock listing adjustments are append-only'); END
+        """)
+        # Released allocations no longer claim stock and can be transitioned
+        # after their last observation has become stale/unavailable. A transition
+        # into a blocking state still requires a usable observation.
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_guard_update")
+        connection.execute("""
+            CREATE TRIGGER gd_stock_allocations_guard_update
+            BEFORE UPDATE ON gd_stock_allocations
+            BEGIN
+                SELECT CASE WHEN NEW.asset_id_key<>gd_asset_id_key(NEW.asset_id)
+                    THEN RAISE(ABORT,'Stock allocation Asset ID key mismatch') END;
+                SELECT CASE WHEN (
+                    NEW.state IN ('active','pending','unknown','legacy_conflict')
+                    OR (NEW.state='consumed' AND NEW.consumed_revision >=
+                        (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id))
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM gd_stock_observations o
+                    WHERE o.observation_id=NEW.observation_id
+                      AND o.game_id=NEW.game_id AND o.app_id=NEW.app_id
+                      AND o.context_id=NEW.context_id
+                      AND o.bot_name=NEW.bot_name COLLATE NOCASE
+                      AND o.asset_id_key=NEW.asset_id_key
+                      AND o.availability_state='usable'
+                ) THEN RAISE(ABORT,'Blocking stock allocation requires a usable observation') END;
+                SELECT CASE WHEN (
+                    NEW.state IN ('active','pending','unknown','legacy_conflict')
+                    OR (NEW.state='consumed' AND NEW.consumed_revision >=
+                        (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id))
+                ) AND (
+                    EXISTS (
+                        SELECT 1 FROM gd_resource_reservations r
+                        WHERE r.state IN ('active','legacy_conflict')
+                          AND r.game_id=NEW.game_id AND r.app_id=NEW.app_id
+                          AND r.context_id=NEW.context_id
+                          AND r.bot_name=NEW.bot_name COLLATE NOCASE
+                          AND r.asset_id_key=NEW.asset_id_key
+                    ) OR (NEW.game_id='steam_cards' AND NEW.app_id=753 AND NEW.context_id='6'
+                        AND EXISTS (SELECT 1 FROM steam_asset_reservations s
+                            WHERE s.bot_name=NEW.bot_name COLLATE NOCASE
+                              AND gd_asset_id_key(s.asset_id)=NEW.asset_id_key))
+                ) THEN RAISE(ABORT,'Resource is blocked by a legacy reservation') END;
+                SELECT CASE WHEN (
+                    SELECT COALESCE(SUM(a.units),0) FROM gd_stock_allocations a
+                    WHERE a.observation_id=NEW.observation_id
+                      AND a.allocation_id<>OLD.allocation_id
+                      AND (a.state IN ('active','pending','unknown','legacy_conflict')
+                        OR (a.state='consumed' AND a.consumed_revision >=
+                            (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id)))
+                ) + CASE WHEN NEW.state IN ('active','pending','unknown','legacy_conflict')
+                    OR (NEW.state='consumed' AND NEW.consumed_revision >=
+                        (SELECT revision FROM gd_stock_observations WHERE observation_id=NEW.observation_id))
+                    THEN NEW.units ELSE 0 END >
+                    (SELECT observed_amount FROM gd_stock_observations WHERE observation_id=NEW.observation_id)
+                    THEN RAISE(ABORT,'Stock allocation exceeds observed amount') END;
+            END
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_MIGRATION_ID,),
+        )
+        for table in ("gd_stock_listing_adjustments", "gd_stock_allocations"):
+            if connection.execute(f"PRAGMA foreign_key_check({table})").fetchall():
+                raise sqlite3.IntegrityError(
+                    f"Listing adjustment hardening migration produced foreign-key violations in {table}"
+                )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     """Apply the canonical ledger, Playerok sync, recipe, and reservation migrations."""
     connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
@@ -1140,7 +1261,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_quantity_stock_batch_migration(connection) or changed
     changed = _apply_quantity_stock_identity_migration(connection) or changed
     changed = _apply_quantity_stock_recipe_item_migration(connection) or changed
-    return _apply_quantity_stock_listing_adjustment_migration(connection) or changed
+    changed = _apply_quantity_stock_listing_adjustment_migration(connection) or changed
+    return _apply_quantity_stock_listing_adjustment_hardening_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
@@ -2210,6 +2332,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
         database_path,
         migration_id=QUANTITY_STOCK_LISTING_ADJUSTMENT_MIGRATION_ID,
         backup_suffix=QUANTITY_STOCK_LISTING_ADJUSTMENT_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_MIGRATION_ID,
+        backup_suffix=QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_BACKUP_SUFFIX,
     )
     ensure_pre_migration_backup(
         database_path,

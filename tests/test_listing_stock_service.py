@@ -220,6 +220,26 @@ class ListingStockServiceTests(unittest.TestCase):
         self.assertEqual((order_row["units"], order_row["state"]), (3, "active"))
         self.assertEqual(self.ledger.free_units(self.a), 7)
 
+    def test_partial_release_of_stale_allocation_fails_without_changing_claim(self):
+        self.ledger.observe(self.a, 8)
+        self.service.allocate_listing(
+            request_id="partial-stale-base", listing_id="listing-1",
+            config_version_id="config-1", units=5, resources=[self.a],
+        )
+        self.ledger.observe_snapshot("cs2", "Bot-A", [])
+        with self.assertRaisesRegex(ValueError, "частично изменять"):
+            self.service.release_listing_units(
+                adjustment_id="partial-stale-release", listing_id="listing-1",
+                config_version_id="config-1", units=2,
+            )
+        with self.database.connect() as db:
+            rows = db.execute(
+                "SELECT state,units FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1'"
+            ).fetchall()
+        self.assertEqual([(row["state"], row["units"]) for row in rows], [("active", 5)])
+
     def test_release_listing_units_can_free_a_stale_inventory_observation(self):
         self.ledger.observe(self.a, 8)
         self.service.allocate_listing(
@@ -247,6 +267,22 @@ class ListingStockServiceTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(active_listing_units, 0)
 
+    def test_disabled_listing_generation_rejects_new_allocations(self):
+        self.ledger.observe(self.a, 5)
+        self.service.allocate_listing(
+            request_id="disabled-base", listing_id="listing-1",
+            config_version_id="config-1", units=4, resources=[self.a],
+        )
+        self.service.disable_listing_stock(
+            adjustment_id="disabled-generation", listing_id="listing-1",
+            config_version_id="config-1",
+        )
+        with self.assertRaisesRegex(ValueError, "отключено"):
+            self.service.allocate_listing(
+                request_id="disabled-new-allocation", listing_id="listing-1",
+                config_version_id="config-1", units=1, resources=[self.a],
+            )
+
     def test_disable_listing_with_no_listing_units_still_disables_generation(self):
         result = self.service.disable_listing_stock(
             adjustment_id="disable-empty-generation", listing_id="listing-1",
@@ -269,6 +305,7 @@ class ListingStockServiceTests(unittest.TestCase):
             request_id="disable-unknown-base", listing_id="listing-1",
             config_version_id="config-1", units=5, resources=[self.a],
         )
+        self.ledger.observe(self.b, 2)
         self.ledger.allocate(
             allocation_id="listing-unknown", resource=self.b, units=2,
             owner_type="listing", listing_id="listing-1", config_version_id="config-1",

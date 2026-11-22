@@ -110,3 +110,6 @@
 
 
 **C.3 listing adjustment migration backup path correction (2026-11-22):** Добавлен вызов `ensure_pre_migration_backup()` для `QUANTITY_STOCK_LISTING_ADJUSTMENT_MIGRATION_ID` также в альтернативный `migrate_delivery_ledger()` entry point; `Database.initialize()` уже содержит тот же backup. Оба штатных migration entry point теперь создают отдельную копию до применения новой схемы.
+
+
+**C.3 listing release guard hardening (2026-11-22):** В отдельной additive migration `2026-11-quantity-stock-listing-adjustment-hardening-v1` (с отдельным backup) переносится rebuild audit table к `units>=0`, чтобы disable пустого поколения сохранялся как audit event. В той же миграции обновляется allocation UPDATE trigger: переход в released разрешён после stale/unavailable observation, но partial release, который требует создания нового активного remainder, явно fail-closed без usable observation; возврат в любое blocking state по-прежнему требует usable observation и проходит aggregate Amount/legacy reservation guards. Оба аллокатора теперь отклоняют disabled ConfigVersion, partial release проверяет observation state до изменения, тест pending/unknown теперь создаёт observation для его физического ресурса. Добавлены проверки: disabled generation не принимает новые allocations и stale partial release оставляет старую allocation неизменной.

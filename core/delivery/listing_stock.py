@@ -176,9 +176,11 @@ class ListingStockService:
             params = (listing_id, config_version_id)
         sources = connection.execute(
             """
-            SELECT * FROM gd_stock_allocations
-            WHERE owner_type='listing' AND listing_id=? AND config_version_id=?
-              AND state='active'
+            SELECT a.*,o.availability_state AS observation_state
+            FROM gd_stock_allocations a
+            JOIN gd_stock_observations o ON o.observation_id=a.observation_id
+            WHERE a.owner_type='listing' AND a.listing_id=? AND a.config_version_id=?
+              AND a.state='active'
             """ + where_recipe + """
             ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key,allocation_id
             """,
@@ -209,6 +211,11 @@ class ListingStockService:
             changed_ids.append(source["allocation_id"])
             keep = source_units - take
             if keep:
+                if source["observation_state"] != "usable":
+                    raise ValueError(
+                        "Нельзя частично изменять listing allocation по stale/unavailable observation; "
+                        "требуется свежий полный snapshot"
+                    )
                 remainder_id = _stable_id(
                     "listing-adjustment-remainder", adjustment_id, source["allocation_id"]
                 )
@@ -312,11 +319,15 @@ class ListingStockService:
                 return rows
 
             config = connection.execute(
-                "SELECT listing_id,recipe_schema_version FROM gd_config_versions WHERE config_version_id=?",
+                "SELECT c.listing_id,c.recipe_schema_version,l.status AS listing_status "
+                "FROM gd_config_versions c JOIN gd_listings l ON l.listing_id=c.listing_id "
+                "WHERE c.config_version_id=?",
                 (config_version_id,),
             ).fetchone()
             if config is None or config["listing_id"] != listing_id:
                 raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+            if config["listing_status"] == "disabled":
+                raise ValueError("Listing generation отключено; для нового запуска требуется новая ConfigVersion")
             if config["recipe_schema_version"] is not None:
                 raise ValueError(
                     "Для типизированного Recipe используйте allocate_recipe_items: "
@@ -414,12 +425,15 @@ class ListingStockService:
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             config = connection.execute(
-                "SELECT listing_id,recipe_schema_version FROM gd_config_versions "
-                "WHERE config_version_id=?",
+                "SELECT c.listing_id,c.recipe_schema_version,l.status AS listing_status "
+                "FROM gd_config_versions c JOIN gd_listings l ON l.listing_id=c.listing_id "
+                "WHERE c.config_version_id=?",
                 (config_version_id,),
             ).fetchone()
             if config is None or config["listing_id"] != listing_id:
                 raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+            if config["listing_status"] == "disabled":
+                raise ValueError("Listing generation отключено; для нового запуска требуется новая ConfigVersion")
             if config["recipe_schema_version"] != 1:
                 raise ValueError("Требуется ConfigVersion с типизированным Recipe v1")
             recipe = DeliveryLedger.recipe_for_config_version(
