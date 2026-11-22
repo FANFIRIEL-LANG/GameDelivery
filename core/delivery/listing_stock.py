@@ -70,7 +70,7 @@ class ListingStockService:
                     raise ValueError("request_id уже использован для другого allocation")
                 rows = [
                     dict(row) for row in connection.execute(
-                        "SELECT * FROM gd_stock_allocations WHERE allocation_id LIKE ? ORDER BY allocation_id",
+                        "SELECT * FROM gd_stock_allocations WHERE allocation_id LIKE ? ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
                         (f"listing-batch:{hashlib.sha256(request_id.encode()).hexdigest()}:%",),
                     ).fetchall()
                 ]
@@ -141,7 +141,7 @@ class ListingStockService:
             placeholders = ",".join("?" for _ in allocation_ids)
             return [
                 dict(row) for row in connection.execute(
-                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({placeholders}) ORDER BY allocation_id",
+                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({placeholders}) ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
                     allocation_ids,
                 ).fetchall()
             ]
@@ -179,7 +179,7 @@ class ListingStockService:
                 marks = ",".join("?" for _ in ids)
                 return [
                     dict(row) for row in connection.execute(
-                        f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY allocation_id",
+                        f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
                         ids,
                     ).fetchall()
                 ]
@@ -274,7 +274,7 @@ class ListingStockService:
             marks = ",".join("?" for _ in transfer_ids)
             return [
                 dict(row) for row in connection.execute(
-                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY allocation_id",
+                    f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
                     transfer_ids,
                 ).fetchall()
             ]
