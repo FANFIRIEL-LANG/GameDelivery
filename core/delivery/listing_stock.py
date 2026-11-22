@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from typing import Any, Iterable
 
 from core.database.db import Database
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource, _positive_int
+from games.asset_ids import asset_id_key
 
 
 class InsufficientListingStock(ValueError):
@@ -127,7 +127,7 @@ class ListingStockService:
                     (
                         allocation_id, observation_id, resource.game_id, resource.app_id,
                         resource.context_id, resource.bot_name, resource.asset_id,
-                        __import__("games.asset_ids", fromlist=["asset_id_key"]).asset_id_key(resource.asset_id),
+                        asset_id_key(resource.asset_id),
                         listing_id, config_version_id, take,
                     ),
                 )
@@ -208,7 +208,7 @@ class ListingStockService:
             remaining = units
             transfer_ids: list[str] = []
             event_hash = hashlib.sha256(transfer_event_id.encode()).hexdigest()
-            for index, source in enumerate(sources):
+            for source in sources:
                 if remaining <= 0:
                     break
                 source_units = int(source["units"])
