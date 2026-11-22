@@ -67,3 +67,6 @@
 
 
 **C.3 quantity stock ledger follow-up (2026-11-22):** Дополнительно добавлены DB guards канонического `asset_id_key` для stock observations (insert/update), а также тесты на запрет подмены ключа и на корректное прекращение учёта consumed units после более новой inventory revision. Дополнен concurrency test: два параллельных writer-а пытаются зарезервировать по 4 из Amount=5; ожидается ровно один успех. Последующие commits: `fc1a6cc58b97c05a2940f426dfc031191209f20c`, `18ee8f33b7418b4cdcb5cf5a8fce9b7fe9919264`. Код и тесты пока не исполнены локально; CI status для текущей ветки ещё не получен. Следующий обязательный gate — выполнить targeted test module и полный test suite в поддерживаемом GitHub Actions/локальном окружении, исправить все ошибки до подключения к listing/order lifecycle.
+
+
+**C.3 quantity stock ledger hardening (2026-11-22):** Усилена неизменяемость физической идентичности observation: запрещено менять `observation_id/game_id/app_id/context_id/bot_name/asset_id`; revision обязана строго возрастать. Добавлены регрессионные тесты на оба ограничения. Коммиты: `ae6d08b58c9c7361427e03fea0f123fc1aac9dc4`, `0a109dcf82ca3c84a819defdc65d60209e016ef1`. По-прежнему ожидается выполнение тестов/CI; до их прохождения не подключать этот слой к автоматической выдаче.
