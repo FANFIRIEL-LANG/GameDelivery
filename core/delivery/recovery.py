@@ -242,6 +242,143 @@ class DeliveryRecoveryService:
         return {"action_id": action_id, "order_id": order, "leg_id": leg,
                 "status": "reserved", "retry_generation": new_generation}
 
+
+    def cancel_order(self, *, order_id: str, actor: str, reason: str) -> dict[str, Any]:
+        """Cancel an ACTION_REQUIRED order only when every leg is proven unsent.
+
+        Steam acceptance, in-flight/unknown offers, incomplete leg history, or
+        missing/ambiguous reservations fail closed. No inventory is reassigned
+        by this operation; it only releases this order's exact active reserves.
+        """
+        order = str(order_id).strip()
+        actor, reason = str(actor).strip(), str(reason).strip()
+        if not order or not actor or not reason:
+            raise ValueError("order_id, actor и reason обязательны")
+
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            order_row = db.execute(
+                "SELECT status,recipient_steam_id64 FROM gd_orders WHERE order_id=?",
+                (order,),
+            ).fetchone()
+            if order_row is None:
+                raise DeliveryRecoveryBlocked("Заказ не найден")
+            if str(order_row["status"]) != "ACTION_REQUIRED":
+                raise DeliveryRecoveryBlocked("Отмена доступна только для ACTION_REQUIRED заказа")
+            legs = db.execute("""
+                SELECT l.*,ol.order_line_id
+                FROM gd_delivery_legs l
+                JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
+                WHERE ol.order_id=?
+                ORDER BY l.leg_id
+            """, (order,)).fetchall()
+            if not legs:
+                raise DeliveryRecoveryBlocked("У заказа нет DeliveryLeg; безопасно подтвердить состав отмены нельзя")
+
+            verified_assets: list[tuple[str, str, list[str]]] = []
+            for raw_leg in legs:
+                leg = dict(raw_leg)
+                if leg["status"] not in {"FAILED", "DECLINED"}:
+                    raise DeliveryRecoveryBlocked(
+                        f"Отмена заблокирована: DeliveryLeg {leg['leg_id']} не имеет доказанного FAILED/DECLINED результата"
+                    )
+                self._assert_latest_attempt_is_terminal(db, order, str(leg["leg_id"]))
+                assets = json.loads(leg["asset_ids_json"])
+                if (not isinstance(assets, list) or not assets
+                    or any(not isinstance(value, str) or not value.strip() for value in assets)
+                    or len(set(assets)) != len(assets)):
+                    raise DeliveryRecoveryBlocked("Некорректный manifest DeliveryLeg")
+                reservations = db.execute("""
+                    SELECT r.reservation_id,r.asset_id,
+                           (SELECT COUNT(*) FROM gd_resource_reservations blocking
+                            WHERE blocking.bot_name=r.bot_name COLLATE NOCASE
+                              AND blocking.asset_id_key=r.asset_id_key
+                              AND blocking.state IN ('active','legacy_conflict')) AS blocking_count
+                    FROM gd_resource_reservations r
+                    WHERE r.order_line_id=? AND r.bot_name=? COLLATE NOCASE
+                      AND r.owner_type='order' AND r.app_id=? AND r.context_id=?
+                      AND r.state='active'
+                      AND r.asset_id IN (SELECT value FROM json_each(?))
+                    ORDER BY r.asset_id
+                """, (leg["order_line_id"], leg["bot_name"], int(leg["app_id"]),
+                      str(leg["context_id"]), leg["asset_ids_json"])).fetchall()
+                self._assert_reservations_safe([dict(row) for row in reservations], sorted(assets))
+                verified_assets.append((str(leg["leg_id"]), str(leg["bot_name"]), assets))
+
+        # External checks are deliberately outside the SQLite write transaction.
+        # Any timeout or mismatch blocks cancellation; nothing is released.
+        for leg_id, bot_name, _ in verified_assets:
+            self._verify_recipient(order, leg_id, order_row["recipient_steam_id64"])
+            self._verify_no_offer(order, leg_id, bot_name)
+
+        action_ids: list[str] = []
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT status FROM gd_orders WHERE order_id=?", (order,)
+            ).fetchone()
+            if current is None or current["status"] != "ACTION_REQUIRED":
+                raise DeliveryRecoveryBlocked("Статус заказа изменился во время проверки")
+            for leg_id, _, assets in verified_assets:
+                leg = db.execute("""
+                    SELECT l.status,l.order_line_id,l.asset_ids_json,l.bot_name,l.app_id,l.context_id
+                    FROM gd_delivery_legs l
+                    JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
+                    WHERE l.leg_id=? AND ol.order_id=?
+                """, (leg_id, order)).fetchone()
+                if leg is None or leg["status"] not in {"FAILED", "DECLINED"}:
+                    raise DeliveryRecoveryBlocked("Состояние DeliveryLeg изменилось во время проверки")
+                self._assert_latest_attempt_is_terminal(db, order, leg_id)
+                current_reservations = db.execute("""
+                    SELECT r.reservation_id,r.asset_id,
+                           (SELECT COUNT(*) FROM gd_resource_reservations blocking
+                            WHERE blocking.bot_name=r.bot_name COLLATE NOCASE
+                              AND blocking.asset_id_key=r.asset_id_key
+                              AND blocking.state IN ('active','legacy_conflict')) AS blocking_count
+                    FROM gd_resource_reservations r
+                    WHERE r.order_line_id=? AND r.bot_name=? COLLATE NOCASE
+                      AND r.owner_type='order' AND r.app_id=? AND r.context_id=?
+                      AND r.state='active'
+                      AND r.asset_id IN (SELECT value FROM json_each(?))
+                    ORDER BY r.asset_id
+                """, (leg["order_line_id"], leg["bot_name"], int(leg["app_id"]),
+                      str(leg["context_id"]), leg["asset_ids_json"])).fetchall()
+                self._assert_reservations_safe([dict(row) for row in current_reservations], sorted(assets))
+                action_id = "delivery-action:" + uuid.uuid4().hex
+                evidence = {
+                    "order_cancelled": True,
+                    "offer_absence_confirmed": True,
+                    "released_asset_ids": sorted(assets),
+                }
+                db.execute("""
+                    INSERT INTO gd_delivery_operator_actions
+                        (action_id,order_id,leg_id,action_type,retry_generation,actor,reason,evidence_json)
+                    VALUES(?,?,?,'release',NULL,?,?,?)
+                """, (action_id, order, leg_id, actor, reason,
+                      json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
+                changed = db.execute("""
+                    UPDATE gd_resource_reservations SET state='released',
+                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    WHERE order_line_id=? AND bot_name=? COLLATE NOCASE
+                      AND owner_type='order' AND app_id=? AND context_id=?
+                      AND state='active'
+                      AND asset_id IN (SELECT value FROM json_each(?))
+                """, (leg["order_line_id"], leg["bot_name"], int(leg["app_id"]),
+                      str(leg["context_id"]), leg["asset_ids_json"])).rowcount
+                if changed != len(assets):
+                    raise DeliveryRecoveryBlocked("Не удалось атомарно освободить полный набор резервов")
+                db.execute(
+                    "UPDATE gd_delivery_legs SET status='CANCELLED',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
+                    (leg_id,),
+                )
+                action_ids.append(action_id)
+            db.execute(
+                "UPDATE gd_orders SET status='CANCELLED',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                (order,),
+            )
+        return {"order_id": order, "status": "CANCELLED",
+                "released_legs": len(verified_assets), "action_ids": action_ids}
+
     def release(self, *, order_id: str, leg_id: str, actor: str, reason: str) -> dict[str, Any]:
         order, leg = str(order_id).strip(), str(leg_id).strip()
         actor, reason = str(actor).strip(), str(reason).strip()
