@@ -174,12 +174,23 @@ class DeliveryReconciliation:
                 continue
             steam_state = str(status.get("status", "")).casefold()
             if steam_state == "accepted":
-                self._update_leg(leg["leg_id"], "ACCEPTED", trade_offer_id=offer_id)
+                changed = self._update_leg(leg["leg_id"], "ACCEPTED", trade_offer_id=offer_id)
                 self._complete_order_if_all_accepted(order)
-                results.append({"leg_id": leg["leg_id"], "status": "ACCEPTED", "trade_offer_id": offer_id})
+                results.append({
+                    "leg_id": leg["leg_id"],
+                    "status": "ACCEPTED" if changed else "STATE_CHANGED",
+                    "trade_offer_id": offer_id,
+                    "reconciled": changed,
+                })
             elif steam_state in {"declined", "canceled", "cancelled", "expired"}:
-                self._update_leg(leg["leg_id"], "DECLINED", trade_offer_id=offer_id)
+                changed = self._update_leg(leg["leg_id"], "DECLINED", trade_offer_id=offer_id)
                 self._complete_order_if_all_accepted(order)
+                if not changed:
+                    results.append({
+                        "leg_id": leg["leg_id"], "status": "STATE_CHANGED",
+                        "trade_offer_id": offer_id, "reconciled": False,
+                    })
+                    continue
                 self._event(order, "telegram_notification", {
                     "leg_id": leg["leg_id"], "trade_offer_id": offer_id,
                     "steam_status": steam_state, "message": "Steam отклонил или завершил предложение обмена.",
@@ -203,7 +214,7 @@ class DeliveryReconciliation:
 
     def _update_leg(
         self, leg_id: str, state: str, *, trade_offer_id: str | None = None
-    ) -> None:
+    ) -> bool:
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             leg = db.execute(
@@ -212,13 +223,19 @@ class DeliveryReconciliation:
                 "WHERE l.leg_id=?", (leg_id,),
             ).fetchone()
             if leg is None:
-                return
-            db.execute(
+                return False
+            changed = db.execute(
                 "UPDATE gd_delivery_legs SET status=?, "
                 "trade_offer_id=COALESCE(?,trade_offer_id), "
-                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE leg_id=? AND status IN ('UNKNOWN','SENT_TO_STEAM')",
                 (state, trade_offer_id, leg_id),
             )
+            # Steam status may have been fetched concurrently by another
+            # reconciliation worker. Never let a stale response overwrite a
+            # terminal state (especially ACCEPTED) or a newer operator state.
+            if changed.rowcount != 1:
+                return False
             attempt = db.execute(
                 "SELECT attempt_id,result_json FROM gd_delivery_attempts "
                 "WHERE order_id=? AND leg_id=? ORDER BY retry_generation DESC LIMIT 1",
@@ -256,6 +273,7 @@ class DeliveryReconciliation:
                         )
                       )
                 """, (leg_id, leg_id, leg_id, leg_id, leg_id))
+            return True
 
     def _consume_reservations(self, leg_id: str) -> None:
         with self.database.connect() as db:
