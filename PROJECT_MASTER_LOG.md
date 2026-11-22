@@ -6456,3 +6456,45 @@ I. Запустить только целевые тесты, затем пол�
 **Важное ограничение:** точный способ доказать отсутствие активного Steam offer и формат inventory evidence для ручного release нужно реализовать через уже имеющиеся ASF inventory/status contracts, а не через предположение о результате. Если ASF не может доказать отсутствие offer, операция остаётся заблокированной. UI/chat-команды в первый patch не включать: сначала закрыть service/API и тесты; интерфейс отдельно после проверки.
 
 **Следующий шаг:** подготовить короткую карту методов/транзакций и финальный перечень файлов для первого кода patch, не менять реализацию без отдельного разрешения. Текущий этап остаётся documentation + read-only audit; пользовательскую машину, ASF и Steam пока не трогать.
+
+
+## C.2 — реализация согласованного recovery-контракта, первая итерация (2026-11-22)
+
+Пользователь явно разрешил перейти от read-only аудита к изменению Python-кода и SQLite-миграций. Изменения выполняются только в `work/local-sync`; `main` и PR #4 не затрагиваются.
+
+**Изменённые runtime-файлы:**
+- `core/delivery/dispatcher.py`:
+  - `ACTION_REQUIRED` и legacy `FAILED` блокируют новые dispatch; leg `FAILED` также заблокирована от обычной отправки.
+  - Доказанный ASF отказ без созданного offer переводит leg/attempt в `FAILED`, а заказ — в `ACTION_REQUIRED`, не в order-level `FAILED`.
+  - Если у заказа уже есть другая leg со статусом `UNKNOWN`, `SENT_TO_STEAM` или `DISPATCHING`, после отказа первой leg заказ остаётся `PROCESSING`, чтобы уже начатые offers могли пройти reconciliation.
+  - Разрешён единственный безопасный повтор существующего `prepared` attempt, созданного сервисом recovery и содержащего `operator_retry_action_id`. Любой другой конфликт idempotency key по-прежнему fail-closed переводится в `UNKNOWN`.
+  - При завершении attempt сохраняются audit-ссылка, actor/reason и inventory/recipient evidence операторского retry.
+- `core/delivery/reconciliation.py`:
+  - Startup recovery одной транзакцией переводит `DISPATCHING` legs и связанные `dispatching` attempts в `UNKNOWN`.
+  - Обнаруженный offer обновляет leg и текущую attempt до `SENT_TO_STEAM`.
+  - `ACCEPTED`/`DECLINED` обновляют соответствующую attempt и leg транзакционно; offer ID и evidence сохраняются. При `ACCEPTED` резерв той же leg атомарно становится `consumed`.
+  - Агрегат заказа: пока остаются начатые offers — `PROCESSING`; после их разрешения при `DECLINED`/`FAILED` — `ACTION_REQUIRED`; `DELIVERED` только когда приняты все обязательные legs.
+- Новый `core/delivery/recovery.py`:
+  - Добавлен явный `DeliveryRecoveryService.retry/release`; reconciliation сам по себе retry/release не запускает.
+  - Retry требует подтверждённого ASF inventory с актуальным timestamp, исходного bot ownership, присутствия каждого asset и `tradable=true`, совпадения проверенного Steam recipient с сохранённым recipient и строгого подтверждения отсутствия активного/неопределённого offer.
+  - Retry создаёт новую `retry_generation` и `prepared` attempt, не меняя старые attempts и сохраняя активные reservations.
+  - Release — отдельная явная операция; она требует terminal attempt, отсутствия других in-flight offers в заказе, совпадения recipient и положительного доказательства отсутствия offer. Освобождаются только assets текущей leg.
+  - Любое отсутствие/неоднозначность доказательств блокирует операцию.
+- `core/database/ledger_migrations.py`:
+  - Добавлена миграция `2026-11-delivery-operator-recovery-audit-v1`.
+  - Таблица `gd_delivery_operator_actions` хранит action ID, order/leg, тип retry/release, generation, actor, reason, evidence JSON и timestamp.
+  - Миграция использует существующий backup-before-migration механизм, транзакцию, FK check и отдельный migration ID.
+
+**Тесты добавлены/усилены:**
+- `tests/test_delivery_dispatcher.py`: startup recovery синхронизирует attempt; decline синхронизирует attempt/order и сохраняет активный резерв; доказанный отказ блокирует неотправленную leg; уже отправленная leg продолжает reconciliation и может стать ACCEPTED.
+- Новый `tests/test_delivery_recovery.py`: generation и сохранение старой attempt; fail-closed на stale inventory, recipient mismatch и неподтверждённое отсутствие offer; запрет retry для UNKNOWN; явный аудируемый release.
+
+**Коммиты реализации:**
+- `7283a2af6990dc1561e3be7fd32280770bf53ba3` — синхронизация reconciliation attempts и legs.
+- `3c8418def9f4921198724d944bc59706870399b0` — сохранение PROCESSING при наличии уже начатых offers.
+- `6d820f2863c7a6cf2eb5182c3248bf28e3dcc302`, `7bd950fcef47367a51002918bcab73095519a07d` — regression tests для recovery и multi-bot.
+- `a0546fb0d6d948ba5dbd20d14424dd6693622ff7` — audit migration.
+- `61c6c750b9adb6ed6f557ebc9b64b52d11bc6c6a` — recovery service.
+- `bbbc42b38ce1e7ed0049aba2d6660fdc0fe6914f`, `574bc731ad355687e9bea2464c74704dbe263289`, `fd5de0561405f7f1ceb6bf68bc19db6ac38341e8` — безопасное продолжение operator retry generation, точная область reservation и сохранение recovery evidence.
+
+**Проверки:** GitHub ref обновлялся с expected SHA после каждого коммита. Python unit tests, SQLite migration tests и end-to-end ASF проверки на этом этапе ещё не запускались; фактическое выполнение тестов не заявляется. Следующий шаг — проверить CI и точечно исправить найденные ошибки, затем расширить coverage ledger/reservation и Playerok outbox без изменения `platform_status`.
