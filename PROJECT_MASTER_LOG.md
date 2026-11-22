@@ -6498,3 +6498,12 @@ I. Запустить только целевые тесты, затем пол�
 - `bbbc42b38ce1e7ed0049aba2d6660fdc0fe6914f`, `574bc731ad355687e9bea2464c74704dbe263289`, `fd5de0561405f7f1ceb6bf68bc19db6ac38341e8` — безопасное продолжение operator retry generation, точная область reservation и сохранение recovery evidence.
 
 **Проверки:** GitHub ref обновлялся с expected SHA после каждого коммита. Python unit tests, SQLite migration tests и end-to-end ASF проверки на этом этапе ещё не запускались; фактическое выполнение тестов не заявляется. Следующий шаг — проверить CI и точечно исправить найденные ошибки, затем расширить coverage ledger/reservation и Playerok outbox без изменения `platform_status`.
+
+
+**Дополнение к C.2 (2026-11-22):**
+- Recovery retry теперь создаёт новый `prepared` DeliveryAttempt с отдельным generation в той же транзакции, что и audit action. Dispatcher принимает только такой `prepared` attempt с `operator_retry_action_id`; обычный конфликт idempotency key по-прежнему переводится в `UNKNOWN`. Operator evidence сохраняется в result JSON при последующей отправке и reconciliation.
+- Проверка резервов retry/release ограничена точными asset IDs текущей leg; перед операторским действием проверяется отсутствие других in-flight legs заказа.
+- `DELIVERED` теперь требует не только ACCEPTED всех legs, но и подтверждения, что каждый asset из manifest соответствующей leg имеет reservation со state `consumed`. Если проверка не сходится, заказ остаётся в `ACTION_REQUIRED`.
+- Дополнительно dispatch заблокирован для `CANCELLED` заказов.
+- Проверка Playerok-контракта: `integrations/playerok/sync.py` уже создаёт `playerok_status_outbox` только триггером перехода внутреннего заказа в `DELIVERED`; `gd_deals.platform_status` продолжает обновляться из наблюдаемого статуса площадки отдельно. Этот файл не менялся.
+- Дополнительные коммиты: `e40f446de666c1b9875d27e4928a5a93bccc288a` (reservation consumption gate), `eefc48bef3f439f751ebec1a4347789296498a0a` (тест consumed reservations), `5545fdeacbb78d07fd14c286fe064e684dde9f88` (CANCELLED dispatch guard).
