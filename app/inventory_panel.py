@@ -660,8 +660,8 @@ class InventoryPanel(QWidget):
             if row_data is None or row_data.is_tradable is not True:
                 continue
             for bot_name, asset_id in expand_inventory_instances(row_data):
-                key = (str(bot_name), str(asset_id))
-                if self._reservation_key(*key) not in self.reservation_rows:
+                key = self._reservation_key(str(bot_name), str(asset_id))
+                if key not in self.reservation_rows:
                     candidates.add(key)
         self._selected_asset_keys.update(candidates)
         self._sync_tile_selection()
@@ -695,8 +695,8 @@ class InventoryPanel(QWidget):
                 if take <= 0:
                     continue
                 for asset_id in game_set.asset_ids[:take * game_set.cards_per_set]:
-                    key = (str(bot_name), str(asset_id))
-                    if self._reservation_key(*key) in self.reservation_rows:
+                    key = self._reservation_key(bot_name, str(asset_id))
+                    if key in self.reservation_rows:
                         problems.append(f"{bot_name}: выбранный набор содержит зарезервированную карточку")
                     bot_chosen.add(key)
                 remaining -= take
@@ -851,7 +851,7 @@ class InventoryPanel(QWidget):
                     for asset_id in asset_ids:
                         self._selected_asset_keys.discard(self._reservation_key(bot, asset_id))
             tile_selected = selectable and any(
-                (str(bot), str(asset_id)) in self._selected_asset_keys
+                self._reservation_key(bot, asset_id) in self._selected_asset_keys
                 for bot, asset_ids in row_data.assets_by_bot
                 for asset_id in asset_ids
             )

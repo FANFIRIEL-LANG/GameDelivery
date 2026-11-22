@@ -73,7 +73,7 @@ class AppStartupSmokeTests(unittest.TestCase):
             try:
                 critical.assert_called_once()
                 title, message = critical.call_args.args[1:3]
-                self.assertEqual(title, "Ошибка запуска: SQLite schema migration")
+                self.assertEqual(title, "Ошибка локальной базы данных")
                 self.assertIn("не может безопасно открыть локальные заказы или системное хранилище секретов", message)
                 self.assertIn("резервную копию", message)
                 self.assertEqual(window.startup_error_label.text(), message)
@@ -96,7 +96,7 @@ class AppStartupSmokeTests(unittest.TestCase):
 
             try:
                 critical.assert_called_once()
-                self.assertEqual(critical.call_args.args[1], "Ошибка запуска: SQLite schema migration")
+                self.assertIn("Ошибка локальной базы данных", critical.call_args.args[1])
                 self.assertEqual(window.startup_error_label.text(), critical.call_args.args[2])
                 self.assertIsNone(window.tabs if hasattr(window, "tabs") else None)
                 self.assertTrue(database.is_dir())
@@ -426,11 +426,19 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.deleteLater()
                     self.app.processEvents()
 
-    def test_playerok_order_import_selects_canonical_order_without_legacy_duplicate(self):
+    def test_playerok_order_imports_once_and_prepares_under_same_local_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
+            InventorySnapshotStore(database).replace(
+                [
+                    CardCopy("567", "Example Game", "Trading Card"),
+                    CardCopy("678", "Other Game", "Another Card"),
+                ],
+                bot_name="Bot A",
+            )
             ledger_database = Database(database)
             ledger = DeliveryLedger(ledger_database)
+            PlayerokDealSyncService(ledger_database)
             config = ledger.create_listing_config_version(
                 listing_id="listing-deal-123", source_platform="playerok",
                 external_listing_id="listing-123", delivery_quantity_per_deal=1,
@@ -442,15 +450,8 @@ class AppStartupSmokeTests(unittest.TestCase):
                 chat_id="chat-123", listing_id=config["listing_id"],
                 config_version_id=config["config_version_id"], platform_status="PAID",
             )
-            ledger.create_order(order_id="order-123", deal_id="deal-123", total_quantity=1)
-            with ledger_database.connect() as db:
-                db.execute(
-                    "UPDATE gd_deals SET playerok_account_id='seller-1' WHERE deal_id='deal-123'"
-                )
             source_order = {
                 "platform": "playerok",
-                "account_user_id": "seller-1",
-                "deal_id": "deal-123",
                 "order_id": "deal-123",
                 "title": "Steam Card Set",
                 "buyer": "buyer-a",
@@ -466,25 +467,76 @@ class AppStartupSmokeTests(unittest.TestCase):
                 try:
                     window._import_marketplace_order(source_order)
                     self.assertEqual(window.orders.rowCount(), 1)
-                    context = window.orders.item(0, 0).data(Qt.ItemDataRole.UserRole)
-                    self.assertIsInstance(context, dict)
-                    self.assertEqual(context["kind"], "ledger")
-                    self.assertEqual(context["order_id"], "order-123")
+                    imported_context = window.orders.item(0, 0).data(Qt.ItemDataRole.UserRole)
+                    self.assertIsInstance(imported_context, dict)
+                    local_order_id = str(imported_context["order_id"])
+                    self.assertEqual(window.orders.item(0, 0).text(), "deal-123")
+                    self.assertEqual(window.orders.item(0, 1).text(), "Playerok · buyer-a")
+                    self.assertEqual(window.orders.item(0, 2).text(), "Steam Card Set")
                     window._import_marketplace_order(source_order)
                     self.assertEqual(window.orders.rowCount(), 1)
+
+                    window.order_recipient.setText(
+                        "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=Abc_123"
+                    )
+                    window.order_assets.item(0).setSelected(True)
+                    window._prepare_delivery_order()
                     warning.assert_not_called()
-                    info.assert_not_called()
-                    with ledger_database.connect() as db:
-                        self.assertEqual(
-                            db.execute(
-                                "SELECT COUNT(*) FROM gd_orders WHERE order_id='order-123'"
-                            ).fetchone()[0],
-                            1,
-                        )
-                        self.assertEqual(
-                            db.execute("SELECT COUNT(*) FROM delivery_orders").fetchone()[0],
-                            0,
-                        )
+                    info.assert_called_once()
+                    with connect_sqlite(database, row_factory=lambda _cursor, row: tuple(row)) as db:
+                        order = db.execute(
+                            "SELECT source_platform, source_order_id, source_title, source_buyer, "
+                            "recipient_trade_url, status, asset_count, source_status, source_amount, source_url "
+                            "FROM delivery_orders WHERE order_id = ?",
+                            (local_order_id,),
+                        ).fetchone()
+                        reserved_assets = db.execute(
+                            "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
+                            (local_order_id,),
+                        ).fetchall()
+                    self.assertEqual(
+                        order,
+                        (
+                            "playerok", "deal-123", "Steam Card Set", "buyer-a",
+                            "https://steamcommunity.com/tradeoffer/new/?partner=123456",
+                            "reserved — не отправлен", 1, "PAID", "250",
+                            "https://playerok.com/deal/deal-123",
+                        ),
+                    )
+                    self.assertEqual(reserved_assets, [("Bot A", "567")])
+                    self.assertEqual(
+                        self.credential_backend.values[
+                            (SteamTradeCredentialStore.SERVICE, local_order_id)
+                        ],
+                        "Abc_123",
+                    )
+                    with connect_sqlite(database, row_factory=lambda _cursor, row: tuple(row)) as db:
+                        order_assets = db.execute(
+                            "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"
+                        ).fetchall()
+                        local_order_count = db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders"
+                        ).fetchone()[0]
+                    self.assertEqual(order_assets, [(local_order_id, "Bot A", "567")])
+                    self.assertEqual(local_order_count, 1)
+                    self.assertEqual(window.orders.rowCount(), 1)
+
+                    # Re-importing a prepared Playerok sale must not create a separate manual order.
+                    window._import_marketplace_order(source_order)
+                    self.assertEqual(window.orders.rowCount(), 1)
+                    window.order_assets.item(1).setSelected(True)
+                    window._prepare_delivery_order()
+                    warning.assert_called_once()
+                    with connect_sqlite(database, row_factory=lambda _cursor, row: tuple(row)) as db:
+                        local_order_count = db.execute(
+                            "SELECT COUNT(*) FROM delivery_orders"
+                        ).fetchone()[0]
+                        reserved_assets_after_repeat = db.execute(
+                            "SELECT bot_name, asset_id FROM steam_asset_reservations WHERE order_id = ?",
+                            (local_order_id,),
+                        ).fetchall()
+                    self.assertEqual(local_order_count, 1)
+                    self.assertEqual(reserved_assets_after_repeat, [("Bot A", "567")])
                 finally:
                     window.close()
                     window.deleteLater()
@@ -591,24 +643,6 @@ class AppStartupSmokeTests(unittest.TestCase):
     def test_playerok_import_persists_deal_chat_and_listing_ids_separately(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
-            ledger_database = Database(database)
-            ledger = DeliveryLedger(ledger_database)
-            config = ledger.create_listing_config_version(
-                listing_id="listing-uuid-3", source_platform="playerok",
-                external_listing_id="listing-uuid-3", delivery_quantity_per_deal=1,
-                item_selectors={"app_id": 730, "context_id": 2}, bot_pool=["Bot A"],
-            )
-            ledger.create_deal(
-                deal_id="deal-uuid-1", source_platform="playerok",
-                external_deal_id="deal-uuid-1", chat_id="chat-uuid-2",
-                listing_id=config["listing_id"], config_version_id=config["config_version_id"],
-                platform_status="PAID",
-            )
-            ledger.create_order(order_id="order-uuid-1", deal_id="deal-uuid-1", total_quantity=1)
-            with ledger_database.connect() as db:
-                db.execute(
-                    "UPDATE gd_deals SET playerok_account_id='seller-1' WHERE deal_id='deal-uuid-1'"
-                )
             with patch.object(
                 MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
             ), patch("app.main.QMessageBox.information"), patch("app.main.QMessageBox.warning"):
@@ -616,7 +650,6 @@ class AppStartupSmokeTests(unittest.TestCase):
                 try:
                     order = {
                         "platform": "playerok",
-                        "account_user_id": "seller-1",
                         "deal_id": "deal-uuid-1",
                         "order_id": "deal-uuid-1",
                         "chat_id": "chat-uuid-2",
@@ -632,21 +665,15 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window._import_marketplace_order(order)
                     window._import_marketplace_order({**order, "status": "SENT"})
                     with sqlite3.connect(database) as db:
-                        deal = db.execute("""
-                            SELECT external_deal_id,chat_id,listing_id,playerok_account_id,platform_status
-                            FROM gd_deals WHERE deal_id='deal-uuid-1'
-                        """).fetchone()
-                        order_count = db.execute(
-                            "SELECT COUNT(*) FROM gd_orders WHERE order_id='order-uuid-1'"
-                        ).fetchone()[0]
-                        legacy_count = db.execute(
-                            "SELECT COUNT(*) FROM delivery_orders WHERE source_platform='playerok'"
-                        ).fetchone()[0]
-                    self.assertEqual(
-                        deal, ("deal-uuid-1", "chat-uuid-2", "listing-uuid-3", "seller-1", "SENT")
-                    )
-                    self.assertEqual(order_count, 1)
-                    self.assertEqual(legacy_count, 0)
+                        rows = db.execute("""
+                            SELECT source_order_id,source_deal_id,source_chat_id,
+                                   source_listing_id,source_chat_url,source_status
+                            FROM delivery_orders WHERE source_platform='playerok'
+                        """).fetchall()
+                    self.assertEqual(rows, [(
+                        "deal-uuid-1", "deal-uuid-1", "chat-uuid-2",
+                        "listing-uuid-3", "https://playerok.com/chats/chat-uuid-2", "SENT",
+                    )])
                     self.assertEqual(window.orders.rowCount(), 1)
                 finally:
                     window.close()
