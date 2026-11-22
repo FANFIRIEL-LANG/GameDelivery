@@ -177,5 +177,52 @@ class ListingStockServiceTests(unittest.TestCase):
             ).fetchone()[0], 1)
 
 
+    def test_transfer_can_join_callers_transaction_and_rolls_back_with_it(self):
+        self.ledger.observe(self.a, 4)
+        self.service.allocate_listing(
+            request_id="allocation-caller-tx", listing_id="listing-1",
+            config_version_id="config-1", units=4, resources=[self.a],
+        )
+        with self.assertRaisesRegex(RuntimeError, "rollback caller"):
+            with self.database.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                transferred = self.service.transfer_to_order(
+                    transfer_event_id="paid-event-caller-tx", listing_id="listing-1",
+                    config_version_id="config-1", order_line_id="line-1",
+                    units=3, connection=db,
+                )
+                self.assertEqual(sum(row["units"] for row in transferred), 3)
+                raise RuntimeError("rollback caller")
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_stock_transfers WHERE transfer_event_id='paid-event-caller-tx'"
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1' AND state='active'"
+            ).fetchone()[0], 4)
+            self.assertEqual(db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id='line-1' AND state='active'"
+            ).fetchone()[0], 0)
+
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            transferred = self.service.transfer_to_order(
+                transfer_event_id="paid-event-caller-tx", listing_id="listing-1",
+                config_version_id="config-1", order_line_id="line-1",
+                units=3, connection=db,
+            )
+            self.assertEqual(sum(row["units"] for row in transferred), 3)
+            db.commit()
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id='line-1' AND state='active'"
+            ).fetchone()[0], 3)
+
+
+
 if __name__ == "__main__":
     unittest.main()
