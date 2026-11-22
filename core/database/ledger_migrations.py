@@ -38,6 +38,8 @@ QUANTITY_STOCK_TRANSFER_MIGRATION_ID = "2026-11-quantity-stock-transfers-v1"
 QUANTITY_STOCK_TRANSFER_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-transfers-v1.bak"
 QUANTITY_STOCK_BATCH_MIGRATION_ID = "2026-11-quantity-stock-batches-v1"
 QUANTITY_STOCK_BATCH_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-batches-v1.bak"
+QUANTITY_STOCK_IDENTITY_MIGRATION_ID = "2026-11-quantity-stock-identity-v1"
+QUANTITY_STOCK_IDENTITY_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-identity-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -858,6 +860,37 @@ def _apply_operator_recovery_audit_migration(connection: sqlite3.Connection) -> 
     return True
 
 
+def _apply_quantity_stock_identity_migration(connection: sqlite3.Connection) -> bool:
+    """Persist verified item identity and tradability beside each stock observation."""
+    if _migration_applied(connection, QUANTITY_STOCK_IDENTITY_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        columns = _columns(connection, "gd_stock_observations")
+        if "identity_json" not in columns:
+            connection.execute("ALTER TABLE gd_stock_observations ADD COLUMN identity_json TEXT")
+        if "is_tradable" not in columns:
+            connection.execute(
+                "ALTER TABLE gd_stock_observations ADD COLUMN is_tradable INTEGER "
+                "CHECK(is_tradable IS NULL OR is_tradable IN (0,1))"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gd_stock_observations_selector "
+            "ON gd_stock_observations(game_id,app_id,context_id,availability_state,is_tradable)"
+        )
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (QUANTITY_STOCK_IDENTITY_MIGRATION_ID,),
+        )
+        if connection.execute("PRAGMA foreign_key_check(gd_stock_observations)").fetchall():
+            raise sqlite3.IntegrityError("Stock identity migration produced foreign-key violations")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     """Apply the canonical ledger, Playerok sync, recipe, and reservation migrations."""
     connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
@@ -903,7 +936,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_quantity_stock_migration(connection) or changed
     changed = _apply_quantity_stock_audit_migration(connection) or changed
     changed = _apply_quantity_stock_transfer_migration(connection) or changed
-    return _apply_quantity_stock_batch_migration(connection) or changed
+    changed = _apply_quantity_stock_batch_migration(connection) or changed
+    return _apply_quantity_stock_identity_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:

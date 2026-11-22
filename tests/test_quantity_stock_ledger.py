@@ -10,6 +10,8 @@ from pathlib import Path
 from core.database.db import Database
 from core.database.connection import connect_sqlite
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.recipes import SteamAssetSpec
+from games.inventory import InventoryItem
 
 
 class QuantityStockLedgerTests(unittest.TestCase):
@@ -43,6 +45,13 @@ class QuantityStockLedgerTests(unittest.TestCase):
             self.assertIsNotNone(db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gd_stock_allocations'"
             ).fetchone())
+            from core.database.ledger_migrations import QUANTITY_STOCK_IDENTITY_MIGRATION_ID
+            self.assertIsNotNone(db.execute(
+                "SELECT 1 FROM gd_schema_migrations WHERE migration_id=?",
+                (QUANTITY_STOCK_IDENTITY_MIGRATION_ID,),
+            ).fetchone())
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(gd_stock_observations)")}
+            self.assertTrue({"identity_json", "is_tradable"}.issubset(columns))
 
 
     def test_existing_database_is_backed_up_before_quantity_migration(self):
@@ -199,6 +208,99 @@ class QuantityStockLedgerTests(unittest.TestCase):
             outcomes = list(pool.map(reserve, ("concurrent-a", "concurrent-b")))
         self.assertCountEqual(outcomes, ["reserved", "blocked"])
         self.assertEqual(self.ledger.free_units(self.resource), 1)
+
+    def test_observation_persists_exact_identity_and_tradability(self):
+        identity = __import__(
+            "core.delivery.stock_identity", fromlist=["StockItemIdentity"]
+        ).StockItemIdentity(
+            "cs2", 730, "2", market_hash_name="AK-47 | Redline (Field-Tested)",
+            name="AK-47 | Redline", item_type="Classified Rifle", class_id="2001",
+            exterior="Field-Tested", rarity="Classified",
+        )
+        row = self.ledger.observe(
+            self.resource, 100, identity=identity, is_tradable=True
+        )
+        self.assertEqual(row["is_tradable"], 1)
+        self.assertIn('"class_id":"2001"', row["identity_json"])
+        spec = SteamAssetSpec(
+            game_id="cs2", app_id=730, context_id="2",
+            selector={"class_id": "2001", "market_hash_name": "AK-47 | Redline (Field-Tested)"},
+        )
+        self.assertEqual(self.ledger.eligible_resources(spec), [self.resource])
+
+    def test_selector_matcher_rejects_unknown_false_and_missing_tradability(self):
+        from core.delivery.stock_identity import StockItemIdentity
+        base_identity = StockItemIdentity(
+            "cs2", 730, "2", market_hash_name="AK-47 | Redline (Field-Tested)",
+            name="AK-47 | Redline", item_type="Classified Rifle", class_id="2001",
+            exterior="Field-Tested", rarity="Classified",
+        )
+        spec = SteamAssetSpec(
+            "cs2", 730, "2", {"class_id": "2001"}, allowed_bot_pool=("Bot-A",)
+        )
+        for asset_id, flag in (("1101", False), ("1102", None)):
+            resource = StockResource("cs2", 730, "2", "Bot-A", asset_id)
+            self.ledger.observe(resource, 3, identity=base_identity, is_tradable=flag)
+        self.assertEqual(self.ledger.eligible_resources(spec), [])
+
+        tradable_resource = StockResource("cs2", 730, "2", "Bot-A", "1103")
+        self.ledger.observe(tradable_resource, 3, identity=base_identity, is_tradable=True)
+        self.assertEqual(self.ledger.eligible_resources(spec), [tradable_resource])
+        blocked_spec = SteamAssetSpec(
+            "cs2", 730, "2", {"class_id": "2001"}, allowed_bot_pool=("Bot-B",)
+        )
+        self.assertEqual(self.ledger.eligible_resources(blocked_spec), [])
+
+    def test_identity_scope_mismatch_is_rejected_on_observe(self):
+        from core.delivery.stock_identity import StockItemIdentity
+        wrong_scope = StockItemIdentity(
+            "dota2", 570, "2", class_id="2001"
+        )
+        with self.assertRaisesRegex(ValueError, "scope"):
+            self.ledger.observe(
+                self.resource, 1, identity=wrong_scope, is_tradable=True
+            )
+
+    def test_complete_snapshot_invalidates_missing_assets_atomically(self):
+        item = InventoryItem(
+            game_id="cs2", bot_name="Bot-A", asset_id="123456",
+            class_id="2001", instance_id="0", name="AK-47 | Redline",
+            market_hash_name="AK-47 | Redline (Field-Tested)",
+            item_type="Classified Rifle", is_tradable=True, amount=10,
+        )
+        result = self.ledger.observe_snapshot("cs2", "Bot-A", [item])
+        self.assertEqual(result["observed_count"], 1)
+        self.ledger.allocate(
+            allocation_id="snapshot-allocation", resource=self.resource, units=4,
+            owner_type="listing", listing_id="listing-a",
+        )
+        empty = self.ledger.observe_snapshot("cs2", "Bot-A", [])
+        self.assertEqual(empty["observed_count"], 0)
+        self.assertEqual(empty["unavailable_count"], 1)
+        with self.database.connect() as db:
+            observation = db.execute(
+                "SELECT revision,availability_state,is_tradable,identity_json "
+                "FROM gd_stock_observations WHERE observation_id=?",
+                (self.ledger._observation_id(self.resource),),
+            ).fetchone()
+            allocation = db.execute(
+                "SELECT units,state FROM gd_stock_allocations WHERE allocation_id='snapshot-allocation'"
+            ).fetchone()
+        self.assertEqual((observation["revision"], observation["availability_state"]), (2, "unavailable"))
+        self.assertEqual(observation["is_tradable"], 1)
+        self.assertIsNotNone(observation["identity_json"])
+        self.assertEqual((allocation["units"], allocation["state"]), (4, "active"))
+        self.assertEqual(self.ledger.free_units(self.resource), 0)
+
+    def test_complete_snapshot_rejects_wrong_bot_and_duplicate_assets(self):
+        item = InventoryItem(
+            "cs2", "Bot-A", "123456", "2001", "0", "Item", amount=1,
+            is_tradable=True,
+        )
+        with self.assertRaisesRegex(ValueError, "другой игры или бота"):
+            self.ledger.observe_snapshot("cs2", "Bot-B", [item])
+        with self.assertRaisesRegex(ValueError, "повторяющийся"):
+            self.ledger.observe_snapshot("cs2", "Bot-A", [item, item])
 
     def test_resource_rejects_non_string_asset_ids(self):
         for invalid in (123456, None, "", "   "):

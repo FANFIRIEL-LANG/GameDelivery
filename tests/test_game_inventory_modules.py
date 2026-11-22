@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from games.catalog import GAME_CATALOG, get_game
+from core.database.db import Database
+from core.delivery.stock_ledger import QuantityStockLedger
 from games.inventory import (
     GameInventoryStore, parse_game_inventory, refresh_game_inventory,
     is_container_item, filter_game_inventory_items,
@@ -123,6 +125,40 @@ class GameInventoryRefreshTaskTests(unittest.TestCase):
             )
             self.assertEqual(store.load("cs2", "Bot A"), [])
             self.assertEqual(store.load_snapshot_meta("cs2"), {"Bot A": 0})
+            self.assertEqual(completed[0][0], 1)
+            self.assertEqual(completed[0][1], [])
+
+    def test_worker_complete_empty_snapshot_marks_previous_stock_unavailable(self):
+        from app.game_inventory_panel import _GameInventoryRefreshTask
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "inventory.sqlite3"
+            store = GameInventoryStore(database)
+            old = parse_game_inventory(payload(), "cs2", "Bot A")
+            store.replace("cs2", "Bot A", old)
+            ledger_database = Database(database)
+            ledger_database.initialize()
+            ledger = QuantityStockLedger(ledger_database)
+            ledger.observe_snapshot("cs2", "Bot A", old)
+            client = Mock()
+            client.get_bot_inventory.return_value = {
+                "Success": True,
+                "Result": {"Bot A": {"Assets": [], "Descriptions": []}},
+            }
+            task = _GameInventoryRefreshTask(
+                client, database, "cs2", ["Bot A"], store=store
+            )
+            completed = []
+            task.signals.finished.connect(
+                lambda succeeded, failed, instances: completed.append((succeeded, failed, instances))
+            )
+            task.run()
+
+            with ledger_database.connect() as db:
+                row = db.execute(
+                    "SELECT revision,availability_state FROM gd_stock_observations"
+                ).fetchone()
+            self.assertEqual((row["revision"], row["availability_state"]), (2, "unavailable"))
             self.assertEqual(completed[0][0], 1)
             self.assertEqual(completed[0][1], [])
 

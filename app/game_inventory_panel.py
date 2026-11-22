@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from core.database.db import Database
+from core.delivery.stock_ledger import QuantityStockLedger
 from app.bot_selector import (
     BotSelectionModel, checked_bot_names, configured_bot_names,
     connect_account_search, populate_bot_list,
@@ -100,18 +102,30 @@ class _GameInventoryRefreshTask(QRunnable):
         if game is None:
             self.signals.finished.emit(0, ["Неизвестная игра."], {})
             return
+        stock_ledger = None
+        if game.item_domain != "trading_cards":
+            try:
+                stock_database = Database(self.database_path)
+                stock_database.initialize()
+                stock_ledger = QuantityStockLedger(stock_database)
+            except Exception as exc:
+                detail = _safe_test_asf_error(exc) if self.test_mode else str(exc)
+                self.signals.finished.emit(
+                    0, [f"Не удалось инициализировать складской ledger: {detail}"], {}
+                )
+                return
         for index, bot_name in enumerate(self.bot_names, 1):
             self.signals.progress.emit(index, len(self.bot_names), bot_name)
             try:
-                if self.game_id != "cs2":
-                    refresh_game_inventory(self.client, store, self.game_id, bot_name)
-                    succeeded += 1
-                    continue
                 payload = self.client.get_bot_inventory(
                     bot_name, app_id=game.app_id, context_id=game.context_id,
                     language="english",
                 )
+                # Parsing validates the entire ASF response before either stock
+                # observations or the display snapshot can be replaced.
                 items = parse_game_inventory(payload, self.game_id, bot_name)
+                if stock_ledger is not None:
+                    stock_ledger.observe_snapshot(self.game_id, bot_name, items)
                 store.replace(self.game_id, bot_name, items)
                 succeeded += 1
                 if self.game_id == "cs2":
