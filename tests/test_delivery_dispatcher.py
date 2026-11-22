@@ -513,10 +513,11 @@ class DeliveryDispatchTests(unittest.TestCase):
                 db.execute("SELECT status FROM gd_delivery_attempts WHERE leg_id=?", (legs[0],)).fetchone()[0],
                 "failed",
             )
+        sent_before_blocked_dispatch = len(self.asf.sent)
         blocked = self.dispatch("order-1", legs[1])
         self.assertFalse(blocked["dispatched"])
         self.assertEqual(blocked["status"], "ACTION_REQUIRED")
-        self.assertEqual(len(self.asf.sent), 0)
+        self.assertEqual(len(self.asf.sent), sent_before_blocked_dispatch)
 
     def test_sent_offer_continues_reconciliation_after_another_leg_fails(self):
         legs = self.create_order(bots=("Bot-A", "Bot-B"))
