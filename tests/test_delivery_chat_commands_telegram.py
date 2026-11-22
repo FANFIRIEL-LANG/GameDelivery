@@ -109,7 +109,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             payload={"buyer_steam_id64": "76561197960265851",
                      "stored_trade_url": "https://steamcommunity.com/tradeoffer/new/?partner=123"},
         )
-        self.ledger.create_order(order_id="order-1", deal_id="deal-1", total_quantity=1, status=status)
+        self.ledger.create_order(order_id="order-1", deal_id="deal-1", total_quantity=1, status="reserved")
         self.ledger.add_order_line(
             order_line_id="line-1", order_id="order-1", line_number=1,
             item_type="cs2_item", item_name="Skin",
@@ -117,11 +117,7 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         )
         self.ledger.add_delivery_leg(
             leg_id="leg-1", order_line_id="line-1", bot_name="Bot-A",
-            app_id=730, context_id=2, asset_ids=["asset-1"], status="PRIVACY_WAIT",
-        )
-        self.ledger.create_delivery_attempt(
-            order_id="order-1", leg_id="leg-1", retry_generation=0,
-            status="privacy_wait", result={"error": "private"},
+            app_id=730, context_id=2, asset_ids=["asset-1"], status="reserved",
         )
         with self.db.connect() as db:
             db.execute("""
@@ -130,6 +126,14 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
                      bot_name,asset_id,units,state)
                 VALUES ('reservation-1','order','line-1','cs2',730,'2','Bot-A','asset-1',1,'active')
             """)
+        self.ledger.bind_order_recipient("order-1", "76561197960265851")
+        with self.db.connect() as db:
+            db.execute("UPDATE gd_orders SET status=? WHERE order_id='order-1'", (status,))
+            db.execute("UPDATE gd_delivery_legs SET status='PRIVACY_WAIT' WHERE leg_id='leg-1'")
+        self.ledger.create_delivery_attempt(
+            order_id="order-1", leg_id="leg-1", retry_generation=0,
+            status="privacy_wait", result={"error": "private"},
+        )
 
     def _commands(self, custom=None):
         return BuyerChatCommandRegistry(
