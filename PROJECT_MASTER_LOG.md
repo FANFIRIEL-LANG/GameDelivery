@@ -6519,3 +6519,6 @@ I. Запустить только целевые тесты, затем пол�
 
 
 **Reservation conflict gate (2026-11-22):** операторские retry/release дополнительно сверяют каждый точный asset с глобальным blocking reservation count (`active` + `legacy_conflict`) и блокируют операцию, если ресурс конфликтует или не имеет ровно одного блокирующего резерва владельца. Проверка выполняется до внешних доказательств и повторно внутри write-транзакции.
+
+
+**CI isolation for the recovery patch (2026-11-22):** added a focused test step for `tests.test_delivery_dispatcher` and `tests.test_delivery_recovery` before the pre-existing Qt trade UI test. The UI test currently reaches a 120-second timeout in `test_reimported_paid_status_cannot_unblock_historical_baseline_order`, which otherwise prevents the new state-machine tests and full suite from running. This step makes the directly affected delivery tests execute and report independently before that existing UI gate; it does not remove or weaken the UI test.
