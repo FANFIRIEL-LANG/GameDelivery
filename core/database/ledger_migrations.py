@@ -28,6 +28,8 @@ ASSET_ID_BLOCKING_STATE_MIGRATION_ID = "2026-11-asset-id-blocking-state-v1"
 ASSET_ID_BLOCKING_STATE_BACKUP_SUFFIX = ".pre-gamedelivery-asset-id-blocking-state-v1.bak"
 RECIPIENT_SNAPSHOT_MIGRATION_ID = "2026-11-delivery-recipient-snapshot-v1"
 RECIPIENT_SNAPSHOT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-recipient-snapshot-v1.bak"
+OPERATOR_RECOVERY_AUDIT_MIGRATION_ID = "2026-11-delivery-operator-recovery-audit-v1"
+OPERATOR_RECOVERY_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-operator-recovery-audit-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -802,6 +804,52 @@ def _apply_recipient_snapshot_migration(connection: sqlite3.Connection) -> bool:
     return True
 
 
+
+def _apply_operator_recovery_audit_migration(connection: sqlite3.Connection) -> bool:
+    """Persist append-only operator retry/release decisions with evidence metadata."""
+    if _migration_applied(connection, OPERATOR_RECOVERY_AUDIT_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS gd_delivery_operator_actions (
+                action_id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL REFERENCES gd_orders(order_id) ON DELETE RESTRICT,
+                leg_id TEXT NOT NULL REFERENCES gd_delivery_legs(leg_id) ON DELETE RESTRICT,
+                action_type TEXT NOT NULL CHECK(action_type IN ('retry','release')),
+                retry_generation INTEGER,
+                actor TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gd_delivery_operator_actions_order "
+            "ON gd_delivery_operator_actions(order_id,created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gd_delivery_operator_actions_leg "
+            "ON gd_delivery_operator_actions(leg_id,created_at)"
+        )
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (OPERATOR_RECOVERY_AUDIT_MIGRATION_ID,),
+        )
+        violations = connection.execute(
+            "PRAGMA foreign_key_check(gd_delivery_operator_actions)"
+        ).fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"Operator recovery audit migration produced {len(violations)} foreign-key violation(s)"
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     """Apply the canonical ledger, Playerok sync, recipe, and reservation migrations."""
     connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
@@ -842,7 +890,8 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_unified_reservation_migration(connection) or changed
     changed = _apply_asset_id_key_migration(connection) or changed
     changed = _apply_asset_id_blocking_state_migration(connection) or changed
-    return _apply_recipient_snapshot_migration(connection) or changed
+    changed = _apply_recipient_snapshot_migration(connection) or changed
+    return _apply_operator_recovery_audit_migration(connection) or changed
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:
@@ -1621,6 +1670,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
         database_path,
         migration_id=RECIPIENT_SNAPSHOT_MIGRATION_ID,
         backup_suffix=RECIPIENT_SNAPSHOT_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=OPERATOR_RECOVERY_AUDIT_MIGRATION_ID,
+        backup_suffix=OPERATOR_RECOVERY_AUDIT_BACKUP_SUFFIX,
     )
     with connect_sqlite(database_path) as connection:
         return apply_delivery_ledger_migrations(connection)
