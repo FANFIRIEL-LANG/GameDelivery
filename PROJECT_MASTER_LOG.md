@@ -6507,3 +6507,6 @@ I. Запустить только целевые тесты, затем пол�
 - Дополнительно dispatch заблокирован для `CANCELLED` заказов.
 - Проверка Playerok-контракта: `integrations/playerok/sync.py` уже создаёт `playerok_status_outbox` только триггером перехода внутреннего заказа в `DELIVERED`; `gd_deals.platform_status` продолжает обновляться из наблюдаемого статуса площадки отдельно. Этот файл не менялся.
 - Дополнительные коммиты: `e40f446de666c1b9875d27e4928a5a93bccc288a` (reservation consumption gate), `eefc48bef3f439f751ebec1a4347789296498a0a` (тест consumed reservations), `5545fdeacbb78d07fd14c286fe064e684dde9f88` (CANCELLED dispatch guard).
+
+
+**Тестовая корректировка (2026-11-22):** уточнена проверка блокировки второй leg после доказанного отказа: первая попытка уже пересекает ASF boundary и учитывается в числе вызовов; assertion проверяет, что заблокированный повторный dispatch не добавляет новых вызовов ASF. Коммит: `f29c94a4db65de52469e6ae6211d23820d1b58a6`.
