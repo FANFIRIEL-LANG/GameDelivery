@@ -183,6 +183,18 @@ class DeliveryRecoveryService:
                 VALUES(?,?,?,'retry',?,?,?,?)
             """, (action_id, order, leg, new_generation, actor, reason,
                   json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
+            attempt_key = f"{order}:{leg}:{new_generation}"
+            db.execute("""
+                INSERT INTO gd_delivery_attempts
+                    (attempt_id,order_id,leg_id,retry_generation,idempotency_key,status,result_json)
+                VALUES(?,?,?,?,?,'prepared',?)
+            """, (
+                f"attempt:{attempt_key}", order, leg, new_generation, attempt_key,
+                json.dumps({"operator_retry_action_id": action_id,
+                            "operator_actor": actor, "operator_reason": reason,
+                            "recovery_evidence": evidence},
+                           ensure_ascii=False, sort_keys=True),
+            ))
             db.execute(
                 "UPDATE gd_delivery_legs SET status='reserved',trade_offer_id=NULL,"
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",

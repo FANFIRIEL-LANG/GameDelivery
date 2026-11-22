@@ -253,20 +253,30 @@ class DeliveryDispatcher:
                     connection=db,
                 )
                 if not created:
-                    db.execute(
-                        "UPDATE gd_delivery_legs SET status='UNKNOWN', "
-                        "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
-                        (leg,),
+                    try:
+                        prior_attempt_result = json.loads(attempt.get("result_json") or "{}")
+                    except (TypeError, ValueError):
+                        prior_attempt_result = {}
+                    approved_operator_retry = (
+                        attempt.get("status") == "prepared"
+                        and isinstance(prior_attempt_result, dict)
+                        and bool(prior_attempt_result.get("operator_retry_action_id"))
                     )
-                    db.execute(
-                        "UPDATE gd_delivery_attempts SET status='unknown',result_json=? WHERE attempt_id=?",
-                        (json.dumps({"reason": "idempotency key already exists; automatic retry prohibited"}), attempt["attempt_id"]),
-                    )
-                    db.execute(
-                        "UPDATE gd_orders SET status='UNKNOWN',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
-                        (order,),
-                    )
-                    return {"_claimed": False, "response": {"dispatched": False, "status": "UNKNOWN", "reason": "idempotency key already exists"}}
+                    if not approved_operator_retry:
+                        db.execute(
+                            "UPDATE gd_delivery_legs SET status='UNKNOWN', "
+                            "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
+                            (leg,),
+                        )
+                        db.execute(
+                            "UPDATE gd_delivery_attempts SET status='unknown',result_json=? WHERE attempt_id=?",
+                            (json.dumps({"reason": "idempotency key already exists; automatic retry prohibited"}), attempt["attempt_id"]),
+                        )
+                        db.execute(
+                            "UPDATE gd_orders SET status='UNKNOWN',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                            (order,),
+                        )
+                        return {"_claimed": False, "response": {"dispatched": False, "status": "UNKNOWN", "reason": "idempotency key already exists"}}
 
                 db.execute(
                     "UPDATE gd_delivery_attempts SET status='dispatching' WHERE attempt_id=?",
