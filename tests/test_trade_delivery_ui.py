@@ -387,7 +387,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                 info.assert_called_once()
                 with connect_sqlite(database, row_factory=_tuple_row) as db:
                     row = db.execute(
-                        "SELECT status, trade_offer_id, trade_confirmation_status, recipient_trade_url "
+                        "SELECT status, trade_offer_id, trade_confirmation_status, recipient_trade_url, recipient_steam_id64 "
                         "FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
                     ).fetchone()
@@ -402,6 +402,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                         "9876543210",
                         "handled",
                         "https://steamcommunity.com/tradeoffer/new/?partner=123456",
+                        "76561197960389184",
                     ),
                 )
                 self.assertIsNone(
@@ -437,11 +438,12 @@ class TradeDeliveryUITests(unittest.TestCase):
 
                 send.assert_called_once()
                 with connect_sqlite(database, row_factory=_tuple_row) as db:
-                    status = db.execute(
-                        "SELECT status FROM delivery_orders WHERE order_id = ?",
+                    status, recipient_snapshot = db.execute(
+                        "SELECT status, recipient_steam_id64 FROM delivery_orders WHERE order_id = ?",
                         ("GD-ORDER-1",),
-                    ).fetchone()[0]
+                    ).fetchone()
                 self.assertEqual(status, "неизвестен результат отправки — проверь исходящие Steam")
+                self.assertEqual(recipient_snapshot, "76561197960389184")
                 self.assertIsNone(
                     window._trade_credentials._backend.get_password(
                         window._trade_credentials.SERVICE, "GD-ORDER-1"

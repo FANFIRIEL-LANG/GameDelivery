@@ -1571,6 +1571,9 @@ class MainWindow(QMainWindow):
                 or [str(item.get("assetId", "")) for item in preview.get("assets", []) if isinstance(item, dict)] != asset_ids
             ):
                 raise ASFError("ASF не подтвердил точное совпадение получателя, бота и состава активов. Отправка отменена.")
+            # The synchronous legacy path must persist the same ASF-verified recipient
+            # snapshot as the asynchronous path before the atomic send claim checks it.
+            self._bind_legacy_order_recipient_snapshot(order_id, preview)
 
             confirmation_lines = [
                 "Сейчас будет создано реальное предложение обмена Steam.",
