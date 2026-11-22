@@ -64,6 +64,9 @@ class DeliveryRecoveryTests(unittest.TestCase):
                 "VALUES('reservation-recovery','order','line-recovery','cs2',730,'2',"
                 "'Bot-A','asset-1',1,'active')"
             )
+        self.ledger.bind_order_recipient("order-recovery", "76561197960265851")
+        with self.database.connect() as db:
+            db.execute("UPDATE gd_delivery_legs SET status='FAILED' WHERE leg_id='leg-recovery'")
             self.ledger.create_delivery_attempt(
                 order_id="order-recovery", leg_id="leg-recovery",
                 retry_generation=0, status="failed",
