@@ -6522,3 +6522,6 @@ I. Запустить только целевые тесты, затем пол�
 
 
 **CI isolation for the recovery patch (2026-11-22):** added a focused test step for `tests.test_delivery_dispatcher` and `tests.test_delivery_recovery` before the pre-existing Qt trade UI test. The UI test currently reaches a 120-second timeout in `test_reimported_paid_status_cannot_unblock_historical_baseline_order`, which otherwise prevents the new state-machine tests and full suite from running. This step makes the directly affected delivery tests execute and report independently before that existing UI gate; it does not remove or weaken the UI test.
+
+
+**Точность consume reservation (2026-11-22):** при ACCEPTED reservation теперь потребляется только при совпадении order line, bot, app/context, owner type и asset ID текущей DeliveryLeg. Order aggregation учитывает только соответствующие order-owned consumed reservations. Это исключает случайное потребление совместно принадлежащего ресурса из другого контекста.

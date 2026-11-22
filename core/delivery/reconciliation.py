@@ -205,12 +205,14 @@ class DeliveryReconciliation:
                         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                     WHERE order_line_id=(SELECT order_line_id FROM gd_delivery_legs WHERE leg_id=?)
                       AND bot_name=(SELECT bot_name FROM gd_delivery_legs WHERE leg_id=?)
-                      AND state='active' AND asset_id IN (
+                      AND app_id=(SELECT app_id FROM gd_delivery_legs WHERE leg_id=?)
+                      AND context_id=(SELECT context_id FROM gd_delivery_legs WHERE leg_id=?)
+                      AND owner_type='order' AND state='active' AND asset_id IN (
                         SELECT value FROM json_each(
                             (SELECT asset_ids_json FROM gd_delivery_legs WHERE leg_id=?)
                         )
                       )
-                """, (leg_id, leg_id, leg_id))
+                """, (leg_id, leg_id, leg_id, leg_id, leg_id))
 
     def _consume_reservations(self, leg_id: str) -> None:
         with self.database.connect() as db:
@@ -245,7 +247,7 @@ class DeliveryReconciliation:
                              ON r.order_line_id=l.order_line_id
                             AND r.bot_name=l.bot_name COLLATE NOCASE
                             AND r.app_id=l.app_id AND r.context_id=l.context_id
-                            AND r.asset_id=a.value AND r.state='consumed'
+                            AND r.asset_id=a.value AND r.owner_type='order' AND r.state='consumed'
                        )) AS consumed_assets
                 FROM gd_delivery_legs l
                 JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
