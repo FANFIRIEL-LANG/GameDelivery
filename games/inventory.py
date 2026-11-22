@@ -19,7 +19,6 @@ class InventoryItem:
     class_id: str
     instance_id: str
     name: str
-    amount: int = 1
     item_type: str = ""
     market_hash_name: str = ""
     icon_url: str = ""
@@ -30,6 +29,7 @@ class InventoryItem:
     rarity: str = ""
     exterior: str = ""
     tags: tuple[str, ...] = ()
+    amount: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "asset_id", validate_asset_id(self.asset_id))
