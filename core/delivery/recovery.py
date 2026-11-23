@@ -275,7 +275,7 @@ class DeliveryRecoveryService:
             generation = self._assert_latest_attempt_is_terminal(db, order, leg)
             reservations = self._active_reservations(db, target)
         expected_assets = sorted(str(value) for value in json.loads(target["asset_ids_json"]))
-        self._assert_reservations_safe(reservations, expected_assets)
+        self._assert_reservations_safe(reservations, expected_assets, self._expected_amounts(target))
         inventory_evidence = self._verify_inventory(target)
         recipient = self._verify_recipient(order, leg, target["recipient_steam_id64"])
         self._verify_no_offer(order, leg, str(target["bot_name"]))
@@ -293,7 +293,7 @@ class DeliveryRecoveryService:
             if current_generation != generation:
                 raise DeliveryRecoveryBlocked("История попыток изменилась во время проверки; повторите операцию")
             current_reservations = self._active_reservations(db, current)
-            self._assert_reservations_safe(current_reservations, expected_assets)
+            self._assert_reservations_safe(current_reservations, expected_assets, self._expected_amounts(current))
             db.execute("""
                 INSERT INTO gd_delivery_operator_actions
                     (action_id,order_id,leg_id,action_type,retry_generation,actor,reason,evidence_json)
@@ -371,21 +371,10 @@ class DeliveryRecoveryService:
                     or any(not isinstance(value, str) or not value.strip() for value in assets)
                     or len(set(assets)) != len(assets)):
                     raise DeliveryRecoveryBlocked("Некорректный manifest DeliveryLeg")
-                reservations = db.execute("""
-                    SELECT r.reservation_id,r.asset_id,
-                           (SELECT COUNT(*) FROM gd_resource_reservations blocking
-                            WHERE blocking.bot_name=r.bot_name COLLATE NOCASE
-                              AND blocking.asset_id_key=r.asset_id_key
-                              AND blocking.state IN ('active','legacy_conflict')) AS blocking_count
-                    FROM gd_resource_reservations r
-                    WHERE r.order_line_id=? AND r.bot_name=? COLLATE NOCASE
-                      AND r.owner_type='order' AND r.app_id=? AND r.context_id=?
-                      AND r.state='active'
-                      AND r.asset_id IN (SELECT value FROM json_each(?))
-                    ORDER BY r.asset_id
-                """, (leg["order_line_id"], leg["bot_name"], int(leg["app_id"]),
-                      str(leg["context_id"]), leg["asset_ids_json"])).fetchall()
-                self._assert_reservations_safe([dict(row) for row in reservations], sorted(assets))
+                reservations = self._active_reservations(db, dict(leg))
+                self._assert_reservations_safe(
+                    reservations, sorted(assets), self._expected_amounts(dict(leg))
+                )
                 verified_assets.append((str(leg["leg_id"]), str(leg["bot_name"]), assets))
 
         # External checks are deliberately outside the SQLite write transaction.
@@ -404,7 +393,7 @@ class DeliveryRecoveryService:
                 raise DeliveryRecoveryBlocked("Статус заказа изменился во время проверки")
             for leg_id, _, assets in verified_assets:
                 leg = db.execute("""
-                    SELECT l.status,l.order_line_id,l.asset_ids_json,l.bot_name,l.app_id,l.context_id
+                    SELECT l.status,l.order_line_id,l.asset_ids_json,l.asset_amounts_json,l.bot_name,l.app_id,l.context_id
                     FROM gd_delivery_legs l
                     JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
                     WHERE l.leg_id=? AND ol.order_id=?
@@ -412,26 +401,16 @@ class DeliveryRecoveryService:
                 if leg is None or leg["status"] not in {"FAILED", "DECLINED"}:
                     raise DeliveryRecoveryBlocked("Состояние DeliveryLeg изменилось во время проверки")
                 self._assert_latest_attempt_is_terminal(db, order, leg_id)
-                current_reservations = db.execute("""
-                    SELECT r.reservation_id,r.asset_id,
-                           (SELECT COUNT(*) FROM gd_resource_reservations blocking
-                            WHERE blocking.bot_name=r.bot_name COLLATE NOCASE
-                              AND blocking.asset_id_key=r.asset_id_key
-                              AND blocking.state IN ('active','legacy_conflict')) AS blocking_count
-                    FROM gd_resource_reservations r
-                    WHERE r.order_line_id=? AND r.bot_name=? COLLATE NOCASE
-                      AND r.owner_type='order' AND r.app_id=? AND r.context_id=?
-                      AND r.state='active'
-                      AND r.asset_id IN (SELECT value FROM json_each(?))
-                    ORDER BY r.asset_id
-                """, (leg["order_line_id"], leg["bot_name"], int(leg["app_id"]),
-                      str(leg["context_id"]), leg["asset_ids_json"])).fetchall()
-                self._assert_reservations_safe([dict(row) for row in current_reservations], sorted(assets))
+                current_reservations = self._active_reservations(db, dict(leg))
+                self._assert_reservations_safe(
+                    current_reservations, sorted(assets), self._expected_amounts(dict(leg))
+                )
                 action_id = "delivery-action:" + uuid.uuid4().hex
                 evidence = {
                     "order_cancelled": True,
                     "offer_absence_confirmed": True,
                     "released_asset_ids": sorted(assets),
+                    "restored_listing_units": restored_units,
                 }
                 db.execute("""
                     INSERT INTO gd_delivery_operator_actions
@@ -439,17 +418,7 @@ class DeliveryRecoveryService:
                     VALUES(?,?,?,'release',NULL,?,?,?)
                 """, (action_id, order, leg_id, actor, reason,
                       json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
-                changed = db.execute("""
-                    UPDATE gd_resource_reservations SET state='released',
-                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                    WHERE order_line_id=? AND bot_name=? COLLATE NOCASE
-                      AND owner_type='order' AND app_id=? AND context_id=?
-                      AND state='active'
-                      AND asset_id IN (SELECT value FROM json_each(?))
-                """, (leg["order_line_id"], leg["bot_name"], int(leg["app_id"]),
-                      str(leg["context_id"]), leg["asset_ids_json"])).rowcount
-                if changed != len(assets):
-                    raise DeliveryRecoveryBlocked("Не удалось атомарно освободить полный набор резервов")
+                changed, restored_units = self._release_leg_allocations(db, dict(leg))
                 db.execute(
                     "UPDATE gd_delivery_legs SET status='CANCELLED',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
                     (leg_id,),
@@ -474,7 +443,7 @@ class DeliveryRecoveryService:
         self._verify_recipient(order, leg, target["recipient_steam_id64"])
         self._verify_no_offer(order, leg, str(target["bot_name"]))
         expected_assets = sorted(str(value) for value in json.loads(target["asset_ids_json"]))
-        self._assert_reservations_safe(reservations, expected_assets)
+        self._assert_reservations_safe(reservations, expected_assets, self._expected_amounts(target))
         action_id = "delivery-action:" + uuid.uuid4().hex
         evidence = {"offer_absence_confirmed": True, "released_asset_ids": expected_assets}
         with self.database.connect() as db:
@@ -482,23 +451,14 @@ class DeliveryRecoveryService:
             current = self._load_target(db, order, leg)
             self._assert_latest_attempt_is_terminal(db, order, leg)
             current_reservations = self._active_reservations(db, current)
-            self._assert_reservations_safe(current_reservations, expected_assets)
+            self._assert_reservations_safe(current_reservations, expected_assets, self._expected_amounts(current))
             db.execute("""
                 INSERT INTO gd_delivery_operator_actions
                     (action_id,order_id,leg_id,action_type,retry_generation,actor,reason,evidence_json)
                 VALUES(?,?,?,'release',NULL,?,?,?)
             """, (action_id, order, leg, actor, reason,
                   json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
-            cursor = db.execute("""
-                UPDATE gd_resource_reservations SET state='released',
-                    updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                WHERE order_line_id=? AND bot_name=? COLLATE NOCASE
-                  AND owner_type='order' AND app_id=? AND context_id=? AND state='active'
-                  AND asset_id IN (SELECT value FROM json_each(?))
-            """, (current["order_line_id"], current["bot_name"],
-                  int(current["app_id"]), str(current["context_id"]),
-                  current["asset_ids_json"]))
-            if cursor.rowcount != len(expected_assets):
-                raise DeliveryRecoveryBlocked("Не удалось атомарно освободить полный набор резервов")
+            released_count, restored_units = self._release_leg_allocations(db, current)
         return {"action_id": action_id, "order_id": order, "leg_id": leg,
-                "status": "released", "released_asset_ids": expected_assets}
+                "status": "released", "released_asset_ids": expected_assets,
+                "released_allocations": released_count, "restored_listing_units": restored_units}
