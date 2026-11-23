@@ -140,8 +140,34 @@ class DeliveryRecoveryService:
 
     @staticmethod
     def _active_reservations(connection, target: dict[str, Any]) -> list[dict[str, Any]]:
+        stock_rows = connection.execute("""
+            SELECT a.asset_id,SUM(a.units) AS units,
+                   CASE WHEN o.availability_state='usable'
+                          AND (SELECT COALESCE(SUM(blocking.units),0)
+                               FROM gd_stock_allocations blocking
+                               WHERE blocking.observation_id=a.observation_id
+                                 AND (blocking.state IN ('active','pending','unknown','legacy_conflict')
+                                   OR (blocking.state='consumed' AND blocking.consumed_revision>=o.revision))
+                              )<=o.observed_amount
+                          AND (SELECT COUNT(*) FROM gd_resource_reservations r
+                               WHERE r.bot_name=a.bot_name COLLATE NOCASE
+                                 AND r.asset_id_key=a.asset_id_key
+                                 AND r.state IN ('active','legacy_conflict'))=0
+                        THEN 1 ELSE 2 END AS blocking_count
+            FROM gd_stock_allocations a
+            JOIN gd_stock_observations o ON o.observation_id=a.observation_id
+            WHERE a.order_line_id=? AND a.bot_name=? COLLATE NOCASE
+              AND a.owner_type='order' AND a.app_id=? AND a.context_id=? AND a.state='active'
+              AND a.asset_id IN (SELECT value FROM json_each(?))
+            GROUP BY a.asset_id,a.asset_id_key,a.observation_id,o.availability_state,o.observed_amount,o.revision
+            ORDER BY a.asset_id
+        """, (target["order_line_id"], target["bot_name"],
+              int(target["app_id"]), str(target["context_id"]),
+              target["asset_ids_json"])).fetchall()
+        if stock_rows:
+            return [dict(row) for row in stock_rows]
         rows = connection.execute("""
-            SELECT r.reservation_id,r.asset_id,r.state,
+            SELECT r.reservation_id,r.asset_id,r.units,r.state,
                    (SELECT COUNT(*) FROM gd_resource_reservations blocking
                     WHERE blocking.bot_name=r.bot_name COLLATE NOCASE
                       AND blocking.asset_id_key=r.asset_id_key
@@ -158,12 +184,69 @@ class DeliveryRecoveryService:
 
     @staticmethod
     def _assert_reservations_safe(
-        reservations: list[dict[str, Any]], expected_assets: list[str]
+        reservations: list[dict[str, Any]], expected_assets: list[str],
+        expected_amounts: dict[str, int] | None = None,
     ) -> None:
         if sorted(str(row["asset_id"]) for row in reservations) != expected_assets:
             raise DeliveryRecoveryBlocked("Активные резервы не совпадают с manifest DeliveryLeg")
         if any(int(row.get("blocking_count", 0)) != 1 for row in reservations):
             raise DeliveryRecoveryBlocked("Для одного или нескольких assets обнаружен конфликтующий blocking reservation")
+        if expected_amounts is not None:
+            actual = {str(row["asset_id"]): int(row["units"]) for row in reservations}
+            if actual != expected_amounts:
+                raise DeliveryRecoveryBlocked("Активные Amount не совпадают с asset_amounts_json DeliveryLeg")
+
+    @staticmethod
+    def _expected_amounts(target: dict[str, Any]) -> dict[str, int] | None:
+        raw = target.get("asset_amounts_json")
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            raise DeliveryRecoveryBlocked("Повреждён asset_amounts_json DeliveryLeg") from None
+        if not isinstance(value, dict) or any(
+            not isinstance(key, str) or type(amount) is not int or amount < 1
+            for key, amount in value.items()
+        ):
+            raise DeliveryRecoveryBlocked("Некорректный asset_amounts_json DeliveryLeg")
+        return value
+
+    @staticmethod
+    def _release_leg_allocations(connection, target: dict[str, Any]) -> tuple[int, int]:
+        stock_rows = connection.execute("""
+            SELECT allocation_id FROM gd_stock_allocations
+            WHERE owner_type='order' AND state='active'
+              AND order_line_id=? AND bot_name=? COLLATE NOCASE
+              AND app_id=? AND context_id=?
+              AND asset_id IN (SELECT value FROM json_each(?))
+        """, (target["order_line_id"], target["bot_name"], int(target["app_id"]),
+              str(target["context_id"]), target["asset_ids_json"])).fetchall()
+        if stock_rows:
+            ids = [str(row["allocation_id"]) for row in stock_rows]
+            changed = connection.execute("""
+                UPDATE gd_stock_allocations SET state='released',
+                    updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE allocation_id IN (SELECT value FROM json_each(?))
+                  AND owner_type='order' AND state='active'
+            """, (json.dumps(ids),)).rowcount
+            if changed != len(ids):
+                raise DeliveryRecoveryBlocked("Не удалось освободить полный набор quantity stock allocations")
+            from core.delivery.listing_stock import ListingStockService
+            restored = ListingStockService.restore_order_allocations_to_listing(connection, ids)
+            return changed, restored
+        expected_assets = json.loads(target["asset_ids_json"])
+        changed = connection.execute("""
+            UPDATE gd_resource_reservations SET state='released',
+                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE order_line_id=? AND bot_name=? COLLATE NOCASE
+              AND owner_type='order' AND app_id=? AND context_id=? AND state='active'
+              AND asset_id IN (SELECT value FROM json_each(?))
+        """, (target["order_line_id"], target["bot_name"], int(target["app_id"]),
+              str(target["context_id"]), target["asset_ids_json"])).rowcount
+        if changed != len(expected_assets):
+            raise DeliveryRecoveryBlocked("Не удалось освободить полный набор canonical reservations")
+        return changed, 0
 
     @staticmethod
     def _assert_latest_attempt_is_terminal(connection, order_id: str, leg_id: str) -> int:
