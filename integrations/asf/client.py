@@ -198,7 +198,6 @@ def _unwrap_result(payload: Any) -> Any:
     return payload[result_key] if result_key is not None else payload
 
 
-@dataclass(frozen=True)
 def _normalize_asset_amounts(
     asset_ids: list[str],
     asset_amounts: Mapping[str, int] | None,
@@ -244,6 +243,7 @@ def _response_asset_amounts_match(
     return returned == dict(expected)
 
 
+@dataclass(frozen=True)
 class ASFClient:
     """Minimal client for the local, official ASF IPC API.
 

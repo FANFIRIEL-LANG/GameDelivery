@@ -163,3 +163,6 @@
 
 
 **C.3 ASF quantity fingerprint backward-compatibility correction (2026-11-23):** Исправлено построение send fingerprint: при legacy запросе без `AssetAmounts` canonical string остаётся байт-в-байт прежним; дополнительная строка `amounts=...` добавляется только когда карта количеств явно передана. Это сохраняет existing idempotency keys для старых Steam Cards и CS2 отправок, но различает, например, запросы на 3 и 100 единиц одного Asset ID.
+
+
+**C.3 Python ASF amount helper decorator placement fix (2026-11-23):** Windows ACL gate discovered that the new module-level `_normalize_asset_amounts()` helper had been inserted between `@dataclass(frozen=True)` and `ASFClient`, causing the decorator to apply to a function and breaking module import. Moved `@dataclass(frozen=True)` back directly above `class ASFClient`; both amount helpers remain module-level undecorated functions. No runtime ACL or trade logic change. Full Tests, Windows Build and ASF plugin workflow rerun on the corrected commit.
