@@ -302,12 +302,16 @@ class DeliveryReconciliation:
                     SELECT order_line_id FROM gd_delivery_legs WHERE leg_id=?
                 ) AND bot_name=(
                     SELECT bot_name FROM gd_delivery_legs WHERE leg_id=?
+                ) AND app_id=(
+                    SELECT app_id FROM gd_delivery_legs WHERE leg_id=?
+                ) AND context_id=(
+                    SELECT context_id FROM gd_delivery_legs WHERE leg_id=?
                 ) AND state='active' AND asset_id IN (
                     SELECT value FROM json_each(
                         (SELECT asset_ids_json FROM gd_delivery_legs WHERE leg_id=?)
                     )
                 )
-            """, (leg_id, leg_id, leg_id))
+            """, (leg_id, leg_id, leg_id, leg_id, leg_id))
             db.execute("""
                 UPDATE gd_stock_allocations SET state='consumed',
                     consumed_revision=(
@@ -320,12 +324,16 @@ class DeliveryReconciliation:
                     SELECT order_line_id FROM gd_delivery_legs WHERE leg_id=?
                   ) AND bot_name=(
                     SELECT bot_name FROM gd_delivery_legs WHERE leg_id=?
+                  ) AND app_id=(
+                    SELECT app_id FROM gd_delivery_legs WHERE leg_id=?
+                  ) AND context_id=(
+                    SELECT context_id FROM gd_delivery_legs WHERE leg_id=?
                   ) AND asset_id IN (
                     SELECT value FROM json_each(
                         (SELECT asset_ids_json FROM gd_delivery_legs WHERE leg_id=?)
                     )
                   )
-            """, (leg_id, leg_id, leg_id))
+            """, (leg_id, leg_id, leg_id, leg_id, leg_id))
 
     def _complete_order_if_all_accepted(self, order_id: str) -> None:
         with self.database.connect() as db:

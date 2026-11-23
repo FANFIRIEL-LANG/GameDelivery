@@ -202,3 +202,6 @@
 
 
 **C.3 Recovery quantity test fixture config reference correction (2026-11-23):** В новом test fixture для operator quantity release использован несуществующий convenience method config_for_order. Заменено на сохранённый ConfigVersion ID, возвращённый при создании тестового объявления. Production code не менялся.
+
+
+**C.3 reconciliation app/context scoping correction (2026-11-23):** Review обнаружил, что `DeliveryReconciliation._consume_reservations()` завершал canonical reservations и quantity stock allocations только по order_line_id, bot_name и Asset ID. Теперь оба UPDATE дополнительно ограничены `app_id/context_id` текущей DeliveryLeg, чтобы accepted offer не мог пометить consumed соседний ресурс из другого inventory context с совпавшим Asset ID. Добавлен integration regression test с одинаковым Asset ID в context 2 и context 6: принятие leg context 2 должно consume только его allocation, сохраняя соседнюю запись active.
