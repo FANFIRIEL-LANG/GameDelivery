@@ -714,7 +714,7 @@ class DeliveryReservationService:
                             for unit in line_plan.units for resource in unit
                         )
                     ):
-                        raise ValueError("Обычный Steam Asset plan должен содержать по одному Asset на единицу")
+                        raise ValueError("Steam Asset quantity plan должен содержать по одному Asset на единицу")
                 elif line_plan.units and len(line_plan.units) != item.quantity_per_order:
                     raise ValueError("Количество планируемых units не совпадает с RecipeItem.quantity")
 
