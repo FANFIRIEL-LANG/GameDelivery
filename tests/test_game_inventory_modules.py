@@ -66,6 +66,22 @@ class GameInventoryParserTests(unittest.TestCase):
         self.assertTrue(item.is_marketable)
         self.assertTrue(item.icon_url.startswith("https://"))
 
+    def test_numeric_uint64_asset_id_from_asf_is_normalized_to_string(self):
+        data = payload()
+        numeric_id = 76561198000000001
+        data["Result"]["Bot A"]["Assets"][0]["assetid"] = numeric_id
+        item = parse_game_inventory(data, "cs2", "Bot A")[0]
+        self.assertEqual(item.asset_id, str(numeric_id))
+        self.assertIs(type(item.asset_id), str)
+
+    def test_invalid_numeric_asset_ids_are_rejected(self):
+        for invalid_id in (0, -1, True, 1.5, 2**64):
+            with self.subTest(asset_id=invalid_id):
+                data = payload()
+                data["Result"]["Bot A"]["Assets"][0]["assetid"] = invalid_id
+                with self.assertRaises(ValueError):
+                    parse_game_inventory(data, "cs2", "Bot A")
+
     def test_stack_amount_is_parsed_and_must_be_positive_integer(self):
         item = parse_game_inventory(payload(), "cs2", "Bot A")[0]
         self.assertEqual(item.amount, 100)
