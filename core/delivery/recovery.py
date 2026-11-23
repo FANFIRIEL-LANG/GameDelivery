@@ -119,12 +119,20 @@ class DeliveryRecoveryService:
             asset_id = str(getattr(item, "asset_id", ""))
             if asset_id:
                 available[asset_id] = item
+        expected_amounts = self._expected_amounts(target)
         for asset_id in asset_ids:
             item = available.get(str(asset_id))
             if item is None or getattr(item, "is_tradable", None) is not True:
                 raise DeliveryRecoveryBlocked(
                     "Каждый зарезервированный предмет должен присутствовать в свежем ASF inventory и иметь tradable=true"
                 )
+            if expected_amounts is not None:
+                live_amount = getattr(item, "amount", None)
+                required_amount = expected_amounts.get(str(asset_id))
+                if type(live_amount) is not int or required_amount is None or live_amount < required_amount:
+                    raise DeliveryRecoveryBlocked(
+                        "Свежий ASF inventory содержит меньше единиц стека, чем требуется DeliveryLeg"
+                    )
             item_bot = getattr(item, "bot_name", bot)
             if str(item_bot).casefold() != bot.casefold():
                 raise DeliveryRecoveryBlocked("Предмет обнаружен не на исходном боте-владельце")
@@ -133,6 +141,7 @@ class DeliveryRecoveryService:
             "app_id": app_id,
             "context_id": context_id,
             "asset_ids": [str(value) for value in asset_ids],
+            "asset_amounts": expected_amounts,
             "refreshed_at": refreshed_at.astimezone(timezone.utc).isoformat(),
             "expires_at": (refreshed_at.astimezone(timezone.utc) + self.max_inventory_age).isoformat(),
             "asf_verified": True,
@@ -452,13 +461,14 @@ class DeliveryRecoveryService:
             self._assert_latest_attempt_is_terminal(db, order, leg)
             current_reservations = self._active_reservations(db, current)
             self._assert_reservations_safe(current_reservations, expected_assets, self._expected_amounts(current))
+            released_count, restored_units = self._release_leg_allocations(db, current)
+            evidence["restored_listing_units"] = restored_units
             db.execute("""
                 INSERT INTO gd_delivery_operator_actions
                     (action_id,order_id,leg_id,action_type,retry_generation,actor,reason,evidence_json)
                 VALUES(?,?,?,'release',NULL,?,?,?)
             """, (action_id, order, leg, actor, reason,
                   json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
-            released_count, restored_units = self._release_leg_allocations(db, current)
         return {"action_id": action_id, "order_id": order, "leg_id": leg,
                 "status": "released", "released_asset_ids": expected_assets,
                 "released_allocations": released_count, "restored_listing_units": restored_units}
