@@ -283,6 +283,17 @@ class ListingStockServiceTests(unittest.TestCase):
 
     def test_reallocate_listing_units_is_atomic_idempotent_and_preserves_order_stock(self):
         self.observe_typed_inventory(include_dragon=False)
+        # Legacy listings have no typed selector, so reallocation requires
+        # complete source/destination identity equality.
+        destination = StockResource("cs2", 730, "2", "Bot-B", "1002")
+        self.ledger.observe(
+            destination, 9,
+            identity=StockItemIdentity(
+                "cs2", 730, "2", market_hash_name="AK-47 | Redline",
+                name="AK-47 | Redline", item_type="Rifle", class_id="class-redline",
+            ),
+            is_tradable=True,
+        )
         self.service.allocate_listing(
             request_id="reallocate-legacy-base", listing_id="listing-1",
             config_version_id="config-1", units=4, resources=[self.a],
@@ -298,7 +309,6 @@ class ListingStockServiceTests(unittest.TestCase):
                 "AND config_version_id='config-1' AND bot_name='Bot-A' AND state='active'"
             ).fetchone()
         self.assertEqual(int(source["units"]), 3)
-        destination = StockResource("cs2", 730, "2", "Bot-B", "1002")
         moved = self.service.reallocate_listing_units(
             adjustment_id="reallocate-legacy-1", listing_id="listing-1",
             config_version_id="config-1", source_allocation_id=source["allocation_id"],
