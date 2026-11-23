@@ -659,6 +659,26 @@ class DeliveryOrderPipeline:
                 "AND state='active'",
                 (order,),
             ).rowcount
+            stock_rows = db.execute(
+                "SELECT allocation_id FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND state='active' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)",
+                (order,),
+            ).fetchall()
+            stock_allocation_ids = [str(value["allocation_id"]) for value in stock_rows]
+            released_stock = db.execute(
+                "UPDATE gd_stock_allocations SET state='released',"
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE owner_type='order' AND state='active' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)",
+                (order,),
+            ).rowcount
+            if released_stock != len(stock_allocation_ids):
+                raise ValueError("Не удалось освободить полный набор quantity stock allocations")
+            from core.delivery.listing_stock import ListingStockService
+            restored_listing_units = ListingStockService(self.database).restore_order_allocations_to_listing(
+                db, stock_allocation_ids
+            )
             db.execute(
                 "UPDATE gd_orders SET status='CANCELLED', "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
@@ -671,5 +691,7 @@ class DeliveryOrderPipeline:
             "order_id": order,
             "status": "CANCELLED",
             "released_canonical_reservations": released,
+            "released_quantity_allocations": released_stock,
+            "restored_listing_units": restored_listing_units,
             "released_compatibility_reservations": released_legacy,
         }
