@@ -391,6 +391,9 @@ class DeliveryRecoveryService:
         for leg_id, bot_name, _ in verified_assets:
             self._verify_recipient(order, leg_id, order_row["recipient_steam_id64"])
             self._verify_no_offer(order, leg_id, bot_name)
+            with self.database.connect() as inventory_db:
+                inventory_target = self._load_target(inventory_db, order, leg_id)
+            self._verify_inventory(inventory_target)
 
         action_ids: list[str] = []
         restored_listing_units = 0
@@ -454,10 +457,15 @@ class DeliveryRecoveryService:
             reservations = self._active_reservations(db, target)
         self._verify_recipient(order, leg, target["recipient_steam_id64"])
         self._verify_no_offer(order, leg, str(target["bot_name"]))
+        inventory_evidence = self._verify_inventory(target)
         expected_assets = sorted(str(value) for value in json.loads(target["asset_ids_json"]))
         self._assert_reservations_safe(reservations, expected_assets, self._expected_amounts(target))
         action_id = "delivery-action:" + uuid.uuid4().hex
-        evidence = {"offer_absence_confirmed": True, "released_asset_ids": expected_assets}
+        evidence = {
+            "offer_absence_confirmed": True,
+            "released_asset_ids": expected_assets,
+            "inventory": inventory_evidence,
+        }
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             current = self._load_target(db, order, leg)
