@@ -461,8 +461,48 @@ class DeliveryDispatchTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
             ).fetchone()[0], 1)
 
+    def test_delivery_leg_amount_manifest_migration_is_applied(self):
+        with self.db.connect() as db:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(gd_delivery_legs)")}
+            self.assertIn("asset_amounts_json", columns)
+            self.assertIsNotNone(db.execute(
+                "SELECT 1 FROM gd_schema_migrations "
+                "WHERE migration_id='2026-11-delivery-leg-asset-amounts-v1'"
+            ).fetchone())
+
+    def test_delivery_leg_rejects_incomplete_or_non_positive_amount_manifest(self):
+        self.create_order()
+        for amounts in ({"100": 3, "101": 1}, {"100": 0}, {"100": True}):
+            with self.subTest(amounts=amounts):
+                with self.assertRaises(ValueError):
+                    self.ledger.add_delivery_leg(
+                        leg_id="invalid-amount-manifest",
+                        order_line_id="line-order-1", bot_name="Bot-A",
+                        app_id=730, context_id=2, asset_ids=["100"],
+                        status="reserved", asset_amounts=amounts,
+                    )
+
+    def test_dispatch_blocks_invalid_asset_amount_manifest_before_attempt(self):
+        leg = self.create_order(asset_amounts={"100": 3})[0]
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_delivery_legs SET asset_amounts_json=? WHERE leg_id=?",
+                ('{"100":0}', leg),
+            )
+
+        result = self.dispatch("order-1", leg)
+
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "invalid asset amount manifest")
+        self.assertEqual(self.asf.sent, [])
+        with self.db.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
+            ).fetchone()[0], 0)
+
     def test_dispatch_passes_exact_asset_amount_manifest_to_asf(self):
         leg = self.create_order(asset_amounts={"100": 3})[0]
+        self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["amount-offer"]}
 
         result = self.dispatch("order-1", leg)
 
