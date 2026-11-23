@@ -172,3 +172,6 @@
 
 
 **C.3 DeliveryLeg amount manifest regression tests (2026-11-23):** Добавлены проверки, что migration `2026-11-delivery-leg-asset-amounts-v1` реально создаёт колонку и фиксируется в `gd_schema_migrations`; `DeliveryLedger.add_delivery_leg()` отклоняет неполные/нулевые/boolean amounts; dispatcher блокирует повреждённый JSON manifest до создания DeliveryAttempt; и ASF получает exact map только при совпадении с reservation units. Исправлен ASF fake в pass-through тесте, чтобы он возвращал успешный результат после проверки фактически переданного amount map.
+
+
+**C.3 Deferred DeliveryLeg migration ordering fix (2026-11-23):** Полный CI выявил, что generic Playerok migration path запускается на базах без таблицы `gd_delivery_legs`. Новая additive migration ошибочно считала это фатальной ошибкой. Теперь она безопасно откладывается без записи migration ID, если таблица ещё не создана; следующий вызов после установки delivery ledger schema применит колонку штатно. Это сохраняет независимый порядок старых Playerok migration tests и не маскирует ошибку при наличии таблицы.

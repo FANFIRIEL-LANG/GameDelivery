@@ -1463,7 +1463,10 @@ def _apply_delivery_leg_asset_amounts_migration(connection: sqlite3.Connection) 
     connection.execute("BEGIN IMMEDIATE")
     try:
         if not _table_exists(connection, "gd_delivery_legs"):
-            raise sqlite3.OperationalError("gd_delivery_legs must exist before its amount manifest migration")
+            # Generic Playerok migrations can run before the delivery ledger schema.
+            # Defer without recording the migration; it will apply once the table exists.
+            connection.rollback()
+            return False
         columns = _columns(connection, "gd_delivery_legs")
         if "asset_amounts_json" not in columns:
             connection.execute("ALTER TABLE gd_delivery_legs ADD COLUMN asset_amounts_json TEXT")
