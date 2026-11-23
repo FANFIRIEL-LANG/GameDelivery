@@ -64,6 +64,28 @@ def _legacy_schema(db: sqlite3.Connection, *, unique_external: bool = True) -> N
 
 
 class PlayerokSyncMigrationTests(unittest.TestCase):
+    def test_partial_legacy_listing_status_guard_is_schema_aware_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "legacy-listing-status.sqlite3"
+            with connect_sqlite(path) as db:
+                _legacy_schema(db)
+                apply_delivery_ledger_migrations(db)
+                insert_trigger = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='gd_stock_allocations_listing_enabled_insert'"
+                ).fetchone()
+                update_trigger = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='gd_stock_allocations_listing_enabled_update'"
+                ).fetchone()
+                self.assertIsNotNone(insert_trigger)
+                self.assertIsNotNone(update_trigger)
+                self.assertIn("status column unavailable", insert_trigger[0])
+                self.assertIn("status column unavailable", update_trigger[0])
+                self.assertNotIn("l.status", insert_trigger[0])
+                self.assertNotIn("l.status", update_trigger[0])
+
+
     def test_playerok_sync_migration_preserves_trigger_referencing_deals(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "trigger-migration.sqlite3"

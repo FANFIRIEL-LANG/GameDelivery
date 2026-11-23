@@ -143,3 +143,8 @@
 
 
 **C.3 reallocation legacy identity fixture correction (2026-11-23):** Новый legacy reallocation test использует один и тот же item identity на source и destination. В fixture Bot-B class_id из общего inventory helper отличался от Bot-A, что при корректной fail-closed политике legacy reallocation означало бы другой item. Тест теперь задаёт целевому наблюдению тот же полный StockItemIdentity, не ослабляя production matching.
+
+
+**C.3 reallocation migration legacy-schema guard correction (2026-11-23):** CI run `45136612250` показал 4 errors в промежуточных legacy schema: триггеры `gd_stock_allocations_listing_enabled_insert/update`, созданные прежней migration, ссылались на `gd_listings.status`, хотя в legacy fixture таблица содержала только `listing_id`. Добавлена отдельная backed-up migration `2026-11-quantity-stock-listing-enabled-guard-v1`: она заменяет эти триггеры без обращения к отсутствующей колонке; если `status` ещё отсутствует, любые новые blocking listing allocations fail-closed до расширения схемы. Backup добавлен в `Database.initialize()` и `migrate_delivery_ledger()`; добавлен regression test для частичной legacy schema.
+
+**C.3 reallocation identity fixture correction (2026-11-23):** В test `test_reallocate_listing_units_is_atomic_idempotent_and_preserves_order_stock` destination использовал уже наблюдавшийся Bot-B Asset ID `1002`, у которого исходная fixture намеренно задавала другой `class_id`. Повторное наблюдение с подменённым identity не является корректной fixture для identity equality. Destination перенесён на отдельный физический Asset ID `9001` с согласованной StockItemIdentity; production matching rule остаётся строгим и неизменным.

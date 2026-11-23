@@ -285,7 +285,7 @@ class ListingStockServiceTests(unittest.TestCase):
         self.observe_typed_inventory(include_dragon=False)
         # Legacy listings have no typed selector, so reallocation requires
         # complete source/destination identity equality.
-        destination = StockResource("cs2", 730, "2", "Bot-B", "1002")
+        destination = StockResource("cs2", 730, "2", "Bot-B", "9001")
         self.ledger.observe(
             destination, 9,
             identity=StockItemIdentity(

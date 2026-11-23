@@ -50,6 +50,8 @@ QUANTITY_STOCK_LISTING_INCREASE_MIGRATION_ID = "2026-11-quantity-stock-listing-i
 QUANTITY_STOCK_LISTING_INCREASE_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-increase-v1.bak"
 QUANTITY_STOCK_LISTING_REALLOCATION_MIGRATION_ID = "2026-11-quantity-stock-listing-reallocation-v1"
 QUANTITY_STOCK_LISTING_REALLOCATION_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-reallocation-v1.bak"
+QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID = "2026-11-quantity-stock-listing-enabled-guard-v1"
+QUANTITY_STOCK_LISTING_ENABLED_GUARD_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-enabled-guard-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -1314,6 +1316,79 @@ def _apply_quantity_stock_listing_increase_migration(connection: sqlite3.Connect
     return True
 
 
+def _apply_quantity_stock_listing_enabled_guard_migration(connection: sqlite3.Connection) -> bool:
+    """Repair disabled-listing triggers without referencing absent legacy columns."""
+    if _migration_applied(connection, QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        if not _table_exists(connection, "gd_stock_allocations"):
+            raise sqlite3.OperationalError("Quantity stock allocation table is missing")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_listing_enabled_insert")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_allocations_listing_enabled_update")
+
+        listing_columns = _columns(connection, "gd_listings") if _table_exists(connection, "gd_listings") else set()
+        if "status" in listing_columns:
+            connection.execute("""
+                CREATE TRIGGER gd_stock_allocations_listing_enabled_insert
+                BEFORE INSERT ON gd_stock_allocations
+                WHEN NEW.owner_type='listing'
+                  AND NEW.state IN ('active','pending','unknown','legacy_conflict')
+                  AND EXISTS (
+                      SELECT 1 FROM gd_listings l
+                      WHERE l.listing_id=NEW.listing_id AND l.status='disabled'
+                  )
+                BEGIN
+                    SELECT RAISE(ABORT,'Disabled listing cannot receive stock allocations');
+                END
+            """)
+            connection.execute("""
+                CREATE TRIGGER gd_stock_allocations_listing_enabled_update
+                BEFORE UPDATE OF owner_type,listing_id,state ON gd_stock_allocations
+                WHEN NEW.owner_type='listing'
+                  AND NEW.state IN ('active','pending','unknown','legacy_conflict')
+                  AND EXISTS (
+                      SELECT 1 FROM gd_listings l
+                      WHERE l.listing_id=NEW.listing_id AND l.status='disabled'
+                  )
+                BEGIN
+                    SELECT RAISE(ABORT,'Disabled listing cannot receive stock allocations');
+                END
+            """)
+        else:
+            # Intermediate legacy schemas do not expose listing status. Refuse
+            # new blocking listing claims until the status-bearing schema exists.
+            connection.execute("""
+                CREATE TRIGGER gd_stock_allocations_listing_enabled_insert
+                BEFORE INSERT ON gd_stock_allocations
+                WHEN NEW.owner_type='listing'
+                  AND NEW.state IN ('active','pending','unknown','legacy_conflict')
+                BEGIN
+                    SELECT RAISE(ABORT,
+                        'Listing status column unavailable; refusing listing stock allocation');
+                END
+            """)
+            connection.execute("""
+                CREATE TRIGGER gd_stock_allocations_listing_enabled_update
+                BEFORE UPDATE OF owner_type,listing_id,state ON gd_stock_allocations
+                WHEN NEW.owner_type='listing'
+                  AND NEW.state IN ('active','pending','unknown','legacy_conflict')
+                BEGIN
+                    SELECT RAISE(ABORT,
+                        'Listing status column unavailable; refusing listing stock allocation');
+                END
+            """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID,),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def _apply_quantity_stock_listing_reallocation_migration(connection: sqlite3.Connection) -> bool:
     """Allow an immutable audit record for atomic listing stock reallocation."""
     if _migration_applied(connection, QUANTITY_STOCK_LISTING_REALLOCATION_MIGRATION_ID):
@@ -1434,6 +1509,7 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
         changed = _apply_quantity_stock_listing_adjustment_migration(connection) or changed
         changed = _apply_quantity_stock_listing_adjustment_hardening_migration(connection) or changed
         changed = _apply_quantity_stock_listing_increase_migration(connection) or changed
+        changed = _apply_quantity_stock_listing_enabled_guard_migration(connection) or changed
         changed = _apply_quantity_stock_listing_reallocation_migration(connection) or changed
     return changed
 
@@ -2516,6 +2592,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
         database_path,
         migration_id=QUANTITY_STOCK_LISTING_INCREASE_MIGRATION_ID,
         backup_suffix=QUANTITY_STOCK_LISTING_INCREASE_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID,
+        backup_suffix=QUANTITY_STOCK_LISTING_ENABLED_GUARD_BACKUP_SUFFIX,
     )
     ensure_pre_migration_backup(
         database_path,
