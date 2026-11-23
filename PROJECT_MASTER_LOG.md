@@ -193,3 +193,6 @@
 
 
 **C.3 Operator cancel audit ordering correction (2026-11-23):** CI выявил, что cancel_order формировал operator evidence до получения результата release/restore и обращался к restored_units раньше присваивания. Перенесено создание audit row после атомарного release/restore; restored_listing_units теперь фиксируется и возвращается в результате отмены. Это устраняет UnboundLocalError на прежнем canonical recovery path и сохраняет audit evidence для quantity stock.
+
+
+**C.3 Quantity stock dispatch fixture ordering correction (2026-11-23):** CI выявил, что новый dispatcher integration test создавал stock observation до снятия test-only canonical reservation. QuantityStockLedger корректно помечал такую observation как conflict. Тест теперь сначала освобождает canonical fixture reservation и только затем создаёт usable observation и order allocation; production logic не менялась.
