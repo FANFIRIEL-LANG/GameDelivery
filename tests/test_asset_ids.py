@@ -53,18 +53,30 @@ class AssetIDValidationTests(unittest.TestCase):
         self.assertEqual(parsed[0].asset_id, "000123456789")
 
     def test_general_game_parser_validates_raw_asset_id(self):
-        for value in INVALID_ASSET_IDS:
+        # Game inventory crosses the ASF JSON boundary, where UInt64 AssetID
+        # values may be represented as JSON integers. Other invalid types
+        # remain rejected; internal InventoryItem construction stays strict.
+        invalid_asf_values = (None, True, 12.5, "", " \\t\\n")
+        for value in invalid_asf_values:
             payload = {"Success": True, "Result": {"Bot-A": {
                 "Assets": [{"assetid": value, "classid": "class-1"}],
                 "Descriptions": [{"classid": "class-1", "instanceid": "0", "name": "Item"}],
             }}}
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_game_inventory(payload, "cs2", "Bot-A")
+
+        payload = {"Success": True, "Result": {"Bot-A": {
+            "Assets": [{"assetid": 123, "classid": "class-1"}],
+            "Descriptions": [{"classid": "class-1", "instanceid": "0", "name": "Item"}],
+        }}}
+        parsed = parse_game_inventory(payload, "cs2", "Bot-A")
+        self.assertEqual(parsed[0].asset_id, "123")
+
         payload["Result"]["Bot-A"]["Assets"][0]["assetid"] = "  000987654321  "
         parsed = parse_game_inventory(payload, "cs2", "Bot-A")
         self.assertEqual(parsed[0].asset_id, "000987654321")
         with self.assertRaises(ValueError):
-            InventoryItem("cs2", "Bot-A", False, "class", "0", "Item")
+            InventoryItem("cs2", "Bot-A", 123, "class", "0", "Item")
 
     def test_card_model_and_selectors_reject_invalid_source_ids(self):
         for value in INVALID_ASSET_IDS:
