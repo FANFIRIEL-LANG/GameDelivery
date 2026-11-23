@@ -8,7 +8,7 @@ from typing import Any
 
 from integrations.asf.client import ASFError
 from core.database.connection import connect_sqlite
-from games.asset_ids import validate_asset_id
+from games.asset_ids import normalize_asf_asset_id, validate_asset_id
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ def parse_game_inventory(payload: Any, game_id: str, bot_name: str) -> list[Inve
         asset_key, class_key = _find_key(asset, "assetid"), _find_key(asset, "classid")
         if asset_key is None or class_key is None:
             raise ASFError("Предмет ASF не содержит asset ID или class ID; снимок не обновлён")
-        asset_id = validate_asset_id(asset[asset_key])
+        asset_id = normalize_asf_asset_id(asset[asset_key])
         instance_key = _find_key(asset, "instanceid")
         if not asset_id or asset_id in seen:
             raise ASFError("ASF вернул пустой или повторяющийся asset ID; снимок не обновлён")
