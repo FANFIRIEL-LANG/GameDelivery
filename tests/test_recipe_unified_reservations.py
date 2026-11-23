@@ -244,7 +244,7 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                 (order,),
             ).fetchall()
             reservations = db.execute(
-                "SELECT bot_name,asset_id,units FROM gd_resource_reservations "
+                "SELECT bot_name,asset_id,units FROM gd_stock_allocations "
                 "WHERE owner_type='order' AND state='active' AND order_line_id IN "
                 "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?) ORDER BY bot_name",
                 (order,),
@@ -255,6 +255,12 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                 "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?) GROUP BY state",
                 (order,),
             ).fetchall()
+            canonical_count = db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE owner_type='order' "
+                "AND state='active' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)",
+                (order,),
+            ).fetchone()[0]
         self.assertEqual(
             {row["bot_name"]: json.loads(row["asset_amounts_json"]) for row in legs},
             {"Bot-A": {"51001": 4}, "Bot-B": {"52002": 6}},
@@ -265,8 +271,9 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
         )
         self.assertEqual(
             {(row["state"], int(row["units"])) for row in transferred},
-            {("released", 10)},
+            {("active", 10)},
         )
+        self.assertEqual(canonical_count, 0)
 
         repeated = self.pipeline.prepare_recipe_order(order_id=order, snapshots={})
         self.assertTrue(repeated.reserved, repeated.message)
@@ -279,6 +286,142 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                 ).fetchone()[0],
                 2,
             )
+
+    def test_two_orders_can_reserve_disjoint_amounts_from_the_same_stack(self):
+        item = recipe_item(
+            "repeat-sale-redline", 1, "steam_asset", 3,
+            SteamAssetSpec(
+                "cs2", 730, "2",
+                {"market_hash_name": "AK-47 | Redline"},
+                ("Bot-A",),
+            ),
+        )
+        config = self.ledger.create_recipe_config_version(
+            listing_id="repeat-sale-listing",
+            source_platform="playerok",
+            external_listing_id="repeat-sale-external",
+            recipe_items=(item,),
+        )
+        item_id = self.recipe_item_id(config["config_version_id"], 1)
+        stock = QuantityStockLedger(self.database)
+        resource = StockResource("cs2", 730, "2", "Bot-A", "61001")
+        identity = StockItemIdentity(
+            "cs2", 730, "2",
+            market_hash_name="AK-47 | Redline",
+            name="AK-47 | Redline",
+            item_type="Rifle",
+            class_id="class-redline",
+        )
+        stock.observe(resource, 10, identity=identity, is_tradable=True)
+        ListingStockService(self.database).allocate_recipe_items(
+            request_id="repeat-sale-stock-batch",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={item_id: 10},
+        )
+
+        orders = ("repeat-order-1", "repeat-order-2")
+        for index, order_id in enumerate(orders, start=1):
+            deal_id = f"repeat-deal-{index}"
+            self.ledger.create_deal(
+                deal_id=deal_id,
+                source_platform="playerok",
+                external_deal_id=f"repeat-external-deal-{index}",
+                chat_id=f"repeat-chat-{index}",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                platform_status="PAID",
+            )
+            self.ledger.create_order(order_id=order_id, deal_id=deal_id, total_quantity=1)
+            with self.database.connect() as db:
+                db.execute(
+                    "UPDATE gd_deals SET playerok_account_id='seller-test',is_historical=0 WHERE deal_id=?",
+                    (deal_id,),
+                )
+                db.execute(
+                    "INSERT OR REPLACE INTO playerok_sync_state(account_user_id,baseline_completed) VALUES('seller-test',1)"
+                )
+            result = self.pipeline.prepare_recipe_order(order_id=order_id, snapshots={})
+            self.assertTrue(result.reserved, result.message)
+
+        with self.database.connect() as db:
+            allocations = db.execute(
+                "SELECT ol.order_id,a.asset_id,a.units,a.state FROM gd_stock_allocations a "
+                "JOIN gd_order_lines ol ON ol.order_line_id=a.order_line_id "
+                "WHERE a.owner_type='order' AND a.state='active' AND ol.order_id IN (?,?) "
+                "ORDER BY ol.order_id",
+                orders,
+            ).fetchall()
+            listing_remaining = db.execute(
+                "SELECT SUM(units) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND state='active' AND listing_id=? AND config_version_id=?",
+                (config["listing_id"], config["config_version_id"]),
+            ).fetchone()[0]
+            amount_manifests = db.execute(
+                "SELECT ol.order_id,l.asset_amounts_json FROM gd_delivery_legs l "
+                "JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                "WHERE ol.order_id IN (?,?) ORDER BY ol.order_id",
+                orders,
+            ).fetchall()
+        self.assertEqual(
+            {(row["order_id"], row["asset_id"], int(row["units"]), row["state"]) for row in allocations},
+            {
+                ("repeat-order-1", "61001", 3, "active"),
+                ("repeat-order-2", "61001", 3, "active"),
+            },
+        )
+        self.assertEqual(int(listing_remaining), 4)
+        self.assertEqual(
+            {row["order_id"]: json.loads(row["asset_amounts_json"]) for row in amount_manifests},
+            {"repeat-order-1": {"61001": 3}, "repeat-order-2": {"61001": 3}},
+        )
+
+    def test_cancelled_quantity_stock_order_returns_units_to_listing(self):
+        item = recipe_item(
+            "cancel-return-redline", 1, "steam_asset", 3,
+            SteamAssetSpec(
+                "cs2", 730, "2",
+                {"market_hash_name": "AK-47 | Redline"},
+                ("Bot-A",),
+            ),
+        )
+        order, config_id = self.create_recipe_order("cancel-return", (item,))
+        item_id = self.recipe_item_id(config_id, 1)
+        stock = QuantityStockLedger(self.database)
+        resource = StockResource("cs2", 730, "2", "Bot-A", "62001")
+        identity = StockItemIdentity(
+            "cs2", 730, "2",
+            market_hash_name="AK-47 | Redline",
+            name="AK-47 | Redline",
+            item_type="Rifle",
+            class_id="class-redline",
+        )
+        stock.observe(resource, 10, identity=identity, is_tradable=True)
+        ListingStockService(self.database).allocate_recipe_items(
+            request_id="cancel-return-stock-batch",
+            listing_id="listing-cancel-return",
+            config_version_id=config_id,
+            units_by_recipe_item={item_id: 10},
+        )
+        prepared = self.pipeline.prepare_recipe_order(order_id=order, snapshots={})
+        self.assertTrue(prepared.reserved, prepared.message)
+        cancelled = self.pipeline.cancel_order(order)
+        self.assertEqual(cancelled["released_quantity_allocations"], 1)
+        self.assertEqual(cancelled["restored_listing_units"], 3)
+        with self.database.connect() as db:
+            listing_units = db.execute(
+                "SELECT SUM(units) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND state='active' AND listing_id=? AND config_version_id=?",
+                ("listing-cancel-return", config_id),
+            ).fetchone()[0]
+            order_active = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND state='active' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)",
+                (order,),
+            ).fetchone()[0]
+        self.assertEqual(int(listing_units), 10)
+        self.assertEqual(int(order_active), 0)
 
     def test_mixed_cards_and_five_cs2_assets_commit_all_positions_together(self):
         order, _ = self.create_recipe_order("mixed", self.mixed_recipe())
