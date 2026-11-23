@@ -56,7 +56,7 @@ class AssetIDValidationTests(unittest.TestCase):
         # Game inventory crosses the ASF JSON boundary, where UInt64 AssetID
         # values may be represented as JSON integers. Other invalid types
         # remain rejected; internal InventoryItem construction stays strict.
-        invalid_asf_values = (None, True, 12.5, "", " \	\n")
+        invalid_asf_values = (None, True, 12.5, "", " " + chr(9) + chr(10))
         for value in invalid_asf_values:
             payload = {"Success": True, "Result": {"Bot-A": {
                 "Assets": [{"assetid": value, "classid": "class-1"}],
