@@ -515,6 +515,11 @@ class DeliveryDispatchTests(unittest.TestCase):
 
     def test_dispatches_and_reconciles_from_shared_quantity_stock_allocation(self):
         leg = self.create_order(asset_amounts={"100": 3})[0]
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_resource_reservations SET state='released' "
+                "WHERE order_line_id='line-order-1' AND asset_id='100'"
+            )
         stock = QuantityStockLedger(self.db)
         observation = stock.observe(
             StockResource("cs2", 730, "2", "Bot-A", "100"),
@@ -529,10 +534,6 @@ class DeliveryDispatchTests(unittest.TestCase):
             is_tradable=True,
         )
         with self.db.connect() as db:
-            db.execute(
-                "UPDATE gd_resource_reservations SET state='released' "
-                "WHERE order_line_id='line-order-1' AND asset_id='100'"
-            )
             db.execute(
                 """
                 INSERT INTO gd_stock_allocations
