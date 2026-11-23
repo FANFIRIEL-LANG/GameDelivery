@@ -1508,3 +1508,99 @@ class ListingStockService:
                 transfer_ids,
             ).fetchall()
         ]
+
+    def restore_order_allocations_to_listing(self, connection, allocation_ids: Iterable[str]) -> int:
+        """Restore released order allocations to their listing after offer absence is proven."""
+        if not connection.in_transaction:
+            raise RuntimeError("Returning order stock requires an active transaction")
+        ids = tuple(dict.fromkeys(
+            value.strip() for value in allocation_ids
+            if isinstance(value, str) and value.strip()
+        ))
+        restored = 0
+        for allocation_id in ids:
+            allocation = connection.execute(
+                "SELECT * FROM gd_stock_allocations WHERE allocation_id=?",
+                (allocation_id,),
+            ).fetchone()
+            if allocation is None or allocation["owner_type"] != "order" or allocation["state"] != "released":
+                raise ValueError("Order stock allocation is not safely released")
+            transfer = connection.execute(
+                """
+                SELECT transfer_event_id,listing_id,config_version_id,recipe_item_id
+                FROM gd_stock_transfers
+                WHERE order_line_id=?
+                  AND EXISTS (
+                    SELECT 1 FROM json_each(gd_stock_transfers.allocation_ids_json)
+                    WHERE value=?
+                  )
+                """,
+                (allocation["order_line_id"], allocation_id),
+            ).fetchone()
+            if transfer is None:
+                raise ValueError("Order allocation has no immutable stock transfer audit")
+            listing = connection.execute(
+                "SELECT status FROM gd_listings WHERE listing_id=?",
+                (transfer["listing_id"],),
+            ).fetchone()
+            if listing is None:
+                raise ValueError("Listing generation for stock return was not found")
+            if str(listing["status"]).casefold() == "disabled":
+                continue
+            observation = connection.execute(
+                "SELECT availability_state,is_tradable,identity_json FROM gd_stock_observations "
+                "WHERE observation_id=?",
+                (allocation["observation_id"],),
+            ).fetchone()
+            if observation is None or observation["availability_state"] != "usable" or observation["is_tradable"] != 1:
+                raise ValueError("Cannot return stock to an active listing without a usable tradable observation")
+            if allocation["recipe_item_id"] != transfer["recipe_item_id"]:
+                raise ValueError("Order allocation recipe item differs from its transfer audit")
+            if transfer["recipe_item_id"] is not None:
+                from core.delivery.ledger import DeliveryLedger
+                recipe = DeliveryLedger.recipe_for_config_version(
+                    connection, str(transfer["config_version_id"]), allow_legacy=False
+                )
+                item = next((value for value in recipe.items if value.item_id == transfer["recipe_item_id"]), None)
+                if item is None or not isinstance(item.spec, SteamAssetSpec):
+                    raise ValueError("Stock transfer does not reference a Steam Asset RecipeItem")
+                try:
+                    identity = StockItemIdentity(**json.loads(observation["identity_json"])).normalized()
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    raise ValueError("Current stock identity is not verified") from None
+                if not identity.matches_spec(item.spec) or not identity.allows_bot(allocation["bot_name"], item.spec):
+                    raise ValueError("Current stock identity no longer matches the listing RecipeItem")
+            returned_id = _stable_id("listing-return", transfer["transfer_event_id"], allocation_id)
+            existing = connection.execute(
+                "SELECT * FROM gd_stock_allocations WHERE allocation_id=?",
+                (returned_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["owner_type"] != "listing"
+                    or existing["listing_id"] != transfer["listing_id"]
+                    or existing["config_version_id"] != transfer["config_version_id"]
+                    or existing["recipe_item_id"] != transfer["recipe_item_id"]
+                    or existing["observation_id"] != allocation["observation_id"]
+                    or int(existing["units"]) != int(allocation["units"])
+                ):
+                    raise RuntimeError("Existing listing return allocation has a different identity")
+                restored += int(existing["units"])
+                continue
+            connection.execute(
+                """
+                INSERT INTO gd_stock_allocations
+                    (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                     asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                     order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
+                """,
+                (
+                    returned_id, allocation["observation_id"], allocation["game_id"],
+                    allocation["app_id"], allocation["context_id"], allocation["bot_name"],
+                    allocation["asset_id"], allocation["asset_id_key"], transfer["listing_id"],
+                    transfer["config_version_id"], allocation["units"], transfer["recipe_item_id"],
+                ),
+            )
+            restored += int(allocation["units"])
+        return restored
