@@ -535,7 +535,7 @@ class DeliveryReservationService:
         if not order or not config_id or not isinstance(planned_by_line, Mapping):
             raise ValueError("order_id, config_version_id и plan обязательны")
         grouped: dict[tuple[str, str, int, str, str, bool], dict[str, int]] = {}
-        stock_allocation_ids_to_release: set[str] = set()
+        stock_allocation_ids_seen: set[str] = set()
         stock_backed_assets: set[tuple[tuple[str, str, int, str, str, bool], str]] = set()
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -856,9 +856,9 @@ class DeliveryReservationService:
                                 raise ValueError("Listing stock allocation не совпадает с OrderLine/RecipeItem/Asset")
                             if sum(int(row["units"]) for row in allocation_rows) != resource.units:
                                 raise ValueError("Amount не совпадает с суммой listing stock allocations")
-                            if stock_allocation_ids_to_release.intersection(allocation_ids):
+                            if stock_allocation_ids_seen.intersection(allocation_ids):
                                 raise ValueError("Один listing allocation повторно включён в DeliveryLeg")
-                            stock_allocation_ids_to_release.update(allocation_ids)
+                            stock_allocation_ids_seen.update(allocation_ids)
                         elif resource.units != 1 or allocation_ids:
                             raise ValueError("Multi-unit Steam Asset требует listing stock allocation")
                         key = (bot.casefold(), asset_id_key(asset))
@@ -912,20 +912,8 @@ class DeliveryReservationService:
                     for allocation_id in resource.stock_allocation_ids:
                         stock_backed_assets.add((key, resource.asset_id))
 
-            # Convert transferred order allocations into the canonical live
-            # reservations in this same transaction. The immutable transfer
-            # record remains as the audit trail; dispatcher/recovery/reconcile
-            # continue to use gd_resource_reservations as the live owner.
-            for allocation_id in sorted(stock_allocation_ids_to_release):
-                changed = connection.execute(
-                    "UPDATE gd_stock_allocations SET state='released',"
-                    "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
-                    "WHERE allocation_id=? AND owner_type='order' AND state='active'",
-                    (allocation_id,),
-                ).rowcount
-                if changed != 1:
-                    raise ValueError("Listing stock allocation изменился до фиксации DeliveryLeg")
-
+            # Quantity-stock-backed assets remain active in gd_stock_allocations.
+            # This ledger supports several orders reserving disjoint units of one stack.
             legs: list[PlannedLeg] = []
             assets: list[tuple[str, str]] = []
             for (line_id, bot, app_id, context_id, game_id, card_compat), asset_units in sorted(
@@ -954,15 +942,16 @@ class DeliveryReservationService:
                     reservation_id = self._stable_id(
                         "reservation", f"{order}:{line_id}:{bot.casefold()}:{app_id}:{context_id}:{asset_id}"
                     )
-                    connection.execute("""
-                        INSERT INTO gd_resource_reservations
-                            (reservation_id,owner_type,order_line_id,game_id,app_id,context_id,
-                             bot_name,asset_id,units,state)
-                        VALUES(?,'order',?,?,?,?,?,?,?,'active')
-                    """, (
-                        reservation_id, line_id, game_id, app_id, context_id, bot,
-                        asset_id, amount_manifest[asset_id],
-                    ))
+                    if (group_key, asset_id) not in stock_backed_assets:
+                        connection.execute("""
+                            INSERT INTO gd_resource_reservations
+                                (reservation_id,owner_type,order_line_id,game_id,app_id,context_id,
+                                 bot_name,asset_id,units,state)
+                            VALUES(?,'order',?,?,?,?,?,?,?,'active')
+                        """, (
+                            reservation_id, line_id, game_id, app_id, context_id, bot,
+                            asset_id, amount_manifest[asset_id],
+                        ))
                     if card_compat:
                         connection.execute("""
                             INSERT INTO steam_asset_reservations(bot_name,asset_id,order_id)

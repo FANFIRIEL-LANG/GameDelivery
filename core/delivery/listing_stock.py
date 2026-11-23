@@ -1509,7 +1509,8 @@ class ListingStockService:
             ).fetchall()
         ]
 
-    def restore_order_allocations_to_listing(self, connection, allocation_ids: Iterable[str]) -> int:
+    @staticmethod
+    def restore_order_allocations_to_listing(connection, allocation_ids: Iterable[str]) -> int:
         """Restore released order allocations to their listing after offer absence is proven."""
         if not connection.in_transaction:
             raise RuntimeError("Returning order stock requires an active transaction")
