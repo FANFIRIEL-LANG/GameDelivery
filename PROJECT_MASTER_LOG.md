@@ -190,3 +190,6 @@
 
 
 **C.3 Quantity stock operator recovery hardening (2026-11-23):** Operator retry теперь требует, чтобы свежий ASF snapshot содержал на исходном боте не только tradable Asset ID, но и не меньше точного Amount из DeliveryLeg. Operator release/cancel сверяет aggregate active order allocations с asset_amounts_json и глобальным blocking quantity, затем освобождает именно эти allocations и возвращает units в listing generation в той же транзакции. Canonical reservation path для обычных ресурсов сохранён.
+
+
+**C.3 Operator cancel audit ordering correction (2026-11-23):** CI выявил, что cancel_order формировал operator evidence до получения результата release/restore и обращался к restored_units раньше присваивания. Перенесено создание audit row после атомарного release/restore; restored_listing_units теперь фиксируется и возвращается в результате отмены. Это устраняет UnboundLocalError на прежнем canonical recovery path и сохраняет audit evidence для quantity stock.
