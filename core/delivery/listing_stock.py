@@ -1419,15 +1419,18 @@ class ListingStockService:
             """,
             source_params,
         ).fetchall()
-        if typed_recipe:
-            for source in sources:
+        for source in sources:
+            if source["observation_state"] != "usable":
+                raise ValueError(
+                    "Stock observation больше не usable (stale/conflict/unavailable); transfer заблокирован"
+                )
+            if typed_recipe:
                 try:
                     current_identity = StockItemIdentity(**json.loads(source["identity_json"]))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     raise ValueError("Текущая identity ресурса не подтверждена; transfer заблокирован") from None
                 if (
-                    source["observation_state"] != "usable"
-                    or source["is_tradable"] != 1
+                    source["is_tradable"] != 1
                     or not current_identity.matches_spec(selected_recipe_item.spec)
                     or not current_identity.allows_bot(source["bot_name"], selected_recipe_item.spec)
                 ):

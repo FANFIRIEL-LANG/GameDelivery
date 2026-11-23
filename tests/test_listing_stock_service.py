@@ -147,6 +147,107 @@ class ListingStockServiceTests(unittest.TestCase):
             for item in items
         ]
 
+    def test_one_physical_stack_can_be_split_across_multiple_listing_generations(self):
+        self.ledger.observe(self.a, 100)
+        with self.database.connect() as db:
+            for listing_id, config_id, external_id in (
+                ("listing-2", "config-2", "external-2"),
+                ("listing-3", "config-3", "external-3"),
+                ("listing-4", "config-4", "external-4"),
+            ):
+                db.execute(
+                    "INSERT INTO gd_listings(listing_id,source_platform,external_listing_id,title) "
+                    "VALUES(?,'manual',?,'Shared stack listing')",
+                    (listing_id, external_id),
+                )
+                db.execute(
+                    """
+                    INSERT INTO gd_config_versions
+                        (config_version_id,listing_id,version_number,delivery_quantity_per_deal,
+                         item_selectors_json,bot_pool_json)
+                    VALUES(?,?,1,1,'{}','[]')
+                    """,
+                    (config_id, listing_id),
+                )
+
+        requests = [
+            ("listing-1", "config-1", "shared-generation-1", 3),
+            ("listing-2", "config-2", "shared-generation-2", 5),
+            ("listing-3", "config-3", "shared-generation-3", 10),
+        ]
+        for listing_id, config_id, request_id, units in requests:
+            rows = self.service.allocate_listing(
+                request_id=request_id,
+                listing_id=listing_id,
+                config_version_id=config_id,
+                units=units,
+                resources=[self.a],
+            )
+            self.assertEqual(sum(int(row["units"]) for row in rows), units)
+
+        self.assertEqual(self.ledger.free_units(self.a), 82)
+        with self.database.connect() as db:
+            by_listing = {
+                row["listing_id"]: int(row["units"])
+                for row in db.execute(
+                    "SELECT listing_id,SUM(units) AS units FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND state='active' GROUP BY listing_id"
+                ).fetchall()
+            }
+        self.assertEqual(
+            by_listing,
+            {"listing-1": 3, "listing-2": 5, "listing-3": 10},
+        )
+        with self.assertRaises(InsufficientListingStock) as caught:
+            self.service.allocate_listing(
+                request_id="shared-generation-overflow",
+                listing_id="listing-4",
+                config_version_id="config-4",
+                units=83,
+                resources=[self.a],
+            )
+        self.assertEqual((caught.exception.required, caught.exception.available), (83, 82))
+        self.assertEqual(self.ledger.free_units(self.a), 82)
+
+    def test_legacy_transfer_is_blocked_after_inventory_amount_conflict(self):
+        self.ledger.observe(self.a, 10)
+        self.service.allocate_listing(
+            request_id="legacy-conflict-transfer-stock",
+            listing_id="listing-1",
+            config_version_id="config-1",
+            units=6,
+            resources=[self.a],
+        )
+        observation = self.ledger.observe(self.a, 5)
+        self.assertEqual(observation["availability_state"], "conflict")
+
+        with self.assertRaisesRegex(ValueError, "больше не usable"):
+            self.service.transfer_to_order(
+                transfer_event_id="legacy-conflict-paid-event",
+                listing_id="listing-1",
+                config_version_id="config-1",
+                order_line_id="line-1",
+                units=1,
+            )
+        with self.database.connect() as db:
+            listing_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1' AND state='active'"
+            ).fetchone()[0]
+            transfer_count = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_transfers "
+                "WHERE transfer_event_id='legacy-conflict-paid-event'"
+            ).fetchone()[0]
+            order_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id='line-1' AND state='active'"
+            ).fetchone()[0]
+        self.assertEqual(listing_units, 6)
+        self.assertEqual(transfer_count, 0)
+        self.assertEqual(order_units, 0)
+        self.assertEqual(self.ledger.free_units(self.a), 0)
+
     def test_concurrent_listing_allocations_cannot_overbook_one_physical_stack(self):
         self.ledger.observe(self.a, 10)
         with self.database.connect() as db:

@@ -151,3 +151,6 @@
 
 
 **C.3 reallocation audit payload semantics correction (2026-11-23):** Source allocation, recreated active source remainder и newly claimed destination slices теперь записываются в три независимых audit arrays: `released_allocation_ids`, `source_remainder_allocation_ids`, `created_allocation_ids`. Это исключает двусмысленность, при которой активный остаток source ошибочно фигурировал как released. Добавлена точная проверка структуры audit payload.
+
+
+**C.3 shared stack across listing generations and legacy conflict transfer gate (2026-11-23):** Добавлен сервисный тест одного физического stack Amount=100, разделённого между тремя ConfigVersions/listing generations: 3+5+10 units, занято 18, свободно 82; запрос ещё 83 units отклоняется полностью с сохранением 82 свободных units. Найден и исправлен guard gap: `transfer_to_order()` повторно проверял `availability_state='usable'` только для typed Recipe, но не для legacy ConfigVersion. Теперь любое listing→order transfer требует usable observation; stale/conflict/unavailable block применяется ко всем recipe modes. Добавлен regression test Amount 10→5 при 6 listing-owned units: legacy transfer блокируется, исходные 6 units остаются у объявления, transfer/audit/order allocation не создаются.
