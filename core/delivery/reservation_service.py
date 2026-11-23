@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.playerok_eligibility import require_canonical_playerok_delivery_eligible
+from core.delivery.listing_stock import ListingStockService
 from core.delivery.recipes import (
     DigitalTextUnitSpec,
     RecipeItem,
@@ -45,6 +46,7 @@ class PlannedLeg:
     context_id: str
     asset_ids: tuple[str, ...]
     order_line_id: str = ""
+    asset_amounts: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ class PlannedResource:
     context_id: str
     steam_cards_compatibility: bool = False
     steam_card_hash_name: str | None = None
+    units: int = 1
+    stock_allocation_ids: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class PlannedRecipeLine:
@@ -83,6 +87,7 @@ class PlannedRecipeLine:
     # Exact verified selector output, retained so the ledger boundary can compare
     # planned resources to the existing authoritative preflight result.
     steam_card_preflight: MultiGameOrderPreflight | None = None
+    use_listing_stock: bool = False
 
 
 class DeliveryReservationService:
@@ -529,12 +534,14 @@ class DeliveryReservationService:
         config_id = str(config_version_id or "").strip()
         if not order or not config_id or not isinstance(planned_by_line, Mapping):
             raise ValueError("order_id, config_version_id и plan обязательны")
-        grouped: dict[tuple[str, str, int, str, str, bool], list[str]] = {}
+        grouped: dict[tuple[str, str, int, str, str, bool], dict[str, int]] = {}
+        stock_allocation_ids_to_release: set[str] = set()
+        stock_backed_assets: set[tuple[tuple[str, str, int, str, str, bool], str]] = set()
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             require_canonical_playerok_delivery_eligible(connection, order)
             order_row = connection.execute(
-                "SELECT o.status,d.config_version_id FROM gd_orders o "
+                "SELECT o.status,d.config_version_id,d.listing_id FROM gd_orders o "
                 "JOIN gd_deals d ON d.deal_id=o.deal_id WHERE o.order_id=?",
                 (order,),
             ).fetchone()
@@ -544,13 +551,15 @@ class DeliveryReservationService:
                 raise ValueError("ConfigVersion изменилась после планирования")
             if order_row["status"] == "reserved":
                 rows = connection.execute("""
-                    SELECT l.leg_id,l.order_line_id,l.bot_name,l.app_id,l.context_id,l.asset_ids_json
+                    SELECT l.leg_id,l.order_line_id,l.bot_name,l.app_id,l.context_id,
+                           l.asset_ids_json,l.asset_amounts_json
                     FROM gd_delivery_legs l JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
                     WHERE ol.order_id=? ORDER BY ol.line_number,l.bot_name COLLATE NOCASE
                 """, (order,)).fetchall()
                 legs = tuple(PlannedLeg(
                     row["bot_name"], int(row["app_id"]), str(row["context_id"]),
                     tuple(json.loads(row["asset_ids_json"])), str(row["order_line_id"]),
+                    json.loads(row["asset_amounts_json"]) if row["asset_amounts_json"] else None,
                 ) for row in rows)
                 assets = tuple((leg.bot_name, asset) for leg in legs for asset in leg.asset_ids)
                 return OrderReservationResult(order, "reserved", legs, assets, (), "Заказ уже зарезервирован.")
@@ -620,17 +629,93 @@ class DeliveryReservationService:
             ):
                 raise ValueError("ConfigVersion содержит некорректный bot_pool")
 
+            effective_planned = dict(planned_by_line)
+            for line_id, line_plan in tuple(effective_planned.items()):
+                if not isinstance(line_plan, PlannedRecipeLine) or not line_plan.use_listing_stock:
+                    continue
+                item = item_by_line.get(line_id)
+                if not isinstance(item.spec if item else None, SteamAssetSpec):
+                    raise ValueError("Listing stock transfer разрешён только для Steam Asset RecipeItem")
+                if line_plan.units or line_plan.steam_card_preflight is not None or line_plan.steam_card_count_per_set is not None:
+                    raise ValueError("Listing stock transfer не должен смешиваться с ручным планом или Steam Cards")
+                transferred = ListingStockService(self.database).transfer_to_order(
+                    transfer_event_id=self._stable_id("stock-transfer", f"{order}:{line_id}:{item.item_id}"),
+                    listing_id=str(order_row["listing_id"]),
+                    config_version_id=config_id,
+                    order_line_id=line_id,
+                    units=item.quantity_per_order,
+                    recipe_item_id=item.item_id,
+                    connection=connection,
+                )
+                aggregated: dict[tuple[str, int, str, str, str], dict[str, Any]] = {}
+                for allocation in transferred:
+                    key = (
+                        str(allocation["bot_name"]).casefold(),
+                        int(allocation["app_id"]),
+                        str(allocation["context_id"]),
+                        str(allocation["game_id"]).casefold(),
+                        asset_id_key(allocation["asset_id"]),
+                    )
+                    entry = aggregated.setdefault(key, {
+                        "bot_name": str(allocation["bot_name"]),
+                        "asset_id": str(allocation["asset_id"]),
+                        "game_id": str(allocation["game_id"]),
+                        "app_id": int(allocation["app_id"]),
+                        "context_id": str(allocation["context_id"]),
+                        "units": 0,
+                        "allocation_ids": [],
+                    })
+                    entry["units"] += int(allocation["units"])
+                    entry["allocation_ids"].append(str(allocation["allocation_id"]))
+                transferred_resources = tuple(
+                    (PlannedResource(
+                        entry["bot_name"], entry["asset_id"], entry["game_id"],
+                        entry["app_id"], entry["context_id"], False, None,
+                        entry["units"], tuple(sorted(entry["allocation_ids"])),
+                    ),)
+                    for _, entry in sorted(aggregated.items(), key=lambda pair: pair[0])
+                )
+                if sum(unit[0].units for unit in transferred_resources) != item.quantity_per_order:
+                    raise ValueError("Перенесённые listing allocations не совпадают с количеством RecipeItem")
+                effective_planned[line_id] = PlannedRecipeLine(item.item_id, transferred_resources)
+
             flattened: list[tuple[str, PlannedResource]] = []
             seen: set[tuple[str, str]] = set()
-            for line_id, line_plan in planned_by_line.items():
+            for line_id, line_plan in effective_planned.items():
                 if not isinstance(line_id, str) or not line_id.strip() or not isinstance(line_plan, PlannedRecipeLine):
                     raise ValueError("План должен связывать каждую OrderLine с RecipeItem и его units")
                 item = item_by_line[line_id]
                 if line_plan.recipe_item_id != item.item_id or not isinstance(line_plan.units, tuple):
                     raise ValueError("Планируемые ресурсы относятся к другому RecipeItem")
+                if line_plan.use_listing_stock:
+                    raise ValueError("Listing stock plan не был перенесён в order allocation")
                 if item.required and not line_plan.units:
                     raise ValueError("Обязательная RecipeItem не имеет ресурсов")
-                if line_plan.units and len(line_plan.units) != item.quantity_per_order:
+                stock_backed_line = (
+                    isinstance(item.spec, SteamAssetSpec)
+                    and any(
+                        resource.stock_allocation_ids
+                        for unit in line_plan.units for resource in unit
+                    )
+                )
+                if isinstance(item.spec, SteamAssetSpec) and line_plan.units:
+                    if stock_backed_line:
+                        if any(
+                            not resource.stock_allocation_ids
+                            for unit in line_plan.units for resource in unit
+                        ) or sum(
+                            resource.units for unit in line_plan.units for resource in unit
+                        ) != item.quantity_per_order:
+                            raise ValueError("Listing allocation units не совпадают с количеством Steam Asset RecipeItem")
+                    elif (
+                        len(line_plan.units) != item.quantity_per_order
+                        or any(
+                            resource.units != 1 or resource.stock_allocation_ids
+                            for unit in line_plan.units for resource in unit
+                        )
+                    ):
+                        raise ValueError("Обычный Steam Asset plan должен содержать по одному Asset на единицу")
+                elif line_plan.units and len(line_plan.units) != item.quantity_per_order:
                     raise ValueError("Количество планируемых units не совпадает с RecipeItem.quantity")
 
                 allowed_bots = (
@@ -742,15 +827,48 @@ class DeliveryReservationService:
                             or type(resource.app_id) is not int or resource.app_id != item.spec.app_id
                             or str(resource.context_id) != item.spec.context_id
                             or resource.steam_cards_compatibility
+                            or type(resource.units) is not int or resource.units < 1
                         ):
-                            raise ValueError("Steam asset ресурс не соответствует RecipeItem или bot_pool")
+                            raise ValueError("Steam asset ресурс не соответствует RecipeItem, Amount или bot_pool")
+                        allocation_ids = tuple(resource.stock_allocation_ids)
+                        if stock_backed_line:
+                            if not allocation_ids or len(set(allocation_ids)) != len(allocation_ids):
+                                raise ValueError("Stock-backed resource должен иметь уникальные allocation IDs")
+                            marks = ",".join("?" for _ in allocation_ids)
+                            allocation_rows = connection.execute(
+                                f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks})",
+                                allocation_ids,
+                            ).fetchall()
+                            if len(allocation_rows) != len(allocation_ids):
+                                raise ValueError("Listing stock allocation отсутствует")
+                            if any(
+                                row["owner_type"] != "order"
+                                or row["state"] != "active"
+                                or row["order_line_id"] != line_id
+                                or row["recipe_item_id"] != item.item_id
+                                or row["bot_name"].casefold() != bot.casefold()
+                                or row["asset_id_key"] != asset_id_key(asset)
+                                or row["game_id"].casefold() != item.spec.game_id.casefold()
+                                or int(row["app_id"]) != item.spec.app_id
+                                or str(row["context_id"]) != item.spec.context_id
+                                for row in allocation_rows
+                            ):
+                                raise ValueError("Listing stock allocation не совпадает с OrderLine/RecipeItem/Asset")
+                            if sum(int(row["units"]) for row in allocation_rows) != resource.units:
+                                raise ValueError("Amount не совпадает с суммой listing stock allocations")
+                            if stock_allocation_ids_to_release.intersection(allocation_ids):
+                                raise ValueError("Один listing allocation повторно включён в DeliveryLeg")
+                            stock_allocation_ids_to_release.update(allocation_ids)
+                        elif resource.units != 1 or allocation_ids:
+                            raise ValueError("Multi-unit Steam Asset требует listing stock allocation")
                         key = (bot.casefold(), asset_id_key(asset))
                         if key in seen:
                             raise ValueError("Один физический asset выбран более чем для одной позиции")
                         seen.add(key)
                         flattened.append((line_id, PlannedResource(
                             bot, asset, resource.game_id, resource.app_id,
-                            str(resource.context_id), False,
+                            str(resource.context_id), False, None,
+                            resource.units, allocation_ids,
                         )))
                 elif isinstance(item.spec, DigitalTextUnitSpec):
                     if line_plan.units or line_plan.steam_card_count_per_set is not None or line_plan.steam_card_preflight is not None:
@@ -789,22 +907,49 @@ class DeliveryReservationService:
                     line_id, resource.bot_name, resource.app_id, str(resource.context_id),
                     str(resource.game_id), resource.steam_cards_compatibility,
                 )
-                grouped.setdefault(key, []).append(resource.asset_id)
+                grouped.setdefault(key, {})[resource.asset_id] = resource.units
+                if resource.stock_allocation_ids:
+                    for allocation_id in resource.stock_allocation_ids:
+                        stock_backed_assets.add((key, resource.asset_id))
+
+            # Convert transferred order allocations into the canonical live
+            # reservations in this same transaction. The immutable transfer
+            # record remains as the audit trail; dispatcher/recovery/reconcile
+            # continue to use gd_resource_reservations as the live owner.
+            for allocation_id in sorted(stock_allocation_ids_to_release):
+                changed = connection.execute(
+                    "UPDATE gd_stock_allocations SET state='released',"
+                    "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    "WHERE allocation_id=? AND owner_type='order' AND state='active'",
+                    (allocation_id,),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("Listing stock allocation изменился до фиксации DeliveryLeg")
 
             legs: list[PlannedLeg] = []
             assets: list[tuple[str, str]] = []
-            for (line_id, bot, app_id, context_id, game_id, card_compat), raw_assets in sorted(
+            for (line_id, bot, app_id, context_id, game_id, card_compat), asset_units in sorted(
                 grouped.items(), key=lambda entry: (lines[entry[0][0]]["line_number"], entry[0][1].casefold())
             ):
-                asset_ids = tuple(dict.fromkeys(raw_assets))
-                if len(asset_ids) != len(raw_assets):
-                    raise ValueError("План содержит повтор asset_id внутри DeliveryLeg")
+                asset_ids = tuple(asset_units)
+                amount_manifest = dict(asset_units)
+                group_key = (line_id, bot, app_id, context_id, game_id, card_compat)
+                has_stock_amounts = any((group_key, asset_id) in stock_backed_assets for asset_id in asset_ids)
+                amount_json = (
+                    json.dumps(amount_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    if has_stock_amounts or any(amount != 1 for amount in amount_manifest.values())
+                    else None
+                )
                 leg_id = self._stable_id("leg", f"{order}:{line_id}:{bot.casefold()}:{app_id}:{context_id}")
                 connection.execute("""
                     INSERT INTO gd_delivery_legs
-                        (leg_id,order_line_id,bot_name,app_id,context_id,asset_ids_json,status)
-                    VALUES(?,?,?,?,?,?, 'reserved')
-                """, (leg_id, line_id, bot, app_id, context_id, json.dumps(asset_ids)))
+                        (leg_id,order_line_id,bot_name,app_id,context_id,
+                         asset_ids_json,asset_amounts_json,status)
+                    VALUES(?,?,?,?,?,?,?, 'reserved')
+                """, (
+                    leg_id, line_id, bot, app_id, context_id,
+                    json.dumps(asset_ids), amount_json,
+                ))
                 for asset_id in asset_ids:
                     reservation_id = self._stable_id(
                         "reservation", f"{order}:{line_id}:{bot.casefold()}:{app_id}:{context_id}:{asset_id}"
@@ -813,15 +958,21 @@ class DeliveryReservationService:
                         INSERT INTO gd_resource_reservations
                             (reservation_id,owner_type,order_line_id,game_id,app_id,context_id,
                              bot_name,asset_id,units,state)
-                        VALUES(?,'order',?,?,?,?,?,?,1,'active')
-                    """, (reservation_id, line_id, game_id, app_id, context_id, bot, asset_id))
+                        VALUES(?,'order',?,?,?,?,?,?,?,'active')
+                    """, (
+                        reservation_id, line_id, game_id, app_id, context_id, bot,
+                        asset_id, amount_manifest[asset_id],
+                    ))
                     if card_compat:
                         connection.execute("""
                             INSERT INTO steam_asset_reservations(bot_name,asset_id,order_id)
                             VALUES(?,?,?)
                         """, (bot, asset_id, order))
                     assets.append((bot, asset_id))
-                legs.append(PlannedLeg(bot, app_id, context_id, asset_ids, line_id))
+                legs.append(PlannedLeg(
+                    bot, app_id, context_id, asset_ids, line_id,
+                    amount_manifest if amount_json is not None else None,
+                ))
             connection.execute(
                 "UPDATE gd_orders SET status='reserved',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
                 (order,),

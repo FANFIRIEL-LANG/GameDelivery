@@ -419,6 +419,20 @@ class DeliveryOrderPipeline:
                 "WHERE order_id=? ORDER BY line_number",
                 (order,),
             ).fetchall()
+            listing_stock_batch = connection.execute(
+                "SELECT 1 FROM gd_stock_allocation_batches "
+                "WHERE listing_id=? AND config_version_id=?",
+                (str(config["listing_id"]), config_id),
+            ).fetchone() is not None
+            listing_stock_units = {
+                str(row["recipe_item_id"]): int(row["units"])
+                for row in connection.execute(
+                    "SELECT recipe_item_id,SUM(units) AS units FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND listing_id=? AND config_version_id=? "
+                    "AND state='active' AND recipe_item_id IS NOT NULL GROUP BY recipe_item_id",
+                    (str(config["listing_id"]), config_id),
+                ).fetchall()
+            }
         if len(line_rows) != len(recipe.items):
             raise ValueError("Число OrderLine не совпадает с закреплённым Recipe")
         lines_by_position = {int(row["line_number"]): str(row["order_line_id"]) for row in line_rows}
@@ -509,34 +523,45 @@ class DeliveryOrderPipeline:
                     )
                     resources = [resource for unit in card_units for resource in unit]
             elif isinstance(item.spec, SteamAssetSpec):
-                allowed = item.spec.allowed_bot_pool or tuple(config["bot_pool"])
-                selector = {
-                    "game_id": item.spec.game_id,
-                    "app_id": item.spec.app_id,
-                    "context_id": item.spec.context_id,
-                    **dict(item.spec.selector),
-                }
-                available_snapshots = {}
-                for snapshot_key, snapshot in snapshots.items():
-                    filtered_items = tuple(
-                        value for value in snapshot.items
-                        if (self.cs2_reservations._normal(
-                                self.cs2_reservations._get(value, "bot_name", snapshot.bot_name)),
-                                asset_id_key(validate_asset_id(self.cs2_reservations._get(value, "asset_id")))) not in reserved_keys
-                    )
-                    available_snapshots[snapshot_key] = InventorySnapshot(
-                        snapshot.bot_name, snapshot.game_id, snapshot.app_id, snapshot.context_id,
-                        snapshot.refreshed_at, filtered_items, snapshot.asf_verified,
-                    )
-                candidates = self.cs2_reservations._select_assets(
-                    selector, item.quantity_per_order, available_snapshots, tuple(allowed), current_time
-                ) if allowed else ()
-                units = tuple(
-                    (PlannedResource(bot, asset, item.spec.game_id, app_id, context_id),)
-                    for bot, asset, app_id, context_id in candidates[:item.quantity_per_order]
-                ) if len(candidates) >= item.quantity_per_order else ()
-                planned[line_id] = PlannedRecipeLine(item.item_id, units)
-                resources = [unit[0] for unit in units]
+                if listing_stock_batch:
+                    # Listing allocation is authoritative. Transfer it inside the
+                    # reservation transaction instead of re-picking snapshot assets.
+                    if item.required or listing_stock_units.get(item.item_id, 0) >= item.quantity_per_order:
+                        planned[line_id] = PlannedRecipeLine(
+                            item.item_id, (), use_listing_stock=True
+                        )
+                    else:
+                        planned[line_id] = PlannedRecipeLine(item.item_id, ())
+                    resources = []
+                else:
+                    allowed = item.spec.allowed_bot_pool or tuple(config["bot_pool"])
+                    selector = {
+                        "game_id": item.spec.game_id,
+                        "app_id": item.spec.app_id,
+                        "context_id": item.spec.context_id,
+                        **dict(item.spec.selector),
+                    }
+                    available_snapshots = {}
+                    for snapshot_key, snapshot in snapshots.items():
+                        filtered_items = tuple(
+                            value for value in snapshot.items
+                            if (self.cs2_reservations._normal(
+                                    self.cs2_reservations._get(value, "bot_name", snapshot.bot_name)),
+                                    asset_id_key(validate_asset_id(self.cs2_reservations._get(value, "asset_id")))) not in reserved_keys
+                        )
+                        available_snapshots[snapshot_key] = InventorySnapshot(
+                            snapshot.bot_name, snapshot.game_id, snapshot.app_id, snapshot.context_id,
+                            snapshot.refreshed_at, filtered_items, snapshot.asf_verified,
+                        )
+                    candidates = self.cs2_reservations._select_assets(
+                        selector, item.quantity_per_order, available_snapshots, tuple(allowed), current_time
+                    ) if allowed else ()
+                    units = tuple(
+                        (PlannedResource(bot, asset, item.spec.game_id, app_id, context_id),)
+                        for bot, asset, app_id, context_id in candidates[:item.quantity_per_order]
+                    ) if len(candidates) >= item.quantity_per_order else ()
+                    planned[line_id] = PlannedRecipeLine(item.item_id, units)
+                    resources = [unit[0] for unit in units]
             elif isinstance(item.spec, DigitalTextUnitSpec):
                 # No digital stock source exists yet. Required rows fail closed;
                 # optional rows are explicitly omitted from this reservation plan.
@@ -545,7 +570,12 @@ class DeliveryOrderPipeline:
             else:
                 raise RecipeValidationError("Для RecipeItem нет поддерживаемого планировщика ресурсов")
 
-            if not resources and item.required:
+            if not resources and item.required and not (
+                isinstance(item.spec, SteamAssetSpec)
+                and listing_stock_batch
+                and planned.get(line_id) is not None
+                and planned[line_id].use_listing_stock
+            ):
                 failed_required.append(
                     f"Обязательная RecipeItem {item.item_id} не может быть полностью обеспечена."
                 )
@@ -565,16 +595,25 @@ class DeliveryOrderPipeline:
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (), " ".join(failed_required)
             )
-        if not any(line_plan.units for line_plan in planned.values()):
+        if not any(line_plan.units or line_plan.use_listing_stock for line_plan in planned.values()):
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (),
                 "В Recipe нет обязательных физических ресурсов для безопасного резервирования.",
             )
-        return self.cs2_reservations.reserve_recipe_plan(
-            order_id=order,
-            config_version_id=config_id,
-            planned_by_line=planned,
-        )
+        try:
+            return self.cs2_reservations.reserve_recipe_plan(
+                order_id=order,
+                config_version_id=config_id,
+                planned_by_line=planned,
+            )
+        except Exception as exc:
+            from core.delivery.listing_stock import InsufficientListingStock
+            if isinstance(exc, InsufficientListingStock):
+                return OrderReservationResult(
+                    order, "preflight_blocked", (), (), (),
+                    f"Недостаточно закреплённого складского остатка: {exc}",
+                )
+            raise
 
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:

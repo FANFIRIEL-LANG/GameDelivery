@@ -10,6 +10,9 @@ from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.reservation_service import InventorySnapshot, PlannedRecipeLine, PlannedResource
+from core.delivery.listing_stock import ListingStockService
+from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.stock_identity import StockItemIdentity
 from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem, SteamAssetSpec, SteamCardSetSpec
 from games.cs2.inventory_view import CS2InventoryInstance, RestrictionStatus, RestrictionType
 from games.steam_cards.recipient_badge import RecipientBadge
@@ -196,6 +199,85 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             steam_card_count_per_set=next(iter(card_sizes)) if len(card_sizes) == 1 else None,
             steam_card_preflight=preflight,
         )
+
+    def test_listing_stack_amounts_flow_into_delivery_leg_and_canonical_reservation(self):
+        item = recipe_item(
+            "stacked-redline", 1, "steam_asset", 10,
+            SteamAssetSpec(
+                "cs2", 730, "2",
+                {"market_hash_name": "AK-47 | Redline"},
+                ("Bot-A", "Bot-B"),
+            ),
+        )
+        order, config_id = self.create_recipe_order("stacked-stock", (item,))
+        item_id = self.recipe_item_id(config_id, 1)
+        stock = QuantityStockLedger(self.database)
+        identity = StockItemIdentity(
+            "cs2", 730, "2",
+            market_hash_name="AK-47 | Redline",
+            name="AK-47 | Redline",
+            item_type="Rifle",
+            class_id="class-redline",
+        )
+        resources = (
+            StockResource("cs2", 730, "2", "Bot-A", "51001"),
+            StockResource("cs2", 730, "2", "Bot-B", "52002"),
+        )
+        for resource, amount in zip(resources, (4, 6), strict=True):
+            stock.observe(resource, amount, identity=identity, is_tradable=True)
+        listing = ListingStockService(self.database)
+        listing.allocate_recipe_items(
+            request_id="stacked-stock-batch",
+            listing_id="listing-stacked-stock",
+            config_version_id=config_id,
+            units_by_recipe_item={item_id: 10},
+        )
+
+        result = self.pipeline.prepare_recipe_order(order_id=order, snapshots={})
+        self.assertTrue(result.reserved, result.message)
+        with self.database.connect() as db:
+            legs = db.execute(
+                "SELECT bot_name,asset_ids_json,asset_amounts_json FROM gd_delivery_legs "
+                "WHERE order_line_id IN (SELECT order_line_id FROM gd_order_lines WHERE order_id=?) "
+                "ORDER BY bot_name",
+                (order,),
+            ).fetchall()
+            reservations = db.execute(
+                "SELECT bot_name,asset_id,units FROM gd_resource_reservations "
+                "WHERE owner_type='order' AND state='active' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?) ORDER BY bot_name",
+                (order,),
+            ).fetchall()
+            transferred = db.execute(
+                "SELECT state,SUM(units) AS units FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?) GROUP BY state",
+                (order,),
+            ).fetchall()
+        self.assertEqual(
+            {row["bot_name"]: json.loads(row["asset_amounts_json"]) for row in legs},
+            {"Bot-A": {"51001": 4}, "Bot-B": {"52002": 6}},
+        )
+        self.assertEqual(
+            {(row["bot_name"], row["asset_id"], int(row["units"])) for row in reservations},
+            {("Bot-A", "51001", 4), ("Bot-B", "52002", 6)},
+        )
+        self.assertEqual(
+            {(row["state"], int(row["units"])) for row in transferred},
+            {("released", 10)},
+        )
+
+        repeated = self.pipeline.prepare_recipe_order(order_id=order, snapshots={})
+        self.assertTrue(repeated.reserved, repeated.message)
+        with self.database.connect() as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                    "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)",
+                    (order,),
+                ).fetchone()[0],
+                2,
+            )
 
     def test_mixed_cards_and_five_cs2_assets_commit_all_positions_together(self):
         order, _ = self.create_recipe_order("mixed", self.mixed_recipe())
