@@ -393,6 +393,7 @@ class DeliveryRecoveryService:
             self._verify_no_offer(order, leg_id, bot_name)
 
         action_ids: list[str] = []
+        restored_listing_units = 0
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             current = db.execute(
@@ -415,6 +416,8 @@ class DeliveryRecoveryService:
                     current_reservations, sorted(assets), self._expected_amounts(dict(leg))
                 )
                 action_id = "delivery-action:" + uuid.uuid4().hex
+                changed, restored_units = self._release_leg_allocations(db, dict(leg))
+                restored_listing_units += restored_units
                 evidence = {
                     "order_cancelled": True,
                     "offer_absence_confirmed": True,
@@ -427,7 +430,6 @@ class DeliveryRecoveryService:
                     VALUES(?,?,?,'release',NULL,?,?,?)
                 """, (action_id, order, leg_id, actor, reason,
                       json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
-                changed, restored_units = self._release_leg_allocations(db, dict(leg))
                 db.execute(
                     "UPDATE gd_delivery_legs SET status='CANCELLED',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE leg_id=?",
                     (leg_id,),
@@ -438,7 +440,8 @@ class DeliveryRecoveryService:
                 (order,),
             )
         return {"order_id": order, "status": "CANCELLED",
-                "released_legs": len(verified_assets), "action_ids": action_ids}
+                "released_legs": len(verified_assets), "action_ids": action_ids,
+                "restored_listing_units": restored_listing_units}
 
     def release(self, *, order_id: str, leg_id: str, actor: str, reason: str) -> dict[str, Any]:
         order, leg = str(order_id).strip(), str(leg_id).strip()
