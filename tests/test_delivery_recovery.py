@@ -10,6 +10,8 @@ from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.recovery import DeliveryRecoveryBlocked, DeliveryRecoveryService
 from core.delivery.reservation_service import InventorySnapshot
+from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.stock_identity import StockItemIdentity
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,7 @@ class Item:
     asset_id: str
     is_tradable: bool
     bot_name: str = "Bot-A"
+    amount: int = 1
 
 
 class DeliveryRecoveryTests(unittest.TestCase):
@@ -93,6 +96,94 @@ class DeliveryRecoveryTests(unittest.TestCase):
             offer_absence_verifier=lambda order, leg, bot: self.no_offer if no_offer is None else no_offer,
         )
 
+
+    def attach_quantity_stock(self):
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_resource_reservations SET state='released' "
+                "WHERE order_line_id='line-recovery' AND asset_id='asset-1'"
+            )
+            db.execute(
+                "UPDATE gd_delivery_legs SET asset_amounts_json=? WHERE leg_id='leg-recovery'",
+                ('{"asset-1":3}',),
+            )
+            db.execute(
+                "UPDATE gd_listings SET status='disabled' WHERE listing_id='listing-recovery'"
+            )
+        observation = QuantityStockLedger(self.database).observe(
+            StockResource("cs2", 730, "2", "Bot-A", "asset-1"),
+            10,
+            identity=StockItemIdentity(
+                "cs2", 730, "2",
+                market_hash_name="AK-47",
+                name="AK-47",
+                item_type="Rifle",
+                class_id="class-1",
+            ),
+            is_tradable=True,
+        )
+        with self.database.connect() as db:
+            db.execute(
+                """
+                INSERT INTO gd_stock_allocations
+                    (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                     asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                     order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                VALUES(?,?,?,?,?,?,?,?,'order',NULL,NULL,?,NULL,3,'active',NULL)
+                """,
+                (
+                    "stock-recovery", observation["observation_id"], "cs2", 730,
+                    "2", "Bot-A", "asset-1", observation["asset_id_key"], "line-recovery",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO gd_stock_transfers
+                    (transfer_event_id,listing_id,config_version_id,order_line_id,
+                     units,allocation_ids_json,recipe_item_id)
+                VALUES('transfer-recovery','listing-recovery',?,'line-recovery',3,?,NULL)
+                """,
+                (self.ledger.config_for_order("order-recovery")["config_version_id"],
+                 '["stock-recovery"]'),
+            )
+        self.snapshot = InventorySnapshot(
+            bot_name="Bot-A", game_id="cs2", app_id=730, context_id="2",
+            refreshed_at=datetime.now(timezone.utc),
+            items=(Item("asset-1", True, amount=3),), asf_verified=True,
+        )
+
+    def test_operator_release_handles_quantity_stock_and_exact_live_amount(self):
+        self.attach_quantity_stock()
+        result = self.service.release(
+            order_id="order-recovery", leg_id="leg-recovery",
+            actor="operator", reason="No Steam offer exists",
+        )
+        self.assertEqual(result["status"], "released")
+        self.assertEqual(result["released_allocations"], 1)
+        self.assertEqual(result["restored_listing_units"], 0)
+        with self.database.connect() as db:
+            state = db.execute(
+                "SELECT state FROM gd_stock_allocations WHERE allocation_id='stock-recovery'"
+            ).fetchone()[0]
+        self.assertEqual(state, "released")
+
+    def test_operator_release_rejects_live_stack_amount_below_delivery_amount(self):
+        self.attach_quantity_stock()
+        self.snapshot = InventorySnapshot(
+            bot_name="Bot-A", game_id="cs2", app_id=730, context_id="2",
+            refreshed_at=datetime.now(timezone.utc),
+            items=(Item("asset-1", True, amount=2),), asf_verified=True,
+        )
+        with self.assertRaisesRegex(DeliveryRecoveryBlocked, "меньше единиц стека"):
+            self.service.release(
+                order_id="order-recovery", leg_id="leg-recovery",
+                actor="operator", reason="No Steam offer exists",
+            )
+        with self.database.connect() as db:
+            state = db.execute(
+                "SELECT state FROM gd_stock_allocations WHERE allocation_id='stock-recovery'"
+            ).fetchone()[0]
+        self.assertEqual(state, "active")
 
     def test_cancel_order_releases_all_proven_unsent_legs_atomically(self):
         result = self.service.cancel_order(
