@@ -145,6 +145,153 @@ class ListingStockServiceTests(unittest.TestCase):
             for item in items
         ]
 
+    def test_legacy_listing_increase_is_atomic_and_idempotent(self):
+        self.ledger.observe(self.a, 6)
+        self.ledger.observe(self.b, 5)
+        self.service.allocate_listing(
+            request_id="increase-legacy-initial", listing_id="listing-1",
+            config_version_id="config-1", units=5, resources=[self.a],
+        )
+        first = self.service.increase_listing_units(
+            adjustment_id="increase-legacy-1", listing_id="listing-1",
+            config_version_id="config-1", units=4, resources=[self.b, self.a],
+        )
+        repeated = self.service.increase_listing_units(
+            adjustment_id="increase-legacy-1", listing_id="listing-1",
+            config_version_id="config-1", units=4, resources=[self.a, self.b],
+        )
+        self.assertEqual(
+            {row["allocation_id"] for row in first},
+            {row["allocation_id"] for row in repeated},
+        )
+        self.assertEqual([(row["bot_name"], row["units"]) for row in first],
+                         [("Bot-A", 1), ("Bot-B", 3)])
+        with self.database.connect() as db:
+            total = db.execute(
+                "SELECT SUM(units) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1' AND state='active'"
+            ).fetchone()[0]
+            adjustment = db.execute(
+                "SELECT operation,units,recipe_item_id FROM gd_stock_listing_adjustments "
+                "WHERE adjustment_id='increase-legacy-1'"
+            ).fetchone()
+        self.assertEqual(total, 9)
+        self.assertEqual(tuple(adjustment), ("allocate_units", 4, None))
+        with self.assertRaisesRegex(ValueError, "другой listing operation"):
+            self.service.increase_listing_units(
+                adjustment_id="increase-legacy-1", listing_id="listing-1",
+                config_version_id="config-1", units=3, resources=[self.a, self.b],
+            )
+
+    def test_legacy_listing_increase_shortage_leaves_previous_stock_unchanged(self):
+        self.ledger.observe(self.a, 4)
+        self.ledger.observe(self.b, 2)
+        self.service.allocate_listing(
+            request_id="increase-shortage-initial", listing_id="listing-1",
+            config_version_id="config-1", units=1, resources=[self.a],
+        )
+        with self.assertRaises(InsufficientListingStock) as caught:
+            self.service.increase_listing_units(
+                adjustment_id="increase-shortage", listing_id="listing-1",
+                config_version_id="config-1", units=6, resources=[self.a, self.b],
+            )
+        self.assertEqual((caught.exception.required, caught.exception.available), (6, 5))
+        with self.database.connect() as db:
+            active = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1' AND state='active'"
+            ).fetchone()[0]
+            audit = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_listing_adjustments "
+                "WHERE adjustment_id='increase-shortage'"
+            ).fetchone()[0]
+        self.assertEqual(active, 1)
+        self.assertEqual(audit, 0)
+
+    def test_typed_recipe_increase_is_scoped_and_idempotent_across_items(self):
+        config, recipe_items, _ = self.create_typed_recipe_order()
+        self.observe_typed_inventory()
+        first_id, second_id = [item["item_id"] for item in recipe_items[:2]]
+        self.service.allocate_recipe_items(
+            request_id="typed-increase-initial", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={first_id: 1, second_id: 1},
+        )
+        first = self.service.increase_recipe_units(
+            adjustment_id="typed-increase-1", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={first_id: 2, second_id: 1},
+        )
+        repeated = self.service.increase_recipe_units(
+            adjustment_id="typed-increase-1", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={second_id: 1, first_id: 2},
+        )
+        self.assertEqual(
+            {row["allocation_id"] for row in first},
+            {row["allocation_id"] for row in repeated},
+        )
+        self.assertEqual({row["recipe_item_id"] for row in first}, {first_id, second_id})
+        with self.database.connect() as db:
+            totals = {
+                row["recipe_item_id"]: int(row["units"])
+                for row in db.execute(
+                    "SELECT recipe_item_id,SUM(units) AS units FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND listing_id=? AND config_version_id=? "
+                    "AND state='active' GROUP BY recipe_item_id",
+                    (config["listing_id"], config["config_version_id"]),
+                ).fetchall()
+            }
+        self.assertEqual(totals, {first_id: 3, second_id: 2})
+        self.assertTrue(all(row["recipe_item_id"] != recipe_items[2]["item_id"] for row in first))
+
+    def test_typed_recipe_increase_shortage_across_items_is_all_or_nothing(self):
+        config, recipe_items, _ = self.create_typed_recipe_order()
+        self.observe_typed_inventory(include_dragon=False)
+        first_id, second_id = [item["item_id"] for item in recipe_items[:2]]
+        self.service.allocate_recipe_items(
+            request_id="typed-increase-shortage-initial", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={first_id: 1},
+        )
+        with self.assertRaises(InsufficientListingStock):
+            self.service.increase_recipe_units(
+                adjustment_id="typed-increase-shortage", listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                units_by_recipe_item={first_id: 1, second_id: 1},
+            )
+        with self.database.connect() as db:
+            audit = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_listing_adjustments "
+                "WHERE adjustment_id='typed-increase-shortage'"
+            ).fetchone()[0]
+            active = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id=? AND config_version_id=? "
+                "AND state='active'",
+                (config["listing_id"], config["config_version_id"]),
+            ).fetchone()[0]
+        self.assertEqual(audit, 0)
+        self.assertEqual(active, 1)
+
+    def test_listing_increase_rejects_disabled_generation(self):
+        self.ledger.observe(self.a, 5)
+        self.service.allocate_listing(
+            request_id="increase-disabled-initial", listing_id="listing-1",
+            config_version_id="config-1", units=2, resources=[self.a],
+        )
+        self.service.disable_listing_stock(
+            adjustment_id="increase-disable-generation", listing_id="listing-1",
+            config_version_id="config-1",
+        )
+        with self.assertRaisesRegex(ValueError, "Отключённому объявлению"):
+            self.service.increase_listing_units(
+                adjustment_id="increase-disabled", listing_id="listing-1",
+                config_version_id="config-1", units=1, resources=[self.a],
+            )
+
     def test_release_listing_units_splits_only_listing_claim_and_is_idempotent(self):
         self.ledger.observe(self.a, 10)
         self.service.allocate_listing(

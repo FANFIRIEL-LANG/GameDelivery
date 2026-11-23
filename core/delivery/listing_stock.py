@@ -31,6 +31,340 @@ class ListingStockService:
     def __init__(self, database: Database):
         self.database = database
 
+    def increase_listing_units(
+        self,
+        *,
+        adjustment_id: str,
+        listing_id: str,
+        config_version_id: str,
+        units: int,
+        resources: Iterable[StockResource],
+    ) -> list[dict[str, Any]]:
+        """Atomically add units to an existing legacy listing generation."""
+        adjustment_id = str(adjustment_id or "").strip()
+        listing_id = str(listing_id or "").strip()
+        config_version_id = str(config_version_id or "").strip()
+        if not adjustment_id or not listing_id or not config_version_id:
+            raise ValueError("adjustment_id, listing_id и config_version_id обязательны")
+        units = _positive_int(units, "units")
+        normalized: dict[str, StockResource] = {}
+        for candidate in resources:
+            resource = candidate.normalized()
+            normalized[QuantityStockLedger._observation_id(resource)] = resource
+        ordered = sorted(
+            normalized.values(),
+            key=lambda r: (
+                r.bot_name.casefold(), r.game_id, r.app_id, r.context_id,
+                r.asset_id.casefold(),
+            ),
+        )
+
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                "SELECT * FROM gd_stock_listing_adjustments WHERE adjustment_id=?",
+                (adjustment_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    prior["listing_id"] != listing_id
+                    or prior["config_version_id"] != config_version_id
+                    or prior["operation"] != "allocate_units"
+                    or prior["recipe_item_id"] is not None
+                    or int(prior["units"]) != units
+                ):
+                    raise ValueError("adjustment_id уже использован для другой listing operation")
+                ids = json.loads(prior["allocation_ids_json"])
+                rows = self._listing_adjustment_rows(connection, ids)
+                if sum(int(row["units"]) for row in rows) != units or any(
+                    row["recipe_item_id"] is not None for row in rows
+                ):
+                    raise RuntimeError("Сохранённый listing increase batch неполон или изменён")
+                return rows
+
+            config = connection.execute(
+                "SELECT c.listing_id,c.recipe_schema_version,l.status AS listing_status "
+                "FROM gd_config_versions c JOIN gd_listings l ON l.listing_id=c.listing_id "
+                "WHERE c.config_version_id=?",
+                (config_version_id,),
+            ).fetchone()
+            if config is None or config["listing_id"] != listing_id:
+                raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+            if config["listing_status"] == "disabled":
+                raise ValueError("Отключённому объявлению нельзя добавлять складские units")
+            if config["recipe_schema_version"] is not None:
+                raise ValueError("Для typed Recipe используйте increase_recipe_units")
+            initial_batch = connection.execute(
+                "SELECT 1 FROM gd_stock_allocation_batches "
+                "WHERE listing_id=? AND config_version_id=?",
+                (listing_id, config_version_id),
+            ).fetchone()
+            if initial_batch is None:
+                raise ValueError("Для listing generation отсутствует исходный allocation batch")
+            if not ordered:
+                raise InsufficientListingStock(units, 0)
+
+            plan: list[tuple[StockResource, str, int]] = []
+            available_total = 0
+            remaining = units
+            for resource in ordered:
+                observation_id = QuantityStockLedger._observation_id(resource)
+                observation = connection.execute(
+                    "SELECT observed_amount,revision,availability_state FROM gd_stock_observations "
+                    "WHERE observation_id=?",
+                    (observation_id,),
+                ).fetchone()
+                if observation is None or observation["availability_state"] != "usable":
+                    continue
+                free = max(
+                    0,
+                    int(observation["observed_amount"])
+                    - QuantityStockLedger._blocking_units(
+                        connection, observation_id, int(observation["revision"])
+                    ),
+                )
+                available_total += free
+                take = min(remaining, free)
+                if take:
+                    plan.append((resource, observation_id, take))
+                    remaining -= take
+                if remaining == 0:
+                    break
+            if remaining:
+                raise InsufficientListingStock(units, available_total)
+
+            allocation_prefix = "listing-adjustment:" + hashlib.sha256(
+                adjustment_id.encode()
+            ).hexdigest() + ":"
+            allocation_ids: list[str] = []
+            for index, (resource, observation_id, take) in enumerate(plan):
+                allocation_id = f"{allocation_prefix}{index}"
+                connection.execute(
+                    """
+                    INSERT INTO gd_stock_allocations
+                        (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                         asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',NULL)
+                    """,
+                    (
+                        allocation_id, observation_id, resource.game_id, resource.app_id,
+                        resource.context_id, resource.bot_name, resource.asset_id,
+                        asset_id_key(resource.asset_id), listing_id, config_version_id, take,
+                    ),
+                )
+                allocation_ids.append(allocation_id)
+            connection.execute(
+                """
+                INSERT INTO gd_stock_listing_adjustments
+                    (adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                     units,allocation_ids_json)
+                VALUES(?,?,?,'allocate_units',NULL,?,?)
+                """,
+                (
+                    adjustment_id, listing_id, config_version_id, units,
+                    json.dumps(allocation_ids, separators=(",", ":")),
+                ),
+            )
+            return self._listing_adjustment_rows(connection, allocation_ids)
+
+    def increase_recipe_units(
+        self,
+        *,
+        adjustment_id: str,
+        listing_id: str,
+        config_version_id: str,
+        units_by_recipe_item: Mapping[str, int],
+    ) -> list[dict[str, Any]]:
+        """Atomically top up multiple typed Steam Asset RecipeItems without mixing them."""
+        from core.delivery.ledger import DeliveryLedger
+
+        adjustment_id = str(adjustment_id or "").strip()
+        listing_id = str(listing_id or "").strip()
+        config_version_id = str(config_version_id or "").strip()
+        if not adjustment_id or not listing_id or not config_version_id:
+            raise ValueError("adjustment_id, listing_id и config_version_id обязательны")
+        if not isinstance(units_by_recipe_item, Mapping) or not units_by_recipe_item:
+            raise ValueError("units_by_recipe_item должен содержать хотя бы одну Steam Asset позицию")
+        normalized_units: dict[str, int] = {}
+        for raw_id, raw_units in units_by_recipe_item.items():
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                raise ValueError("recipe_item_id должен быть непустой строкой")
+            item_id = raw_id.strip()
+            normalized_units[item_id] = _positive_int(raw_units, "units")
+
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                "SELECT * FROM gd_stock_listing_adjustments WHERE adjustment_id=?",
+                (adjustment_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    prior["listing_id"] != listing_id
+                    or prior["config_version_id"] != config_version_id
+                    or prior["operation"] != "allocate_units"
+                    or prior["recipe_item_id"] is not None
+                    or int(prior["units"]) != sum(normalized_units.values())
+                ):
+                    raise ValueError("adjustment_id уже использован для другой recipe increase")
+                ids = json.loads(prior["allocation_ids_json"])
+                rows = self._listing_adjustment_rows(connection, ids)
+                stored: dict[str, int] = {}
+                for row in rows:
+                    item_id = row["recipe_item_id"]
+                    if not item_id:
+                        raise RuntimeError("Typed increase содержит allocation без recipe_item_id")
+                    stored[item_id] = stored.get(item_id, 0) + int(row["units"])
+                if stored != normalized_units:
+                    raise RuntimeError("Сохранённый recipe increase batch неполон или имеет другой состав")
+                return rows
+
+            config = connection.execute(
+                "SELECT c.listing_id,c.recipe_schema_version,l.status AS listing_status "
+                "FROM gd_config_versions c JOIN gd_listings l ON l.listing_id=c.listing_id "
+                "WHERE c.config_version_id=?",
+                (config_version_id,),
+            ).fetchone()
+            if config is None or config["listing_id"] != listing_id:
+                raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+            if config["listing_status"] == "disabled":
+                raise ValueError("Отключённому объявлению нельзя добавлять складские units")
+            if config["recipe_schema_version"] != 1:
+                raise ValueError("Требуется ConfigVersion с типизированным Recipe v1")
+            initial_batch = connection.execute(
+                "SELECT 1 FROM gd_stock_allocation_batches "
+                "WHERE listing_id=? AND config_version_id=?",
+                (listing_id, config_version_id),
+            ).fetchone()
+            if initial_batch is None:
+                raise ValueError("Для listing generation отсутствует исходный allocation batch")
+            recipe = DeliveryLedger.recipe_for_config_version(
+                connection, config_version_id, allow_legacy=False
+            )
+            item_by_id = {item.item_id: item for item in recipe.items}
+            steam_items = {
+                item_id: item for item_id, item in item_by_id.items()
+                if item.kind == "steam_asset" and isinstance(item.spec, SteamAssetSpec)
+            }
+            unknown_ids = set(normalized_units) - set(steam_items)
+            if unknown_ids:
+                raise ValueError(
+                    "Увеличивать можно только steam_asset RecipeItem: "
+                    + ", ".join(sorted(unknown_ids))
+                )
+
+            observations = connection.execute(
+                """
+                SELECT * FROM gd_stock_observations
+                WHERE availability_state='usable' AND identity_json IS NOT NULL
+                  AND is_tradable=1
+                ORDER BY bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key
+                """
+            ).fetchall()
+            parsed: list[tuple[Any, StockItemIdentity, StockResource]] = []
+            free_by_observation: dict[str, int] = {}
+            for observation in observations:
+                try:
+                    raw_identity = json.loads(observation["identity_json"])
+                    if not isinstance(raw_identity, dict):
+                        continue
+                    identity = StockItemIdentity(**raw_identity).normalized()
+                    resource = StockResource(
+                        observation["game_id"], int(observation["app_id"]),
+                        observation["context_id"], observation["bot_name"],
+                        observation["asset_id"],
+                    ).normalized()
+                    free = max(
+                        0,
+                        int(observation["observed_amount"])
+                        - QuantityStockLedger._blocking_units(
+                            connection, observation["observation_id"],
+                            int(observation["revision"]),
+                        ),
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if free > 0:
+                    parsed.append((observation, identity, resource))
+                    free_by_observation[observation["observation_id"]] = free
+
+            plan: list[tuple[str, StockResource, str, int]] = []
+            for item_id, recipe_item in [
+                (key, value) for key, value in steam_items.items()
+                if key in normalized_units
+            ]:
+                remaining = normalized_units[item_id]
+                available_total = 0
+                for observation, identity, resource in parsed:
+                    observation_id = observation["observation_id"]
+                    free = free_by_observation.get(observation_id, 0)
+                    if free <= 0:
+                        continue
+                    if not identity.matches_spec(recipe_item.spec) or not identity.allows_bot(
+                        resource.bot_name, recipe_item.spec
+                    ):
+                        continue
+                    available_total += free
+                    take = min(remaining, free)
+                    if take:
+                        plan.append((item_id, resource, observation_id, take))
+                        free_by_observation[observation_id] -= take
+                        remaining -= take
+                    if remaining == 0:
+                        break
+                if remaining:
+                    raise InsufficientListingStock(normalized_units[item_id], available_total)
+
+            allocation_prefix = "listing-adjustment:" + hashlib.sha256(
+                adjustment_id.encode()
+            ).hexdigest() + ":"
+            allocation_ids: list[str] = []
+            for index, (item_id, resource, observation_id, take) in enumerate(plan):
+                allocation_id = f"{allocation_prefix}{index}"
+                connection.execute(
+                    """
+                    INSERT INTO gd_stock_allocations
+                        (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                         asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
+                    """,
+                    (
+                        allocation_id, observation_id, resource.game_id, resource.app_id,
+                        resource.context_id, resource.bot_name, resource.asset_id,
+                        asset_id_key(resource.asset_id), listing_id, config_version_id,
+                        take, item_id,
+                    ),
+                )
+                allocation_ids.append(allocation_id)
+            connection.execute(
+                """
+                INSERT INTO gd_stock_listing_adjustments
+                    (adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                     units,allocation_ids_json)
+                VALUES(?,?,?,'allocate_units',NULL,?,?)
+                """,
+                (
+                    adjustment_id, listing_id, config_version_id, sum(normalized_units.values()),
+                    json.dumps(allocation_ids, separators=(",", ":")),
+                ),
+            )
+            return self._listing_adjustment_rows(connection, allocation_ids)
+
+    @staticmethod
+    def _listing_adjustment_rows(connection, allocation_ids: list[str]) -> list[dict[str, Any]]:
+        if not allocation_ids:
+            return []
+        marks = ",".join("?" for _ in allocation_ids)
+        return [
+            dict(row) for row in connection.execute(
+                f"SELECT * FROM gd_stock_allocations WHERE allocation_id IN ({marks}) "
+                "ORDER BY recipe_item_id,bot_name COLLATE NOCASE,game_id,app_id,context_id,asset_id_key",
+                allocation_ids,
+            ).fetchall()
+        ]
+
     def release_listing_units(
         self,
         *,
