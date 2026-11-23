@@ -196,3 +196,6 @@
 
 
 **C.3 Quantity stock dispatch fixture ordering correction (2026-11-23):** CI выявил, что новый dispatcher integration test создавал stock observation до снятия test-only canonical reservation. QuantityStockLedger корректно помечал такую observation как conflict. Тест теперь сначала освобождает canonical fixture reservation и только затем создаёт usable observation и order allocation; production logic не менялась.
+
+
+**C.3 Quantity stock operator release inventory proof (2026-11-23):** Operator release and ACTION_REQUIRED cancellation now also require a fresh ASF inventory snapshot for the original bot, with every Asset ID tradable and live stack Amount at least equal to DeliveryLeg.asset_amounts_json. This prevents returning a stale or depleted stack allocation to an active listing after an offer-absence check. Added operator recovery tests for exact Amount acceptance and rejection when the live stack contains fewer units than the reserved Amount.
