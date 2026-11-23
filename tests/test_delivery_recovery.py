@@ -35,6 +35,7 @@ class DeliveryRecoveryTests(unittest.TestCase):
             item_selectors={"game_id": "cs2", "app_id": 730, "context_id": 2},
             bot_pool=["Bot-A"],
         )
+        self.config_id = config["config_version_id"]
         self.ledger.create_deal(
             deal_id="deal-recovery",
             source_platform="local",
@@ -143,8 +144,7 @@ class DeliveryRecoveryTests(unittest.TestCase):
                      units,allocation_ids_json,recipe_item_id)
                 VALUES('transfer-recovery','listing-recovery',?,'line-recovery',3,?,NULL)
                 """,
-                (self.ledger.config_for_order("order-recovery")["config_version_id"],
-                 '["stock-recovery"]'),
+                (self.config_id, '["stock-recovery"]'),
             )
         self.snapshot = InventorySnapshot(
             bot_name="Bot-A", game_id="cs2", app_id=730, context_id="2",
