@@ -131,3 +131,6 @@
 
 
 **C.3 listing increase shortage test setup correction (2026-11-23):** Первый CI на `50bd47fff660841dc35716a465aae830bccd45bb` прошёл 1008 тестов; один новый test setup завершился до вызова increase потому, что typed Recipe требует initial allocation для всех обязательных Steam Asset позиций. Исправлен сценарий: initial batch выделяет по 1 unit для Redline и Dragon Lore, затем increase запрашивает 1 дополнительный Redline и 3 Dragon Lore при двух свободных Dragon Lore units; ожидаемый shortage возникает во время второго slice planner. Проверка подтверждает, что ни один planned slice и audit event не сохраняются. Дополнительно `increase_recipe_units()` теперь отклоняет повторяющиеся `recipe_item_id` после нормализации пробелов; добавлен отдельный тест.
+
+
+**C.3 typed increase shortage assertion correction (2026-11-23):** CI run `45135374114` показал, что после корректного initial typed batch тест ожидал один active unit, хотя setup намеренно закрепляет по одному unit для двух разных обязательных Steam Asset RecipeItems. Production planner вернул expected shortage, а audit row не создал; ошибка была только в test expectation. Проверка заменена на точное сравнение active units по двум `recipe_item_id`: `{first: 1, second: 1}`. Суммарное количество по-прежнему не меняется, а операция increase остаётся all-or-nothing.

@@ -269,14 +269,17 @@ class ListingStockServiceTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM gd_stock_listing_adjustments "
                 "WHERE adjustment_id='typed-increase-shortage'"
             ).fetchone()[0]
-            active = db.execute(
-                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
-                "WHERE owner_type='listing' AND listing_id=? AND config_version_id=? "
-                "AND state='active'",
-                (config["listing_id"], config["config_version_id"]),
-            ).fetchone()[0]
+            active_by_item = {
+                row["recipe_item_id"]: int(row["units"])
+                for row in db.execute(
+                    "SELECT recipe_item_id,SUM(units) AS units FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND listing_id=? AND config_version_id=? "
+                    "AND state='active' GROUP BY recipe_item_id",
+                    (config["listing_id"], config["config_version_id"]),
+                ).fetchall()
+            }
         self.assertEqual(audit, 0)
-        self.assertEqual(active, 1)
+        self.assertEqual(active_by_item, {first_id: 1, second_id: 1})
 
     def test_typed_recipe_increase_rejects_duplicate_normalized_item_ids(self):
         config, recipe_items, _ = self.create_typed_recipe_order()
