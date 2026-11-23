@@ -252,35 +252,78 @@ class DeliveryDispatcher:
                             "reason": "invalid asset amount manifest",
                         }}
 
-                reservations = db.execute(
-                    "SELECT asset_id,units FROM gd_resource_reservations "
-                    "WHERE order_line_id=? AND bot_name=? COLLATE NOCASE "
-                    "AND owner_type='order' AND app_id=? AND context_id=? AND state='active'",
-                    (row["order_line_id"], row["bot_name"], int(row["app_id"]), str(row["context_id"])),
+                quantity_allocations = db.execute(
+                    """
+                    SELECT a.asset_id,SUM(a.units) AS units,
+                           o.availability_state,o.observed_amount,
+                           (SELECT COALESCE(SUM(blocking.units),0)
+                            FROM gd_stock_allocations blocking
+                            WHERE blocking.observation_id=a.observation_id
+                              AND (blocking.state IN ('active','pending','unknown','legacy_conflict')
+                                OR (blocking.state='consumed' AND blocking.consumed_revision>=o.revision))
+                           ) AS globally_blocked_units,
+                           (SELECT COUNT(*) FROM gd_resource_reservations r
+                            WHERE r.bot_name=a.bot_name COLLATE NOCASE
+                              AND r.asset_id_key=a.asset_id_key
+                              AND r.state IN ('active','legacy_conflict')) AS legacy_reservation_count
+                    FROM gd_stock_allocations a
+                    JOIN gd_stock_observations o ON o.observation_id=a.observation_id
+                    WHERE a.order_line_id=? AND a.bot_name=? COLLATE NOCASE
+                      AND a.owner_type='order' AND a.app_id=? AND a.context_id=?
+                      AND a.state='active'
+                      AND a.asset_id IN (SELECT value FROM json_each(?))
+                    GROUP BY a.asset_id,a.asset_id_key,a.observation_id
+                    """,
+                    (row["order_line_id"], row["bot_name"], int(row["app_id"]),
+                     str(row["context_id"]), row["asset_ids_json"]),
                 ).fetchall()
-                reserved_ids = [str(value["asset_id"]) for value in reservations]
-                if sorted(reserved_ids) != sorted(asset_ids):
-                    return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "active reservation mismatch"}}
-                reserved_amounts = {str(value["asset_id"]): int(value["units"]) for value in reservations}
-                if asset_amounts is None:
-                    if any(amount != 1 for amount in reserved_amounts.values()):
+                if quantity_allocations:
+                    stock_amounts = {str(value["asset_id"]): int(value["units"]) for value in quantity_allocations}
+                    if asset_amounts is None or stock_amounts != asset_amounts or set(stock_amounts) != set(asset_ids):
                         return {"_claimed": False, "response": {
                             "dispatched": False, "status": row["status"],
-                            "reason": "asset amount manifest required for multi-unit reservation",
+                            "reason": "active quantity stock allocation amount mismatch",
                         }}
-                elif reserved_amounts != asset_amounts:
-                    return {"_claimed": False, "response": {
-                        "dispatched": False, "status": row["status"],
-                        "reason": "active reservation amount mismatch",
-                    }}
-                for asset_id in asset_ids:
-                    active_count = db.execute(
-                        "SELECT COUNT(*) FROM gd_resource_reservations "
-                        "WHERE bot_name=? COLLATE NOCASE AND asset_id_key=? AND state IN ('active','legacy_conflict')",
-                        (row["bot_name"], asset_id_key(asset_id)),
-                    ).fetchone()[0]
-                    if active_count != 1:
-                        return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "asset has conflicting active reservations"}}
+                    if any(
+                        value["availability_state"] != "usable"
+                        or int(value["globally_blocked_units"]) > int(value["observed_amount"])
+                        or int(value["legacy_reservation_count"]) != 0
+                        for value in quantity_allocations
+                    ):
+                        return {"_claimed": False, "response": {
+                            "dispatched": False, "status": row["status"],
+                            "reason": "quantity stock observation or global allocation conflict",
+                        }}
+                else:
+                    reservations = db.execute(
+                        "SELECT asset_id,units FROM gd_resource_reservations "
+                        "WHERE order_line_id=? AND bot_name=? COLLATE NOCASE "
+                        "AND owner_type='order' AND app_id=? AND context_id=? AND state='active'",
+                        (row["order_line_id"], row["bot_name"], int(row["app_id"]), str(row["context_id"])),
+                    ).fetchall()
+                    reserved_ids = [str(value["asset_id"]) for value in reservations]
+                    if sorted(reserved_ids) != sorted(asset_ids):
+                        return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "active reservation mismatch"}}
+                    reserved_amounts = {str(value["asset_id"]): int(value["units"]) for value in reservations}
+                    if asset_amounts is None:
+                        if any(amount != 1 for amount in reserved_amounts.values()):
+                            return {"_claimed": False, "response": {
+                                "dispatched": False, "status": row["status"],
+                                "reason": "asset amount manifest required for multi-unit reservation",
+                            }}
+                    elif reserved_amounts != asset_amounts:
+                        return {"_claimed": False, "response": {
+                            "dispatched": False, "status": row["status"],
+                            "reason": "active reservation amount mismatch",
+                        }}
+                    for asset_id in asset_ids:
+                        active_count = db.execute(
+                            "SELECT COUNT(*) FROM gd_resource_reservations "
+                            "WHERE bot_name=? COLLATE NOCASE AND asset_id_key=? AND state IN ('active','legacy_conflict')",
+                            (row["bot_name"], asset_id_key(asset_id)),
+                        ).fetchone()[0]
+                        if active_count != 1:
+                            return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "asset has conflicting active reservations"}}
 
                 attempt, created = self.ledger.create_delivery_attempt(
                     order_id=order, leg_id=leg, retry_generation=retry_generation,
