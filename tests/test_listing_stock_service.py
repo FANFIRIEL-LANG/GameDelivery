@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from pathlib import Path
 
 from core.database.db import Database
@@ -144,6 +146,140 @@ class ListingStockServiceTests(unittest.TestCase):
             )
             for item in items
         ]
+
+    def test_concurrent_listing_allocations_cannot_overbook_one_physical_stack(self):
+        self.ledger.observe(self.a, 10)
+        with self.database.connect() as db:
+            db.execute(
+                "INSERT INTO gd_listings(listing_id,source_platform,external_listing_id,title) "
+                "VALUES('listing-2','manual','external-listing-2','Second listing')"
+            )
+            db.execute(
+                """
+                INSERT INTO gd_config_versions
+                    (config_version_id,listing_id,version_number,delivery_quantity_per_deal,
+                     item_selectors_json,bot_pool_json)
+                VALUES('config-2','listing-2',1,7,'{}','[]')
+                """
+            )
+
+        barrier = Barrier(2)
+
+        def allocate(listing_id: str, config_version_id: str, request_id: str):
+            barrier.wait(timeout=5)
+            try:
+                rows = self.service.allocate_listing(
+                    request_id=request_id,
+                    listing_id=listing_id,
+                    config_version_id=config_version_id,
+                    units=7,
+                    resources=[self.a],
+                )
+                return ("allocated", listing_id, rows)
+            except InsufficientListingStock as exc:
+                return ("shortage", exc.required, exc.available)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(allocate, "listing-1", "config-1", "concurrent-request-1"),
+                executor.submit(allocate, "listing-2", "config-2", "concurrent-request-2"),
+            ]
+            results = [future.result(timeout=15) for future in futures]
+
+        winners = [result for result in results if result[0] == "allocated"]
+        shortages = [result for result in results if result[0] == "shortage"]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(len(shortages), 1)
+        self.assertEqual((shortages[0][1], shortages[0][2]), (7, 3))
+        with self.database.connect() as db:
+            active = db.execute(
+                "SELECT listing_id,SUM(units) AS units FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND state='active' "
+                "GROUP BY listing_id"
+            ).fetchall()
+            batches = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_allocation_batches "
+                "WHERE request_id IN ('concurrent-request-1','concurrent-request-2')"
+            ).fetchone()[0]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(int(active[0]["units"]), 7)
+        self.assertEqual(batches, 1)
+        self.assertEqual(self.ledger.free_units(self.a), 3)
+
+    def test_concurrent_paid_events_cannot_transfer_one_listing_slice_twice(self):
+        self.ledger.observe(self.a, 4)
+        self.service.allocate_listing(
+            request_id="concurrent-transfer-initial",
+            listing_id="listing-1",
+            config_version_id="config-1",
+            units=4,
+            resources=[self.a],
+        )
+        with self.database.connect() as db:
+            db.execute(
+                """
+                INSERT INTO gd_deals
+                    (deal_id,source_platform,external_deal_id,listing_id,config_version_id,payload_json)
+                VALUES('deal-2','playerok','external-2','listing-1','config-1','{}')
+                """
+            )
+            db.execute(
+                "INSERT INTO gd_orders(order_id,deal_id,total_quantity) "
+                "VALUES('order-2','deal-2',4)"
+            )
+            db.execute(
+                """
+                INSERT INTO gd_order_lines
+                    (order_line_id,order_id,config_version_id,line_number,item_type,item_name,
+                     item_selector_json,quantity)
+                VALUES('line-2','order-2','config-1',1,'cs2','Second item','{}',4)
+                """
+            )
+
+        barrier = Barrier(2)
+
+        def transfer(event_id: str, line_id: str):
+            barrier.wait(timeout=5)
+            try:
+                rows = self.service.transfer_to_order(
+                    transfer_event_id=event_id,
+                    listing_id="listing-1",
+                    config_version_id="config-1",
+                    order_line_id=line_id,
+                    units=4,
+                )
+                return ("transferred", line_id, rows)
+            except InsufficientListingStock as exc:
+                return ("shortage", exc.required, exc.available)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(transfer, "concurrent-paid-1", "line-1"),
+                executor.submit(transfer, "concurrent-paid-2", "line-2"),
+            ]
+            results = [future.result(timeout=15) for future in futures]
+
+        winners = [result for result in results if result[0] == "transferred"]
+        shortages = [result for result in results if result[0] == "shortage"]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(len(shortages), 1)
+        self.assertEqual((shortages[0][1], shortages[0][2]), (4, 0))
+        with self.database.connect() as db:
+            transfers = db.execute(
+                "SELECT COUNT(*),COALESCE(SUM(units),0) FROM gd_stock_transfers"
+            ).fetchone()
+            active_listing = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' AND state='active'"
+            ).fetchone()[0]
+            active_orders = db.execute(
+                "SELECT COUNT(*),COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND state='active'"
+            ).fetchone()
+        self.assertEqual((transfers[0], transfers[1]), (1, 4))
+        self.assertEqual(active_listing, 0)
+        self.assertEqual((active_orders[0], active_orders[1]), (1, 4))
+        self.assertEqual(self.ledger.free_units(self.a), 0)
 
     def test_legacy_listing_increase_is_atomic_and_idempotent(self):
         self.ledger.observe(self.a, 6)
