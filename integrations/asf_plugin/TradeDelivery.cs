@@ -990,12 +990,14 @@ internal static class TradeDelivery
             request.TargetSteamId64.ToString(CultureInfo.InvariantCulture),
             request.AppId.ToString(CultureInfo.InvariantCulture),
             request.ContextId.ToString(CultureInfo.InvariantCulture),
-            string.Join(",", request.AssetIds.OrderBy(value => value, StringComparer.Ordinal)),
-            request.AssetAmounts is null
-                ? ""
-                : "amounts=" + string.Join(",", request.AssetAmounts
-                    .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-                    .Select(entry => entry.Key + ":" + entry.Value.ToString(CultureInfo.InvariantCulture))));
+            string.Join(",", request.AssetIds.OrderBy(value => value, StringComparer.Ordinal)));
+        if (request.AssetAmounts is not null)
+        {
+            canonical += "\namounts=" + string.Join(",", request.AssetAmounts
+                .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+                .Select(entry => entry.Key + ":" + entry.Value.ToString(CultureInfo.InvariantCulture)));
+        }
+
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
