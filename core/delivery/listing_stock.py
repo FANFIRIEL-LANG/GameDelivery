@@ -302,6 +302,7 @@ class ListingStockService:
                 (source_allocation_id,),
             )
             released_ids = [source_allocation_id]
+            source_remainder_ids: list[str] = []
             source_remainder_units = int(source["units"]) - units
             if source_remainder_units:
                 source_remainder_id = _stable_id(
@@ -322,7 +323,7 @@ class ListingStockService:
                         config_version_id, source_remainder_units, recipe_item_id,
                     ),
                 )
-                released_ids.append(source_remainder_id)
+                source_remainder_ids.append(source_remainder_id)
 
             created_ids: list[str] = []
             allocation_prefix = _stable_id("listing-reallocation", adjustment_id)
@@ -358,6 +359,7 @@ class ListingStockService:
                         "source_allocation_id": source_allocation_id,
                         "destination_observation_ids": destination_observation_ids,
                         "released_allocation_ids": released_ids,
+                        "source_remainder_allocation_ids": source_remainder_ids,
                         "created_allocation_ids": created_ids,
                     }, separators=(",", ":")),
                 ),
