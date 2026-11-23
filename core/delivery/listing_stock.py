@@ -31,6 +31,339 @@ class ListingStockService:
     def __init__(self, database: Database):
         self.database = database
 
+    def reallocate_listing_units(
+        self,
+        *,
+        adjustment_id: str,
+        listing_id: str,
+        config_version_id: str,
+        source_allocation_id: str,
+        units: int,
+        destinations: Iterable[StockResource],
+        recipe_item_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Atomically replace a listing claim on one bot with equivalent stock on other bots.
+
+        The source allocation is released (and its untransferred remainder is
+        recreated when needed) in the same BEGIN IMMEDIATE transaction that
+        claims the destination units. Both sides require usable, tradable,
+        identity-verified observations. Typed recipes remain pinned to one
+        Steam Asset RecipeItem; legacy listings require exact source/destination
+        StockItemIdentity equality because they have no typed selector contract.
+        """
+        adjustment_id = str(adjustment_id or "").strip()
+        listing_id = str(listing_id or "").strip()
+        config_version_id = str(config_version_id or "").strip()
+        source_allocation_id = str(source_allocation_id or "").strip()
+        recipe_item_id = str(recipe_item_id).strip() if recipe_item_id is not None else None
+        if not all((adjustment_id, listing_id, config_version_id, source_allocation_id)):
+            raise ValueError(
+                "adjustment_id, listing_id, config_version_id и source_allocation_id обязательны"
+            )
+        units = _positive_int(units, "units")
+
+        normalized_destinations: dict[str, StockResource] = {}
+        for candidate in destinations:
+            resource = candidate.normalized()
+            observation_id = QuantityStockLedger._observation_id(resource)
+            normalized_destinations[observation_id] = resource
+        ordered_destinations = sorted(
+            normalized_destinations.values(),
+            key=lambda resource: (
+                resource.bot_name.casefold(), resource.game_id, resource.app_id,
+                resource.context_id, resource.asset_id.casefold(),
+            ),
+        )
+        if not ordered_destinations:
+            raise InsufficientListingStock(units, 0)
+        destination_observation_ids = [
+            QuantityStockLedger._observation_id(resource)
+            for resource in ordered_destinations
+        ]
+
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                "SELECT * FROM gd_stock_listing_adjustments WHERE adjustment_id=?",
+                (adjustment_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    prior["listing_id"] != listing_id
+                    or prior["config_version_id"] != config_version_id
+                    or prior["operation"] != "reallocate_units"
+                    or prior["recipe_item_id"] != recipe_item_id
+                    or int(prior["units"]) != units
+                ):
+                    raise ValueError("adjustment_id уже использован для другой listing reallocation")
+                try:
+                    audit_payload = json.loads(prior["allocation_ids_json"])
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("Reallocation audit payload повреждён") from exc
+                if (
+                    not isinstance(audit_payload, dict)
+                    or audit_payload.get("source_allocation_id") != source_allocation_id
+                    or audit_payload.get("destination_observation_ids") != destination_observation_ids
+                ):
+                    raise ValueError("adjustment_id уже использован для другого source/destination")
+                created_ids = audit_payload.get("created_allocation_ids")
+                if not isinstance(created_ids, list) or not created_ids:
+                    raise RuntimeError("Reallocation audit не содержит destination allocations")
+                rows = self._listing_adjustment_rows(connection, created_ids)
+                if (
+                    sum(int(row["units"]) for row in rows) != units
+                    or any(
+                        row["owner_type"] != "listing"
+                        or row["config_version_id"] != config_version_id
+                        or row["recipe_item_id"] != recipe_item_id
+                        for row in rows
+                    )
+                ):
+                    raise RuntimeError("Сохранённый reallocation batch неполон или изменён")
+                return rows
+
+            config = connection.execute(
+                """
+                SELECT c.listing_id,c.recipe_schema_version,c.bot_pool_json,
+                       l.status AS listing_status
+                FROM gd_config_versions c
+                JOIN gd_listings l ON l.listing_id=c.listing_id
+                WHERE c.config_version_id=?
+                """,
+                (config_version_id,),
+            ).fetchone()
+            if config is None or config["listing_id"] != listing_id:
+                raise ValueError("ConfigVersion не принадлежит указанному объявлению")
+            if config["listing_status"] == "disabled":
+                raise ValueError("Отключённому объявлению нельзя перераспределять складские units")
+            if connection.execute(
+                "SELECT 1 FROM gd_stock_allocation_batches "
+                "WHERE listing_id=? AND config_version_id=?",
+                (listing_id, config_version_id),
+            ).fetchone() is None:
+                raise ValueError("Для listing generation отсутствует исходный allocation batch")
+
+            unresolved = int(connection.execute(
+                """
+                SELECT COUNT(*) FROM gd_stock_allocations
+                WHERE owner_type='listing' AND listing_id=? AND config_version_id=?
+                  AND state IN ('pending','unknown','legacy_conflict')
+                """,
+                (listing_id, config_version_id),
+            ).fetchone()[0])
+            if unresolved:
+                raise ValueError(
+                    "У listing generation есть pending/UNKNOWN/conflict allocations; "
+                    "сначала требуется reconciliation"
+                )
+
+            source = connection.execute(
+                """
+                SELECT a.*,o.identity_json,o.is_tradable,
+                       o.availability_state AS observation_state,
+                       o.observed_amount,o.revision
+                FROM gd_stock_allocations a
+                JOIN gd_stock_observations o ON o.observation_id=a.observation_id
+                WHERE a.allocation_id=? AND a.owner_type='listing'
+                  AND a.listing_id=? AND a.config_version_id=? AND a.state='active'
+                """,
+                (source_allocation_id, listing_id, config_version_id),
+            ).fetchone()
+            if source is None:
+                raise ValueError("Source allocation не является активным listing-owned ресурсом этой ConfigVersion")
+            if source["recipe_item_id"] != recipe_item_id:
+                raise ValueError("recipe_item_id source allocation не совпадает с запросом")
+            if int(source["units"]) < units:
+                raise InsufficientListingStock(units, int(source["units"]))
+            if source["observation_state"] != "usable" or source["is_tradable"] != 1:
+                raise ValueError("Source resource должен иметь свежее usable observation и is_tradable=True")
+            try:
+                source_identity_raw = json.loads(source["identity_json"])
+                if not isinstance(source_identity_raw, dict):
+                    raise ValueError("identity_json must be an object")
+                source_identity = StockItemIdentity(**source_identity_raw).normalized()
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("Source resource identity не подтверждена; reallocation запрещён") from exc
+            source_resource = StockResource(
+                source["game_id"], int(source["app_id"]), source["context_id"],
+                source["bot_name"], source["asset_id"],
+            ).normalized()
+            selector_spec = None
+            legacy_bot_pool: list[str] = []
+            if config["recipe_schema_version"] is not None:
+                if not recipe_item_id:
+                    raise ValueError("Для typed Recipe обязателен точный recipe_item_id")
+                from core.delivery.ledger import DeliveryLedger
+                recipe = DeliveryLedger.recipe_for_config_version(
+                    connection, config_version_id, allow_legacy=False
+                )
+                selected_item = next(
+                    (item for item in recipe.items if item.item_id == recipe_item_id), None
+                )
+                if selected_item is None or not isinstance(selected_item.spec, SteamAssetSpec):
+                    raise ValueError("recipe_item_id должен указывать на Steam Asset RecipeItem")
+                selector_spec = selected_item.spec
+                if (
+                    not source_identity.matches_spec(selector_spec)
+                    or not source_identity.allows_bot(source_resource.bot_name, selector_spec)
+                ):
+                    raise ValueError("Source resource не соответствует SteamAssetSpec или allowed_bot_pool")
+            else:
+                if recipe_item_id is not None:
+                    raise ValueError("Legacy ConfigVersion не поддерживает recipe_item_id")
+                try:
+                    legacy_bot_pool = json.loads(config["bot_pool_json"])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("ConfigVersion bot_pool_json повреждён") from exc
+                if not isinstance(legacy_bot_pool, list) or any(
+                    not isinstance(bot, str) or not bot.strip() for bot in legacy_bot_pool
+                ):
+                    raise ValueError("ConfigVersion bot_pool должен быть списком имён ботов")
+                identity_values = (
+                    source_identity.market_hash_name, source_identity.name,
+                    source_identity.item_type, source_identity.class_id,
+                    source_identity.quality, source_identity.exterior, source_identity.rarity,
+                )
+                if not any(identity_values):
+                    raise ValueError("Legacy source identity не содержит проверяемых item attributes")
+                if legacy_bot_pool and source_resource.bot_name.casefold() not in {
+                    bot.strip().casefold() for bot in legacy_bot_pool
+                }:
+                    raise ValueError("Source bot отсутствует в ConfigVersion allowed bot pool")
+
+            planned: list[tuple[StockResource, str, int]] = []
+            available_total = 0
+            remaining = units
+            for resource in ordered_destinations:
+                if resource.bot_name.casefold() == source_resource.bot_name.casefold():
+                    raise ValueError("Reallocation destination должен находиться на другом ASF bot")
+                if (
+                    resource.game_id != source_resource.game_id
+                    or resource.app_id != source_resource.app_id
+                    or resource.context_id != source_resource.context_id
+                ):
+                    raise ValueError("Reallocation destination должен иметь тот же game/app/context scope")
+                if legacy_bot_pool and resource.bot_name.casefold() not in {
+                    bot.strip().casefold() for bot in legacy_bot_pool
+                }:
+                    raise ValueError("Destination bot отсутствует в ConfigVersion allowed bot pool")
+                observation_id = QuantityStockLedger._observation_id(resource)
+                observation = connection.execute(
+                    """
+                    SELECT identity_json,is_tradable,availability_state,
+                           observed_amount,revision
+                    FROM gd_stock_observations WHERE observation_id=?
+                    """,
+                    (observation_id,),
+                ).fetchone()
+                if observation is None or observation["availability_state"] != "usable":
+                    continue
+                if observation["is_tradable"] != 1:
+                    continue
+                try:
+                    identity_raw = json.loads(observation["identity_json"])
+                    if not isinstance(identity_raw, dict):
+                        continue
+                    identity = StockItemIdentity(**identity_raw).normalized()
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if selector_spec is not None:
+                    if (
+                        not identity.matches_spec(selector_spec)
+                        or not identity.allows_bot(resource.bot_name, selector_spec)
+                    ):
+                        continue
+                elif identity != source_identity:
+                    continue
+
+                free = max(
+                    0,
+                    int(observation["observed_amount"])
+                    - QuantityStockLedger._blocking_units(
+                        connection, observation_id, int(observation["revision"])
+                    ),
+                )
+                available_total += free
+                take = min(remaining, free)
+                if take:
+                    planned.append((resource, observation_id, take))
+                    remaining -= take
+                if remaining == 0:
+                    break
+            if remaining:
+                raise InsufficientListingStock(units, available_total)
+
+            # All source and destination checks are complete. A failure in any
+            # state transition or destination INSERT rolls back the whole move.
+            connection.execute(
+                "UPDATE gd_stock_allocations SET state='released',"
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE allocation_id=? AND state='active'",
+                (source_allocation_id,),
+            )
+            released_ids = [source_allocation_id]
+            source_remainder_units = int(source["units"]) - units
+            if source_remainder_units:
+                source_remainder_id = _stable_id(
+                    "listing-reallocation-remainder", adjustment_id, source_allocation_id
+                )
+                connection.execute(
+                    """
+                    INSERT INTO gd_stock_allocations
+                        (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                         asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
+                    """,
+                    (
+                        source_remainder_id, source["observation_id"], source["game_id"],
+                        source["app_id"], source["context_id"], source["bot_name"],
+                        source["asset_id"], source["asset_id_key"], listing_id,
+                        config_version_id, source_remainder_units, recipe_item_id,
+                    ),
+                )
+                released_ids.append(source_remainder_id)
+
+            created_ids: list[str] = []
+            allocation_prefix = _stable_id("listing-reallocation", adjustment_id)
+            for index, (resource, observation_id, take) in enumerate(planned):
+                allocation_id = f"{allocation_prefix}:{index}"
+                connection.execute(
+                    """
+                    INSERT INTO gd_stock_allocations
+                        (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                         asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                         order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                    VALUES(?,?,?,?,?,?,?,?, 'listing',?,?,NULL,NULL,?,'active',?)
+                    """,
+                    (
+                        allocation_id, observation_id, resource.game_id, resource.app_id,
+                        resource.context_id, resource.bot_name, resource.asset_id,
+                        asset_id_key(resource.asset_id), listing_id, config_version_id,
+                        take, recipe_item_id,
+                    ),
+                )
+                created_ids.append(allocation_id)
+
+            connection.execute(
+                """
+                INSERT INTO gd_stock_listing_adjustments
+                    (adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                     units,allocation_ids_json)
+                VALUES(?,?,?,'reallocate_units',?,?,?)
+                """,
+                (
+                    adjustment_id, listing_id, config_version_id, recipe_item_id, units,
+                    json.dumps({
+                        "source_allocation_id": source_allocation_id,
+                        "destination_observation_ids": destination_observation_ids,
+                        "released_allocation_ids": released_ids,
+                        "created_allocation_ids": created_ids,
+                    }, separators=(",", ":")),
+                ),
+            )
+            return self._listing_adjustment_rows(connection, created_ids)
+
     def increase_listing_units(
         self,
         *,

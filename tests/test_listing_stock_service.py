@@ -281,6 +281,181 @@ class ListingStockServiceTests(unittest.TestCase):
         self.assertEqual((active_orders[0], active_orders[1]), (1, 4))
         self.assertEqual(self.ledger.free_units(self.a), 0)
 
+    def test_reallocate_listing_units_is_atomic_idempotent_and_preserves_order_stock(self):
+        self.observe_typed_inventory(include_dragon=False)
+        self.service.allocate_listing(
+            request_id="reallocate-legacy-base", listing_id="listing-1",
+            config_version_id="config-1", units=4, resources=[self.a],
+        )
+        self.service.transfer_to_order(
+            transfer_event_id="reallocate-existing-order", listing_id="listing-1",
+            config_version_id="config-1", order_line_id="line-1", units=1,
+        )
+        with self.database.connect() as db:
+            source = db.execute(
+                "SELECT allocation_id,units FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' "
+                "AND config_version_id='config-1' AND bot_name='Bot-A' AND state='active'"
+            ).fetchone()
+        self.assertEqual(int(source["units"]), 3)
+        destination = StockResource("cs2", 730, "2", "Bot-B", "1002")
+        moved = self.service.reallocate_listing_units(
+            adjustment_id="reallocate-legacy-1", listing_id="listing-1",
+            config_version_id="config-1", source_allocation_id=source["allocation_id"],
+            units=2, destinations=[destination],
+        )
+        repeated = self.service.reallocate_listing_units(
+            adjustment_id="reallocate-legacy-1", listing_id="listing-1",
+            config_version_id="config-1", source_allocation_id=source["allocation_id"],
+            units=2, destinations=[destination],
+        )
+        self.assertEqual(
+            {row["allocation_id"] for row in moved},
+            {row["allocation_id"] for row in repeated},
+        )
+        self.assertEqual({row["bot_name"] for row in moved}, {"Bot-B"})
+        with self.database.connect() as db:
+            active = {
+                row["bot_name"]: int(row["units"])
+                for row in db.execute(
+                    "SELECT bot_name,SUM(units) AS units FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND listing_id='listing-1' "
+                    "AND config_version_id='config-1' AND state='active' GROUP BY bot_name"
+                ).fetchall()
+            }
+            order = db.execute(
+                "SELECT units,state FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id='line-1' AND state='active'"
+            ).fetchone()
+            audit = json.loads(db.execute(
+                "SELECT allocation_ids_json FROM gd_stock_listing_adjustments "
+                "WHERE adjustment_id='reallocate-legacy-1'"
+            ).fetchone()[0])
+        self.assertEqual(active, {"Bot-A": 1, "Bot-B": 2})
+        self.assertEqual((int(order["units"]), order["state"]), (1, "active"))
+        self.assertEqual(sum(row["units"] for row in moved), 2)
+        self.assertEqual(len(audit["released_allocation_ids"]), 2)
+        self.assertEqual(len(audit["created_allocation_ids"]), 1)
+        self.assertEqual(self.ledger.free_units(self.a), 3)
+        self.assertEqual(self.ledger.free_units(destination), 7)
+
+    def test_reallocate_shortage_leaves_source_allocation_and_audit_unchanged(self):
+        source_identity = StockItemIdentity(
+            "cs2", 730, "2", market_hash_name="AK-47 | Redline",
+            name="AK-47 | Redline", item_type="Rifle", class_id="class-redline",
+        )
+        self.ledger.observe(self.a, 5, identity=source_identity, is_tradable=True)
+        destination = StockResource("cs2", 730, "2", "Bot-B", "9001")
+        self.ledger.observe(
+            destination, 1,
+            identity=source_identity, is_tradable=True,
+        )
+        self.service.allocate_listing(
+            request_id="reallocate-shortage-base", listing_id="listing-1",
+            config_version_id="config-1", units=4, resources=[self.a],
+        )
+        with self.database.connect() as db:
+            source_id = db.execute(
+                "SELECT allocation_id FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' AND state='active'"
+            ).fetchone()[0]
+        with self.assertRaises(InsufficientListingStock) as caught:
+            self.service.reallocate_listing_units(
+                adjustment_id="reallocate-shortage", listing_id="listing-1",
+                config_version_id="config-1", source_allocation_id=source_id,
+                units=2, destinations=[destination],
+            )
+        self.assertEqual((caught.exception.required, caught.exception.available), (2, 1))
+        with self.database.connect() as db:
+            state, units_now = db.execute(
+                "SELECT state,units FROM gd_stock_allocations WHERE allocation_id=?",
+                (source_id,),
+            ).fetchone()
+            created = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND bot_name='Bot-B' AND state='active'"
+            ).fetchone()[0]
+            audit = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_listing_adjustments "
+                "WHERE adjustment_id='reallocate-shortage'"
+            ).fetchone()[0]
+        self.assertEqual((state, int(units_now), created, audit), ("active", 4, 0, 0))
+
+    def test_typed_recipe_reallocation_stays_on_one_exact_steam_asset_item(self):
+        delivery = DeliveryLedger(self.database)
+        item = RecipeItem(
+            "redline-move", 1, "steam_asset", 1, 4, True, None,
+            "steam_trade_offer",
+            SteamAssetSpec(
+                "cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                ("Bot-A", "Bot-B"),
+            ),
+        )
+        config = delivery.create_recipe_config_version(
+            listing_id="typed-reallocate-listing", source_platform="manual",
+            external_listing_id="typed-reallocate-external", recipe_items=[item],
+        )
+        self.observe_typed_inventory(include_dragon=False)
+        recipe_item_id = config["recipe_items"][0]["item_id"]
+        self.service.allocate_recipe_items(
+            request_id="typed-reallocate-base", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={recipe_item_id: 4},
+        )
+        with self.database.connect() as db:
+            source_id = db.execute(
+                "SELECT allocation_id FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id=? AND state='active'",
+                (config["listing_id"],),
+            ).fetchone()[0]
+        destination = StockResource("cs2", 730, "2", "Bot-B", "1002")
+        moved = self.service.reallocate_listing_units(
+            adjustment_id="typed-reallocate-1", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            source_allocation_id=source_id, units=2, destinations=[destination],
+            recipe_item_id=recipe_item_id,
+        )
+        self.assertEqual({row["recipe_item_id"] for row in moved}, {recipe_item_id})
+        self.assertEqual({row["bot_name"] for row in moved}, {"Bot-B"})
+        with self.assertRaisesRegex(ValueError, "другого source/destination"):
+            self.service.reallocate_listing_units(
+                adjustment_id="typed-reallocate-1", listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                source_allocation_id=source_id, units=2,
+                destinations=[StockResource("cs2", 730, "2", "Bot-A", "1001")],
+                recipe_item_id=recipe_item_id,
+            )
+
+    def test_reallocate_rejects_stale_source_without_releasing_its_claim(self):
+        self.observe_typed_inventory(include_dragon=False)
+        self.service.allocate_listing(
+            request_id="reallocate-stale-base", listing_id="listing-1",
+            config_version_id="config-1", units=3, resources=[self.a],
+        )
+        with self.database.connect() as db:
+            source_id = db.execute(
+                "SELECT allocation_id FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id='listing-1' AND state='active'"
+            ).fetchone()[0]
+        self.ledger.observe_snapshot("cs2", "Bot-A", [])
+        with self.assertRaisesRegex(ValueError, "свежее usable observation"):
+            self.service.reallocate_listing_units(
+                adjustment_id="reallocate-stale-source", listing_id="listing-1",
+                config_version_id="config-1", source_allocation_id=source_id,
+                units=2,
+                destinations=[StockResource("cs2", 730, "2", "Bot-B", "1002")],
+            )
+        with self.database.connect() as db:
+            state = db.execute(
+                "SELECT state FROM gd_stock_allocations WHERE allocation_id=?",
+                (source_id,),
+            ).fetchone()[0]
+            audit = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_listing_adjustments "
+                "WHERE adjustment_id='reallocate-stale-source'"
+            ).fetchone()[0]
+        self.assertEqual((state, audit), ("active", 0))
+
     def test_legacy_listing_increase_is_atomic_and_idempotent(self):
         self.ledger.observe(self.a, 6)
         self.ledger.observe(self.b, 5)

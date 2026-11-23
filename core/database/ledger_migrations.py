@@ -48,6 +48,8 @@ QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_MIGRATION_ID = "2026-11-quantity-sto
 QUANTITY_STOCK_LISTING_ADJUSTMENT_HARDENING_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-adjustment-hardening-v1.bak"
 QUANTITY_STOCK_LISTING_INCREASE_MIGRATION_ID = "2026-11-quantity-stock-listing-increase-v1"
 QUANTITY_STOCK_LISTING_INCREASE_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-increase-v1.bak"
+QUANTITY_STOCK_LISTING_REALLOCATION_MIGRATION_ID = "2026-11-quantity-stock-listing-reallocation-v1"
+QUANTITY_STOCK_LISTING_REALLOCATION_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-reallocation-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -1312,6 +1314,71 @@ def _apply_quantity_stock_listing_increase_migration(connection: sqlite3.Connect
     return True
 
 
+def _apply_quantity_stock_listing_reallocation_migration(connection: sqlite3.Connection) -> bool:
+    """Allow an immutable audit record for atomic listing stock reallocation."""
+    if _migration_applied(connection, QUANTITY_STOCK_LISTING_REALLOCATION_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        if not _table_exists(connection, "gd_stock_listing_adjustments"):
+            raise sqlite3.OperationalError("Listing adjustment migration is missing")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_update")
+        connection.execute("DROP TRIGGER IF EXISTS gd_stock_listing_adjustments_no_delete")
+        connection.execute(
+            "ALTER TABLE gd_stock_listing_adjustments RENAME TO gd_stock_listing_adjustments_old"
+        )
+        connection.execute("""
+            CREATE TABLE gd_stock_listing_adjustments (
+                adjustment_id TEXT PRIMARY KEY,
+                listing_id TEXT NOT NULL REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                operation TEXT NOT NULL CHECK(operation IN
+                    ('allocate_units','release_units','reallocate_units','disable')),
+                recipe_item_id TEXT,
+                units INTEGER NOT NULL CHECK(
+                    (operation='disable' AND units>=0)
+                    OR (operation IN ('allocate_units','release_units','reallocate_units') AND units>0)
+                ),
+                allocation_ids_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("""
+            INSERT INTO gd_stock_listing_adjustments
+                (adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                 units,allocation_ids_json,created_at)
+            SELECT adjustment_id,listing_id,config_version_id,operation,recipe_item_id,
+                   units,allocation_ids_json,created_at
+            FROM gd_stock_listing_adjustments_old
+        """)
+        connection.execute("DROP TABLE gd_stock_listing_adjustments_old")
+        connection.execute(
+            "CREATE INDEX idx_gd_stock_listing_adjustments_generation "
+            "ON gd_stock_listing_adjustments(listing_id,config_version_id,created_at)"
+        )
+        connection.execute("""
+            CREATE TRIGGER gd_stock_listing_adjustments_no_update
+            BEFORE UPDATE ON gd_stock_listing_adjustments
+            BEGIN SELECT RAISE(ABORT,'Stock listing adjustments are immutable'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_stock_listing_adjustments_no_delete
+            BEFORE DELETE ON gd_stock_listing_adjustments
+            BEGIN SELECT RAISE(ABORT,'Stock listing adjustments are append-only'); END
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (QUANTITY_STOCK_LISTING_REALLOCATION_MIGRATION_ID,),
+        )
+        if connection.execute("PRAGMA foreign_key_check(gd_stock_listing_adjustments)").fetchall():
+            raise sqlite3.IntegrityError("Listing reallocation migration produced foreign-key violations")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     """Apply the canonical ledger, Playerok sync, recipe, and reservation migrations."""
     connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
@@ -1367,6 +1434,7 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
         changed = _apply_quantity_stock_listing_adjustment_migration(connection) or changed
         changed = _apply_quantity_stock_listing_adjustment_hardening_migration(connection) or changed
         changed = _apply_quantity_stock_listing_increase_migration(connection) or changed
+        changed = _apply_quantity_stock_listing_reallocation_migration(connection) or changed
     return changed
 
 
@@ -2448,6 +2516,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
         database_path,
         migration_id=QUANTITY_STOCK_LISTING_INCREASE_MIGRATION_ID,
         backup_suffix=QUANTITY_STOCK_LISTING_INCREASE_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=QUANTITY_STOCK_LISTING_REALLOCATION_MIGRATION_ID,
+        backup_suffix=QUANTITY_STOCK_LISTING_REALLOCATION_BACKUP_SUFFIX,
     )
     ensure_pre_migration_backup(
         database_path,
