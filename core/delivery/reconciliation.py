@@ -273,6 +273,24 @@ class DeliveryReconciliation:
                         )
                       )
                 """, (leg_id, leg_id, leg_id, leg_id, leg_id))
+                db.execute("""
+                    UPDATE gd_stock_allocations SET state='consumed',
+                        consumed_revision=(
+                            SELECT revision FROM gd_stock_observations o
+                            WHERE o.observation_id=gd_stock_allocations.observation_id
+                        ),
+                        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    WHERE owner_type='order' AND state='active'
+                      AND order_line_id=(SELECT order_line_id FROM gd_delivery_legs WHERE leg_id=?)
+                      AND bot_name=(SELECT bot_name FROM gd_delivery_legs WHERE leg_id=?)
+                      AND app_id=(SELECT app_id FROM gd_delivery_legs WHERE leg_id=?)
+                      AND context_id=(SELECT context_id FROM gd_delivery_legs WHERE leg_id=?)
+                      AND asset_id IN (
+                        SELECT value FROM json_each(
+                            (SELECT asset_ids_json FROM gd_delivery_legs WHERE leg_id=?)
+                        )
+                      )
+                """, (leg_id, leg_id, leg_id, leg_id, leg_id))
             return True
 
     def _consume_reservations(self, leg_id: str) -> None:
@@ -290,6 +308,24 @@ class DeliveryReconciliation:
                     )
                 )
             """, (leg_id, leg_id, leg_id))
+            db.execute("""
+                UPDATE gd_stock_allocations SET state='consumed',
+                    consumed_revision=(
+                        SELECT revision FROM gd_stock_observations o
+                        WHERE o.observation_id=gd_stock_allocations.observation_id
+                    ),
+                    updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE owner_type='order' AND state='active'
+                  AND order_line_id=(
+                    SELECT order_line_id FROM gd_delivery_legs WHERE leg_id=?
+                  ) AND bot_name=(
+                    SELECT bot_name FROM gd_delivery_legs WHERE leg_id=?
+                  ) AND asset_id IN (
+                    SELECT value FROM json_each(
+                        (SELECT asset_ids_json FROM gd_delivery_legs WHERE leg_id=?)
+                    )
+                  )
+            """, (leg_id, leg_id, leg_id))
 
     def _complete_order_if_all_accepted(self, order_id: str) -> None:
         with self.database.connect() as db:
@@ -304,11 +340,19 @@ class DeliveryReconciliation:
                        SUM((SELECT COUNT(*) FROM json_each(l.asset_ids_json))) AS expected_assets,
                        SUM((
                            SELECT COUNT(*) FROM json_each(l.asset_ids_json) a
-                           JOIN gd_resource_reservations r
-                             ON r.order_line_id=l.order_line_id
-                            AND r.bot_name=l.bot_name COLLATE NOCASE
-                            AND r.app_id=l.app_id AND r.context_id=l.context_id
-                            AND r.asset_id=a.value AND r.owner_type='order' AND r.state='consumed'
+                           WHERE EXISTS (
+                               SELECT 1 FROM gd_resource_reservations r
+                               WHERE r.order_line_id=l.order_line_id
+                                 AND r.bot_name=l.bot_name COLLATE NOCASE
+                                 AND r.app_id=l.app_id AND r.context_id=l.context_id
+                                 AND r.asset_id=a.value AND r.owner_type='order' AND r.state='consumed'
+                           ) OR EXISTS (
+                               SELECT 1 FROM gd_stock_allocations sa
+                               WHERE sa.order_line_id=l.order_line_id
+                                 AND sa.bot_name=l.bot_name COLLATE NOCASE
+                                 AND sa.app_id=l.app_id AND sa.context_id=l.context_id
+                                 AND sa.asset_id=a.value AND sa.owner_type='order' AND sa.state='consumed'
+                           )
                        )) AS consumed_assets
                 FROM gd_delivery_legs l
                 JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
