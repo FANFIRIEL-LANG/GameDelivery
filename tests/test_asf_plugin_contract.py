@@ -427,6 +427,22 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("StringComparison.Ordinal", plugin)
         self.assertIn("StringComparison.Ordinal", send)
 
+    def test_plugin_validates_and_sends_exact_partial_stack_amounts(self):
+        trade = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
+        preview = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        self.assertIn("Dictionary<string, uint>? AssetAmounts", trade)
+        self.assertIn("Dictionary<string, uint>? AssetAmounts", preview)
+        self.assertIn("TryNormalizeAssetAmounts", trade)
+        self.assertIn("request.AssetAmounts", trade)
+        self.assertIn("request.AssetAmounts", preview)
+        self.assertIn("requestedAmount > asset.Amount", trade)
+        self.assertIn("new Asset(", trade)
+        self.assertIn("inventoryAsset.AssetID", trade)
+        self.assertIn("inventoryAsset.InstanceID", trade)
+        self.assertIn("AssetAmountsEqual(secret.AssetAmounts, normalizedAssetAmounts)", trade)
+        self.assertIn("asset.Amount == expectedAmount", trade)
+        self.assertIn("Amount = requestedAmount", preview)
+
     def test_pending_trade_secret_must_be_deleted_before_external_send(self):
         source = (ROOT / "integrations/asf_plugin/TradeDelivery.cs").read_text(encoding="utf-8")
         start = source.index("public static async Task<string> ProcessSendCommand")

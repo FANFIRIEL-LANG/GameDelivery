@@ -292,6 +292,12 @@ internal static class TradeDelivery
                     asset.AppID == record.AppId && asset.ContextID == record.ContextId)
                 && offer.ItemsToGiveReadOnly.Select(asset => asset.AssetID.ToString(CultureInfo.InvariantCulture))
                     .ToHashSet(StringComparer.Ordinal).SetEquals(expectedAssets)
+                && (record.AssetAmounts is null
+                    || (offer.ItemsToGiveReadOnly.Count == record.AssetAmounts.Count
+                        && offer.ItemsToGiveReadOnly.All(asset =>
+                            record.AssetAmounts.TryGetValue(
+                                asset.AssetID.ToString(CultureInfo.InvariantCulture), out uint expectedAmount)
+                            && asset.Amount == expectedAmount)))
             ).ToArray();
 
             if (matches.Length != 1)
@@ -487,6 +493,77 @@ internal static class TradeDelivery
         return (true, tradeHoldDays, null);
     }
 
+    internal static bool TryNormalizeAssetAmounts(
+        IReadOnlyList<string> assetIds,
+        Dictionary<string, uint>? requestedAmounts,
+        out Dictionary<string, uint>? normalizedAmounts,
+        out string error)
+    {
+        normalizedAmounts = null;
+        error = "";
+        if (requestedAmounts is null)
+        {
+            return true; // Legacy requests send the complete current stack.
+        }
+
+        if (requestedAmounts.Count != assetIds.Count
+            || assetIds.Any(assetId => !requestedAmounts.ContainsKey(assetId))
+            || requestedAmounts.Keys.Any(assetId => !assetIds.Contains(assetId, StringComparer.Ordinal))
+            || requestedAmounts.Values.Any(amount => amount == 0))
+        {
+            error = "AssetAmounts должен содержать ровно один положительный Amount для каждого Asset ID.";
+            return false;
+        }
+
+        normalizedAmounts = new Dictionary<string, uint>(StringComparer.Ordinal);
+        foreach (string assetId in assetIds)
+        {
+            normalizedAmounts.Add(assetId, requestedAmounts[assetId]);
+        }
+
+        return true;
+    }
+
+    internal static bool AssetAmountsEqual(
+        Dictionary<string, uint>? left,
+        Dictionary<string, uint>? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        return left.Count == right.Count
+            && left.All(entry =>
+                right.TryGetValue(entry.Key, out uint amount) && amount == entry.Value);
+    }
+
+    internal static Asset BuildAssetWithAmount(Asset inventoryAsset, uint amount)
+    {
+        ArgumentNullException.ThrowIfNull(inventoryAsset);
+        if (amount == 0 || amount > inventoryAsset.Amount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(amount),
+                "Requested Asset amount must be positive and cannot exceed the live ASF inventory stack.");
+        }
+
+        if (amount == inventoryAsset.Amount)
+        {
+            return inventoryAsset;
+        }
+
+        // Copy the physical identity without mutating ASF's live inventory object.
+        return new Asset(
+            inventoryAsset.AppID,
+            inventoryAsset.ContextID,
+            inventoryAsset.ClassID,
+            amount,
+            inventoryAsset.Description,
+            inventoryAsset.AssetID,
+            inventoryAsset.InstanceID);
+    }
+
     public static async Task<string> ProcessSendCommand(
         string encodedPayload,
         string ipcContextBotName,
@@ -531,6 +608,13 @@ internal static class TradeDelivery
         {
             return Failure("Список asset ID пустой, содержит повторы, неканонические или некорректные значения.");
         }
+        if (!TryNormalizeAssetAmounts(
+                request.AssetIds, request.AssetAmounts,
+                out Dictionary<string, uint>? normalizedAssetAmounts, out string amountError))
+        {
+            return Failure(amountError);
+        }
+        request.AssetAmounts = normalizedAssetAmounts;
 
         PendingTradeSecret? secret;
         string secretPath = GetPendingSecretPath(request.CredentialNonce!);
@@ -570,6 +654,7 @@ internal static class TradeDelivery
             || secret.ContextId != request.ContextId
             || secret.AssetIds is null
             || !secret.AssetIds.SequenceEqual(request.AssetIds, StringComparer.Ordinal)
+            || !AssetAmountsEqual(secret.AssetAmounts, normalizedAssetAmounts)
             || string.IsNullOrWhiteSpace(secret.TradeToken)
             || !Regex.IsMatch(secret.TradeToken, "^[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant))
         {
@@ -691,6 +776,7 @@ internal static class TradeDelivery
                 .GroupBy(asset => asset.AssetID)
                 .ToDictionary(group => group.Key, group => group.First());
             List<Asset> selectedAssets = new(request.AssetIds.Count);
+            Dictionary<string, uint> selectedAssetAmounts = new(StringComparer.Ordinal);
             foreach (string rawAssetId in request.AssetIds)
             {
                 ulong assetId = ulong.Parse(rawAssetId, NumberStyles.None, CultureInfo.InvariantCulture);
@@ -713,7 +799,28 @@ internal static class TradeDelivery
                         + "не имеет подтверждённого описания, не передаваем или не является обычной Steam Trading Card.");
                 }
 
-                selectedAssets.Add(asset);
+                uint requestedAmount = normalizedAssetAmounts is null
+                    ? asset.Amount
+                    : normalizedAssetAmounts[rawAssetId];
+                if (requestedAmount == 0 || requestedAmount > asset.Amount)
+                {
+                    return Failure(
+                        "Запрошенное количество для актива " + rawAssetId
+                        + " превышает актуальный стек ASF или равно нулю. Предложение не отправлено.");
+                }
+
+                Asset outgoingAsset;
+                try
+                {
+                    outgoingAsset = BuildAssetWithAmount(asset, requestedAmount);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    return Failure("ASF не подтвердил запрошенное количество для актива " + rawAssetId + ".");
+                }
+
+                selectedAssets.Add(outgoingAsset);
+                selectedAssetAmounts.Add(rawAssetId, requestedAmount);
             }
 
             (bool recipientInventoryAccessible, byte? recipientTradeHoldDays, string? recipientPreflightError) =
@@ -742,6 +849,7 @@ internal static class TradeDelivery
                 AppId = request.AppId,
                 ContextId = request.ContextId,
                 AssetIds = request.AssetIds.ToList(),
+                AssetAmounts = selectedAssetAmounts,
                 State = "sending",
                 UpdatedAtUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)
             };
@@ -882,7 +990,12 @@ internal static class TradeDelivery
             request.TargetSteamId64.ToString(CultureInfo.InvariantCulture),
             request.AppId.ToString(CultureInfo.InvariantCulture),
             request.ContextId.ToString(CultureInfo.InvariantCulture),
-            string.Join(",", request.AssetIds.OrderBy(value => value, StringComparer.Ordinal)));
+            string.Join(",", request.AssetIds.OrderBy(value => value, StringComparer.Ordinal)),
+            request.AssetAmounts is null
+                ? ""
+                : "amounts=" + string.Join(",", request.AssetAmounts
+                    .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+                    .Select(entry => entry.Key + ":" + entry.Value.ToString(CultureInfo.InvariantCulture))));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
@@ -973,7 +1086,11 @@ internal static class TradeDelivery
             appId = record.AppId,
             contextId = record.ContextId,
             assetCount = record.AssetIds.Count,
-            assets = record.AssetIds.Select(id => new { assetId = id }).ToList(),
+            assets = record.AssetIds.Select(id => new {
+                assetId = id,
+                amount = record.AssetAmounts is not null
+                    && record.AssetAmounts.TryGetValue(id, out uint amount) ? (uint?)amount : null
+            }).ToList(),
             offerIds = record.OfferIds,
             confirmationStatus = record.State == "awaiting_confirmation" ? "pending" : "handled",
             message = record.Message ?? (sendSucceeded
@@ -1005,7 +1122,11 @@ internal static class TradeDelivery
         appId = record.AppId,
         contextId = record.ContextId,
         assetCount = record.AssetIds.Count,
-        assets = record.AssetIds.Select(id => new { assetId = id }).ToList(),
+        assets = record.AssetIds.Select(id => new {
+            assetId = id,
+            amount = record.AssetAmounts is not null
+                && record.AssetAmounts.TryGetValue(id, out uint amount) ? (uint?)amount : null
+        }).ToList(),
         offerIds = record.OfferIds
     }, JsonOptions);
 
@@ -1059,6 +1180,7 @@ internal static class TradeDelivery
         public uint AppId { get; set; } = Asset.SteamAppID;
         public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
+        public Dictionary<string, uint>? AssetAmounts { get; set; }
         public string CredentialNonce { get; set; } = "";
     }
 
@@ -1073,6 +1195,7 @@ internal static class TradeDelivery
         public uint AppId { get; set; } = Asset.SteamAppID;
         public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
+        public Dictionary<string, uint>? AssetAmounts { get; set; }
         public string TradeToken { get; set; } = "";
     }
 
@@ -1087,6 +1210,7 @@ internal static class TradeDelivery
         public uint AppId { get; set; } = Asset.SteamAppID;
         public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
+        public Dictionary<string, uint>? AssetAmounts { get; set; }
         public List<string> OfferIds { get; set; } = [];
         public string State { get; set; } = "sending";
         public string? Message { get; set; }

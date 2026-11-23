@@ -321,6 +321,13 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
             {
                 return Failure("Список asset ID содержит некорректные или неканонические значения.");
             }
+            if (!TradeDelivery.TryNormalizeAssetAmounts(
+                    request.AssetIds, request.AssetAmounts,
+                    out Dictionary<string, uint>? normalizedAssetAmounts, out string amountError))
+            {
+                return Failure(amountError);
+            }
+            request.AssetAmounts = normalizedAssetAmounts;
 
             SteamID recipient = new(request.TargetSteamId64);
             if (!recipient.IsIndividualAccount)
@@ -378,12 +385,23 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                         + "не имеет подтверждённого описания, не передаваем или не является обычной Steam Trading Card.");
                 }
 
+                uint requestedAmount = normalizedAssetAmounts is null
+                    ? asset.Amount
+                    : normalizedAssetAmounts[rawAssetId];
+                if (requestedAmount == 0 || requestedAmount > asset.Amount)
+                {
+                    return Failure(
+                        "Запрошенное количество для актива " + rawAssetId
+                        + " превышает актуальный стек ASF или равно нулю.");
+                }
+
                 previewAssets.Add(new PreviewAsset
                 {
                     AssetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
                     Name = asset.Description?.Name ?? "Steam Community item",
                     ClassId = asset.ClassID.ToString(CultureInfo.InvariantCulture),
                     InstanceId = asset.InstanceID.ToString(CultureInfo.InvariantCulture),
+                    Amount = requestedAmount,
                     Tradable = true
                 });
             }
@@ -1027,6 +1045,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         public uint AppId { get; set; } = Asset.SteamAppID;
         public ulong ContextId { get; set; } = Asset.SteamCommunityContextID;
         public List<string> AssetIds { get; set; } = [];
+        public Dictionary<string, uint>? AssetAmounts { get; set; }
     }
 
     private sealed class PreviewResponse
@@ -1050,6 +1069,7 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         public string Name { get; set; } = "";
         public string ClassId { get; set; } = "";
         public string InstanceId { get; set; } = "";
+        public uint Amount { get; set; }
         public bool Tradable { get; set; }
     }
 }

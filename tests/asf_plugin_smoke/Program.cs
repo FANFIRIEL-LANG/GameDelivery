@@ -1,5 +1,6 @@
 using ArchiSteamFarm.Plugins.Interfaces;
 using ArchiSteamFarm.Steam;
+using ArchiSteamFarm.Steam.Data;
 using SteamKit2;
 using GameDelivery.ASFPlugin;
 using System;
@@ -117,6 +118,41 @@ Assert(exports.OfType<IBotCommand2>().Count() == 1,
 
 Assert(typeof(GameDeliveryPlugin).Assembly.GetName().Version == new Version(1, 0, 2, 0),
     "plugin assembly version is not the expected fixed version 1.0.2.0");
+
+static void VerifyPartialStackAssetCopy()
+{
+    Type tradeDeliveryType = typeof(GameDeliveryPlugin).Assembly.GetType(
+        "GameDelivery.ASFPlugin.TradeDelivery",
+        throwOnError: true)!;
+    MethodInfo method = tradeDeliveryType.GetMethod(
+        "BuildAssetWithAmount",
+        BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("Built plugin amount-aware Asset copy method was not found");
+    Asset source = new(730, 2, 1234, 100, description: null, assetID: 5678, instanceID: 9);
+    Asset outgoing;
+    try
+    {
+        outgoing = (Asset)(method.Invoke(null, [source, 3u])
+            ?? throw new InvalidOperationException("Amount-aware Asset copy returned null"));
+    }
+    catch (TargetInvocationException exception)
+    {
+        throw new InvalidOperationException(
+            "Built plugin amount-aware Asset copy failed.",
+            exception.InnerException ?? exception);
+    }
+
+    Assert(outgoing.AssetID == source.AssetID, "partial-stack Asset copy changed the physical Asset ID");
+    Assert(outgoing.AppID == source.AppID && outgoing.ContextID == source.ContextID,
+        "partial-stack Asset copy changed its game context");
+    Assert(outgoing.ClassID == source.ClassID && outgoing.InstanceID == source.InstanceID,
+        "partial-stack Asset copy changed its item identity");
+    Assert(outgoing.Amount == 3, "partial-stack Asset copy did not apply the exact requested Amount");
+    Assert(source.Amount == 100, "partial-stack Asset copy mutated the source ASF inventory object");
+    Assert(!ReferenceEquals(source, outgoing), "partial-stack Asset copy reused the full-stack ASF object");
+}
+
+VerifyPartialStackAssetCopy();
 
 static void InvokeStoragePermissionRestriction(string path, bool isDirectory)
 {

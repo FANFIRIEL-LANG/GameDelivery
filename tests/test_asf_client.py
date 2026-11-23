@@ -188,6 +188,50 @@ class ASFClientTests(unittest.TestCase):
         self.assertFalse(preview["sendEnabled"])
 
     @patch.object(ASFClient, "request")
+    def test_preview_trade_offer_forwards_and_verifies_exact_stack_amounts(self, request):
+        request.return_value = {
+            "Success": True,
+            "Result": json.dumps({
+                "success": True, "mode": "preview-only", "sendEnabled": False,
+                "appId": 730, "contextId": 2, "orderId": "GD-AMOUNT",
+                "botName": "Bot A", "targetSteamId64": 76561197960389184,
+                "assetCount": 1, "assets": [{"assetId": "700", "amount": 3, "tradable": True}],
+            }),
+        }
+        preview = ASFClient().preview_trade_offer(
+            order_id="GD-AMOUNT", bot_name="Bot A",
+            trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123456&token=private",
+            asset_ids=["700"], app_id=730, context_id=2, asset_amounts={"700": 3},
+        )
+        command = request.call_args.kwargs["body"]["Command"]
+        encoded = command.split(" ", 1)[1]
+        payload = json.loads(base64.urlsafe_b64decode(
+            encoded + "=" * ((4 - len(encoded) % 4) % 4)
+        ))
+        self.assertEqual(payload["AssetAmounts"], {"700": 3})
+        self.assertNotIn("private", command)
+        self.assertEqual(preview["assets"][0]["amount"], 3)
+
+    def test_preview_trade_offer_rejects_invalid_asset_amounts_before_ipc(self):
+        client = ASFClient()
+        with patch.object(ASFClient, "request") as request:
+            invalid = (
+                {"700": 2, "701": 1},
+                {"700": 0},
+                {"700": True},
+                {"700": 2**32},
+            )
+            for amounts in invalid:
+                with self.subTest(amounts=amounts):
+                    with self.assertRaises(ValueError):
+                        client.preview_trade_offer(
+                            order_id="GD-AMOUNT", bot_name="Bot A",
+                            trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123456&token=abc",
+                            asset_ids=["700"], app_id=730, context_id=2, asset_amounts=amounts,
+                        )
+            request.assert_not_called()
+
+    @patch.object(ASFClient, "request")
     def test_preview_trade_offer_fails_closed_if_plugin_reply_enables_sending(self, request):
         request.return_value = {
             "Success": True,
@@ -612,6 +656,41 @@ class ASFClientTests(unittest.TestCase):
             self.assertEqual(result["offerIds"], ["456789"])
             secret_dir = Path(temp) / "GameDelivery" / "pending_trade_requests"
             self.assertEqual(list(secret_dir.iterdir()), [])
+
+    def test_send_trade_offer_forwards_exact_amount_to_secret_and_asf(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def fake_send_command(command):
+                encoded = command.split(" ", 1)[1]
+                payload = json.loads(base64.urlsafe_b64decode(
+                    encoded + "=" * ((4 - len(encoded) % 4) % 4)
+                ))
+                self.assertEqual(payload["AssetAmounts"], {"700": 3})
+                secret_path = Path(temp) / "GameDelivery" / "pending_trade_requests" / (
+                    payload["CredentialNonce"] + ".json"
+                )
+                secret = json.loads(secret_path.read_text(encoding="utf-8"))
+                self.assertEqual(secret["AssetAmounts"], {"700": 3})
+                return {
+                    "Success": True,
+                    "Result": json.dumps({
+                        "success": True, "mode": "sent", "sendEnabled": True,
+                        "appId": 730, "contextId": 2, "orderId": "GD-AMOUNT-SEND",
+                        "botName": "cs2-bot", "targetSteamId64": 76561197960265728 + 12345,
+                        "assetCount": 1, "assets": [{"assetId": "700", "amount": 3}],
+                        "offerIds": ["987654"], "confirmationStatus": "handled",
+                        "tradeAccepted": False,
+                    }),
+                }
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+                with patch.object(ASFClient, "send_command", side_effect=fake_send_command) as send_command:
+                    result = ASFClient().send_trade_offer(
+                        order_id="GD-AMOUNT-SEND", bot_name="cs2-bot",
+                        trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                        asset_ids=["700"], app_id=730, context_id=2, asset_amounts={"700": 3},
+                    )
+            send_command.assert_called_once()
+            self.assertTrue(result["success"])
+            self.assertEqual(result["assets"][0]["amount"], 3)
 
     def test_send_trade_offer_treats_unexpected_response_parse_error_after_dispatch_as_unknown(self):
         with tempfile.TemporaryDirectory() as temp:

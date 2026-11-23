@@ -8,7 +8,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import Request, urlopen
@@ -199,6 +199,51 @@ def _unwrap_result(payload: Any) -> Any:
 
 
 @dataclass(frozen=True)
+def _normalize_asset_amounts(
+    asset_ids: list[str],
+    asset_amounts: Mapping[str, int] | None,
+) -> dict[str, int] | None:
+    """Validate a complete AssetId -> requested stack Amount map."""
+    if asset_amounts is None:
+        return None
+    if not isinstance(asset_amounts, Mapping):
+        raise ValueError("asset_amounts должен быть отображением Asset ID → количество")
+    if len(asset_amounts) != len(asset_ids) or set(asset_amounts) != set(asset_ids):
+        raise ValueError("asset_amounts должен содержать ровно один Amount для каждого Asset ID")
+    normalized: dict[str, int] = {}
+    for asset_id in asset_ids:
+        amount = asset_amounts[asset_id]
+        if type(amount) is not int or not 1 <= amount <= 0xFFFFFFFF:
+            raise ValueError("Количество для каждого Asset ID должно быть целым числом от 1 до 4294967295")
+        normalized[asset_id] = amount
+    return normalized
+
+
+def _response_asset_amounts_match(
+    assets: Any,
+    expected: Mapping[str, int] | None,
+) -> bool:
+    if expected is None:
+        return True
+    if not isinstance(assets, list) or len(assets) != len(expected):
+        return False
+    returned: dict[str, int] = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            return False
+        asset_id = asset.get("assetId")
+        amount = asset.get("amount")
+        if (
+            not isinstance(asset_id, str)
+            or type(amount) is not int
+            or amount < 1
+            or asset_id in returned
+        ):
+            return False
+        returned[asset_id] = amount
+    return returned == dict(expected)
+
+
 class ASFClient:
     """Minimal client for the local, official ASF IPC API.
 
@@ -472,6 +517,7 @@ class ASFClient:
         asset_ids: Iterable[str],
         app_id: int = 753,
         context_id: int = 6,
+        asset_amounts: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
         """Ask the installed GameDelivery ASF plugin to validate a no-send trade draft.
 
@@ -516,6 +562,7 @@ class ASFClient:
             raise ValueError("Asset ID должны быть каноническими положительными целыми числами")
         if len(set(normalized_ids)) != len(normalized_ids):
             raise ValueError("В составе заказа найдены повторяющиеся asset ID")
+        normalized_amounts = _normalize_asset_amounts(normalized_ids, asset_amounts)
 
         partner_id = int(partner_values[0])
         steam_id64 = 76561197960265728 + partner_id
@@ -527,6 +574,8 @@ class ASFClient:
             "ContextId": context_id,
             "AssetIds": normalized_ids,
         }
+        if normalized_amounts is not None:
+            request_payload["AssetAmounts"] = normalized_amounts
         encoded_payload = base64.urlsafe_b64encode(
             json.dumps(request_payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         ).decode("ascii").rstrip("=")
@@ -578,6 +627,8 @@ class ASFClient:
         ]
         if len(returned_ids) != len(normalized_ids) or returned_ids != normalized_ids:
             raise ASFError("Состав черновика ASF не совпадает с активами заказа")
+        if not _response_asset_amounts_match(preview_assets, normalized_amounts):
+            raise ASFError("Количество в черновике ASF не совпадает с запрошенным количеством стека")
         return preview
 
     def get_order_trade_status(self, *, bot_name: str, order_id: str) -> dict[str, Any]:
@@ -708,6 +759,7 @@ class ASFClient:
         asset_ids: Iterable[str],
         app_id: int = 753,
         context_id: int = 6,
+        asset_amounts: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
         """Send one reviewed Steam inventory offer via ASF; keep the trade token in a one-use local file."""
         order = order_id.strip()
@@ -750,6 +802,7 @@ class ASFClient:
             raise ValueError("Asset ID должны быть каноническими положительными целыми числами")
         if len(set(normalized_ids)) != len(normalized_ids):
             raise ValueError("В составе заказа найдены повторяющиеся asset ID")
+        normalized_amounts = _normalize_asset_amounts(normalized_ids, asset_amounts)
 
         target_steam_id64 = 76561197960265728 + int(partners[0])
         nonce = secrets.token_hex(32)
@@ -771,6 +824,8 @@ class ASFClient:
             "AssetIds": normalized_ids,
             "TradeToken": tokens[0],
         }
+        if normalized_amounts is not None:
+            secret_payload["AssetAmounts"] = normalized_amounts
         command_payload = {
             "OrderId": order,
             "BotName": bot,
@@ -780,6 +835,8 @@ class ASFClient:
             "AssetIds": normalized_ids,
             "CredentialNonce": nonce,
         }
+        if normalized_amounts is not None:
+            command_payload["AssetAmounts"] = normalized_amounts
         encoded_payload = base64.urlsafe_b64encode(
             json.dumps(command_payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         ).decode("ascii").rstrip("=")
@@ -828,6 +885,8 @@ class ASFClient:
                     str(item.get("assetId", "")) for item in returned_assets if isinstance(item, dict)
                 ] != normalized_ids:
                     raise ASFError("Состав активов в ответе ASF не совпадает с заказом.")
+                if not _response_asset_amounts_match(returned_assets, normalized_amounts):
+                    raise ASFError("ASF не подтвердил точные количества отправляемых стеков.")
                 return outcome
 
             # A known offer ID must be tied to this exact order, recipient, bot, and asset list.
@@ -855,6 +914,8 @@ class ASFClient:
                     str(item.get("assetId", "")) for item in returned_assets if isinstance(item, dict)
                 ] != normalized_ids:
                     raise ASFError("Состав активов в неизвестном результате ASF не совпадает с заказом.")
+                if not _response_asset_amounts_match(returned_assets, normalized_amounts):
+                    raise ASFError("Неизвестный результат ASF содержит другие количества стека.")
 
             # Preserve the structured uncertainty flag so the UI can lock this order if needed.
             return outcome
