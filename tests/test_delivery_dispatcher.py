@@ -11,6 +11,8 @@ from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.send_policy import DeliverySendPolicy
+from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.stock_identity import StockItemIdentity
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from integrations.playerok.sync import PlayerokDealSyncService
 from tests.playerok_freshness_fixtures import reader_completed_snapshot
@@ -510,6 +512,64 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.assertEqual(self.asf.sent[0][3], ("100",))
         self.assertEqual(self.asf.sent[0][4], {"100": 3})
         self.assertEqual(self.asf.sent[0][-2:], (730, 2))
+
+    def test_dispatches_and_reconciles_from_shared_quantity_stock_allocation(self):
+        leg = self.create_order(asset_amounts={"100": 3})[0]
+        stock = QuantityStockLedger(self.db)
+        observation = stock.observe(
+            StockResource("cs2", 730, "2", "Bot-A", "100"),
+            10,
+            identity=StockItemIdentity(
+                "cs2", 730, "2",
+                market_hash_name="AK-47 | Redline",
+                name="AK-47 | Redline",
+                item_type="Rifle",
+                class_id="1",
+            ),
+            is_tradable=True,
+        )
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_resource_reservations SET state='released' "
+                "WHERE order_line_id='line-order-1' AND asset_id='100'"
+            )
+            db.execute(
+                """
+                INSERT INTO gd_stock_allocations
+                    (allocation_id,observation_id,game_id,app_id,context_id,bot_name,
+                     asset_id,asset_id_key,owner_type,listing_id,config_version_id,
+                     order_line_id,legacy_owner_id,units,state,recipe_item_id)
+                VALUES(?,?,?,?,?,?,?,?,'order',NULL,NULL,?,NULL,3,'active',NULL)
+                """,
+                (
+                    "stock-order-allocation", observation["observation_id"],
+                    "cs2", 730, "2", "Bot-A", "100", observation["asset_id_key"],
+                    "line-order-1",
+                ),
+            )
+        self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["stock-offer"]}
+
+        result = self.dispatch("order-1", leg)
+
+        self.assertTrue(result["dispatched"])
+        self.assertEqual(self.asf.sent[0][3], ("100",))
+        self.assertEqual(self.asf.sent[0][4], {"100": 3})
+        self.asf.statuses[("Bot-A", "stock-offer")] = {
+            "success": True, "mode": "trade-status", "found": True,
+            "tradeOfferId": "stock-offer", "botName": "Bot-A", "status": "Accepted",
+        }
+        self.reconciler.reconcile(order_id="order-1")
+        with self.db.connect() as db:
+            allocation = db.execute(
+                "SELECT state,consumed_revision FROM gd_stock_allocations "
+                "WHERE allocation_id='stock-order-allocation'"
+            ).fetchone()
+            order_status = db.execute(
+                "SELECT status FROM gd_orders WHERE order_id='order-1'"
+            ).fetchone()[0]
+        self.assertEqual(allocation["state"], "consumed")
+        self.assertEqual(int(allocation["consumed_revision"]), int(observation["revision"]))
+        self.assertEqual(order_status, "DELIVERED")
 
     def test_dispatch_blocks_manifest_reservation_amount_mismatch_before_attempt(self):
         leg = self.create_order(asset_amounts={"100": 3})[0]
