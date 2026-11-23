@@ -191,6 +191,8 @@ class ListingStockService:
             if not isinstance(raw_id, str) or not raw_id.strip():
                 raise ValueError("recipe_item_id должен быть непустой строкой")
             item_id = raw_id.strip()
+            if item_id in normalized_units:
+                raise ValueError("units_by_recipe_item содержит повторяющийся recipe_item_id")
             normalized_units[item_id] = _positive_int(raw_units, "units")
 
         with self.database.connect() as connection:

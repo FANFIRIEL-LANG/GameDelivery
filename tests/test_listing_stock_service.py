@@ -249,18 +249,20 @@ class ListingStockServiceTests(unittest.TestCase):
 
     def test_typed_recipe_increase_shortage_across_items_is_all_or_nothing(self):
         config, recipe_items, _ = self.create_typed_recipe_order()
-        self.observe_typed_inventory(include_dragon=False)
+        self.observe_typed_inventory(include_dragon=True)
         first_id, second_id = [item["item_id"] for item in recipe_items[:2]]
+        # The initial listing generation must satisfy both required Steam Asset
+        # RecipeItems. The later increase is short only on Dragon Lore.
         self.service.allocate_recipe_items(
             request_id="typed-increase-shortage-initial", listing_id=config["listing_id"],
             config_version_id=config["config_version_id"],
-            units_by_recipe_item={first_id: 1},
+            units_by_recipe_item={first_id: 1, second_id: 1},
         )
         with self.assertRaises(InsufficientListingStock):
             self.service.increase_recipe_units(
                 adjustment_id="typed-increase-shortage", listing_id=config["listing_id"],
                 config_version_id=config["config_version_id"],
-                units_by_recipe_item={first_id: 1, second_id: 1},
+                units_by_recipe_item={first_id: 1, second_id: 3},
             )
         with self.database.connect() as db:
             audit = db.execute(
@@ -275,6 +277,17 @@ class ListingStockServiceTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(audit, 0)
         self.assertEqual(active, 1)
+
+    def test_typed_recipe_increase_rejects_duplicate_normalized_item_ids(self):
+        config, recipe_items, _ = self.create_typed_recipe_order()
+        first_id = recipe_items[0]["item_id"]
+        with self.assertRaisesRegex(ValueError, "повторяющийся recipe_item_id"):
+            self.service.increase_recipe_units(
+                adjustment_id="typed-increase-duplicate",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                units_by_recipe_item={first_id: 1, f" {first_id} ": 2},
+            )
 
     def test_listing_increase_rejects_disabled_generation(self):
         self.ledger.observe(self.a, 5)
