@@ -1460,13 +1460,13 @@ def _apply_delivery_leg_asset_amounts_migration(connection: sqlite3.Connection) 
     """Add an optional exact per-Asset stack Amount manifest to DeliveryLeg."""
     if _migration_applied(connection, DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID):
         return False
+    # Check ordering before opening a transaction. This function is also called
+    # from generic Playerok migration flows that may already own a transaction;
+    # a deferred migration must neither nest BEGIN nor roll back the caller.
+    if not _table_exists(connection, "gd_delivery_legs"):
+        return False
     connection.execute("BEGIN IMMEDIATE")
     try:
-        if not _table_exists(connection, "gd_delivery_legs"):
-            # Generic Playerok migrations can run before the delivery ledger schema.
-            # Defer without recording the migration; it will apply once the table exists.
-            connection.rollback()
-            return False
         columns = _columns(connection, "gd_delivery_legs")
         if "asset_amounts_json" not in columns:
             connection.execute("ALTER TABLE gd_delivery_legs ADD COLUMN asset_amounts_json TEXT")

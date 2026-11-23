@@ -175,3 +175,6 @@
 
 
 **C.3 Deferred DeliveryLeg migration ordering fix (2026-11-23):** Полный CI выявил, что generic Playerok migration path запускается на базах без таблицы `gd_delivery_legs`. Новая additive migration ошибочно считала это фатальной ошибкой. Теперь она безопасно откладывается без записи migration ID, если таблица ещё не создана; следующий вызов после установки delivery ledger schema применит колонку штатно. Это сохраняет независимый порядок старых Playerok migration tests и не маскирует ошибку при наличии таблицы.
+
+
+**C.3 DeliveryLeg amount migration transaction-ownership correction (2026-11-23):** CI run `45157671580` exposed a regression in the deferred migration guard: `apply_delivery_ledger_migrations()` may be invoked inside an existing Playerok migration transaction. The guard previously issued a nested `BEGIN IMMEDIATE` and then rolled back the caller's transaction when `gd_delivery_legs` was absent. The schema-presence check now runs before opening the migration transaction and simply returns `False` when deferred; it no longer starts or rolls back a transaction it does not own. This preserves pending caller writes and allows the DeliveryLeg migration to apply later when the ledger table exists. No schema or delivery behavior changes.
