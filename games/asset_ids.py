@@ -15,6 +15,19 @@ def validate_asset_id(value: Any) -> str:
     return normalized
 
 
+def normalize_asf_asset_id(value: Any) -> str:
+    """Normalize ASF JSON AssetID values at the external response boundary.
+
+    SteamKit/ASF may serialize the UInt64 AssetID as a JSON number, while
+    internal GameDelivery manifests intentionally keep IDs as strings.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        if 0 < value <= 0xFFFFFFFFFFFFFFFF:
+            return str(value)
+        raise ValueError("asset_id должен быть положительным UInt64")
+    return validate_asset_id(value)
+
+
 def asset_id_with_key(value: Any) -> tuple[str, str]:
     """Return the preserved validated ID and its reservation comparison key.
 
