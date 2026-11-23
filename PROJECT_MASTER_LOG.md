@@ -154,3 +154,6 @@
 
 
 **C.3 shared stack across listing generations and legacy conflict transfer gate (2026-11-23):** Добавлен сервисный тест одного физического stack Amount=100, разделённого между тремя ConfigVersions/listing generations: 3+5+10 units, занято 18, свободно 82; запрос ещё 83 units отклоняется полностью с сохранением 82 свободных units. Найден и исправлен guard gap: `transfer_to_order()` повторно проверял `availability_state='usable'` только для typed Recipe, но не для legacy ConfigVersion. Теперь любое listing→order transfer требует usable observation; stale/conflict/unavailable block применяется ко всем recipe modes. Добавлен regression test Amount 10→5 при 6 listing-owned units: legacy transfer блокируется, исходные 6 units остаются у объявления, transfer/audit/order allocation не создаются.
+
+
+**C.3 three-bot typed listing allocation coverage (2026-11-23):** Добавлен прямой integration-style test одного typed Steam Asset RecipeItem на трёх ASF bot inventories. Одна операция allocation без входного выбора bot получает Amounts 3/4/5 на Bot-A/Bot-C и детерминированно распределяет 10 units как 3+4+3; free остатки равны 0/0/2, все строки остаются закреплены за одним RecipeItem. Этот тест закрывает требование C.3 «общий пул ботов, API не требует выбрать бота» без подключения UI/Playerok или реальных Steam операций.

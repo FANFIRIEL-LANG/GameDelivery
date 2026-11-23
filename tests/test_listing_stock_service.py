@@ -945,6 +945,63 @@ class ListingStockServiceTests(unittest.TestCase):
             }
         self.assertEqual(allocations, {first_id: 2, second_id: 2})
 
+    def test_typed_recipe_allocates_one_product_across_three_bots_without_bot_selection(self):
+        delivery = DeliveryLedger(self.database)
+        item = RecipeItem(
+            "redline-three-bots", 1, "steam_asset", 1, 10, True, None,
+            "steam_trade_offer",
+            SteamAssetSpec(
+                "cs2", 730, "2",
+                {"market_hash_name": "AK-47 | Redline"},
+                ("Bot-A", "Bot-B", "Bot-C"),
+            ),
+        )
+        config = delivery.create_recipe_config_version(
+            listing_id="three-bot-listing",
+            source_platform="manual",
+            external_listing_id="three-bot-external",
+            recipe_items=[item],
+        )
+        recipe_item_id = config["recipe_items"][0]["item_id"]
+
+        identity = StockItemIdentity(
+            "cs2", 730, "2",
+            market_hash_name="AK-47 | Redline",
+            name="AK-47 | Redline",
+            item_type="Rifle",
+            class_id="class-redline",
+        )
+        resources = [
+            StockResource("cs2", 730, "2", "Bot-A", "31001"),
+            StockResource("cs2", 730, "2", "Bot-B", "31002"),
+            StockResource("cs2", 730, "2", "Bot-C", "31003"),
+        ]
+        for resource, amount in zip(resources, (3, 4, 5), strict=True):
+            self.ledger.observe(
+                resource, amount, identity=identity, is_tradable=True
+            )
+
+        # No bot is selected by the caller. The listing selector and global
+        # inventory pool determine the exact deterministic multi-bot split.
+        rows = self.service.allocate_recipe_items(
+            request_id="three-bot-allocation",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={recipe_item_id: 10},
+        )
+
+        self.assertEqual({row["recipe_item_id"] for row in rows}, {recipe_item_id})
+        allocated_by_bot = {
+            bot: sum(int(row["units"]) for row in rows if row["bot_name"] == bot)
+            for bot in ("Bot-A", "Bot-B", "Bot-C")
+        }
+        self.assertEqual(allocated_by_bot, {"Bot-A": 3, "Bot-B": 4, "Bot-C": 3})
+        self.assertEqual(sum(int(row["units"]) for row in rows), 10)
+        self.assertEqual(
+            [self.ledger.free_units(resource) for resource in resources],
+            [0, 0, 2],
+        )
+
     def test_typed_recipe_allocation_and_transfer_are_pinned_to_exact_recipe_item(self):
         config, recipe_items, lines = self.create_typed_recipe_order()
         self.observe_typed_inventory()
