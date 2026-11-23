@@ -64,6 +64,7 @@ class DeliveryLeg:
     asset_ids: tuple[str, ...]
     trade_offer_id: str | None
     status: str
+    asset_amounts: tuple[tuple[str, int], ...] | None = None
 
 
 @dataclass(frozen=True)

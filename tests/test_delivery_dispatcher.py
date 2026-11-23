@@ -55,8 +55,14 @@ class FakeASF:
         self.sent = []
         self.inventory_refreshes = []
 
-    def send_trade_offer(self, *, order_id, bot_name, trade_url, asset_ids, app_id=753, context_id=6):
-        self.sent.append((order_id, bot_name, trade_url, tuple(asset_ids), app_id, context_id))
+    def send_trade_offer(
+        self, *, order_id, bot_name, trade_url, asset_ids, app_id=753, context_id=6,
+        asset_amounts=None,
+    ):
+        self.sent.append((
+            order_id, bot_name, trade_url, tuple(asset_ids),
+            asset_amounts, app_id, context_id,
+        ))
         if bot_name in self.send_error:
             raise self.send_error[bot_name]
         return self.send_result[bot_name]
@@ -99,7 +105,7 @@ class DeliveryDispatchTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def create_order(self, order_id="order-1", bots=("Bot-A",)):
+    def create_order(self, order_id="order-1", bots=("Bot-A",), asset_amounts=None):
         config = self.ledger.create_listing_config_version(
             listing_id=f"listing-{order_id}",
             source_platform="playerok",
@@ -142,14 +148,20 @@ class DeliveryDispatchTests(unittest.TestCase):
                 leg_id=leg_id, order_line_id=line_id, bot_name=bot,
                 app_id=730, context_id=2, asset_ids=[str(index * 100)],
                 status="reserved",
+                asset_amounts=(
+                    {str(index * 100): asset_amounts[str(index * 100)]}
+                    if asset_amounts is not None and str(index * 100) in asset_amounts
+                    else None
+                ),
             )
             with self.db.connect() as db:
                 db.execute(
                     "INSERT INTO gd_resource_reservations "
                     "(reservation_id,owner_type,order_line_id,game_id,app_id,context_id,"
-                    "bot_name,asset_id,units,state) VALUES(?,?,?,?,?,?,?,?,1,'active')",
+                    "bot_name,asset_id,units,state) VALUES(?,?,?,?,?,?,?,?,?,'active')",
                     (f"reservation-{order_id}-{index}", "order", line_id, "cs2", 730,
-                     "2", bot, str(index * 100)),
+                     "2", bot, str(index * 100),
+                     asset_amounts.get(str(index * 100), 1) if asset_amounts is not None else 1),
                 )
             legs.append(leg_id)
         with self.db.connect() as db:
@@ -448,6 +460,34 @@ class DeliveryDispatchTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
             ).fetchone()[0], 1)
+
+    def test_dispatch_passes_exact_asset_amount_manifest_to_asf(self):
+        leg = self.create_order(asset_amounts={"100": 3})[0]
+
+        result = self.dispatch("order-1", leg)
+
+        self.assertTrue(result["dispatched"])
+        self.assertEqual(self.asf.sent[0][3], ("100",))
+        self.assertEqual(self.asf.sent[0][4], {"100": 3})
+        self.assertEqual(self.asf.sent[0][-2:], (730, 2))
+
+    def test_dispatch_blocks_manifest_reservation_amount_mismatch_before_attempt(self):
+        leg = self.create_order(asset_amounts={"100": 3})[0]
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE gd_resource_reservations SET units=2 WHERE order_line_id='line-order-1'"
+            )
+
+        result = self.dispatch("order-1", leg)
+
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["status"], "reserved")
+        self.assertEqual(result["reason"], "active reservation amount mismatch")
+        self.assertEqual(self.asf.sent, [])
+        with self.db.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_attempts WHERE order_id='order-1'"
+            ).fetchone()[0], 0)
 
     def test_multi_bot_order_delivers_only_after_both_offers_are_accepted(self):
         legs = self.create_order(bots=("Bot-A", "Bot-B"))

@@ -229,9 +229,31 @@ class DeliveryDispatcher:
                     or len(set(asset_ids)) != len(asset_ids)
                 ):
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "invalid asset manifest"}}
+                try:
+                    raw_amounts = row["asset_amounts_json"]
+                    asset_amounts = json.loads(raw_amounts) if raw_amounts is not None else None
+                except (TypeError, ValueError):
+                    asset_amounts = None
+                    return {"_claimed": False, "response": {
+                        "dispatched": False, "status": row["status"],
+                        "reason": "invalid asset amount manifest",
+                    }}
+                if asset_amounts is not None:
+                    if (
+                        not isinstance(asset_amounts, dict)
+                        or set(asset_amounts) != set(asset_ids)
+                        or any(
+                            type(amount) is not int or not 1 <= amount <= 0xFFFFFFFF
+                            for amount in asset_amounts.values()
+                        )
+                    ):
+                        return {"_claimed": False, "response": {
+                            "dispatched": False, "status": row["status"],
+                            "reason": "invalid asset amount manifest",
+                        }}
 
                 reservations = db.execute(
-                    "SELECT asset_id FROM gd_resource_reservations "
+                    "SELECT asset_id,units FROM gd_resource_reservations "
                     "WHERE order_line_id=? AND bot_name=? COLLATE NOCASE "
                     "AND owner_type='order' AND app_id=? AND context_id=? AND state='active'",
                     (row["order_line_id"], row["bot_name"], int(row["app_id"]), str(row["context_id"])),
@@ -239,6 +261,18 @@ class DeliveryDispatcher:
                 reserved_ids = [str(value["asset_id"]) for value in reservations]
                 if sorted(reserved_ids) != sorted(asset_ids):
                     return {"_claimed": False, "response": {"dispatched": False, "status": row["status"], "reason": "active reservation mismatch"}}
+                reserved_amounts = {str(value["asset_id"]): int(value["units"]) for value in reservations}
+                if asset_amounts is None:
+                    if any(amount != 1 for amount in reserved_amounts.values()):
+                        return {"_claimed": False, "response": {
+                            "dispatched": False, "status": row["status"],
+                            "reason": "asset amount manifest required for multi-unit reservation",
+                        }}
+                elif reserved_amounts != asset_amounts:
+                    return {"_claimed": False, "response": {
+                        "dispatched": False, "status": row["status"],
+                        "reason": "active reservation amount mismatch",
+                    }}
                 for asset_id in asset_ids:
                     active_count = db.execute(
                         "SELECT COUNT(*) FROM gd_resource_reservations "
@@ -339,7 +373,10 @@ class DeliveryDispatcher:
                     "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
                     (order,),
                 )
-                return {"_claimed": True, "attempt": attempt, "row": dict(row), "asset_ids": asset_ids}
+                return {
+                    "_claimed": True, "attempt": attempt, "row": dict(row),
+                    "asset_ids": asset_ids, "asset_amounts": asset_amounts,
+                }
 
         if manual_authorization is None:
             authorized, claim = self.send_policy.run_auto_dispatch_claim(claim_dispatch) if self.send_policy else (False, None)
@@ -353,6 +390,7 @@ class DeliveryDispatcher:
         if not claim["_claimed"]:
             return claim["response"]
         attempt, row, asset_ids = claim["attempt"], claim["row"], claim["asset_ids"]
+        asset_amounts = claim["asset_amounts"]
         try:
             if manual_authorization is not None:
                 logger.info(
@@ -366,6 +404,7 @@ class DeliveryDispatcher:
                 asset_ids=asset_ids,
                 app_id=int(row["app_id"]),
                 context_id=int(row["context_id"]),
+                asset_amounts=asset_amounts,
             )
         except Exception as exc:
             # Once send_trade_offer has crossed its command boundary it returns resultUnknown.

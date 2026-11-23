@@ -52,6 +52,8 @@ QUANTITY_STOCK_LISTING_REALLOCATION_MIGRATION_ID = "2026-11-quantity-stock-listi
 QUANTITY_STOCK_LISTING_REALLOCATION_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-reallocation-v1.bak"
 QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID = "2026-11-quantity-stock-listing-enabled-guard-v1"
 QUANTITY_STOCK_LISTING_ENABLED_GUARD_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-enabled-guard-v1.bak"
+DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID = "2026-11-delivery-leg-asset-amounts-v1"
+DELIVERY_LEG_ASSET_AMOUNTS_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-leg-asset-amounts-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -1454,6 +1456,30 @@ def _apply_quantity_stock_listing_reallocation_migration(connection: sqlite3.Con
     return True
 
 
+def _apply_delivery_leg_asset_amounts_migration(connection: sqlite3.Connection) -> bool:
+    """Add an optional exact per-Asset stack Amount manifest to DeliveryLeg."""
+    if _migration_applied(connection, DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        if not _table_exists(connection, "gd_delivery_legs"):
+            raise sqlite3.OperationalError("gd_delivery_legs must exist before its amount manifest migration")
+        columns = _columns(connection, "gd_delivery_legs")
+        if "asset_amounts_json" not in columns:
+            connection.execute("ALTER TABLE gd_delivery_legs ADD COLUMN asset_amounts_json TEXT")
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID,),
+        )
+        if connection.execute("PRAGMA foreign_key_check(gd_delivery_legs)").fetchall():
+            raise sqlite3.IntegrityError("DeliveryLeg asset Amount migration produced foreign-key violations")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     """Apply the canonical ledger, Playerok sync, recipe, and reservation migrations."""
     connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
@@ -1511,6 +1537,7 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
         changed = _apply_quantity_stock_listing_increase_migration(connection) or changed
         changed = _apply_quantity_stock_listing_enabled_guard_migration(connection) or changed
         changed = _apply_quantity_stock_listing_reallocation_migration(connection) or changed
+    changed = _apply_delivery_leg_asset_amounts_migration(connection) or changed
     return changed
 
 
@@ -2597,6 +2624,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
         database_path,
         migration_id=QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID,
         backup_suffix=QUANTITY_STOCK_LISTING_ENABLED_GUARD_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID,
+        backup_suffix=DELIVERY_LEG_ASSET_AMOUNTS_BACKUP_SUFFIX,
     )
     ensure_pre_migration_backup(
         database_path,

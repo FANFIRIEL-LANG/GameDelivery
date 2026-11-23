@@ -386,6 +386,7 @@ class DeliveryLedger:
         self, *, leg_id: str, order_line_id: str, bot_name: str,
         app_id: int, context_id: str | int, asset_ids: list[str],
         status: str = "planned", trade_offer_id: str | None = None,
+        asset_amounts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         if not all((leg_id.strip(), order_line_id.strip(), bot_name.strip())):
             raise ValueError("leg_id, order_line_id и bot_name обязательны")
@@ -394,16 +395,28 @@ class DeliveryLedger:
         assets = [validate_asset_id(value) for value in asset_ids]
         if not assets or len({asset_id_key(value) for value in assets}) != len(assets):
             raise ValueError("asset_ids должен быть непустым списком без повторов")
+        normalized_amounts = None
+        if asset_amounts is not None:
+            if not isinstance(asset_amounts, dict) or set(asset_amounts) != set(assets):
+                raise ValueError("asset_amounts должен содержать ровно один Amount для каждого Asset ID")
+            normalized_amounts = {}
+            for asset_id in assets:
+                amount = asset_amounts[asset_id]
+                if type(amount) is not int or not 1 <= amount <= 0xFFFFFFFF:
+                    raise ValueError("Amount для каждого Asset ID должен быть целым числом от 1 до 4294967295")
+                normalized_amounts[asset_id] = amount
         with self.database.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO gd_delivery_legs
                     (leg_id, order_line_id, bot_name, app_id, context_id,
-                     asset_ids_json, trade_offer_id, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     asset_ids_json, asset_amounts_json, trade_offer_id, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (leg_id.strip(), order_line_id.strip(), bot_name.strip(), app_id,
-                 str(context_id), _json(assets), trade_offer_id, status.strip() or "planned"),
+                 str(context_id), _json(assets),
+                 _json(normalized_amounts) if normalized_amounts is not None else None,
+                 trade_offer_id, status.strip() or "planned"),
             )
             row = connection.execute("SELECT * FROM gd_delivery_legs WHERE leg_id=?", (leg_id.strip(),)).fetchone()
         return dict(row)
