@@ -238,3 +238,6 @@
 
 
 **C.6.2 CS2 card quantity label layout follow-up (2026-11-24):** Для новой двухчастной подписи «единицы стека · физические ASF assets» включён перенос строк и ограничена высота label, чтобы текст не обрезался в фиксированной ширине карточки. Commit: `c048a60`. Проверка остаётся в GitHub Actions.
+
+
+**C.6.1 ASF CS2 route regression coverage (2026-11-24):** Добавлен отдельный тест `test_cs2_inventory_uses_read_only_730_2_route`: проверяет точный ASF IPC path `/Api/Bot/{bot}/Inventory/730/2?language=english`, HTTP GET, отсутствие request body и сохранение ответа Assets/Descriptions с AssetID/ClassID/InstanceID/Amount. Это автоматическая проверка корректности маршрута и read-only характера вызова; она не подменяет live-запрос к локальному ASF пользователя. Steam Cards route test 753/6 остаётся отдельным. Commit теста: `d7e9fa2`. Текущая ветка: `work/local-sync`; main и PR #4 не затронуты.
