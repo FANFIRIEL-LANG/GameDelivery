@@ -133,6 +133,27 @@ class QuantityStockLedgerTests(unittest.TestCase):
 
 
 
+    def test_direct_allocation_rejects_old_usable_observation(self):
+        self.ledger.observe(self.resource, 10)
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_stock_observations SET observed_at='2000-01-01T00:00:00+00:00' "
+                "WHERE game_id='cs2' AND bot_name='Bot-A'"
+            )
+        with self.assertRaisesRegex(ValueError, "устарело"):
+            self.ledger.allocate(
+                allocation_id="allocation-old-observation",
+                resource=self.resource,
+                units=1,
+                owner_type="listing",
+                listing_id="listing-a",
+            )
+        with self.database.connect() as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_allocations WHERE allocation_id='allocation-old-observation'"
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_old_usable_observation_is_not_reported_as_free_stock(self):
         self.ledger.observe(self.resource, 10)
         with self.database.connect() as db:
