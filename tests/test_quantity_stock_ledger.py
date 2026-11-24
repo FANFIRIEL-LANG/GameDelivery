@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from datetime import datetime, timedelta, timezone
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -9,7 +10,9 @@ from pathlib import Path
 
 from core.database.db import Database
 from core.database.connection import connect_sqlite
-from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.stock_ledger import (
+    QuantityStockLedger, StockResource, is_fresh_stock_observation,
+)
 from core.delivery.stock_identity import StockItemIdentity
 from core.delivery.recipes import SteamAssetSpec
 from games.inventory import InventoryItem
@@ -132,6 +135,19 @@ class QuantityStockLedgerTests(unittest.TestCase):
         self.assertEqual(self.ledger.free_units(self.resource), 0)
 
 
+
+    def test_stock_observation_freshness_has_strict_five_minute_window(self):
+        now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+        self.assertTrue(is_fresh_stock_observation(
+            (now - timedelta(minutes=5)).isoformat(), now=now,
+        ))
+        self.assertFalse(is_fresh_stock_observation(
+            (now - timedelta(minutes=5, seconds=1)).isoformat(), now=now,
+        ))
+        self.assertFalse(is_fresh_stock_observation(
+            (now + timedelta(seconds=1)).isoformat(), now=now,
+        ))
+        self.assertFalse(is_fresh_stock_observation("not-a-timestamp", now=now))
 
     def test_direct_allocation_rejects_old_usable_observation(self):
         self.ledger.observe(self.resource, 10)
