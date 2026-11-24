@@ -360,6 +360,39 @@ class ASFClientTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "GET")
 
     @patch("integrations.asf.client.urlopen")
+    def test_cs2_inventory_uses_read_only_730_2_route(self, urlopen):
+        payload = {
+            "Success": True,
+            "Result": {
+                "bot-cs2": {
+                    "Assets": [{
+                        "appid": 730, "contextid": 2, "assetid": "76561198000000001",
+                        "classid": "class-730", "instanceid": "0", "amount": "3",
+                    }],
+                    "Descriptions": [{
+                        "classid": "class-730", "instanceid": "0",
+                        "name": "AK-47 | Redline", "market_hash_name": "AK-47 | Redline",
+                        "type": "Rifle", "tradable": True, "marketable": True,
+                    }],
+                }
+            },
+        }
+        urlopen.return_value = FakeResponse(payload)
+
+        result = ASFClient().get_bot_inventory(
+            "bot-cs2", app_id=730, context_id=2, language="english"
+        )
+
+        self.assertEqual(result, payload)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:1242/Api/Bot/bot-cs2/Inventory/730/2?language=english",
+        )
+        self.assertEqual(request.get_method(), "GET")
+        self.assertIsNone(request.data)
+
+    @patch("integrations.asf.client.urlopen")
     def test_apply_proxy_preserves_existing_bot_settings(self, urlopen):
         existing = {
             "AcceptGifts": True,
