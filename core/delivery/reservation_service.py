@@ -541,7 +541,7 @@ class DeliveryReservationService:
             connection.execute("BEGIN IMMEDIATE")
             require_canonical_playerok_delivery_eligible(connection, order)
             order_row = connection.execute(
-                "SELECT o.status,d.config_version_id,d.listing_id FROM gd_orders o "
+                "SELECT o.status,d.config_version_id,d.listing_id,d.source_platform FROM gd_orders o "
                 "JOIN gd_deals d ON d.deal_id=o.deal_id WHERE o.order_id=?",
                 (order,),
             ).fetchone()
@@ -920,7 +920,7 @@ class DeliveryReservationService:
                 for line_id, item in item_by_line.items()
                 if isinstance(item.spec, SteamCardSetSpec) and line_id in effective_planned
             )
-            if steam_card_sets:
+            if steam_card_sets and str(order_row["source_platform"]).strip().casefold() == "playerok":
                 limit_row = connection.execute(
                     "SELECT total_sets FROM gd_steam_card_listing_limits WHERE listing_id=?",
                     (str(order_row["listing_id"]),),
