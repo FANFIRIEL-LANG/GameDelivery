@@ -10,6 +10,7 @@ from pathlib import Path
 from core.database.db import Database
 from core.database.connection import connect_sqlite
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.stock_identity import StockItemIdentity
 from core.delivery.recipes import SteamAssetSpec
 from games.inventory import InventoryItem
 
@@ -131,6 +132,33 @@ class QuantityStockLedgerTests(unittest.TestCase):
         self.assertEqual(self.ledger.free_units(self.resource), 0)
 
 
+
+    def test_old_usable_observation_is_not_reported_as_free_stock(self):
+        self.ledger.observe(self.resource, 10)
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_stock_observations SET observed_at='2000-01-01T00:00:00+00:00' "
+                "WHERE game_id='cs2' AND bot_name='Bot-A'"
+            )
+        self.assertEqual(self.ledger.free_units(self.resource), 0)
+
+    def test_eligible_resources_ignores_old_usable_observations(self):
+        identity = StockItemIdentity(
+            "cs2", 730, "2", market_hash_name="AK-47 | Redline",
+            name="AK-47 | Redline", item_type="Rifle", class_id="class-redline",
+        )
+        self.ledger.observe(
+            self.resource, 10, identity=identity, is_tradable=True,
+        )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_stock_observations SET observed_at='2000-01-01T00:00:00+00:00' "
+                "WHERE game_id='cs2' AND bot_name='Bot-A'"
+            )
+        spec = SteamAssetSpec(
+            "cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",),
+        )
+        self.assertEqual(self.ledger.eligible_resources(spec), [])
 
     def test_stock_observation_identity_is_immutable_and_revision_is_monotonic(self):
         self.ledger.observe(self.resource, 10)
