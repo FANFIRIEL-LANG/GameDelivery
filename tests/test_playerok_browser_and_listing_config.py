@@ -207,14 +207,16 @@ class PlayerokListingConfigTests(unittest.TestCase):
     def test_steam_cards_config_creates_immutable_versions(self):
         service = PlayerokListingConfigService(self.db)
         first = service.save(external_listing_id="cards-1", title="Cards", url="https://playerok.com/products/cards",
-                             mode="steam_cards", quantity=3, bot_pool=["BotA"])
+                             mode="steam_cards", quantity=3, listing_quantity=10, bot_pool=["BotA"])
         second = service.save(external_listing_id="cards-1", title="Cards v2", url="", mode="steam_cards",
-                              quantity=5, bot_pool=["BotB"])
+                              quantity=5, listing_quantity=12, bot_pool=["BotB"])
         rows = self.versions(first["listing_id"])
         self.assertEqual([r["version_number"] for r in rows], [1, 2])
         self.assertEqual([r["delivery_quantity_per_deal"] for r in rows], [3, 5])
         self.assertEqual(first["config_version_id"], "playerok-listing:" + first["listing_id"].split(":")[-1] + ":config:1")
         self.assertNotEqual(first["config_version_id"], second["config_version_id"])
+        self.assertEqual(first["listing_quantity"], 10)
+        self.assertEqual(second["listing_quantity"], 12)
         with self.db.connect() as conn:
             recipe_row = conn.execute(
                 "SELECT recipe_items_json FROM gd_config_versions WHERE config_version_id=?",
@@ -223,6 +225,24 @@ class PlayerokListingConfigTests(unittest.TestCase):
         stored_recipe = json.loads(recipe_row[0])
         self.assertEqual(stored_recipe[0]["kind"], "steam_card_set")
         self.assertEqual(stored_recipe[0]["quantity_per_order"], 3)
+
+    def test_steam_cards_listing_quantity_is_required_and_not_inferred_from_order_quantity(self):
+        service = PlayerokListingConfigService(self.db)
+        with self.assertRaisesRegex(ValueError, "отдельно от количества за покупку"):
+            service.save(
+                external_listing_id="cards-missing-listing-limit",
+                title="Cards",
+                url="",
+                mode="steam_cards",
+                quantity=3,
+                bot_pool=["BotA"],
+            )
+        with self.db.connect() as conn:
+            listing = conn.execute(
+                "SELECT COUNT(*) FROM gd_listings WHERE listing_id=?",
+                (service._listing_key("cards-missing-listing-limit"),),
+            ).fetchone()[0]
+        self.assertEqual(listing, 0)
 
     def test_cs2_config_stores_selectors_and_730_2(self):
         result = PlayerokListingConfigService(self.db).save(
