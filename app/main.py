@@ -1766,6 +1766,109 @@ class MainWindow(QMainWindow):
         # Compatibility with older rows/tests that stored only the legacy order ID.
         return {"kind": "legacy", "order_id": item.text().strip()}
 
+    def _prepare_typed_cs2_recipe_order(self, order_id, config):
+        """Prepare a typed CS2 Recipe through quantity-aware stock reservations.
+
+        Listing-owned stock is transferred atomically by prepare_recipe_order;
+        without a listing batch, the same pipeline uses fresh CS2 inventory
+        snapshots. This UI path is pre-trade and never auto-sends an offer.
+        """
+        from core.delivery.recipes import SteamAssetSpec
+
+        config_id = str(config["config_version_id"])
+        with connect_sqlite(self._database_path) as db:
+            recipe = DeliveryLedger.recipe_for_config_version(
+                db, config_id, allow_legacy=False
+            )
+            listing_batch = db.execute(
+                "SELECT 1 FROM gd_stock_allocation_batches "
+                "WHERE listing_id=? AND config_version_id=?",
+                (str(config["listing_id"]), config_id),
+            ).fetchone() is not None
+
+        if not recipe.items or any(
+            item.kind != "steam_asset"
+            or not isinstance(item.spec, SteamAssetSpec)
+            or item.spec.game_id != "cs2"
+            or item.spec.app_id != 730
+            or str(item.spec.context_id) != "2"
+            for item in recipe.items
+        ):
+            raise ValueError(
+                "В интерфейсе пока подключён только typed Recipe из CS2 Steam Asset "
+                "(AppID 730 / ContextID 2). Steam Cards и смешанные Recipe остаются "
+                "на отдельном обработчике."
+            )
+
+        configured_bots = [
+            str(bot).strip() for bot in config.get("bot_pool", [])
+            if isinstance(bot, str) and bot.strip()
+        ]
+        allowed_bots = set()
+        for item in recipe.items:
+            item_bots = item.spec.allowed_bot_pool or tuple(configured_bots)
+            if not item_bots:
+                raise ValueError(
+                    f"Для RecipeItem {item.item_id} не задан разрешённый пул ASF-ботов."
+                )
+            allowed_bots.update(
+                str(bot).strip() for bot in item_bots if isinstance(bot, str) and bot.strip()
+            )
+        if not allowed_bots:
+            raise ValueError("Typed CS2 Recipe не содержит разрешённых ASF-ботов.")
+
+        snapshots = {}
+        if not listing_batch:
+            with connect_sqlite(self._database_path) as db:
+                rows = db.execute(
+                    "SELECT bot_name,updated_at FROM game_inventory_snapshot_meta "
+                    "WHERE game_id='cs2'"
+                ).fetchall()
+            timestamps = {
+                str(row["bot_name"]).casefold(): str(row["updated_at"])
+                for row in rows
+            }
+            all_instances = tuple(
+                getattr(self.game_inventory_panel, "cs2_all_instances", ())
+            )
+            for bot in sorted(allowed_bots, key=str.casefold):
+                timestamp = timestamps.get(bot.casefold())
+                if not timestamp:
+                    snapshots[(bot, 730, "2")] = InventorySnapshot(
+                        bot, "cs2", 730, "2",
+                        datetime.min.replace(tzinfo=timezone.utc), (), False,
+                    )
+                    continue
+                refreshed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if refreshed_at.tzinfo is None:
+                    refreshed_at = refreshed_at.replace(tzinfo=timezone.utc)
+                items = tuple(
+                    item for item in all_instances
+                    if str(getattr(item, "bot_name", "")).casefold() == bot.casefold()
+                )
+                snapshots[(bot, 730, "2")] = InventorySnapshot(
+                    bot, "cs2", 730, "2", refreshed_at, items, True
+                )
+
+        result = self.delivery_pipeline.prepare_recipe_order(
+            order_id=order_id, snapshots=snapshots
+        )
+        if result.status != "reserved":
+            raise ValueError(result.message)
+
+        self._load_saved_orders()
+        for row in range(self.orders.rowCount()):
+            row_context = self.orders.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if isinstance(row_context, dict) and row_context.get("order_id") == order_id:
+                self.orders.selectRow(row)
+                break
+        QMessageBox.information(
+            self, "Выдача подготовлена",
+            f"Заказ {order_id}: резерв подтверждён. DeliveryLeg: {len(result.legs)}, "
+            f"физических Asset ID: {len(result.reserved_assets)}. "
+            "Steam offer не создавался и не отправлялся; отправка требует отдельного ручного действия.",
+        )
+
     def _prepare_ledger_order(self):
         try:
             context = self._order_context()
@@ -1775,6 +1878,9 @@ class MainWindow(QMainWindow):
             config = self.delivery_pipeline._config_for_order(order_id)
             if self.delivery_pipeline._is_card_config(config):
                 self._prepare_steam_card_order_async(order_id, config)
+                return
+            if config.get("recipe_schema_version") is not None:
+                self._prepare_typed_cs2_recipe_order(order_id, config)
                 return
             if not self.delivery_pipeline._is_cs2_config(config):
                 raise ValueError("Для этой ConfigVersion пока нет подключённого delivery handler.")
