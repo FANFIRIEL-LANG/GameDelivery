@@ -318,6 +318,33 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             second_order: (1, "reserved"),
         })
 
+    def test_steam_card_recipe_without_manual_bot_pool_uses_available_card_snapshots(self):
+        item = recipe_item(
+            "cards", 1, "steam_card_set", 1,
+            SteamCardSetSpec(game_name="Dota 2"),
+        )
+        order, _config_id = self.create_recipe_order("steam-card-all-bots", (item,))
+        result = self.prepare(order, self.multi_card_snapshots(complete_sets=1))
+        self.assertTrue(result.reserved, result.message)
+        with self.database.connect() as db:
+            card_reservations = db.execute(
+                "SELECT bot_name,app_id,context_id,COUNT(*) AS cards "
+                "FROM gd_resource_reservations WHERE owner_type='order' AND state='active' "
+                "AND order_line_id IN (SELECT order_line_id FROM gd_order_lines WHERE order_id=?) "
+                "GROUP BY bot_name,app_id,context_id",
+                (order,),
+            ).fetchall()
+            claim = db.execute(
+                "SELECT sets,state FROM gd_steam_card_listing_claims WHERE order_id=?",
+                (order,),
+            ).fetchone()
+        self.assertEqual(
+            [(row["bot_name"], int(row["app_id"]), row["context_id"], int(row["cards"]))
+             for row in card_reservations],
+            [("Bot-A", 753, "6", 2)],
+        )
+        self.assertEqual((int(claim["sets"]), claim["state"]), (1, "reserved"))
+
     def test_playerok_steam_card_order_without_listing_limit_fails_closed(self):
         item = recipe_item(
             "cards", 1, "steam_card_set", 1,
