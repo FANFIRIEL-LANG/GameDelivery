@@ -345,6 +345,8 @@ class CS2InventoryGroupCard(QFrame):
 
         count = QLabel(cs2_group_quantity_text(group))
         count.setObjectName("quantity")
+        count.setWordWrap(True)
+        count.setMaximumHeight(30)
         count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(count)
 
