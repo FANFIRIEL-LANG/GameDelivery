@@ -375,8 +375,9 @@ class QuantityStockLedger:
             ).fetchone()
             if observation is None:
                 raise ValueError("Сначала требуется полное наблюдение инвентаря")
-            if observation["availability_state"] != "usable":
-                raise ValueError("Наблюдение склада недоступно для резервирования")
+            if (observation["availability_state"] != "usable"
+                or not is_fresh_stock_observation(observation["observed_at"])):
+                raise ValueError("Наблюдение склада недоступно или устарело для резервирования")
             connection.execute(
                 """
                 INSERT INTO gd_stock_allocations
