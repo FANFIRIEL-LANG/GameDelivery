@@ -283,8 +283,9 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
         self.assertEqual((int(first_claim["sets"]), first_claim["state"]), (1, "reserved"))
         self.assertEqual(physical_card_count, 2)
 
-        with self.assertRaises(InsufficientListingStock):
-            self.prepare(second_order, snapshots)
+        second_blocked = self.prepare(second_order, snapshots)
+        self.assertEqual(second_blocked.status, "preflight_blocked")
+        self.assertIn("Недостаточно закреплённого складского остатка", second_blocked.message)
         self.assert_no_reservation_commit(second_order)
         with self.database.connect() as db:
             claimed = db.execute(
