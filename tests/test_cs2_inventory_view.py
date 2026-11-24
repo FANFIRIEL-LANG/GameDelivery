@@ -3,6 +3,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from integrations.asf.client import ASFError
+from app.game_inventory_cards import cs2_group_quantity_text, cs2_group_tooltip_text
 from games.cs2.inventory_view import (
     adapt_cs2_inventory_response, build_cs2_inventory_projection,
 )
@@ -289,6 +290,35 @@ class CS2ProjectionTests(unittest.TestCase):
         item = replace(item, tradable_after=datetime(2026, 11, 10))
 
         self.assertIsNone(item.tradable_after)
+
+
+class CS2CardPresentationTests(unittest.TestCase):
+    def test_card_quantity_uses_stack_amount_not_asset_row_count(self):
+        first = adapt_cs2_inventory_response(payload("Bot A", amount="4"), "Bot A")[0]
+        second = replace(first, bot_name="Bot B", asset_id="b2", amount=3)
+        group, = build_cs2_inventory_projection([first, second]).groups
+
+        self.assertEqual(group.instance_count, 2)
+        self.assertEqual(group.total_amount, 7)
+        self.assertEqual(
+            cs2_group_quantity_text(group),
+            "Количество: 7 шт. · активов ASF: 2",
+        )
+
+    def test_card_keeps_unknown_amount_and_lists_each_bot_asset(self):
+        first = adapt_cs2_inventory_response(payload("Bot A", amount="4"), "Bot A")[0]
+        second = replace(first, bot_name="Bot B", asset_id="b2", amount=None)
+        group, = build_cs2_inventory_projection([first, second]).groups
+
+        quantity = cs2_group_quantity_text(group)
+        tooltip = cs2_group_tooltip_text(group)
+
+        self.assertIn("Количество: неизвестно", quantity)
+        self.assertIn("известно: 4 шт.", quantity)
+        self.assertIn("без Amount: 1", quantity)
+        self.assertIn("Bot A: AssetID a1 · Amount 4", tooltip)
+        self.assertIn("Bot B: AssetID b2 · Amount неизвестно", tooltip)
+        self.assertIn("ClassID c1 · InstanceID i1", tooltip)
 
 
 if __name__ == "__main__":
