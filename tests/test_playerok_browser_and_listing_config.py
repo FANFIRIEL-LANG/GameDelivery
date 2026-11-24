@@ -246,6 +246,42 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertEqual(recipe_item["quantity_per_order"], 2)
         self.assertEqual(recipe["recipe_schema_version"], 1)
 
+    def test_playerok_browser_form_saves_and_allocates_listing_stock_quantity(self):
+        ledger = QuantityStockLedger(self.db)
+        resource = StockResource("cs2", 730, "2", "BotA", "22334455")
+        ledger.observe(
+            resource,
+            10,
+            identity=StockItemIdentity(
+                "cs2", 730, "2", market_hash_name="AK-47 | Redline",
+                name="AK-47 | Redline", class_id="class-redline",
+            ),
+            is_tradable=True,
+        )
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        try:
+            panel.mode.setCurrentIndex(panel.mode.findData("cs2_items"))
+            panel.listing_id.setText("cs2-browser-stock")
+            panel.listing_title.setText("AK-47 | Redline")
+            panel.listing_url.setText("https://playerok.com/products/cs2-browser-stock")
+            panel.quantity.setValue(2)
+            panel.listing_stock_quantity.setValue(3)
+            panel.bots.setText("BotA")
+            panel.selectors.setPlainText('[{"market_hash_name":"AK-47 | Redline"}]')
+
+            panel._save_config()
+
+            self.assertIn("Общий склад: зарезервировано 6 шт.", panel.browser_status.text())
+            with self.db.connect() as db:
+                rows = db.execute(
+                    "SELECT units FROM gd_stock_allocations WHERE owner_type='listing' "
+                    "AND listing_id=? AND state='active'",
+                    (PlayerokListingConfigService._listing_key("cs2-browser-stock"),),
+                ).fetchall()
+            self.assertEqual(sum(int(row["units"]) for row in rows), 6)
+        finally:
+            panel.close()
+
     def test_playerok_listing_quantity_allocates_recipe_units_from_shared_stock(self):
         service = PlayerokListingConfigService(self.db)
         result = service.save(
