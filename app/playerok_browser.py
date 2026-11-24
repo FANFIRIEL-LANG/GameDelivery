@@ -2326,7 +2326,7 @@ class PlayerokBrowserPanel(QWidget):
     def _mode_changed(self, *_):
         mode = self.mode.currentData()
         self.quantity.setVisible(mode != "manual")
-        self.bots.setVisible(mode != "manual")
+        self.bots.setVisible(mode == "cs2_items")
         self.selectors.setVisible(mode == "cs2_items")
         self.listing_stock_quantity.setVisible(mode in {"cs2_items", "steam_cards"})
         self.listing_stock_quantity.setPrefix(
