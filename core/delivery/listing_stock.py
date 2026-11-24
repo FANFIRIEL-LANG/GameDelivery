@@ -1197,6 +1197,8 @@ class ListingStockService:
             parsed: list[tuple[Any, StockItemIdentity, StockResource]] = []
             free_by_observation: dict[str, int] = {}
             for observation in observations:
+                if not is_fresh_stock_observation(observation["observed_at"]):
+                    continue
                 try:
                     raw_identity = json.loads(observation["identity_json"])
                     if not isinstance(raw_identity, dict):
