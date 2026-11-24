@@ -12,6 +12,7 @@ from core.delivery.ledger import DeliveryLedger
 from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.reservation_service import InventorySnapshot, PlannedRecipeLine, PlannedResource
 from core.delivery.listing_stock import ListingStockService
+from core.delivery.listing_stock import InsufficientListingStock
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
 from core.delivery.stock_identity import StockItemIdentity
 from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem, SteamAssetSpec, SteamCardSetSpec
@@ -127,6 +128,26 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             ("Bot-B", 730, "2"): assets_b,
         }
 
+    @staticmethod
+    def multi_card_snapshots(complete_sets=2):
+        cards = []
+        for index in range(1, complete_sets + 1):
+            cards.extend((
+                CardCopy(
+                    f"dota-alpha-{index}", "Dota 2", "Dota Alpha",
+                    market_hash_name="Dota Alpha", game_app_id=570,
+                ),
+                CardCopy(
+                    f"dota-beta-{index}", "Dota 2", "Dota Beta",
+                    market_hash_name="Dota Beta", game_app_id=570,
+                ),
+            ))
+        return {
+            ("Bot-A", 753, "6"): InventorySnapshot(
+                "Bot-A", "steam_cards", 753, "6", NOW, tuple(cards), True,
+            ),
+        }
+
     def mixed_recipe(self, cs2_quantity=5):
         return (
             recipe_item("cards", 1, "steam_card_set", 1,
@@ -208,6 +229,115 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             steam_card_count_per_set=next(iter(card_sizes)) if len(card_sizes) == 1 else None,
             steam_card_preflight=preflight,
         )
+
+    def test_steam_card_listing_limit_is_atomic_and_cancel_releases_claim(self):
+        item = recipe_item(
+            "cards", 1, "steam_card_set", 1,
+            SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A",)),
+        )
+        first_order, config_id = self.create_recipe_order("steam-card-cap-flow", (item,))
+        listing_id = "listing-steam-card-cap-flow"
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_steam_card_listing_limits SET total_sets=1 WHERE listing_id=?",
+                (listing_id,),
+            )
+
+        second_deal = "deal-steam-card-cap-flow-second"
+        second_order = "order-steam-card-cap-flow-second"
+        self.ledger.create_deal(
+            deal_id=second_deal,
+            source_platform="playerok",
+            external_deal_id="external-steam-card-cap-flow-second",
+            chat_id="chat-steam-card-cap-flow-second",
+            listing_id=listing_id,
+            config_version_id=config_id,
+            platform_status="PAID",
+        )
+        self.ledger.create_order(
+            order_id=second_order, deal_id=second_deal, total_quantity=1
+        )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_deals SET playerok_account_id='seller-test',is_historical=0 WHERE deal_id=?",
+                (second_deal,),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO playerok_sync_state(account_user_id,baseline_completed) "
+                "VALUES('seller-test',1)"
+            )
+
+        snapshots = self.multi_card_snapshots(complete_sets=2)
+        first = self.prepare(first_order, snapshots)
+        self.assertTrue(first.reserved, first.message)
+        with self.database.connect() as db:
+            first_claim = db.execute(
+                "SELECT sets,state FROM gd_steam_card_listing_claims WHERE order_id=?",
+                (first_order,),
+            ).fetchone()
+            physical_card_count = db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?) AND app_id=753 AND context_id='6'",
+                (first_order,),
+            ).fetchone()[0]
+        self.assertEqual((int(first_claim["sets"]), first_claim["state"]), (1, "reserved"))
+        self.assertEqual(physical_card_count, 2)
+
+        with self.assertRaises(InsufficientListingStock):
+            self.prepare(second_order, snapshots)
+        self.assert_no_reservation_commit(second_order)
+        with self.database.connect() as db:
+            claimed = db.execute(
+                "SELECT COALESCE(SUM(sets),0) FROM gd_steam_card_listing_claims "
+                "WHERE listing_id=? AND state='reserved'",
+                (listing_id,),
+            ).fetchone()[0]
+            second_claims = db.execute(
+                "SELECT COUNT(*) FROM gd_steam_card_listing_claims WHERE order_id=?",
+                (second_order,),
+            ).fetchone()[0]
+        self.assertEqual((int(claimed), int(second_claims)), (1, 0))
+
+        cancelled = self.pipeline.cancel_order(first_order)
+        self.assertEqual(cancelled["released_steam_card_listing_sets"], 1)
+        second = self.prepare(second_order, snapshots)
+        self.assertTrue(second.reserved, second.message)
+        with self.database.connect() as db:
+            claims = db.execute(
+                "SELECT order_id,sets,state FROM gd_steam_card_listing_claims "
+                "WHERE listing_id=? ORDER BY order_id",
+                (listing_id,),
+            ).fetchall()
+        claim_states = {
+            row["order_id"]: (int(row["sets"]), row["state"])
+            for row in claims
+        }
+        self.assertEqual(claim_states, {
+            first_order: (1, "released"),
+            second_order: (1, "reserved"),
+        })
+
+    def test_playerok_steam_card_order_without_listing_limit_fails_closed(self):
+        item = recipe_item(
+            "cards", 1, "steam_card_set", 1,
+            SteamCardSetSpec(game_name="Dota 2", allowed_bot_pool=("Bot-A",)),
+        )
+        order, _config_id = self.create_recipe_order("steam-card-no-limit", (item,))
+        listing_id = "listing-steam-card-no-limit"
+        with self.database.connect() as db:
+            db.execute(
+                "DELETE FROM gd_steam_card_listing_limits WHERE listing_id=?",
+                (listing_id,),
+            )
+        with self.assertRaisesRegex(ValueError, "не задано общее количество наборов"):
+            self.prepare(order, self.multi_card_snapshots(complete_sets=1))
+        self.assert_no_reservation_commit(order)
+        with self.database.connect() as db:
+            claims = db.execute(
+                "SELECT COUNT(*) FROM gd_steam_card_listing_claims WHERE order_id=?",
+                (order,),
+            ).fetchone()[0]
+        self.assertEqual(claims, 0)
 
     def test_alternative_cs2_selectors_reserve_complete_variant_batches_and_fallback_per_order(self):
         item = recipe_item(
