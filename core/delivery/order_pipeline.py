@@ -459,7 +459,17 @@ class DeliveryOrderPipeline:
                     continue
                 allowed = item.spec.allowed_bot_pool or tuple(config["bot_pool"])
                 if not allowed:
-                    reason = f"Для RecipeItem {item.item_id} не задан разрешённый пул ботов."
+                    # With no explicit legacy restriction, inspect all seller
+                    # bots represented by Steam Cards inventory snapshots.
+                    allowed = tuple(sorted({
+                        str(snapshot.bot_name).strip()
+                        for snapshot in snapshots.values()
+                        if str(getattr(snapshot, "bot_name", "")).strip()
+                        and int(getattr(snapshot, "app_id", 0) or 0) == 753
+                        and str(getattr(snapshot, "context_id", "")) == "6"
+                    }, key=str.casefold))
+                if not allowed:
+                    reason = "Нет снимков инвентарей ботов Steam Cards (753/6)."
                     if item.required:
                         failed_required.append(reason)
                     planned[line_id] = PlannedRecipeLine(item.item_id, ())
