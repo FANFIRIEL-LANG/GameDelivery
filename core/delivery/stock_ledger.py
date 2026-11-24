@@ -4,12 +4,30 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from core.database.db import Database
 from games.asset_ids import asset_id_key, validate_asset_id
 from core.delivery.stock_identity import StockItemIdentity
+
+
+STOCK_OBSERVATION_MAX_AGE = timedelta(minutes=5)
+
+
+def is_fresh_stock_observation(observed_at: Any, *, now: datetime | None = None) -> bool:
+    """Return True only for a valid stock observation no older than five minutes."""
+    try:
+        timestamp = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        age = current.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)
+        return timedelta(0) <= age <= STOCK_OBSERVATION_MAX_AGE
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -299,7 +317,7 @@ class QuantityStockLedger:
         with self.database.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT game_id,app_id,context_id,bot_name,asset_id,identity_json,is_tradable
+                SELECT game_id,app_id,context_id,bot_name,asset_id,identity_json,is_tradable,observed_at
                 FROM gd_stock_observations
                 WHERE availability_state='usable' AND identity_json IS NOT NULL
                   AND is_tradable=1
@@ -308,6 +326,8 @@ class QuantityStockLedger:
             ).fetchall()
         matches: list[StockResource] = []
         for row in rows:
+            if not is_fresh_stock_observation(row["observed_at"]):
+                continue
             try:
                 raw_identity = json.loads(row["identity_json"])
                 if not isinstance(raw_identity, dict):
@@ -383,10 +403,11 @@ class QuantityStockLedger:
             # mix the observed amount and allocation sum from different revisions.
             connection.execute("BEGIN")
             observation = connection.execute(
-                "SELECT observed_amount,revision,availability_state "
+                "SELECT observed_amount,revision,availability_state,observed_at "
                 "FROM gd_stock_observations WHERE observation_id=?", (observation_id,)
             ).fetchone()
-            if observation is None or observation["availability_state"] != "usable":
+            if (observation is None or observation["availability_state"] != "usable"
+                or not is_fresh_stock_observation(observation["observed_at"])):
                 return 0
             used = self._blocking_units(connection, observation_id, int(observation["revision"]))
             return max(0, int(observation["observed_amount"]) - used)
