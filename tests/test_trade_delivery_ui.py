@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
 
@@ -13,6 +14,7 @@ from app.main import MainWindow
 from core.database.connection import connect_sqlite
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
+from core.delivery.recipes import RecipeItem, SteamAssetSpec
 from integrations.playerok.sync import PlayerokDealSyncService
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.selection import CardCopy
@@ -622,6 +624,89 @@ class TradeDeliveryUITests(unittest.TestCase):
                 self.assertEqual((order_count, reservation_count), (1, 1))
 
             self._run_with_window(database, exercise)
+
+    def test_typed_cs2_recipe_uses_quantity_stock_pipeline_without_auto_send(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "typed-cs2.sqlite3"
+            self._make_database(database)
+            delivery = DeliveryLedger(Database(database))
+            item = RecipeItem(
+                item_id="redline", position=1, kind="steam_asset", spec_version=1,
+                quantity_per_order=2, required=True, stock_source_id=None,
+                executor_key="steam_trade_offer",
+                spec=SteamAssetSpec(
+                    "cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                    ("Bot A",),
+                ),
+            )
+            config = delivery.create_recipe_config_version(
+                listing_id="typed-cs2-listing", source_platform="playerok",
+                external_listing_id="typed-cs2-external", recipe_items=[item],
+            )
+            delivery.create_deal(
+                deal_id="typed-cs2-deal", source_platform="playerok",
+                external_deal_id="typed-cs2-external-deal", chat_id=None,
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                platform_status="PAID", payload={"title": "AK-47 | Redline"},
+            )
+            order_id = "typed-cs2-order"
+            delivery.create_order(order_id=order_id, deal_id="typed-cs2-deal", total_quantity=2)
+            with connect_sqlite(database) as db:
+                db.execute(
+                    "CREATE TABLE game_inventory_snapshot_meta "
+                    "(game_id TEXT NOT NULL,bot_name TEXT NOT NULL,updated_at TEXT NOT NULL)"
+                )
+                db.execute(
+                    "INSERT INTO game_inventory_snapshot_meta(game_id,bot_name,updated_at) "
+                    "VALUES('cs2','Bot A',?)",
+                    (datetime.now(timezone.utc).isoformat(),),
+                )
+
+            with patch.object(
+                MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
+            ):
+                window = MainWindow()
+                try:
+                    window._order_context = lambda: {"kind": "ledger", "order_id": order_id}
+                    window._load_saved_orders = MagicMock()
+                    window.game_inventory_panel.cs2_all_instances = ()
+                    config_for_order = {
+                        "recipe_schema_version": 1,
+                        "config_version_id": config["config_version_id"],
+                        "listing_id": config["listing_id"],
+                        "bot_pool": [],
+                        "selectors": {"recipe_schema_version": 1},
+                    }
+                    prepared = SimpleNamespace(
+                        status="reserved", legs=(), reserved_assets=(("Bot A", "asset-1"),),
+                        message="reserved",
+                    )
+                    with (
+                        patch.object(
+                            window.delivery_pipeline, "_config_for_order",
+                            return_value=config_for_order,
+                        ),
+                        patch.object(
+                            window.delivery_pipeline, "prepare_recipe_order",
+                            return_value=prepared,
+                        ) as prepare_recipe,
+                        patch.object(window, "_start_send_ledger_order_async") as auto_send,
+                        patch("app.main.QMessageBox.information") as information,
+                    ):
+                        window._prepare_ledger_order()
+
+                    prepare_recipe.assert_called_once()
+                    snapshots = prepare_recipe.call_args.kwargs["snapshots"]
+                    self.assertIn(("Bot A", 730, "2"), snapshots)
+                    self.assertTrue(snapshots[("Bot A", 730, "2")].asf_verified)
+                    self.assertEqual(snapshots[("Bot A", 730, "2")].items, ())
+                    auto_send.assert_not_called()
+                    information.assert_called_once()
+                finally:
+                    window.close()
+                    window.deleteLater()
+                    self.app.processEvents()
 
     def test_game_inventory_delivery_does_not_enter_card_only_order_flow(self):
         with tempfile.TemporaryDirectory() as temp_dir:
