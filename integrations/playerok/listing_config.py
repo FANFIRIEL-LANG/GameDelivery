@@ -50,7 +50,10 @@ class PlayerokListingConfigService:
             raise ValueError("Список разрешённых ботов задан неверно.")
         selector_data: dict[str, Any]
         if mode == "steam_cards":
-            listing_quantity = quantity if listing_quantity is None else listing_quantity
+            if listing_quantity is None:
+                raise ValueError(
+                    "Укажи общее количество наборов в объявлении отдельно от количества за покупку."
+                )
             if isinstance(listing_quantity, bool) or not isinstance(listing_quantity, int) or listing_quantity < 1:
                 raise ValueError("Количество наборов в объявлении должно быть положительным целым числом.")
             selector_data = {"delivery_mode": mode, "app_id": 753, "context_id": 6,
