@@ -1390,8 +1390,12 @@ class PlayerokBrowserPanel(QWidget):
         self.quantity.setRange(1, 9999)
         self.quantity.setPrefix("Количество за покупку: ")
         form.addWidget(self.quantity)
+        self.listing_stock_quantity = QSpinBox()
+        self.listing_stock_quantity.setRange(1, 9999)
+        self.listing_stock_quantity.setPrefix("Количество в объявлении: ")
+        form.addWidget(self.listing_stock_quantity)
         self.bots = QLineEdit()
-        self.bots.setPlaceholderText("Разрешённые боты через запятую")
+        self.bots.setPlaceholderText("Пул ASF-ботов (пусто = все найденные)")
         form.addWidget(self.bots)
         self.selectors = QPlainTextEdit()
         self.selectors.setPlaceholderText('CS2 selectors JSON, например: [{"market_hash_name":"Кейс"}]')
@@ -2324,6 +2328,7 @@ class PlayerokBrowserPanel(QWidget):
         self.quantity.setVisible(mode != "manual")
         self.bots.setVisible(mode != "manual")
         self.selectors.setVisible(mode == "cs2_items")
+        self.listing_stock_quantity.setVisible(mode == "cs2_items")
         self.messages.setVisible(mode == "manual")
 
     def _save_config(self):
@@ -2335,19 +2340,54 @@ class PlayerokBrowserPanel(QWidget):
             mode = self.mode.currentData()
             selectors = json.loads(self.selectors.toPlainText() or "[]") if mode == "cs2_items" else None
             messages = json.loads(self.messages.toPlainText() or "{}") if mode == "manual" else None
-            result = PlayerokListingConfigService(self.database).save(
+            bots = [x.strip() for x in self.bots.text().split(",") if x.strip()]
+            if mode == "cs2_items" and not bots:
+                from app.bot_selector import configured_bot_names
+                bots = configured_bot_names()
+                if not bots:
+                    raise ValueError("Не найдены ASF-боты. Настрой ASF или укажи пул ботов явно.")
+            service = PlayerokListingConfigService(self.database)
+            result = service.save(
                 external_listing_id=self.listing_id.text(),
                 title=self.listing_title.text(),
                 url=self.listing_url.text(),
                 mode=mode,
                 quantity=self.quantity.value(),
-                bot_pool=[x.strip() for x in self.bots.text().split(",") if x.strip()],
+                bot_pool=bots,
                 selectors=selectors,
                 auto_messages=messages,
             )
+            stock_summary = ""
+            if mode == "cs2_items":
+                if result.get("recipe_items"):
+                    try:
+                        stock = service.allocate_listing_stock(
+                            config_version_id=result["config_version_id"],
+                            listing_quantity=self.listing_stock_quantity.value(),
+                        )
+                    except Exception as stock_exc:
+                        self.listing_config_saved.emit(result)
+                        self.browser_status.setText(
+                            f"ConfigVersion #{result['version_number']} сохранена, "
+                            "но общий склад не выделен. Заказы по этой версии будут заблокированы."
+                        )
+                        QMessageBox.warning(
+                            self, "Общий склад",
+                            f"ConfigVersion сохранена, но резервирование остатка не выполнено: {stock_exc}",
+                        )
+                        return
+                    stock_summary = (
+                        f" Общий склад: зарезервировано {stock['reserved_units']} шт. "
+                        f"для {stock['listing_quantity']} продаж."
+                    )
+                else:
+                    stock_summary = (
+                        " Общий склад не выделен: несколько selectors трактуются как альтернативы; "
+                        "для точного резерва нужен один однозначный CS2 selector."
+                    )
             self.listing_config_saved.emit(result)
             self.browser_status.setText(
-                f"Сохранена неизменяемая ConfigVersion #{result['version_number']}."
+                f"Сохранена неизменяемая ConfigVersion #{result['version_number']}.{stock_summary}"
             )
         except Exception as exc:
             QMessageBox.warning(self, "ConfigVersion", str(exc))
