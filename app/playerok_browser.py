@@ -2328,7 +2328,10 @@ class PlayerokBrowserPanel(QWidget):
         self.quantity.setVisible(mode != "manual")
         self.bots.setVisible(mode != "manual")
         self.selectors.setVisible(mode == "cs2_items")
-        self.listing_stock_quantity.setVisible(mode == "cs2_items")
+        self.listing_stock_quantity.setVisible(mode in {"cs2_items", "steam_cards"})
+        self.listing_stock_quantity.setPrefix(
+            "Наборов в объявлении: " if mode == "steam_cards" else "Количество в объявлении: "
+        )
         self.messages.setVisible(mode == "manual")
 
     def _save_config(self):
@@ -2353,11 +2356,17 @@ class PlayerokBrowserPanel(QWidget):
                 url=self.listing_url.text(),
                 mode=mode,
                 quantity=self.quantity.value(),
+                listing_quantity=self.listing_stock_quantity.value() if mode == "steam_cards" else None,
                 bot_pool=bots,
                 selectors=selectors,
                 auto_messages=messages,
             )
             stock_summary = ""
+            if mode == "steam_cards":
+                stock_summary = (
+                    f" Лимит объявления: {result['listing_quantity']} наборов. "
+                    "Карты для каждого заказа подбираются автоматически после проверки покупателя."
+                )
             if mode == "cs2_items":
                 if result.get("recipe_items"):
                     try:

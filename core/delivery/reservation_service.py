@@ -9,7 +9,7 @@ from typing import Any, Mapping
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.playerok_eligibility import require_canonical_playerok_delivery_eligible
-from core.delivery.listing_stock import ListingStockService
+from core.delivery.listing_stock import InsufficientListingStock, ListingStockService
 from core.delivery.recipes import (
     DigitalTextUnitSpec,
     RecipeItem,
@@ -911,6 +911,53 @@ class DeliveryReservationService:
                 if resource.stock_allocation_ids:
                     for allocation_id in resource.stock_allocation_ids:
                         stock_backed_assets.add((key, resource.asset_id))
+
+
+            # Listing-level Steam Card quota is a count of complete sets, not physical cards.
+            # Claim it in this same transaction as the verified card reservations.
+            steam_card_sets = sum(
+                len(effective_planned[line_id].units)
+                for line_id, item in item_by_line.items()
+                if isinstance(item.spec, SteamCardSetSpec) and line_id in effective_planned
+            )
+            if steam_card_sets:
+                limit_row = connection.execute(
+                    "SELECT total_sets FROM gd_steam_card_listing_limits WHERE listing_id=?",
+                    (str(order_row["listing_id"]),),
+                ).fetchone()
+                if limit_row is None:
+                    raise ValueError(
+                        "Для объявления Steam Cards не задано общее количество наборов. "
+                        "Сохраните ConfigVersion с установленным лимитом объявления."
+                    )
+                prior_claim = connection.execute(
+                    "SELECT listing_id,config_version_id,sets,state FROM gd_steam_card_listing_claims "
+                    "WHERE order_id=?",
+                    (order,),
+                ).fetchone()
+                if prior_claim is not None:
+                    if (
+                        str(prior_claim["listing_id"]) != str(order_row["listing_id"])
+                        or str(prior_claim["config_version_id"]) != config_id
+                        or int(prior_claim["sets"]) != steam_card_sets
+                        or str(prior_claim["state"]) != "reserved"
+                    ):
+                        raise ValueError("Для заказа уже существует несовместимый резерв лимита Steam Cards.")
+                else:
+                    claimed_row = connection.execute(
+                        "SELECT COALESCE(SUM(sets),0) AS claimed FROM gd_steam_card_listing_claims "
+                        "WHERE listing_id=? AND state='reserved'",
+                        (str(order_row["listing_id"]),),
+                    ).fetchone()
+                    claimed = int(claimed_row["claimed"] if claimed_row else 0)
+                    available = max(0, int(limit_row["total_sets"]) - claimed)
+                    if available < steam_card_sets:
+                        raise InsufficientListingStock(steam_card_sets, available)
+                    connection.execute(
+                        "INSERT INTO gd_steam_card_listing_claims(order_id,listing_id,config_version_id,sets,state) "
+                        "VALUES(?,?,?,?,'reserved')",
+                        (order, str(order_row["listing_id"]), config_id, steam_card_sets),
+                    )
 
             # Quantity-stock-backed assets remain active in gd_stock_allocations.
             # This ledger supports several orders reserving disjoint units of one stack.

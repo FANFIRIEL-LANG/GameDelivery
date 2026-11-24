@@ -41,6 +41,8 @@ from core.database.ledger_migrations import (
     QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID,
     DELIVERY_LEG_ASSET_AMOUNTS_BACKUP_SUFFIX,
     DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID,
+    STEAM_CARD_LISTING_LIMIT_BACKUP_SUFFIX,
+    STEAM_CARD_LISTING_LIMIT_MIGRATION_ID,
     RECIPE_BACKUP_SUFFIX,
     RECIPE_MIGRATION_ID,
     apply_delivery_ledger_migrations,
@@ -171,6 +173,11 @@ class Database:
             self.path,
             migration_id=DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID,
             backup_suffix=DELIVERY_LEG_ASSET_AMOUNTS_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=STEAM_CARD_LISTING_LIMIT_MIGRATION_ID,
+            backup_suffix=STEAM_CARD_LISTING_LIMIT_BACKUP_SUFFIX,
         )
         ensure_pre_migration_backup(
             self.path,

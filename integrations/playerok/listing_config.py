@@ -32,7 +32,8 @@ class PlayerokListingConfigService:
 
     def save(
         self, *, external_listing_id: str, title: str, url: str, mode: str,
-        quantity: int = 1, bot_pool: list[str] | None = None,
+        quantity: int = 1, listing_quantity: int | None = None,
+        bot_pool: list[str] | None = None,
         selectors: dict[str, Any] | list[Any] | None = None,
         auto_messages: dict[str, str] | None = None,
     ) -> dict[str, Any]:
@@ -49,6 +50,9 @@ class PlayerokListingConfigService:
             raise ValueError("Список разрешённых ботов задан неверно.")
         selector_data: dict[str, Any]
         if mode == "steam_cards":
+            listing_quantity = quantity if listing_quantity is None else listing_quantity
+            if isinstance(listing_quantity, bool) or not isinstance(listing_quantity, int) or listing_quantity < 1:
+                raise ValueError("Количество наборов в объявлении должно быть положительным целым числом.")
             selector_data = {"delivery_mode": mode, "app_id": 753, "context_id": 6,
                              "selection": "buyer_badges_and_complete_sets"}
         elif mode == "cs2_items":
@@ -98,6 +102,11 @@ class PlayerokListingConfigService:
             title=str(title or "").strip(),
             recipe_items=recipe_items,
         )
+        if mode == "steam_cards":
+            limit = self.set_steam_card_listing_limit(
+                listing_id=result["listing_id"], total_sets=listing_quantity
+            )
+            result["listing_quantity"] = limit["total_sets"]
         # Persist the canonical listing URL as metadata, not as mutable config.
         with self.database.connect() as db:
             columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_listings)")}
@@ -108,6 +117,37 @@ class PlayerokListingConfigService:
                 (str(url or "").strip(), str(title or "").strip(), result["listing_id"]),
             )
         return result
+
+
+
+    def set_steam_card_listing_limit(self, *, listing_id: str, total_sets: int) -> dict[str, int]:
+        """Set the listing-wide set cap without assigning or selecting physical cards."""
+        listing = str(listing_id or "").strip()
+        if not listing:
+            raise ValueError("listing_id обязателен")
+        if isinstance(total_sets, bool) or not isinstance(total_sets, int) or total_sets < 1:
+            raise ValueError("Количество наборов в объявлении должно быть положительным целым числом.")
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT COALESCE(SUM(sets),0) AS claimed FROM gd_steam_card_listing_claims "
+                "WHERE listing_id=? AND state='reserved'",
+                (listing,),
+            ).fetchone()
+            claimed = int(row["claimed"] if row else 0)
+            if total_sets < claimed:
+                raise ValueError(
+                    f"Нельзя установить лимит {total_sets}: уже занято {claimed} наборов."
+                )
+            db.execute(
+                "INSERT INTO gd_steam_card_listing_limits(listing_id,total_sets) VALUES(?,?) "
+                "ON CONFLICT(listing_id) DO UPDATE SET total_sets=excluded.total_sets,"
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                (listing, total_sets),
+            )
+        return {"listing_id": listing, "total_sets": total_sets,
+                "claimed_sets": claimed, "remaining_sets": total_sets - claimed}
+
 
 
     def allocate_listing_stock(

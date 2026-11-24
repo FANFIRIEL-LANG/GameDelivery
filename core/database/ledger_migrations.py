@@ -54,6 +54,8 @@ QUANTITY_STOCK_LISTING_ENABLED_GUARD_MIGRATION_ID = "2026-11-quantity-stock-list
 QUANTITY_STOCK_LISTING_ENABLED_GUARD_BACKUP_SUFFIX = ".pre-gamedelivery-quantity-stock-listing-enabled-guard-v1.bak"
 DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID = "2026-11-delivery-leg-asset-amounts-v1"
 DELIVERY_LEG_ASSET_AMOUNTS_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-leg-asset-amounts-v1.bak"
+STEAM_CARD_LISTING_LIMIT_MIGRATION_ID = "2026-11-steam-card-listing-limit-v1"
+STEAM_CARD_LISTING_LIMIT_BACKUP_SUFFIX = ".pre-gamedelivery-steam-card-listing-limit-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -1541,6 +1543,7 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
         changed = _apply_quantity_stock_listing_enabled_guard_migration(connection) or changed
         changed = _apply_quantity_stock_listing_reallocation_migration(connection) or changed
     changed = _apply_delivery_leg_asset_amounts_migration(connection) or changed
+    changed = _apply_steam_card_listing_limit_migration(connection) or changed
     return changed
 
 
@@ -2601,8 +2604,60 @@ def _apply_quantity_stock_audit_migration(connection: sqlite3.Connection) -> boo
     return True
 
 
+
+def _apply_steam_card_listing_limit_migration(connection: sqlite3.Connection) -> bool:
+    """Add listing-wide Steam Card set limits and per-order quantity claims."""
+    if _migration_applied(connection, STEAM_CARD_LISTING_LIMIT_MIGRATION_ID):
+        return False
+    if not _table_exists(connection, "gd_config_versions") or not _table_exists(connection, "gd_orders"):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS gd_steam_card_listing_limits (
+                listing_id TEXT PRIMARY KEY REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                total_sets INTEGER NOT NULL CHECK(total_sets > 0),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS gd_steam_card_listing_claims (
+                order_id TEXT PRIMARY KEY REFERENCES gd_orders(order_id) ON DELETE RESTRICT,
+                listing_id TEXT NOT NULL REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                sets INTEGER NOT NULL CHECK(sets > 0),
+                state TEXT NOT NULL DEFAULT 'reserved' CHECK(state IN ('reserved','released')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gd_steam_card_claims_listing_state "
+            "ON gd_steam_card_listing_claims(listing_id,state)"
+        )
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (STEAM_CARD_LISTING_LIMIT_MIGRATION_ID,),
+        )
+        if connection.execute("PRAGMA foreign_key_check(gd_steam_card_listing_limits)").fetchall():
+            raise sqlite3.IntegrityError("Steam Card listing limit migration produced foreign-key violations")
+        if connection.execute("PRAGMA foreign_key_check(gd_steam_card_listing_claims)").fetchall():
+            raise sqlite3.IntegrityError("Steam Card listing claim migration produced foreign-key violations")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 def migrate_delivery_ledger(database_path: str | Path) -> bool:
     ensure_pre_migration_backup(database_path)
+    ensure_pre_migration_backup(
+        database_path,
+        migration_id=STEAM_CARD_LISTING_LIMIT_MIGRATION_ID,
+        backup_suffix=STEAM_CARD_LISTING_LIMIT_BACKUP_SUFFIX,
+    )
     ensure_pre_migration_backup(
         database_path,
         migration_id=QUANTITY_STOCK_RECIPE_ITEM_MIGRATION_ID,

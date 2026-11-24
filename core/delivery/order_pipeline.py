@@ -684,6 +684,12 @@ class DeliveryOrderPipeline:
             restored_listing_units = ListingStockService(self.database).restore_order_allocations_to_listing(
                 db, stock_allocation_ids
             )
+            released_steam_card_sets = db.execute(
+                "UPDATE gd_steam_card_listing_claims SET state='released', "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE order_id=? AND state='reserved'",
+                (order,),
+            ).rowcount
             db.execute(
                 "UPDATE gd_orders SET status='CANCELLED', "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
@@ -698,5 +704,6 @@ class DeliveryOrderPipeline:
             "released_canonical_reservations": released,
             "released_quantity_allocations": released_stock,
             "restored_listing_units": restored_listing_units,
+            "released_steam_card_listing_sets": released_steam_card_sets,
             "released_compatibility_reservations": released_legacy,
         }
