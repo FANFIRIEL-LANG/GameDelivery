@@ -1002,6 +1002,73 @@ class ListingStockServiceTests(unittest.TestCase):
             [0, 0, 2],
         )
 
+    def test_typed_allocation_rejects_usable_but_stale_observation(self):
+        config, recipe_items, _lines = self.create_typed_recipe_order()
+        self.observe_typed_inventory()
+        first_id, second_id, _text_id = [item["item_id"] for item in recipe_items]
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_stock_observations SET observed_at='2000-01-01T00:00:00+00:00' "
+                "WHERE bot_name='Bot-A' COLLATE NOCASE AND asset_id='1001'"
+            )
+        with self.assertRaises(InsufficientListingStock) as caught:
+            self.service.allocate_recipe_items(
+                request_id="typed-stale-allocation",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                units_by_recipe_item={first_id: 4, second_id: 2},
+            )
+        self.assertEqual((caught.exception.required, caught.exception.available), (4, 0))
+        with self.database.connect() as db:
+            batch_count = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_allocation_batches WHERE request_id='typed-stale-allocation'"
+            ).fetchone()[0]
+            allocation_count = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_allocations WHERE listing_id=? AND config_version_id=?",
+                (config["listing_id"], config["config_version_id"]),
+            ).fetchone()[0]
+        self.assertEqual((batch_count, allocation_count), (0, 0))
+
+    def test_transfer_rejects_usable_but_stale_listing_observation(self):
+        config, recipe_items, lines = self.create_typed_recipe_order()
+        self.observe_typed_inventory()
+        first_id, second_id, _text_id = [item["item_id"] for item in recipe_items]
+        self.service.allocate_recipe_items(
+            request_id="typed-stale-transfer-base",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={first_id: 4, second_id: 2},
+        )
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE gd_stock_observations SET observed_at='2000-01-01T00:00:00+00:00' "
+                "WHERE bot_name='Bot-A' COLLATE NOCASE AND asset_id='1001'"
+            )
+        with self.assertRaisesRegex(ValueError, "stale/conflict/unavailable"):
+            self.service.transfer_to_order(
+                transfer_event_id="typed-stale-transfer",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                order_line_id=lines[first_id]["order_line_id"],
+                recipe_item_id=first_id,
+                units=4,
+            )
+        with self.database.connect() as db:
+            listing_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='listing' AND listing_id=? AND config_version_id=? AND state='active'",
+                (config["listing_id"], config["config_version_id"]),
+            ).fetchone()[0]
+            order_units = db.execute(
+                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id=? AND state='active'",
+                (lines[first_id]["order_line_id"],),
+            ).fetchone()[0]
+            transfer_count = db.execute(
+                "SELECT COUNT(*) FROM gd_stock_transfers WHERE transfer_event_id='typed-stale-transfer'"
+            ).fetchone()[0]
+        self.assertEqual((int(listing_units), int(order_units), int(transfer_count)), (6, 0, 0))
+
     def test_typed_recipe_allocation_and_transfer_are_pinned_to_exact_recipe_item(self):
         config, recipe_items, lines = self.create_typed_recipe_order()
         self.observe_typed_inventory()
