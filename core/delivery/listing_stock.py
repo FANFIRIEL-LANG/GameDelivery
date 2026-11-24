@@ -1232,25 +1232,68 @@ class ListingStockService:
             for item_id, recipe_item in requested_items:
                 spec = recipe_item.spec
                 required_units = normalized_units[item_id]
-                available_total = 0
-                remaining = required_units
-                for observation, identity, resource in parsed:
-                    observation_id = observation["observation_id"]
-                    free = free_by_observation.get(observation_id, 0)
-                    if free <= 0:
-                        continue
-                    if not identity.matches_spec(spec) or not identity.allows_bot(resource.bot_name, spec):
-                        continue
-                    available_total += free
-                    take = min(remaining, free)
-                    if take:
-                        plan.append((item_id, resource, observation_id, take))
-                        free_by_observation[observation_id] -= take
-                        remaining -= take
-                    if remaining == 0:
-                        break
-                if remaining:
-                    raise InsufficientListingStock(required_units, available_total)
+                if len(spec.selectors) > 1:
+                    per_order = int(recipe_item.quantity_per_order)
+                    if required_units % per_order:
+                        raise ValueError(
+                            "Для альтернативных CS2 selectors listing stock должен быть кратен quantity_per_order"
+                        )
+                    remaining_deals = required_units // per_order
+                    available_capacity_units = 0
+                    for option in spec.selectors:
+                        option_spec = SteamAssetSpec(
+                            spec.game_id, spec.app_id, spec.context_id,
+                            dict(option), spec.allowed_bot_pool,
+                        )
+                        matching = [
+                            (observation, identity, resource)
+                            for observation, identity, resource in parsed
+                            if free_by_observation.get(observation["observation_id"], 0) > 0
+                            and identity.matches_spec(option_spec)
+                            and identity.allows_bot(resource.bot_name, option_spec)
+                        ]
+                        option_available = sum(
+                            free_by_observation[observation["observation_id"]]
+                            for observation, _identity, _resource in matching
+                        )
+                        option_deals = min(remaining_deals, option_available // per_order)
+                        take_total = option_deals * per_order
+                        available_capacity_units += take_total
+                        remaining = take_total
+                        for observation, _identity, resource in matching:
+                            if remaining <= 0:
+                                break
+                            observation_id = observation["observation_id"]
+                            take = min(remaining, free_by_observation[observation_id])
+                            if take:
+                                plan.append((item_id, resource, observation_id, take))
+                                free_by_observation[observation_id] -= take
+                                remaining -= take
+                        remaining_deals -= option_deals
+                        if remaining_deals == 0:
+                            break
+                    if remaining_deals:
+                        raise InsufficientListingStock(required_units, available_capacity_units)
+                else:
+                    available_total = 0
+                    remaining = required_units
+                    for observation, identity, resource in parsed:
+                        observation_id = observation["observation_id"]
+                        free = free_by_observation.get(observation_id, 0)
+                        if free <= 0:
+                            continue
+                        if not identity.matches_spec(spec) or not identity.allows_bot(resource.bot_name, spec):
+                            continue
+                        available_total += free
+                        take = min(remaining, free)
+                        if take:
+                            plan.append((item_id, resource, observation_id, take))
+                            free_by_observation[observation_id] -= take
+                            remaining -= take
+                        if remaining == 0:
+                            break
+                    if remaining:
+                        raise InsufficientListingStock(required_units, available_total)
 
             connection.execute(
                 """
@@ -1429,6 +1472,7 @@ class ListingStockService:
             """,
             source_params,
         ).fetchall()
+        source_identities: dict[str, StockItemIdentity] = {}
         for source in sources:
             if (source["observation_state"] != "usable"
                 or not is_fresh_stock_observation(source["observed_at"])):
@@ -1437,7 +1481,7 @@ class ListingStockService:
                 )
             if typed_recipe:
                 try:
-                    current_identity = StockItemIdentity(**json.loads(source["identity_json"]))
+                    current_identity = StockItemIdentity(**json.loads(source["identity_json"])).normalized()
                 except (TypeError, ValueError, json.JSONDecodeError):
                     raise ValueError("Текущая identity ресурса не подтверждена; transfer заблокирован") from None
                 if (
@@ -1446,10 +1490,33 @@ class ListingStockService:
                     or not current_identity.allows_bot(source["bot_name"], selected_recipe_item.spec)
                 ):
                     raise ValueError("Ресурс больше не соответствует SteamAsset RecipeItem; transfer заблокирован")
-        if sum(int(row["units"]) for row in sources) < units:
-            raise InsufficientListingStock(
-                units, sum(int(row["units"]) for row in sources)
-            )
+                source_identities[str(source["allocation_id"])] = current_identity
+        if typed_recipe:
+            selected_sources = []
+            best_available = 0
+            spec = selected_recipe_item.spec
+            for option in spec.selectors:
+                option_spec = SteamAssetSpec(
+                    spec.game_id, spec.app_id, spec.context_id,
+                    dict(option), spec.allowed_bot_pool,
+                )
+                matching_sources = [
+                    source for source in sources
+                    if source_identities[str(source["allocation_id"])].matches_spec(option_spec)
+                    and source_identities[str(source["allocation_id"])].allows_bot(
+                        str(source["bot_name"]), option_spec
+                    )
+                ]
+                available = sum(int(source["units"]) for source in matching_sources)
+                best_available = max(best_available, available)
+                if available >= units:
+                    selected_sources = matching_sources
+                    break
+            if not selected_sources:
+                raise InsufficientListingStock(units, best_available)
+            sources = selected_sources
+        elif sum(int(row["units"]) for row in sources) < units:
+            raise InsufficientListingStock(units, sum(int(row["units"]) for row in sources))
 
         remaining = units
         transfer_ids: list[str] = []

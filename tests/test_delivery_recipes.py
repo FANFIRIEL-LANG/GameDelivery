@@ -129,7 +129,7 @@ class RecipeModelTests(unittest.TestCase):
         self.assertEqual(SteamCardSetSpec(**spec.to_dict()).allowed_bot_pool,
                          ("Bot-A", "Bot-B"))
 
-    def test_legacy_adapter_converts_only_unambiguous_single_items(self):
+    def test_legacy_adapter_converts_single_items_and_ordered_cs2_alternatives(self):
         cards = legacy_config_to_recipe({
             "delivery_quantity_per_deal": 2,
             "item_selectors": {"delivery_mode": "steam_cards", "app_id": 753,
@@ -151,15 +151,21 @@ class RecipeModelTests(unittest.TestCase):
                 "item_selectors": {"item_type": "steam_card_set", "delivery_type": "steam_asset"},
                 "bot_pool": ["Bot-A"],
             })
-        with self.assertRaises(UnsupportedLegacyRecipeError):
-            legacy_config_to_recipe({
-                "delivery_quantity_per_deal": 5,
-                "item_selectors": {"delivery_mode": "cs2_items", "app_id": 730,
-                                   "context_id": 2, "items": [
-                                       {"name": "A"}, {"name": "B"},
-                                   ]},
-                "bot_pool": ["Bot-A"],
-            })
+        alternatives = legacy_config_to_recipe({
+            "delivery_quantity_per_deal": 5,
+            "item_selectors": {"delivery_mode": "cs2_items", "app_id": 730,
+                               "context_id": 2, "items": [
+                                   {"name": "A"}, {"name": "B"},
+                               ]},
+            "bot_pool": ["Bot-A"],
+        })
+        self.assertEqual(alternatives.items[0].kind, "steam_asset")
+        self.assertEqual(alternatives.items[0].spec.selector, {"name": "A"})
+        self.assertEqual(alternatives.items[0].spec.selector_options, ({"name": "B"},))
+        self.assertEqual(
+            Recipe.from_values(alternatives).items[0].spec.selectors,
+            ({"name": "A"}, {"name": "B"}),
+        )
 
 
 class RecipeLedgerTests(unittest.TestCase):

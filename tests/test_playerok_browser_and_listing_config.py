@@ -327,10 +327,10 @@ class PlayerokListingConfigTests(unittest.TestCase):
         )
         self.assertEqual(ledger.free_units(resource), 4)
 
-    def test_playerok_listing_stock_rejects_ambiguous_or_superseded_configs(self):
+    def test_playerok_listing_stock_supports_alternatives_and_rejects_superseded_configs(self):
         service = PlayerokListingConfigService(self.db)
-        ambiguous = service.save(
-            external_listing_id="cs2-stock-ambiguous",
+        alternatives = service.save(
+            external_listing_id="cs2-stock-alternatives",
             title="CS2 alternatives",
             url="",
             mode="cs2_items",
@@ -341,11 +341,25 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 {"market_hash_name": "AWP | Dragon Lore"},
             ],
         )
-        with self.assertRaisesRegex(ValueError, "typed Recipe"):
-            service.allocate_listing_stock(
-                config_version_id=ambiguous["config_version_id"],
-                listing_quantity=2,
+        ledger = QuantityStockLedger(self.db)
+        for asset_id, market_name in (
+            ("alt-redline", "AK-47 | Redline"),
+            ("alt-dragon", "AWP | Dragon Lore"),
+        ):
+            ledger.observe(
+                StockResource("cs2", 730, "2", "BotA", asset_id), 1,
+                identity=StockItemIdentity(
+                    "cs2", 730, "2", market_hash_name=market_name,
+                    name=market_name, class_id="class-" + asset_id,
+                ),
+                is_tradable=True,
             )
+        allocated = service.allocate_listing_stock(
+            config_version_id=alternatives["config_version_id"],
+            listing_quantity=2,
+        )
+        self.assertEqual(allocated["reserved_units"], 2)
+        self.assertEqual(sum(int(row["units"]) for row in allocated["allocations"]), 2)
 
         first = service.save(
             external_listing_id="cs2-stock-versioned",
@@ -387,7 +401,15 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 "SELECT recipe_schema_version FROM gd_config_versions WHERE config_version_id=?",
                 (result["config_version_id"],),
             ).fetchone()
-        self.assertIsNone(version[0], "ambiguous alternatives must not become one typed RecipeItem")
+        self.assertEqual(version[0], 1, "alternative selectors form one typed Steam Asset obligation")
+        with self.db.connect() as conn:
+            recipe_row = conn.execute(
+                "SELECT recipe_items_json FROM gd_config_versions WHERE config_version_id=?",
+                (result["config_version_id"],),
+            ).fetchone()
+        stored_spec = json.loads(recipe_row[0])[0]["spec"]
+        self.assertEqual(stored_spec["selector"]["market_hash_name"], "Case A")
+        self.assertEqual(stored_spec["selector_options"], [{"name": "Case B"}])
 
         old_wrapper = {
             "delivery_mode": "cs2_items", "app_id": 730, "context_id": 2,

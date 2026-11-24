@@ -535,12 +535,6 @@ class DeliveryOrderPipeline:
                     resources = []
                 else:
                     allowed = item.spec.allowed_bot_pool or tuple(config["bot_pool"])
-                    selector = {
-                        "game_id": item.spec.game_id,
-                        "app_id": item.spec.app_id,
-                        "context_id": item.spec.context_id,
-                        **dict(item.spec.selector),
-                    }
                     available_snapshots = {}
                     for snapshot_key, snapshot in snapshots.items():
                         filtered_items = tuple(
@@ -553,13 +547,24 @@ class DeliveryOrderPipeline:
                             snapshot.bot_name, snapshot.game_id, snapshot.app_id, snapshot.context_id,
                             snapshot.refreshed_at, filtered_items, snapshot.asf_verified,
                         )
-                    candidates = self.cs2_reservations._select_assets(
-                        selector, item.quantity_per_order, available_snapshots, tuple(allowed), current_time
-                    ) if allowed else ()
-                    units = tuple(
-                        (PlannedResource(bot, asset, item.spec.game_id, app_id, context_id),)
-                        for bot, asset, app_id, context_id in candidates[:item.quantity_per_order]
-                    ) if len(candidates) >= item.quantity_per_order else ()
+                    units = ()
+                    for selector_option in item.spec.selectors:
+                        selector = {
+                            "game_id": item.spec.game_id,
+                            "app_id": item.spec.app_id,
+                            "context_id": item.spec.context_id,
+                            **dict(selector_option),
+                        }
+                        candidates = self.cs2_reservations._select_assets(
+                            selector, item.quantity_per_order, available_snapshots,
+                            tuple(allowed), current_time,
+                        ) if allowed else ()
+                        if len(candidates) >= item.quantity_per_order:
+                            units = tuple(
+                                (PlannedResource(bot, asset, item.spec.game_id, app_id, context_id),)
+                                for bot, asset, app_id, context_id in candidates[:item.quantity_per_order]
+                            )
+                            break
                     planned[line_id] = PlannedRecipeLine(item.item_id, units)
                     resources = [unit[0] for unit in units]
             elif isinstance(item.spec, DigitalTextUnitSpec):

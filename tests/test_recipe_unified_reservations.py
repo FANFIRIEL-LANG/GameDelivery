@@ -201,6 +201,109 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             steam_card_preflight=preflight,
         )
 
+    def test_alternative_cs2_selectors_reserve_complete_variant_batches_and_fallback_per_order(self):
+        item = recipe_item(
+            "variant-choice", 1, "steam_asset", 2,
+            SteamAssetSpec(
+                "cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                ("Bot-A",),
+                selector_options=({"market_hash_name": "AWP | Dragon Lore"},),
+            ),
+        )
+        config = self.ledger.create_recipe_config_version(
+            listing_id="listing-alternative-variants",
+            source_platform="playerok",
+            external_listing_id="external-alternative-variants",
+            recipe_items=(item,),
+        )
+        item_id = config["recipe_items"][0]["item_id"]
+        stock = QuantityStockLedger(self.database)
+        resources = (
+            ("redline-1", "AK-47 | Redline"),
+            ("redline-2", "AK-47 | Redline"),
+            ("dragon-1", "AWP | Dragon Lore"),
+            ("dragon-2", "AWP | Dragon Lore"),
+            ("dragon-3", "AWP | Dragon Lore"),
+            ("dragon-4", "AWP | Dragon Lore"),
+        )
+        for asset_id, market_name in resources:
+            stock.observe(
+                StockResource("cs2", 730, "2", "Bot-A", asset_id), 1,
+                identity=StockItemIdentity(
+                    "cs2", 730, "2", market_hash_name=market_name,
+                    name=market_name, item_type="Weapon", class_id="class-" + asset_id,
+                ),
+                is_tradable=True,
+            )
+        allocations = ListingStockService(self.database).allocate_recipe_items(
+            request_id="alternative-variants-stock",
+            listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"],
+            units_by_recipe_item={item_id: 6},
+        )
+        self.assertEqual(sum(int(row["units"]) for row in allocations), 6)
+        with self.database.connect() as db:
+            reserved_by_variant = {}
+            for row in db.execute(
+                "SELECT o.identity_json,a.units FROM gd_stock_allocations a "
+                "JOIN gd_stock_observations o ON o.observation_id=a.observation_id "
+                "WHERE a.owner_type='listing' AND a.listing_id=? AND a.state='active'",
+                (config["listing_id"],),
+            ).fetchall():
+                name = json.loads(row["identity_json"])["market_hash_name"]
+                reserved_by_variant[name] = reserved_by_variant.get(name, 0) + int(row["units"])
+        self.assertEqual(reserved_by_variant, {
+            "AK-47 | Redline": 2,
+            "AWP | Dragon Lore": 4,
+        })
+
+        order_ids = ("alternative-order-1", "alternative-order-2", "alternative-order-3")
+        for index, order_id in enumerate(order_ids, start=1):
+            deal_id = f"alternative-deal-{index}"
+            self.ledger.create_deal(
+                deal_id=deal_id, source_platform="playerok",
+                external_deal_id=f"alternative-external-deal-{index}",
+                chat_id=f"alternative-chat-{index}",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                platform_status="PAID",
+            )
+            self.ledger.create_order(order_id=order_id, deal_id=deal_id, total_quantity=1)
+            with self.database.connect() as db:
+                db.execute(
+                    "UPDATE gd_deals SET playerok_account_id='seller-test',is_historical=0 WHERE deal_id=?",
+                    (deal_id,),
+                )
+                db.execute(
+                    "INSERT OR REPLACE INTO playerok_sync_state(account_user_id,baseline_completed) "
+                    "VALUES('seller-test',1)"
+                )
+            prepared = self.pipeline.prepare_recipe_order(order_id=order_id, snapshots={})
+            self.assertTrue(prepared.reserved, prepared.message)
+            with self.database.connect() as db:
+                selected = db.execute(
+                    "SELECT o.identity_json,a.asset_id FROM gd_stock_allocations a "
+                    "JOIN gd_stock_observations o ON o.observation_id=a.observation_id "
+                    "JOIN gd_order_lines ol ON ol.order_line_id=a.order_line_id "
+                    "WHERE a.owner_type='order' AND a.state='active' AND ol.order_id=?",
+                    (order_id,),
+                ).fetchall()
+            selected_variants = {
+                json.loads(row["identity_json"])["market_hash_name"] for row in selected
+            }
+            self.assertEqual(len(selected), 2)
+            expected = "AK-47 | Redline" if index == 1 else "AWP | Dragon Lore"
+            self.assertEqual(selected_variants, {expected})
+
+        with self.database.connect() as db:
+            owned_assets = db.execute(
+                "SELECT asset_id,COUNT(DISTINCT order_line_id) AS owners "
+                "FROM gd_stock_allocations WHERE owner_type='order' AND state='active' "
+                "GROUP BY asset_id"
+            ).fetchall()
+        self.assertTrue(owned_assets)
+        self.assertTrue(all(int(row["owners"]) == 1 for row in owned_assets))
+
     def test_listing_stack_amounts_flow_into_delivery_leg_and_canonical_reservation(self):
         item = recipe_item(
             "stacked-redline", 1, "steam_asset", 10,

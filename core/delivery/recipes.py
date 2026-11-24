@@ -102,6 +102,7 @@ class SteamAssetSpec:
     context_id: str
     selector: Mapping[str, str]
     allowed_bot_pool: tuple[str, ...] = ()
+    selector_options: tuple[Mapping[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         _text(self.game_id, "game_id")
@@ -114,15 +115,33 @@ class SteamAssetSpec:
         _strict_keys(self.selector, _STEAM_SELECTOR_FIELDS, set(), "selector")
         for key, value in self.selector.items():
             _text(value, f"selector.{key}")
+        if not isinstance(self.selector_options, (tuple, list)):
+            raise RecipeValidationError("selector_options должен быть списком альтернатив")
+        normalized_options = []
+        for index, option in enumerate(self.selector_options):
+            if not isinstance(option, Mapping) or not option:
+                raise RecipeValidationError("Каждый selector option должен быть непустым объектом")
+            _strict_keys(option, _STEAM_SELECTOR_FIELDS, set(), f"selector_options[{index}]")
+            for key, value in option.items():
+                _text(value, f"selector_options[{index}].{key}")
+            normalized_options.append(MappingProxyType(dict(option)))
         object.__setattr__(self, "allowed_bot_pool", _normalize_bot_pool(self.allowed_bot_pool))
         object.__setattr__(self, "selector", MappingProxyType(dict(self.selector)))
+        object.__setattr__(self, "selector_options", tuple(normalized_options))
+
+    @property
+    def selectors(self) -> tuple[Mapping[str, str], ...]:
+        return (self.selector, *self.selector_options)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "game_id": self.game_id.strip(), "app_id": self.app_id,
             "context_id": str(self.context_id), "selector": dict(self.selector),
             "allowed_bot_pool": list(self.allowed_bot_pool),
         }
+        if self.selector_options:
+            value["selector_options"] = [dict(option) for option in self.selector_options]
+        return value
 
 
 @dataclass(frozen=True)
@@ -228,15 +247,17 @@ class RecipeItem:
                 allowed_bot_pool=_parse_bot_pool(raw_spec.get("allowed_bot_pool", [])),
             )
         elif kind == "steam_asset":
-            allowed = {"game_id", "app_id", "context_id", "selector", "allowed_bot_pool"}
+            allowed = {"game_id", "app_id", "context_id", "selector", "allowed_bot_pool", "selector_options"}
             _strict_keys(raw_spec, allowed, {"game_id", "app_id", "context_id", "selector"}, "steam_asset.spec")
             selector = raw_spec["selector"]
-            if not isinstance(selector, Mapping):
-                raise RecipeValidationError("steam_asset.spec.selector должен быть объектом")
+            options = raw_spec.get("selector_options", [])
+            if not isinstance(selector, Mapping) or not isinstance(options, list):
+                raise RecipeValidationError("steam_asset.spec selector/selector_options имеют неверный формат")
             spec = SteamAssetSpec(
                 game_id=raw_spec["game_id"], app_id=raw_spec["app_id"],
                 context_id=raw_spec["context_id"], selector=selector,
                 allowed_bot_pool=_parse_bot_pool(raw_spec.get("allowed_bot_pool", [])),
+                selector_options=tuple(options),
             )
         elif kind == "digital_text_unit":
             _strict_keys(raw_spec, {"allocation"}, {"allocation"}, "digital_text_unit.spec")
@@ -337,10 +358,10 @@ def normalize_legacy_cs2_selector_options(value: Any) -> list[dict[str, Any]] | 
 
 
 def legacy_config_to_recipe(config: Mapping[str, Any]) -> Recipe:
-    """Convert only one unambiguous, known legacy selector to one RecipeItem.
+    """Convert a supported legacy selector to one typed RecipeItem.
 
-    Multiple CS2 selector options are alternatives in the current pipeline, not
-    independent obligations, so they are deliberately rejected here.
+    Multiple CS2 selectors are ordered alternatives of one obligation, never
+    independent required RecipeItems.
     """
     if not isinstance(config, Mapping):
         raise UnsupportedLegacyRecipeError("Legacy ConfigVersion должен быть объектом")
@@ -392,18 +413,19 @@ def legacy_config_to_recipe(config: Mapping[str, Any]) -> Recipe:
             and str(selectors.get("context_id")) == "2":
         _strict_keys(selectors, {"delivery_mode", "app_id", "context_id", "items"},
                      {"delivery_mode", "app_id", "context_id", "items"}, "legacy cs2_items selector")
-        options = selectors["items"]
-        if isinstance(options, Mapping):
-            options = [options]
-        if not isinstance(options, list) or len(options) != 1 or not isinstance(options[0], Mapping):
-            raise UnsupportedLegacyRecipeError("Несколько CS2 selectors неоднозначны: это могут быть альтернативы")
+        normalized_options = normalize_legacy_cs2_selector_options(selectors)
+        if not normalized_options:
+            raise UnsupportedLegacyRecipeError("CS2 selector options отсутствуют или некорректны")
         if not allowed_bots:
             raise UnsupportedLegacyRecipeError("Legacy CS2 config не содержит разрешённого bot pool")
-        selector = dict(options[0])
-        _strict_keys(selector, _STEAM_SELECTOR_FIELDS, set(), "legacy CS2 item selector")
-        if not selector:
-            raise UnsupportedLegacyRecipeError("CS2 selector пуст: остаётся только старый selector-driven путь")
-        spec = SteamAssetSpec("cs2", 730, "2", selector, allowed_bots)
+        selector_options = [
+            {key: value for key, value in option.items() if key in _STEAM_SELECTOR_FIELDS}
+            for option in normalized_options
+        ]
+        spec = SteamAssetSpec(
+            "cs2", 730, "2", selector_options[0], allowed_bots,
+            selector_options=tuple(selector_options[1:]),
+        )
         item = RecipeItem("legacy-position-1", 1, "steam_asset", 1, quantity, True,
                           None, "steam_trade_offer", spec)
     elif _is_legacy_card_selector(selectors):

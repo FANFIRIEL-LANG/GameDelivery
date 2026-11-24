@@ -59,20 +59,30 @@ class StockItemIdentity:
             app_id = getattr(spec, "app_id")
             context_id = _clean(getattr(spec, "context_id"), "spec.context_id")
             selector = getattr(spec, "selector")
+            alternatives = getattr(spec, "selector_options", ())
         except (AttributeError, TypeError, ValueError):
             return False
         if (isinstance(app_id, bool) or not isinstance(app_id, int)
             or (identity.game_id, identity.app_id, identity.context_id) != (game_id, app_id, context_id)
             or not isinstance(selector, Mapping) or not selector
-            or any(key not in _SELECTOR_FIELDS for key in selector)):
+            or not isinstance(alternatives, (tuple, list))):
             return False
-        for field, expected in selector.items():
-            if not isinstance(expected, str) or not expected.strip():
-                return False
-            actual = getattr(identity, field)
-            if not actual or actual != expected.strip():
-                return False
-        return True
+        for option in (selector, *alternatives):
+            if (not isinstance(option, Mapping) or not option
+                or any(key not in _SELECTOR_FIELDS for key in option)):
+                continue
+            matched = True
+            for field, expected in option.items():
+                if not isinstance(expected, str) or not expected.strip():
+                    matched = False
+                    break
+                actual = getattr(identity, field)
+                if not actual or actual != expected.strip():
+                    matched = False
+                    break
+            if matched:
+                return True
+        return False
 
     def allows_bot(self, bot_name: str, spec: object) -> bool:
         """Bot-pool policy is deliberately separate from item identity."""
