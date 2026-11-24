@@ -1800,25 +1800,28 @@ class MainWindow(QMainWindow):
                 "на отдельном обработчике."
             )
 
-        configured_bots = [
-            str(bot).strip() for bot in config.get("bot_pool", [])
-            if isinstance(bot, str) and bot.strip()
-        ]
-        allowed_bots = set()
-        for item in recipe.items:
-            item_bots = item.spec.allowed_bot_pool or tuple(configured_bots)
-            if not item_bots:
-                raise ValueError(
-                    f"Для RecipeItem {item.item_id} не задан разрешённый пул ASF-ботов."
-                )
-            allowed_bots.update(
-                str(bot).strip() for bot in item_bots if isinstance(bot, str) and bot.strip()
-            )
-        if not allowed_bots:
-            raise ValueError("Typed CS2 Recipe не содержит разрешённых ASF-ботов.")
-
         snapshots = {}
         if not listing_batch:
+            configured_bots = [
+                str(bot).strip() for bot in (
+                    config.get("bot_pool") or configured_bot_names()
+                )
+                if isinstance(bot, str) and bot.strip()
+            ]
+            allowed_bots = set()
+            for item in recipe.items:
+                item_bots = item.spec.allowed_bot_pool or tuple(configured_bots)
+                if not item_bots:
+                    raise ValueError(
+                        f"Для RecipeItem {item.item_id} не найден пул ASF-ботов для свежего снимка."
+                    )
+                allowed_bots.update(
+                    str(bot).strip() for bot in item_bots
+                    if isinstance(bot, str) and bot.strip()
+                )
+            if not allowed_bots:
+                raise ValueError("Typed CS2 Recipe не содержит разрешённых ASF-ботов.")
+
             with connect_sqlite(self._database_path) as db:
                 rows = db.execute(
                     "SELECT bot_name,updated_at FROM game_inventory_snapshot_meta "
