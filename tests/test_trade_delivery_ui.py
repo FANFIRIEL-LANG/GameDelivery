@@ -19,6 +19,7 @@ from integrations.playerok.sync import PlayerokDealSyncService
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
+from games.inventory import GameInventoryStore
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 
 
@@ -652,14 +653,11 @@ class TradeDeliveryUITests(unittest.TestCase):
             )
             order_id = "typed-cs2-order"
             delivery.create_order(order_id=order_id, deal_id="typed-cs2-deal", total_quantity=2)
+            GameInventoryStore(database)
             with connect_sqlite(database) as db:
                 db.execute(
-                    "CREATE TABLE game_inventory_snapshot_meta "
-                    "(game_id TEXT NOT NULL,bot_name TEXT NOT NULL,updated_at TEXT NOT NULL)"
-                )
-                db.execute(
-                    "INSERT INTO game_inventory_snapshot_meta(game_id,bot_name,updated_at) "
-                    "VALUES('cs2','Bot A',?)",
+                    "INSERT INTO game_inventory_snapshot_meta"
+                    "(game_id,bot_name,updated_at,item_count) VALUES('cs2','Bot A',?,0)",
                     (datetime.now(timezone.utc).isoformat(),),
                 )
 
