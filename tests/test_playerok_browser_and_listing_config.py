@@ -16,6 +16,8 @@ from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
 from core.delivery.recipes import normalize_legacy_cs2_selector_options
+from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.stock_identity import StockItemIdentity
 from integrations.playerok import browser_sales
 from integrations.playerok.browser_sales import BrowserSalesSnapshot
 from integrations.playerok.listing_config import PlayerokListingConfigService
@@ -243,6 +245,95 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertEqual(recipe_item["kind"], "steam_asset")
         self.assertEqual(recipe_item["quantity_per_order"], 2)
         self.assertEqual(recipe["recipe_schema_version"], 1)
+
+    def test_playerok_listing_quantity_allocates_recipe_units_from_shared_stock(self):
+        service = PlayerokListingConfigService(self.db)
+        result = service.save(
+            external_listing_id="cs2-stock-quantity",
+            title="CS2 stock quantity",
+            url="",
+            mode="cs2_items",
+            quantity=2,
+            bot_pool=["BotA"],
+            selectors=[{"market_hash_name": "AK-47 | Redline"}],
+        )
+        recipe_item_id = result["recipe_items"][0]["item_id"]
+        ledger = QuantityStockLedger(self.db)
+        resource = StockResource("cs2", 730, "2", "BotA", "1234567890")
+        ledger.observe(
+            resource,
+            10,
+            identity=StockItemIdentity(
+                "cs2", 730, "2", market_hash_name="AK-47 | Redline",
+                name="AK-47 | Redline", class_id="class-redline",
+            ),
+            is_tradable=True,
+        )
+
+        allocated = service.allocate_listing_stock(
+            config_version_id=result["config_version_id"],
+            listing_quantity=3,
+        )
+        repeated = service.allocate_listing_stock(
+            config_version_id=result["config_version_id"],
+            listing_quantity=3,
+        )
+        self.assertEqual(
+            allocated["units_by_recipe_item"],
+            {recipe_item_id: 6},
+        )
+        self.assertEqual(allocated["reserved_units"], 6)
+        self.assertEqual(sum(int(row["units"]) for row in allocated["allocations"]), 6)
+        self.assertEqual(
+            {row["allocation_id"] for row in allocated["allocations"]},
+            {row["allocation_id"] for row in repeated["allocations"]},
+        )
+        self.assertEqual(ledger.free_units(resource), 4)
+
+    def test_playerok_listing_stock_rejects_ambiguous_or_superseded_configs(self):
+        service = PlayerokListingConfigService(self.db)
+        ambiguous = service.save(
+            external_listing_id="cs2-stock-ambiguous",
+            title="CS2 alternatives",
+            url="",
+            mode="cs2_items",
+            quantity=1,
+            bot_pool=["BotA"],
+            selectors=[
+                {"market_hash_name": "AK-47 | Redline"},
+                {"market_hash_name": "AWP | Dragon Lore"},
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "typed Recipe"):
+            service.allocate_listing_stock(
+                config_version_id=ambiguous["config_version_id"],
+                listing_quantity=2,
+            )
+
+        first = service.save(
+            external_listing_id="cs2-stock-versioned",
+            title="CS2 first version",
+            url="",
+            mode="cs2_items",
+            quantity=1,
+            bot_pool=["BotA"],
+            selectors=[{"market_hash_name": "AK-47 | Redline"}],
+        )
+        second = service.save(
+            external_listing_id="cs2-stock-versioned",
+            title="CS2 second version",
+            url="",
+            mode="cs2_items",
+            quantity=1,
+            bot_pool=["BotA"],
+            selectors=[{"market_hash_name": "AWP | Dragon Lore"}],
+        )
+        with self.assertRaisesRegex(ValueError, "устаревшей версии"):
+            service.allocate_listing_stock(
+                config_version_id=first["config_version_id"],
+                listing_quantity=2,
+            )
+        self.assertNotEqual(first["config_version_id"], second["config_version_id"])
 
     def test_cs2_multi_selectors_remain_alternatives_and_old_wrapper_stays_readable(self):
         result = PlayerokListingConfigService(self.db).save(
