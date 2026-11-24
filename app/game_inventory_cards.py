@@ -225,6 +225,46 @@ def compact_cs2_card_price_text(price_text: str, instance_count: int = 1) -> str
     return value or "Цена неизвестна"
 
 
+def cs2_group_quantity_text(group) -> str:
+    """Describe stack units without confusing them with physical ASF asset rows."""
+    if group.total_amount is not None:
+        return f"Количество: {group.total_amount} шт. · активов ASF: {group.instance_count}"
+    return (
+        f"Количество: неизвестно · известно: {group.known_amount_sum} шт. "
+        f"· активов ASF: {group.instance_count} "
+        f"· без Amount: {group.unknown_amount_instances}"
+    )
+
+
+def cs2_group_tooltip_text(group) -> str:
+    """Expose the exact per-bot physical assets and their independent ASF fields."""
+    lines = [
+        group.instances[0].name or "Название неизвестно",
+        f"Ботов: {group.unique_bot_count} · физических активов ASF: {group.instance_count}",
+        cs2_group_quantity_text(group),
+        "Состав по ботам и AssetID:",
+    ]
+    for item in group.instances:
+        amount = str(item.amount) if item.amount is not None else "неизвестно"
+        tradable = "Да" if item.is_tradable is True else (
+            "Нет" if item.is_tradable is False else "Неизвестно"
+        )
+        marketable = "Да" if item.is_marketable is True else (
+            "Нет" if item.is_marketable is False else "Неизвестно"
+        )
+        restriction = getattr(item.restriction_type, "value", str(item.restriction_type))
+        restriction_status = getattr(
+            item.restriction_status, "value", str(item.restriction_status)
+        )
+        lines.append(
+            f"{item.bot_name}: AssetID {item.asset_id} · Amount {amount} "
+            f"· ClassID {item.class_id} · InstanceID {item.instance_id} "
+            f"· Передаваемый: {tradable} · Можно продать: {marketable} "
+            f"· Ограничение: {restriction}/{restriction_status}"
+        )
+    return "\n".join(lines)
+
+
 class CS2InventoryGroupCard(QFrame):
     """Compact selectable CS2 inventory card with tradability and rarity cues."""
 
@@ -303,7 +343,7 @@ class CS2InventoryGroupCard(QFrame):
             stattrak.setStyleSheet("color: #e4ae39; font-weight: 600;")
             layout.addWidget(stattrak)
 
-        count = QLabel(f"Количество: {group.instance_count}")
+        count = QLabel(cs2_group_quantity_text(group))
         count.setObjectName("quantity")
         count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(count)
@@ -348,7 +388,7 @@ class CS2InventoryGroupCard(QFrame):
 
     def _tooltip_text(self):
         first = self.group.instances[0]
-        lines = [first.name or "Название неизвестно"]
+        lines = [cs2_group_tooltip_text(self.group)]
         quality = first.exterior or first.quality
         if quality:
             lines.append(f"Качество / износ: {quality}")
