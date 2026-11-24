@@ -244,6 +244,37 @@ class PlayerokListingConfigTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(listing, 0)
 
+    def test_steam_cards_browser_form_exposes_only_total_listing_sets(self):
+        panel = PlayerokBrowserPanel(database=self.db, enable_webengine=False)
+        try:
+            panel.mode.setCurrentIndex(panel.mode.findData("steam_cards"))
+            self.assertFalse(panel.listing_stock_quantity.isHidden())
+            self.assertEqual(panel.listing_stock_quantity.prefix(), "Наборов в объявлении: ")
+            self.assertTrue(panel.bots.isHidden())
+
+            panel.listing_id.setText("steam-cards-ui-limit")
+            panel.listing_title.setText("Steam card sets")
+            panel.listing_url.setText("https://playerok.com/products/steam-cards-ui-limit")
+            panel.quantity.setValue(2)
+            panel.listing_stock_quantity.setValue(10)
+            panel._save_config()
+
+            self.assertIn("Лимит объявления: 10 наборов.", panel.browser_status.text())
+            with self.db.connect() as db:
+                row = db.execute(
+                    "SELECT c.delivery_quantity_per_deal,c.bot_pool_json,l.total_sets "
+                    "FROM gd_config_versions c JOIN gd_steam_card_listing_limits l "
+                    "ON l.listing_id=c.listing_id WHERE c.config_version_id=( "
+                    "SELECT config_version_id FROM gd_config_versions "
+                    "WHERE listing_id=? ORDER BY version_number DESC LIMIT 1)",
+                    (PlayerokListingConfigService._listing_key("steam-cards-ui-limit"),),
+                ).fetchone()
+            self.assertEqual(int(row["delivery_quantity_per_deal"]), 2)
+            self.assertEqual(json.loads(row["bot_pool_json"]), [])
+            self.assertEqual(int(row["total_sets"]), 10)
+        finally:
+            panel.close()
+
     def test_cs2_config_stores_selectors_and_730_2(self):
         result = PlayerokListingConfigService(self.db).save(
             external_listing_id="cs2-1", title="CS2", url="", mode="cs2_items",
