@@ -399,8 +399,8 @@ def legacy_config_to_recipe(config: Mapping[str, Any]) -> Recipe:
             selectors, {"delivery_mode", "app_id", "context_id", "selection", "game_name"},
             {"delivery_mode", "app_id", "context_id", "selection"}, "legacy steam_cards selector",
         )
-        if not allowed_bots:
-            raise UnsupportedLegacyRecipeError("Legacy Steam Cards config не содержит разрешённого bot pool")
+        # Empty bot_pool means the Steam Cards planner should inspect all
+        # current seller bot snapshots; the Playerok listing UI has no bot picker.
         spec = SteamCardSetSpec(
             selection=selectors["selection"],
             game_name=selectors.get("game_name"), allowed_bot_pool=allowed_bots,
