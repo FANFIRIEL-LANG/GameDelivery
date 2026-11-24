@@ -262,7 +262,8 @@ class PlayerokListingConfigTests(unittest.TestCase):
             self.assertIn("Лимит объявления: 10 наборов.", panel.browser_status.text())
             with self.db.connect() as db:
                 row = db.execute(
-                    "SELECT c.delivery_quantity_per_deal,c.bot_pool_json,l.total_sets "
+                    "SELECT c.delivery_quantity_per_deal,c.bot_pool_json,c.recipe_schema_version,"
+                    "c.recipe_items_json,l.total_sets "
                     "FROM gd_config_versions c JOIN gd_steam_card_listing_limits l "
                     "ON l.listing_id=c.listing_id WHERE c.config_version_id=( "
                     "SELECT config_version_id FROM gd_config_versions "
@@ -271,6 +272,8 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(int(row["delivery_quantity_per_deal"]), 2)
             self.assertEqual(json.loads(row["bot_pool_json"]), [])
+            self.assertEqual(row["recipe_schema_version"], 1)
+            self.assertEqual(json.loads(row["recipe_items_json"])[0]["spec"]["allowed_bot_pool"], [])
             self.assertEqual(int(row["total_sets"]), 10)
         finally:
             panel.close()
