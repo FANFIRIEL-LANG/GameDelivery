@@ -57,6 +57,14 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             recipe_items=items,
             title="Recipe " + suffix,
         )
+        if any(item.kind == "steam_card_set" for item in items):
+            # Playerok Steam Cards orders must reserve against a configured
+            # listing-wide complete-set quota, just like production listings.
+            with self.database.connect() as db:
+                db.execute(
+                    "INSERT INTO gd_steam_card_listing_limits(listing_id,total_sets) VALUES(?,100)",
+                    (config["listing_id"],),
+                )
         self.ledger.create_deal(
             deal_id=f"deal-{suffix}",
             source_platform="playerok",
