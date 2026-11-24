@@ -56,6 +56,9 @@ class PlayerokListingConfigService:
                 )
             if isinstance(listing_quantity, bool) or not isinstance(listing_quantity, int) or listing_quantity < 1:
                 raise ValueError("Количество наборов в объявлении должно быть положительным целым числом.")
+            # Steam Cards selection evaluates the available seller bot snapshots;
+            # the listing editor does not expose a manual per-bot restriction.
+            bots = []
             selector_data = {"delivery_mode": mode, "app_id": 753, "context_id": 6,
                              "selection": "buyer_badges_and_complete_sets"}
         elif mode == "cs2_items":
