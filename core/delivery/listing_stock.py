@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from core.database.db import Database
-from core.delivery.stock_ledger import QuantityStockLedger, StockResource, _positive_int
+from core.delivery.stock_ledger import (
+    QuantityStockLedger, StockResource, _positive_int, is_fresh_stock_observation,
+)
 from core.delivery.stock_identity import StockItemIdentity
 from core.delivery.recipes import RecipeItem, SteamAssetSpec
 from games.asset_ids import asset_id_key
@@ -20,24 +21,6 @@ class InsufficientListingStock(ValueError):
             f"Недостаточно свободного остатка: требуется {required}, доступно {available}"
         )
 
-
-
-STOCK_OBSERVATION_MAX_AGE = timedelta(minutes=5)
-
-
-def _is_fresh_observation(observed_at: Any, *, now: datetime | None = None) -> bool:
-    """Require a valid, recent snapshot; 'usable' alone does not imply freshness."""
-    try:
-        timestamp = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        current = now or datetime.now(timezone.utc)
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=timezone.utc)
-        age = current.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)
-        return timedelta(0) <= age <= STOCK_OBSERVATION_MAX_AGE
-    except (TypeError, ValueError, OverflowError):
-        return False
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -196,7 +179,7 @@ class ListingStockService:
             if int(source["units"]) < units:
                 raise InsufficientListingStock(units, int(source["units"]))
             if (source["observation_state"] != "usable" or source["is_tradable"] != 1
-                or not _is_fresh_observation(source["observed_at"])):
+                or not is_fresh_stock_observation(source["observed_at"])):
                 raise ValueError("Source resource должен иметь свежее usable observation и is_tradable=True")
             try:
                 source_identity_raw = json.loads(source["identity_json"])
@@ -278,7 +261,7 @@ class ListingStockService:
                     (observation_id,),
                 ).fetchone()
                 if (observation is None or observation["availability_state"] != "usable"
-                    or not _is_fresh_observation(observation["observed_at"])):
+                    or not is_fresh_stock_observation(observation["observed_at"])):
                     continue
                 if observation["is_tradable"] != 1:
                     continue
@@ -472,7 +455,7 @@ class ListingStockService:
                     (observation_id,),
                 ).fetchone()
                 if (observation is None or observation["availability_state"] != "usable"
-                    or not _is_fresh_observation(observation["observed_at"])):
+                    or not is_fresh_stock_observation(observation["observed_at"])):
                     continue
                 free = max(
                     0,
@@ -625,7 +608,7 @@ class ListingStockService:
             parsed: list[tuple[Any, StockItemIdentity, StockResource]] = []
             free_by_observation: dict[str, int] = {}
             for observation in observations:
-                if not _is_fresh_observation(observation["observed_at"]):
+                if not is_fresh_stock_observation(observation["observed_at"]):
                     continue
                 try:
                     raw_identity = json.loads(observation["identity_json"])
@@ -1446,7 +1429,7 @@ class ListingStockService:
         ).fetchall()
         for source in sources:
             if (source["observation_state"] != "usable"
-                or not _is_fresh_observation(source["observed_at"])):
+                or not is_fresh_stock_observation(source["observed_at"])):
                 raise ValueError(
                     "Stock observation больше не usable (stale/conflict/unavailable); transfer заблокирован"
                 )
@@ -1581,7 +1564,7 @@ class ListingStockService:
             ).fetchone()
             if (observation is None or observation["availability_state"] != "usable"
                 or observation["is_tradable"] != 1
-                or not _is_fresh_observation(observation["observed_at"])):
+                or not is_fresh_stock_observation(observation["observed_at"])):
                 raise ValueError("Cannot return stock to an active listing without a usable tradable observation")
             if allocation["recipe_item_id"] != transfer["recipe_item_id"]:
                 raise ValueError("Order allocation recipe item differs from its transfer audit")
