@@ -138,6 +138,13 @@ class RecipeModelTests(unittest.TestCase):
         })
         self.assertEqual(cards.items[0].kind, "steam_card_set")
         self.assertEqual(cards.items[0].quantity_per_order, 2)
+        cards_all_bots = legacy_config_to_recipe({
+            "delivery_quantity_per_deal": 2,
+            "item_selectors": {"delivery_mode": "steam_cards", "app_id": 753,
+                               "context_id": 6, "selection": "buyer_badges_and_complete_sets"},
+            "bot_pool": [],
+        })
+        self.assertEqual(cards_all_bots.items[0].spec.allowed_bot_pool, ())
         with self.assertRaises(RecipeValidationError):
             legacy_config_to_recipe({
                 "delivery_quantity_per_deal": 1,
