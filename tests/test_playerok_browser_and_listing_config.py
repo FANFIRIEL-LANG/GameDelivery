@@ -17,7 +17,6 @@ from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
 from core.delivery.recipes import normalize_legacy_cs2_selector_options
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
-from core.delivery.listing_stock import ListingStockService
 from core.delivery.stock_identity import StockItemIdentity
 from integrations.playerok import browser_sales
 from integrations.playerok.browser_sales import BrowserSalesSnapshot
@@ -248,7 +247,7 @@ class PlayerokListingConfigTests(unittest.TestCase):
         self.assertEqual(recipe["recipe_schema_version"], 1)
 
     def test_playerok_browser_form_saves_and_allocates_listing_stock_quantity(self):
-        ListingStockService(self.db)
+        PlayerokListingConfigService(self.db)
         ledger = QuantityStockLedger(self.db)
         resource = StockResource("cs2", 730, "2", "BotA", "22334455")
         ledger.observe(
