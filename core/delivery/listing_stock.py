@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from core.database.db import Database
@@ -18,6 +19,25 @@ class InsufficientListingStock(ValueError):
         super().__init__(
             f"Недостаточно свободного остатка: требуется {required}, доступно {available}"
         )
+
+
+
+STOCK_OBSERVATION_MAX_AGE = timedelta(minutes=5)
+
+
+def _is_fresh_observation(observed_at: Any, *, now: datetime | None = None) -> bool:
+    """Require a valid, recent snapshot; 'usable' alone does not imply freshness."""
+    try:
+        timestamp = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        age = current.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)
+        return timedelta(0) <= age <= STOCK_OBSERVATION_MAX_AGE
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -161,7 +181,7 @@ class ListingStockService:
                 """
                 SELECT a.*,o.identity_json,o.is_tradable,
                        o.availability_state AS observation_state,
-                       o.observed_amount,o.revision
+                       o.observed_amount,o.revision,o.observed_at
                 FROM gd_stock_allocations a
                 JOIN gd_stock_observations o ON o.observation_id=a.observation_id
                 WHERE a.allocation_id=? AND a.owner_type='listing'
@@ -175,7 +195,8 @@ class ListingStockService:
                 raise ValueError("recipe_item_id source allocation не совпадает с запросом")
             if int(source["units"]) < units:
                 raise InsufficientListingStock(units, int(source["units"]))
-            if source["observation_state"] != "usable" or source["is_tradable"] != 1:
+            if (source["observation_state"] != "usable" or source["is_tradable"] != 1
+                or not _is_fresh_observation(source["observed_at"])):
                 raise ValueError("Source resource должен иметь свежее usable observation и is_tradable=True")
             try:
                 source_identity_raw = json.loads(source["identity_json"])
@@ -251,12 +272,13 @@ class ListingStockService:
                 observation = connection.execute(
                     """
                     SELECT identity_json,is_tradable,availability_state,
-                           observed_amount,revision
+                           observed_amount,revision,observed_at
                     FROM gd_stock_observations WHERE observation_id=?
                     """,
                     (observation_id,),
                 ).fetchone()
-                if observation is None or observation["availability_state"] != "usable":
+                if (observation is None or observation["availability_state"] != "usable"
+                    or not _is_fresh_observation(observation["observed_at"])):
                     continue
                 if observation["is_tradable"] != 1:
                     continue
@@ -445,11 +467,12 @@ class ListingStockService:
             for resource in ordered:
                 observation_id = QuantityStockLedger._observation_id(resource)
                 observation = connection.execute(
-                    "SELECT observed_amount,revision,availability_state FROM gd_stock_observations "
+                    "SELECT observed_amount,revision,availability_state,observed_at FROM gd_stock_observations "
                     "WHERE observation_id=?",
                     (observation_id,),
                 ).fetchone()
-                if observation is None or observation["availability_state"] != "usable":
+                if (observation is None or observation["availability_state"] != "usable"
+                    or not _is_fresh_observation(observation["observed_at"])):
                     continue
                 free = max(
                     0,
@@ -602,6 +625,8 @@ class ListingStockService:
             parsed: list[tuple[Any, StockItemIdentity, StockResource]] = []
             free_by_observation: dict[str, int] = {}
             for observation in observations:
+                if not _is_fresh_observation(observation["observed_at"]):
+                    continue
                 try:
                     raw_identity = json.loads(observation["identity_json"])
                     if not isinstance(raw_identity, dict):
@@ -1409,7 +1434,7 @@ class ListingStockService:
         )
         sources = connection.execute(
             f"""
-            SELECT a.*,o.identity_json,o.is_tradable,o.availability_state AS observation_state
+            SELECT a.*,o.identity_json,o.is_tradable,o.availability_state AS observation_state,o.observed_at
             FROM gd_stock_allocations a
             JOIN gd_stock_observations o ON o.observation_id=a.observation_id
             WHERE a.owner_type='listing' AND a.listing_id=? AND a.config_version_id=?
@@ -1420,7 +1445,8 @@ class ListingStockService:
             source_params,
         ).fetchall()
         for source in sources:
-            if source["observation_state"] != "usable":
+            if (source["observation_state"] != "usable"
+                or not _is_fresh_observation(source["observed_at"])):
                 raise ValueError(
                     "Stock observation больше не usable (stale/conflict/unavailable); transfer заблокирован"
                 )
@@ -1549,11 +1575,13 @@ class ListingStockService:
             if str(listing["status"]).casefold() == "disabled":
                 continue
             observation = connection.execute(
-                "SELECT availability_state,is_tradable,identity_json FROM gd_stock_observations "
+                "SELECT availability_state,is_tradable,identity_json,observed_at FROM gd_stock_observations "
                 "WHERE observation_id=?",
                 (allocation["observation_id"],),
             ).fetchone()
-            if observation is None or observation["availability_state"] != "usable" or observation["is_tradable"] != 1:
+            if (observation is None or observation["availability_state"] != "usable"
+                or observation["is_tradable"] != 1
+                or not _is_fresh_observation(observation["observed_at"])):
                 raise ValueError("Cannot return stock to an active listing without a usable tradable observation")
             if allocation["recipe_item_id"] != transfer["recipe_item_id"]:
                 raise ValueError("Order allocation recipe item differs from its transfer audit")
