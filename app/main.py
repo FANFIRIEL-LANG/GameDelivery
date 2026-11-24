@@ -1786,6 +1786,12 @@ class MainWindow(QMainWindow):
                 (str(config["listing_id"]), config_id),
             ).fetchone() is not None
 
+        if str(config.get("source_platform") or "").casefold() == "playerok" and not listing_batch:
+            raise ValueError(
+                "Для Playerok ConfigVersion не выделен общий склад. "
+                "Сохрани CS2-объявление с количеством и дождись успешного резерва остатка."
+            )
+
         if not recipe.items or any(
             item.kind != "steam_asset"
             or not isinstance(item.spec, SteamAssetSpec)
