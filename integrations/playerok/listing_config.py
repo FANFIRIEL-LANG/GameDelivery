@@ -5,9 +5,11 @@ import json
 from typing import Any
 
 from core.delivery.ledger import DeliveryLedger
+from core.delivery.listing_stock import ListingStockService
 from core.delivery.recipes import (
     Recipe,
     RecipeValidationError,
+    SteamAssetSpec,
     UnsupportedLegacyRecipeError,
     legacy_config_to_recipe,
     normalize_legacy_cs2_selector_options,
@@ -106,6 +108,89 @@ class PlayerokListingConfigService:
                 (str(url or "").strip(), str(title or "").strip(), result["listing_id"]),
             )
         return result
+
+
+    def allocate_listing_stock(
+        self, *, config_version_id: str, listing_quantity: int
+    ) -> dict[str, Any]:
+        """Reserve listing_quantity deals of a typed CS2 recipe across the shared bot stock."""
+        config_id = str(config_version_id or "").strip()
+        if not config_id:
+            raise ValueError("config_version_id обязателен")
+        if isinstance(listing_quantity, bool) or not isinstance(listing_quantity, int) or listing_quantity < 1:
+            raise ValueError("Количество в объявлении должно быть положительным целым числом.")
+
+        with self.database.connect() as db:
+            row = db.execute(
+                """
+                SELECT c.listing_id,c.recipe_schema_version,c.version_number,
+                       l.source_platform,l.status,
+                       (SELECT MAX(current.version_number) FROM gd_config_versions current
+                        WHERE current.listing_id=c.listing_id) AS current_version
+                FROM gd_config_versions c
+                JOIN gd_listings l ON l.listing_id=c.listing_id
+                WHERE c.config_version_id=?
+                """,
+                (config_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"ConfigVersion {config_id} не найдена")
+            if str(row["source_platform"]).casefold() != "playerok":
+                raise ValueError("Общий склад объявлений подключается только к Playerok ConfigVersion.")
+            if str(row["status"]).casefold() != "active":
+                raise ValueError("Нельзя выделить склад для отключённого объявления.")
+            if row["recipe_schema_version"] != 1:
+                raise ValueError(
+                    "Для общего склада нужен однозначный typed Recipe; несколько CS2 selectors "
+                    "считаются альтернативами и не могут резервироваться как отдельные позиции."
+                )
+            if int(row["version_number"]) != int(row["current_version"]):
+                raise ValueError("Нельзя выделить склад для устаревшей версии ConfigVersion.")
+            recipe = DeliveryLedger.recipe_for_config_version(
+                db, config_id, allow_legacy=False
+            )
+
+        if not recipe.items or any(
+            item.kind != "steam_asset"
+            or not isinstance(item.spec, SteamAssetSpec)
+            or item.spec.game_id != "cs2"
+            or item.spec.app_id != 730
+            or str(item.spec.context_id) != "2"
+            for item in recipe.items
+        ):
+            raise ValueError(
+                "Сейчас общий склад Playerok поддерживает только typed CS2 Steam Asset "
+                "(AppID 730 / ContextID 2); смешанные и другие Recipe не резервируются."
+            )
+
+        required_items = [item for item in recipe.items if item.required]
+        if not required_items:
+            raise ValueError("В Recipe нет обязательных CS2 Steam Asset позиций для резерва.")
+        units_by_recipe_item = {
+            item.item_id: listing_quantity * item.quantity_per_order
+            for item in required_items
+        }
+        request_payload = json.dumps(
+            units_by_recipe_item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        digest = hashlib.sha256(
+            f"{config_id}|{request_payload}".encode("utf-8")
+        ).hexdigest()
+        allocations = ListingStockService(self.database).allocate_recipe_items(
+            request_id=f"playerok-listing-stock:{digest}",
+            listing_id=str(row["listing_id"]),
+            config_version_id=config_id,
+            units_by_recipe_item=units_by_recipe_item,
+        )
+        return {
+            "listing_id": str(row["listing_id"]),
+            "config_version_id": config_id,
+            "listing_quantity": listing_quantity,
+            "units_by_recipe_item": units_by_recipe_item,
+            "reserved_units": sum(units_by_recipe_item.values()),
+            "allocations": allocations,
+        }
+
 
     def save_recipe(
         self,
