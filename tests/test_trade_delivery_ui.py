@@ -2,7 +2,6 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -16,11 +15,13 @@ from core.database.connection import connect_sqlite
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.recipes import RecipeItem, SteamAssetSpec
+from core.delivery.listing_stock import ListingStockService
+from core.delivery.stock_ledger import QuantityStockLedger, StockResource
+from core.delivery.stock_identity import StockItemIdentity
 from integrations.playerok.sync import PlayerokDealSyncService
 from games.steam_cards.reservations import AssetReservationStore
 from games.steam_cards.selection import CardCopy
 from games.steam_cards.snapshot import InventorySnapshotStore
-from games.inventory import GameInventoryStore
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 
 
@@ -654,13 +655,24 @@ class TradeDeliveryUITests(unittest.TestCase):
             )
             order_id = "typed-cs2-order"
             delivery.create_order(order_id=order_id, deal_id="typed-cs2-deal", total_quantity=2)
-            GameInventoryStore(database)
-            with connect_sqlite(database) as db:
-                db.execute(
-                    "INSERT INTO game_inventory_snapshot_meta"
-                    "(game_id,bot_name,updated_at,item_count) VALUES('cs2','Bot A',?,0)",
-                    (datetime.now(timezone.utc).isoformat(),),
-                )
+            recipe_item_id = config["recipe_items"][0]["item_id"]
+            stock_database = Database(database)
+            stock_ledger = QuantityStockLedger(stock_database)
+            resource = StockResource("cs2", 730, "2", "Bot A", "1234567890")
+            stock_ledger.observe(
+                resource, 3,
+                identity=StockItemIdentity(
+                    "cs2", 730, "2", market_hash_name="AK-47 | Redline",
+                    name="AK-47 | Redline", class_id="class-redline",
+                ),
+                is_tradable=True,
+            )
+            ListingStockService(stock_database).allocate_recipe_items(
+                request_id="typed-cs2-ui-batch",
+                listing_id=config["listing_id"],
+                config_version_id=config["config_version_id"],
+                units_by_recipe_item={recipe_item_id: 2},
+            )
 
             with patch.object(
                 MainWindow, "_database_path", new_callable=PropertyMock, return_value=database
@@ -674,6 +686,7 @@ class TradeDeliveryUITests(unittest.TestCase):
                         "recipe_schema_version": 1,
                         "config_version_id": config["config_version_id"],
                         "listing_id": config["listing_id"],
+                        "source_platform": "playerok",
                         "bot_pool": [],
                         "selectors": {"recipe_schema_version": 1},
                     }
@@ -697,9 +710,7 @@ class TradeDeliveryUITests(unittest.TestCase):
 
                     prepare_recipe.assert_called_once()
                     snapshots = prepare_recipe.call_args.kwargs["snapshots"]
-                    self.assertIn(("Bot A", 730, "2"), snapshots)
-                    self.assertTrue(snapshots[("Bot A", 730, "2")].asf_verified)
-                    self.assertEqual(snapshots[("Bot A", 730, "2")].items, ())
+                    self.assertEqual(snapshots, {})
                     auto_send.assert_not_called()
                     information.assert_called_once()
                 finally:
