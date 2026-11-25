@@ -201,9 +201,11 @@ class RecipeItem:
             raise RecipeValidationError(f"{self.kind} требует executor_key={executor!r}")
         if self.kind == "digital_text_unit" and self.stock_source_id is None:
             raise RecipeValidationError("digital_text_unit требует stock_source_id")
-        if self.kind in {"steam_card_set", "steam_asset"} \
-                and self.stock_source_id is None and not self.spec.allowed_bot_pool:
-            raise RecipeValidationError("Steam позиция требует stock_source_id или allowed_bot_pool")
+        # Steam Cards listings intentionally have no user-configured bot pool:
+        # an empty pool means the planner may inspect all current 753/6 snapshots.
+        # Steam assets (for example CS2) still require an explicit source or pool.
+        if self.kind == "steam_asset" and self.stock_source_id is None and not self.spec.allowed_bot_pool:
+            raise RecipeValidationError("Steam asset позиция требует stock_source_id или allowed_bot_pool")
 
     @property
     def display_name(self) -> str:
