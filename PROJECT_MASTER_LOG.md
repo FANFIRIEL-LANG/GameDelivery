@@ -515,3 +515,25 @@ Changes: `integrations/playerok/listing_config.py`, `tests/test_playerok_browser
 
 
 **C.4 handler contract foundation — CI verification (2026-11-25):** На актуальном HEAD `4502f355ab2891c91a6bd05669f9851f5d6e25f1` в ветке `work/local-sync` GitHub Actions завершились успешно: Tests run `45662731355` — **success** (compile, credential/migration checks, delivery reconciliation/recovery, Steam trade UI flow, полный unit test suite); Windows Build run `45662731289` — **success** (compile, Windows trade-secret ACL test, GUI executable build, packaged smoke test и artifact upload). Проверен именно актуальный HEAD после добавления контракта, тестов и этой записи. Это подтверждает CI для изолированного C.4 contract foundation, но не закрывает весь C.4 и не означает, что Steam Cards handler уже подключён: dispatcher и действующие Steam Cards/CS2 delivery paths не менялись. Следующий этап — изучить фактический существующий Steam Cards preflight/reservation/ASF execution path и подключить его как первый handler без переписывания алгоритма, с тестами на сохранение поведения. Никаких live Steam offers или Playerok действий не выполнялось; Telegram не начинался; `main` и PR #4 не затрагивались.
+---
+
+## C.3 — payment-time ListingStock handoff (2026-11-25)
+
+**Проверенная точка:** HEAD `e9f04f3430439d448341d695bc520785046c5162`, ветка `work/local-sync`.
+
+### Изменение
+
+- В `integrations/playerok/sync.py::_maybe_create_order` typed Recipe путь теперь передаёт уже выделенные ListingStock units соответствующим OrderLine в той же транзакции, где фиксируются PAID Deal, Order и полный OrderLine manifest.
+- Переводы сгруппированы savepoint-ом. Если обязательного ListingStock объёма не хватает, все переводы этого handoff откатываются; PAID Deal и полный manifest остаются, Order получает `preflight_blocked`. Необязательный RecipeItem без полного выделенного количества пропускается.
+- Для transfer используется тот же стабильный idempotency key, что и в `DeliveryReservationService`, чтобы последующая подготовка не создавала повторный transfer.
+- ASF/Steam сетевые вызовы в sync не добавлялись.
+
+### Проверка
+
+- Добавлен assert в `tests/test_playerok_listing_stock_handoff.py`: ListingStock transfer и active order allocation уже существуют сразу после paid sync, до вызова `prepare_recipe_order`.
+- GitHub Actions на HEAD `e9f04f3`: Tests — **success** (run `45671188888`); Windows executable build — **success** (run `45671188945`).
+- Изменены только `integrations/playerok/sync.py` и `tests/test_playerok_listing_stock_handoff.py`.
+
+### Ограничение / следующий шаг
+
+Это закрывает только атомарный payment-time ListingStock handoff. Это **не** закрывает полный C.3 criterion по единой транзакции для Order + manifest + initial DeliveryLeg/canonical reservations после pure planning. В частности, создание DeliveryLeg и физических reservations по-прежнему происходит позднее в reservation pipeline. C.3 остаётся **OPEN**. Следующий шаг — transaction-aware commit path для typed Recipe после planning: в одной короткой транзакции перепроверить Order/ConfigVersion/eligibility/conflicts, создать или подтвердить Order + manifest, перенести ListingStock allocations (идемпотентно), создать весь набор DeliveryLeg/canonical reservations и обновить статус. ASF snapshots и verified metadata должны быть получены до открытия этой транзакции. Сохранить публичный `reserve_recipe_plan` API и отдельные Steam Cards/legacy CS2 flows.
