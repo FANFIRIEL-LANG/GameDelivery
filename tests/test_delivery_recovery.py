@@ -398,6 +398,23 @@ class DeliveryRecoveryTests(unittest.TestCase):
         self.assertFalse(evidence["steam_offer_cancelled"])
         self.assertTrue(evidence["snapshot_refresh_required"])
 
+    def test_manual_override_requires_second_confirmation_for_in_escrow_offer(self):
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            self.service.manual_release_reservation(
+                resource_kind="resource_reservation", resource_id="reservation-recovery",
+                actor="operator-6", reason="Manual review",
+                reason_code="unknown", steam_status="InEscrow", confirmed=True,
+            )
+        result = self.service.manual_release_reservation(
+            resource_kind="resource_reservation", resource_id="reservation-recovery",
+            actor="operator-6", reason="Manual review after warning",
+            reason_code="unknown", steam_status="InEscrow",
+            confirmed=True, override_confirmed=True,
+        )
+        self.assertTrue(result["requires_warning"])
+        self.assertIn("does not cancel", result["warning"])
+        self.assertFalse(result["steam_offer_cancelled"])
+
     def test_manual_override_marks_accepted_stock_consumed_not_free(self):
         self.attach_quantity_stock()
         result = self.service.manual_release_reservation(
