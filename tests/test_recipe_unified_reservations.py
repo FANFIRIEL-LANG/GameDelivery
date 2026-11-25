@@ -1227,6 +1227,10 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                                         "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,)).fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,)).fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0], "pending")
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_order_lines WHERE order_id=?", (order,)).fetchone()[0],
+                0,
+            )
 
     def test_recipe_plan_respects_legacy_reservations_in_the_shared_pool(self):
         order, _ = self.create_recipe_order("legacy-conflict", self.mixed_recipe(cs2_quantity=4))
