@@ -72,7 +72,7 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
         self.syncer.sync(adapter)  # Complete the historical baseline.
         self.syncer.sync(adapter)  # Persist the first post-baseline PAID deal and order.
         order_id = self.syncer._stable(
-            "playerok-order", "seller-account-1\\x1fstock-transfer-paid"
+            "playerok-order", "seller-account-1\x1fstock-transfer-paid"
         )
 
         pipeline = DeliveryOrderPipeline(self.database)
