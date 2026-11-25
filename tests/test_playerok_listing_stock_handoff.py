@@ -104,7 +104,7 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(
                 sorted((row["owner_type"], row["state"], row["units"]) for row in allocations),
-                [("listing", "active", 4), ("order", "active", 2)],
+                [("listing", "active", 4), ("listing", "released", 6), ("order", "active", 2)],
             )
             self.assertEqual(
                 db.execute(
