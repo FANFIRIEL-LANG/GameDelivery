@@ -71,6 +71,71 @@ class QuantityStockLedgerTests(unittest.TestCase):
         with connect_sqlite(backup) as db:
             self.assertEqual(db.execute("SELECT value FROM legacy_marker").fetchone()[0], "preserve")
 
+    def test_quantity_stock_migration_runs_on_database_copy_and_backup_is_restorable(self):
+        import shutil
+        from core.database.ledger_migrations import (
+            QUANTITY_STOCK_BACKUP_SUFFIX,
+            QUANTITY_STOCK_MIGRATION_ID,
+        )
+
+        source_path = Path(self.tmp.name) / "existing-user-database.sqlite3"
+        working_copy_path = Path(self.tmp.name) / "migration-copy.sqlite3"
+        restored_path = Path(self.tmp.name) / "restored-from-backup.sqlite3"
+
+        with connect_sqlite(source_path) as source:
+            source.execute("CREATE TABLE legacy_marker(value TEXT NOT NULL)")
+            source.execute("INSERT INTO legacy_marker(value) VALUES('keep-existing-data')")
+
+        shutil.copy2(source_path, working_copy_path)
+        Database(working_copy_path).initialize()
+
+        backup_path = Path(str(working_copy_path) + QUANTITY_STOCK_BACKUP_SUFFIX)
+        self.assertTrue(backup_path.exists())
+
+        # The migrated working copy has the new schema and retains legacy rows.
+        with connect_sqlite(working_copy_path) as migrated:
+            self.assertEqual(
+                migrated.execute("SELECT value FROM legacy_marker").fetchone()[0],
+                "keep-existing-data",
+            )
+            self.assertIsNotNone(migrated.execute(
+                "SELECT 1 FROM gd_schema_migrations WHERE migration_id=?",
+                (QUANTITY_STOCK_MIGRATION_ID,),
+            ).fetchone())
+            self.assertIsNotNone(migrated.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gd_stock_observations'"
+            ).fetchone())
+
+        # The original database was not opened for migration or modified.
+        with connect_sqlite(source_path) as original:
+            self.assertEqual(
+                original.execute("SELECT value FROM legacy_marker").fetchone()[0],
+                "keep-existing-data",
+            )
+            self.assertIsNone(original.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gd_schema_migrations'"
+            ).fetchone())
+
+        # Validate the pre-quantity-migration backup and restore it to a new file.
+        with connect_sqlite(backup_path) as backup:
+            self.assertEqual(backup.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                backup.execute("SELECT value FROM legacy_marker").fetchone()[0],
+                "keep-existing-data",
+            )
+            self.assertIsNone(backup.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='gd_stock_observations'"
+            ).fetchone())
+            with connect_sqlite(restored_path) as restored:
+                backup.backup(restored)
+
+        with connect_sqlite(restored_path) as restored:
+            self.assertEqual(restored.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                restored.execute("SELECT value FROM legacy_marker").fetchone()[0],
+                "keep-existing-data",
+            )
+
     def test_multiple_allocations_share_one_stack_without_exceeding_amount(self):
         self.ledger.observe(self.resource, 10)
         self.ledger.allocate(
