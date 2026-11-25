@@ -230,6 +230,56 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             steam_card_preflight=preflight,
         )
 
+    def test_recipe_manifest_is_created_inside_successful_reservation_commit(self):
+        item = recipe_item(
+            "atomic-cs2", 1, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                           ("Bot-A", "Bot-B")),
+        )
+        order, _config_id = self.create_recipe_order("atomic-manifest-success", (item,))
+        self.assertEqual(self.line_rows(order), [])
+
+        result = self.prepare(order)
+        self.assertTrue(result.reserved, result.message)
+        self.assertEqual(len(self.line_rows(order)), 1)
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs l "
+                "JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                "WHERE ol.order_id=?", (order,),
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations r "
+                "JOIN gd_order_lines ol ON ol.order_line_id=r.order_line_id "
+                "WHERE ol.order_id=? AND r.state='active'", (order,),
+            ).fetchone()[0], 1)
+
+    def test_recipe_manifest_materialization_rolls_back_with_failed_reservation_commit(self):
+        item = recipe_item(
+            "atomic-cs2-rollback", 1, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"},
+                           ("Bot-A",)),
+        )
+        order, config_id = self.create_recipe_order("atomic-manifest-rollback", (item,))
+        self.assertEqual(self.line_rows(order), [])
+        line_id = self.ledger._stable_recipe_line_id(order, config_id, item.item_id)
+
+        with self.assertRaises(ValueError):
+            self.pipeline.cs2_reservations.reserve_recipe_plan(
+                order_id=order,
+                config_version_id=config_id,
+                planned_by_line={line_id: PlannedRecipeLine("wrong-recipe-item", ())},
+            )
+
+        self.assertEqual(self.line_rows(order), [])
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id LIKE 'recipe-line:%'"
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_orders WHERE order_id=?", (order,),
+            ).fetchone()[0], "pending")
+
     def test_steam_card_listing_limit_is_atomic_and_cancel_releases_claim(self):
         item = recipe_item(
             "cards", 1, "steam_card_set", 1,
