@@ -111,6 +111,30 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
             ).fetchone()
             self.assertIsNotNone(order_row)
             order_id = str(order_row["order_id"])
+            line_row = db.execute(
+                "SELECT order_line_id FROM gd_order_lines WHERE order_id=?",
+                (order_id,),
+            ).fetchone()
+            self.assertIsNotNone(line_row)
+            # Payment-time order creation and listing-stock transfer must
+            # commit together, before any later inventory preflight runs.
+            transfer_at_payment = db.execute(
+                "SELECT units,order_line_id FROM gd_stock_transfers WHERE order_line_id=?",
+                (line_row["order_line_id"],),
+            ).fetchone()
+            self.assertIsNotNone(transfer_at_payment)
+            self.assertEqual(
+                (transfer_at_payment["units"], transfer_at_payment["order_line_id"]),
+                (2, line_row["order_line_id"]),
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                    "WHERE owner_type='order' AND order_line_id=? AND state='active'",
+                    (line_row["order_line_id"],),
+                ).fetchone()[0],
+                2,
+            )
 
         pipeline = DeliveryOrderPipeline(self.database)
         prepared = pipeline.prepare_recipe_order(order_id=order_id, snapshots={})
