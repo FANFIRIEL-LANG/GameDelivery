@@ -26,7 +26,7 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_paid_playerok_recipe_transfers_listing_stock_through_order_preflight_atomically(self):
+    def test_paid_playerok_recipe_transfers_listing_stock_only_with_reservation_commit(self):
         recipe_item = RecipeItem(
             "cs2-redline", 1, "steam_asset", 1, 2, True, "shared-asf-stock",
             "steam_trade_offer",
@@ -116,16 +116,14 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
                 (order_id,),
             ).fetchone()
             self.assertIsNotNone(line_row)
-            # Payment-time order creation and listing-stock transfer must
-            # commit together, before any later inventory preflight runs.
-            transfer_at_payment = db.execute(
-                "SELECT units,order_line_id FROM gd_stock_transfers WHERE order_line_id=?",
-                (line_row["order_line_id"],),
-            ).fetchone()
-            self.assertIsNotNone(transfer_at_payment)
+            # Payment sync persists the paid order and immutable manifest,
+            # but must not transfer ListingStock before the reservation commit.
             self.assertEqual(
-                (transfer_at_payment["units"], transfer_at_payment["order_line_id"]),
-                (2, line_row["order_line_id"]),
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_stock_transfers WHERE order_line_id=?",
+                    (line_row["order_line_id"],),
+                ).fetchone()[0],
+                0,
             )
             self.assertEqual(
                 db.execute(
@@ -133,7 +131,7 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
                     "WHERE owner_type='order' AND order_line_id=? AND state='active'",
                     (line_row["order_line_id"],),
                 ).fetchone()[0],
-                2,
+                0,
             )
 
         pipeline = DeliveryOrderPipeline(self.database)
