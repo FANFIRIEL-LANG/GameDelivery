@@ -400,3 +400,60 @@ class QuantityStockLedgerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_quantity_stock_migration_rolls_back_partial_ddl_on_trigger_conflict(self):
+        from core.database.ledger_migrations import (
+            QUANTITY_STOCK_MIGRATION_ID,
+            _apply_quantity_stock_migration,
+        )
+        from games.asset_ids import asset_id_key
+
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.create_function("gd_asset_id_key", 1, asset_id_key, deterministic=True)
+            connection.execute(
+                "CREATE TABLE gd_schema_migrations(migration_id TEXT PRIMARY KEY)"
+            )
+            connection.execute(
+                "CREATE TABLE gd_resource_reservations("
+                "state TEXT,game_id TEXT,app_id INTEGER,context_id TEXT,"
+                "bot_name TEXT,asset_id_key TEXT)"
+            )
+            connection.execute(
+                "CREATE TABLE steam_asset_reservations(bot_name TEXT,asset_id TEXT)"
+            )
+            connection.execute("CREATE TABLE migration_trigger_collision(id INTEGER)")
+            # SQLite trigger names are database-global. This forces a failure
+            # after the quantity tables, indexes and allocation guards were created.
+            connection.execute(
+                "CREATE TRIGGER gd_stock_observations_identity_immutable "
+                "BEFORE UPDATE ON migration_trigger_collision BEGIN SELECT 1; END"
+            )
+
+            with self.assertRaisesRegex(sqlite3.OperationalError, "already exists"):
+                _apply_quantity_stock_migration(connection)
+
+            tables = {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            triggers = {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger'"
+                )
+            }
+            self.assertNotIn("gd_stock_observations", tables)
+            self.assertNotIn("gd_stock_allocations", tables)
+            self.assertNotIn(QUANTITY_STOCK_MIGRATION_ID, {
+                row[0] for row in connection.execute(
+                    "SELECT migration_id FROM gd_schema_migrations"
+                )
+            })
+            self.assertEqual(
+                triggers,
+                {"gd_stock_observations_identity_immutable"},
+            )
+        finally:
+            connection.close()
