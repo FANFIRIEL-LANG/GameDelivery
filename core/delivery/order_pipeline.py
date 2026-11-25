@@ -383,6 +383,14 @@ class DeliveryOrderPipeline:
             snapshots=snapshots,
         )
 
+    def _persist_preflight_manifest(self, order_id: str, config_version_id: str) -> None:
+        """Persist the complete immutable manifest for a blocked preflight, without reserves."""
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self.ledger.materialize_recipe_order_lines_in_transaction(
+                connection, order_id, config_version_id, allow_legacy=True
+            )
+
     def prepare_recipe_order(
         self,
         *,
@@ -408,17 +416,16 @@ class DeliveryOrderPipeline:
             raise ValueError("order_id и snapshots обязательны")
         config = self._config_for_order(order)
         config_id = str(config["config_version_id"])
-        # Materialization is idempotent and remains a separate short transaction;
-        # no inventory or reservation state is changed during this step.
-        self.ledger.materialize_recipe_order_lines(order, allow_legacy=True)
+        # Resource selection is pure with respect to the delivery ledger:
+        # stable OrderLine IDs are derived from the immutable ConfigVersion.
+        # The manifest itself is materialized only in the reservation commit.
         current_time = self.cs2_reservations._aware(now or datetime.now(timezone.utc))
         with self.database.connect() as connection:
             recipe = self.ledger.recipe_for_config_version(connection, config_id, allow_legacy=True)
-            line_rows = connection.execute(
-                "SELECT order_line_id,line_number,config_version_id FROM gd_order_lines "
-                "WHERE order_id=? ORDER BY line_number",
-                (order,),
-            ).fetchall()
+            lines_by_position = {
+                item.position: self.ledger._stable_recipe_line_id(order, config_id, item.item_id)
+                for item in recipe.items
+            }
             listing_stock_batch = connection.execute(
                 "SELECT 1 FROM gd_stock_allocation_batches "
                 "WHERE listing_id=? AND config_version_id=?",
@@ -433,12 +440,6 @@ class DeliveryOrderPipeline:
                     (str(config["listing_id"]), config_id),
                 ).fetchall()
             }
-        if len(line_rows) != len(recipe.items):
-            raise ValueError("Число OrderLine не совпадает с закреплённым Recipe")
-        lines_by_position = {int(row["line_number"]): str(row["order_line_id"]) for row in line_rows}
-        if any(str(row["config_version_id"] or "") != config_id for row in line_rows):
-            raise ValueError("OrderLine привязана к другой ConfigVersion")
-
         reserved = set(self.card_reservations.list_reserved_assets(excluding_order_id=order))
         reserved_keys = {(bot.casefold(), asset_id_key(asset)) for bot, asset in reserved}
         planned: dict[str, PlannedRecipeLine] = {}
@@ -607,10 +608,12 @@ class DeliveryOrderPipeline:
             reserved_keys.update((resource.bot_name.casefold(), asset_id_key(resource.asset_id)) for resource in resources)
 
         if failed_required:
+            self._persist_preflight_manifest(order, config_id)
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (), " ".join(failed_required)
             )
         if not any(line_plan.units or line_plan.use_listing_stock for line_plan in planned.values()):
+            self._persist_preflight_manifest(order, config_id)
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (),
                 "В Recipe нет обязательных физических ресурсов для безопасного резервирования.",
@@ -624,6 +627,9 @@ class DeliveryOrderPipeline:
         except Exception as exc:
             from core.delivery.listing_stock import InsufficientListingStock
             if isinstance(exc, InsufficientListingStock):
+                # The reservation transaction rolled back in full. Persist the
+                # immutable manifest separately, with no DeliveryLeg/reservation.
+                self._persist_preflight_manifest(order, config_id)
                 return OrderReservationResult(
                     order, "preflight_blocked", (), (), (),
                     f"Недостаточно закреплённого складского остатка: {exc}",
