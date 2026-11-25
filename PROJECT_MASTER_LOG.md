@@ -1,3 +1,32 @@
+## C.3 — уточнение Order → preflight → reservation lifecycle (2026-11-25)
+
+**Проверенная точка перед анализом:** HEAD до этой записи `86d2e2c197c953bcf52ed93746fc0225a7d3aee3`, ветка `work/local-sync`. План C.3 перечитан непосредственно из `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`.
+
+### Подтверждённый фактический call path
+
+1. `PlayerokSyncService._upsert_incremental()` открывает `BEGIN IMMEDIATE`, вызывает `_upsert_deal()`; при статусе PAID `_maybe_create_order()` вставляет `gd_orders(status='pending')` и вызывает `DeliveryLedger.materialize_recipe_order_lines_in_transaction()`. Deal + Order + OrderLines фиксируются в одной sync-транзакции (`integrations/playerok/sync.py:400-430,315-372`).
+2. Позднее вызывается `DeliveryOrderPipeline.prepare_recipe_order()` (`core/delivery/order_pipeline.py:386-631`). Он получает уже существующий Order, отдельно вызывает `ledger.materialize_recipe_order_lines()` (собственная отдельная `BEGIN IMMEDIATE`, строки 411-413), затем читает Recipe/OrderLines, анализирует переданные snapshots и verified buyer/card metadata, строит полный план ресурсов и только после этого вызывает `reserve_recipe_plan()`.
+3. `DeliveryReservationService.reserve_recipe_plan()` открывает собственную `BEGIN IMMEDIATE` (`core/delivery/reservation_service.py:520-541`), перепроверяет Order/ConfigVersion/OrderLines, конфликты ресурсов, listing allocations и Steam Cards quota; затем записывает DeliveryLeg, canonical reservations/compatibility projection и статус Order='reserved' в этой транзакции (строки 888-1025).
+
+### Вывод относительно C.3
+
+- Атомарность уже обеспечена **внутри** reservation commit: если запись leg/reservation/claim/transfer завершается ошибкой, транзакция откатывается; частичного набора резервов не остаётся.
+- Но буквальный критерий C.3 «создание заказа, manifest/order assets и первоначальных reservations в одной транзакции» сейчас **не выполнен**: Order и OrderLines уже закоммичены при Playerok sync, а inventory planning и initial reservation выполняются позже. Также `prepare_recipe_order()` явно документирует отдельную materialization transaction.
+- Важная граница: ASF inventory snapshots и verified buyer/card metadata передаются в `prepare_recipe_order()` уже снаружи DB transaction; выбор ресурсов производится до reservation transaction. Не следует переносить сетевые ASF вызовы внутрь SQLite transaction. Preflight/selection должен остаться до короткой DB transaction, а transaction должна повторно проверить все изменяемые условия и зафиксировать Order + manifest + reservations вместе.
+- Оплаченная сделка не должна теряться при нехватке ресурсов: запись Playerok Deal сохраняется; в той же короткой транзакции создаётся Order + manifest со статусом `preflight_blocked` без физического резерва. Когда полный preflight готов, отдельная атомарная операция должна создавать/обеспечивать Order + manifest + все initial reservations в одном commit. Никакой частичный резерв не допускается.
+
+### Минимальный целевой дизайн (пока только проектное решение, код не менялся)
+
+1. Сохранить надёжную фиксацию Playerok Deal/PAID event и его точной ConfigVersion в Sync; не вызывать ASF из Sync и не держать SQLite transaction во время сети.
+2. Разделить чистый planning и DB commit. Planning получает уже проверенные свежие snapshots и verified buyer/card inputs, строит полный immutable plan без записи reservations. Для планирования до появления OrderLine использовать стабильные ID, вычисляемые из `(order_id, config_version_id, recipe_item_id)`, либо временные ключи RecipeItem с однозначным преобразованием в эти ID.
+3. В одной `BEGIN IMMEDIATE` транзакции: проверить paid Deal + точную ConfigVersion + eligibility + quota + актуальные ListingStock allocations/состояния; создать Order (если ещё нет), материализовать все OrderLines/manifest, проверить полный plan и глобальные reservation conflicts; атомарно перевести ListingStock allocations; создать все DeliveryLeg + canonical reservations + необходимые legacy projections/Steam Cards claims; перевести Order в `reserved`. Любая ошибка откатывает весь этот commit.
+4. Если полный planning не готов/ресурсов недостаточно: в одной транзакции сохранить Order + полный manifest со статусом `preflight_blocked`, без DeliveryLeg и без физических reservations. Повторная подготовка должна быть идемпотентной и переходить в резерв только после нового полного planning.
+5. Перед реализацией проверить все callers `prepare_recipe_order`, `reserve_recipe_plan`, `prepare_steam_card_order`, `prepare_cs2_order` и существующие sync/order tests. Нельзя ломать legacy callers, карточный отдельный flow, listing-stock handoff, quota или статусную модель. Вероятный минимальный технический шаг — вынести внутренний helper, принимающий уже открытую SQLite connection, из `reserve_recipe_plan()`, а создание Order/OrderLines подключить к этому же commit; конкретную форму выбрать только после аудита всех call sites.
+6. Добавить rollback/idempotency tests: crash/failure до и после materialization, недостаток ресурсов, повторный paid event, повторный preflight, два параллельных preparation, изменение ConfigVersion/eligibility между planning и commit, конфликт AssetID, listing stock transfer, Steam Cards quota, legacy projection. Внешний ASF network call не входит в транзакцию.
+
+**Статус:** C.3 всё ещё открыт. Это доказанный разрыв с буквальным acceptance criterion, а не повод переписывать ledger или reservation logic. Следующая задача — проверить все call sites и тесты, затем подготовить минимальный refactor-патч с сохранением текущих публичных API. На этом шаге код и тесты не менялись/не запускались; Steam/Playerok live actions не выполнялись.
+
+---
 ## C.3 — первый аудит acceptance criteria по исходникам (2026-11-25)
 
 **Проверенная точка:** ветка `work/local-sync`, HEAD `5ad89238e73ef1addccd22542e04b5d390f657f0` (документальный коммит с единым рабочим планом). План C: `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`, blob SHA `06b764c1706e2989d814f9395a8a73682c486261`. Изучены актуальные исходники `core/delivery/ledger.py`, `listing_stock.py`, `stock_ledger.py`, `reservation_service.py`, `recovery.py`, `reconciliation.py`, `order_pipeline.py`, `core/database/ledger_migrations.py`, `integrations/playerok/sync.py` и соответствующие тесты. В этой записи только аудит: production code и пользовательская БД не менялись; Steam/Playerok live actions не выполнялись.
