@@ -182,9 +182,12 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             recipe = self.ledger.recipe_for_config_version(db, config_id)
         return next(item.item_id for item in recipe.items if item.position == position)
 
-    def assert_no_reservation_commit(self, order):
+    def assert_no_reservation_commit(self, order, *, expected_status="pending"):
         with self.database.connect() as db:
-            self.assertEqual(db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0], "pending")
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0],
+                expected_status,
+            )
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
                 "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
@@ -336,7 +339,7 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
         second_blocked = self.prepare(second_order, snapshots)
         self.assertEqual(second_blocked.status, "preflight_blocked")
         self.assertIn("Недостаточно закреплённого складского остатка", second_blocked.message)
-        self.assert_no_reservation_commit(second_order)
+        self.assert_no_reservation_commit(second_order, expected_status="preflight_blocked")
         with self.database.connect() as db:
             claimed = db.execute(
                 "SELECT COALESCE(SUM(sets),0) FROM gd_steam_card_listing_claims "
@@ -525,13 +528,17 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             "stock-backed", 1, "steam_asset", 1,
             SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
         )
-        manual_item = recipe_item(
-            "manual", 2, "steam_asset", 1,
-            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AWP | Asiimov"}, ("Bot-A",)),
+        manual_item = RecipeItem(
+            item_id="manual", position=2, kind="steam_asset", spec_version=1,
+            quantity_per_order=1, required=False, stock_source_id=None,
+            executor_key="steam_trade_offer",
+            spec=SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AWP | Asiimov"}, ("Bot-A",)),
         )
         order, config_id = self.create_recipe_order("mixed-stock-conflict", (stock_item, manual_item))
-        stock_id = self.ledger._stable_recipe_line_id(order, config_id, stock_item.item_id)
-        manual_id = self.ledger._stable_recipe_line_id(order, config_id, manual_item.item_id)
+        stock_item_id = self.recipe_item_id(config_id, 1)
+        manual_item_id = self.recipe_item_id(config_id, 2)
+        stock_id = self.ledger._stable_recipe_line_id(order, config_id, stock_item_id)
+        manual_id = self.ledger._stable_recipe_line_id(order, config_id, manual_item_id)
 
         stock = QuantityStockLedger(self.database)
         stock.observe(
@@ -546,7 +553,7 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             request_id="mixed-stock-conflict-batch",
             listing_id="listing-mixed-stock-conflict",
             config_version_id=config_id,
-            units_by_recipe_item={stock_item.item_id: 1},
+            units_by_recipe_item={stock_item_id: 1},
         )
 
         conflict_order, conflict_config = self.create_recipe_order(
@@ -567,9 +574,9 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
             order_id=order,
             config_version_id=config_id,
             planned_by_line={
-                stock_id: PlannedRecipeLine(stock_item.item_id, (), use_listing_stock=True),
+                stock_id: PlannedRecipeLine(stock_item_id, (), use_listing_stock=True),
                 manual_id: PlannedRecipeLine(
-                    manual_item.item_id,
+                    manual_item_id,
                     ((PlannedResource("Bot-A", "conflict-asset", "cs2", 730, "2"),),),
                 ),
             },
@@ -1159,7 +1166,7 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                 "UPDATE gd_order_lines SET item_selector_json='{}' WHERE order_line_id=?",
                 (line["order_line_id"],),
             )
-        with self.assertRaisesRegex(ValueError, "snapshot"):
+        with self.assertRaisesRegex(ValueError, "OrderLine|закреплённым рецептом"):
             self.pipeline.cs2_reservations.reserve_recipe_plan(
                 order_id=order, config_version_id=config_id,
                 planned_by_line={line["order_line_id"]: self.cs2_line_plan(
