@@ -1,3 +1,27 @@
+## C.3 — проверка безопасного входа PAID Deal без Order (2026-11-25)
+
+**Проверенная точка:** HEAD `2c9f777f1322bb9ef3c683efe271fa3a025b050f`, ветка `work/local-sync`. Проверены `integrations/playerok/sync.py`, `integrations/playerok/listing_config.py`, `core/delivery/playerok_eligibility.py`, `core/delivery/order_pipeline.py`, участки `app/main.py` с загрузкой/выбором/подготовкой заказов и тесты Playerok sync/listing-stock handoff.
+
+### Подтверждённые факты
+
+- Новый PAID Deal намеренно сохраняется без `config_version_id`: `_upsert_deal()` не назначает последнюю версию объявления, потому что имеющиеся данные не доказывают, какая версия действовала в момент оплаты.
+- `_maybe_create_order()` создаёт canonical Order только при наличии уже доказанной точной ConfigVersion; стабильный `order_id` вычисляется из Playerok account + external deal ID.
+- `resolve_unresolved_deal()` решает только связь с точным объявлением. Для PAID сделки без существующего Order он не закрепляет ConfigVersion.
+- Текущий UI `_load_saved_orders()` читает canonical очередь через `gd_orders JOIN gd_deals`; `_prepare_ledger_order()` сначала вызывает `_config_for_order(order_id)`. Поэтому Deal без Order сейчас не виден в canonical списке и не может попасть в текущий preparation handler.
+- `_show_order_details()` также требует существующий Order и OrderLines.
+- Listing config save создаёт новую immutable ConfigVersion, но проверенные call sites не предоставляют доказательства payment-time version для уже оплаченной сделки.
+- Тест `test_paid_playerok_recipe_transfers_listing_stock_only_with_reservation_commit` вручную задаёт `gd_deals.config_version_id` перед вызовом `_maybe_create_order()`; это тестовая фикстура, а не production механизм разрешения версии.
+
+### Решение / блокер для безопасного refactor
+
+Нельзя переносить Order creation в preparation или добавлять PAID Deal без Order в очередь подготовки, пока отсутствует production-механизм, который связывает сделку с **точной** ConfigVersion на основании достоверного свидетельства. Подстановка текущей/последней ConfigVersion запрещена. Простое отображение unresolved PAID Deal возможно как диагностической записи, но не как доступного к подготовке заказа.
+
+Следующий необходимый этап перед изменением UI/pipeline: определить и реализовать источник доказательства payment-time ConfigVersion (либо явный контролируемый операторский выбор уже существующей версии с аудитом и неизменяемой фиксацией, если это соответствует утверждённому процессу). До этого не менять eligibility, не создавать Order/OrderLines для unresolved PAID Deal и не ослаблять fail-closed. Steam Cards, legacy CS2 и ручные заказы остаются вне этого refactor.
+
+**Изменения production code:** отсутствуют. **Тесты:** не запускались. **Внешние Playerok/Steam действия:** не выполнялись.
+ 
+---
+
 ## C.3 — перенос ListingStock в reservation commit (2026-11-25)
 
 **База изменения:** HEAD `404290cdac6f26d0cd6d581ffc723febbe9bdfb1`, ветка `work/local-sync`.
