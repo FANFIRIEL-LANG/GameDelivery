@@ -520,6 +520,97 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
         self.assertTrue(owned_assets)
         self.assertTrue(all(int(row["owners"]) == 1 for row in owned_assets))
 
+    def test_order_resource_conflict_rolls_back_prior_listing_stock_transfer(self):
+        stock_item = recipe_item(
+            "stock-backed", 1, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        )
+        manual_item = recipe_item(
+            "manual", 2, "steam_asset", 1,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AWP | Asiimov"}, ("Bot-A",)),
+        )
+        order, config_id = self.create_recipe_order("mixed-stock-conflict", (stock_item, manual_item))
+        stock_id = self.ledger._stable_recipe_line_id(order, config_id, stock_item.item_id)
+        manual_id = self.ledger._stable_recipe_line_id(order, config_id, manual_item.item_id)
+
+        stock = QuantityStockLedger(self.database)
+        stock.observe(
+            StockResource("cs2", 730, "2", "Bot-A", "stock-backed-asset"), 1,
+            identity=StockItemIdentity(
+                "cs2", 730, "2", market_hash_name="AK-47 | Redline",
+                name="AK-47 | Redline", item_type="Rifle", class_id="stock-class",
+            ),
+            is_tradable=True,
+        )
+        ListingStockService(self.database).allocate_recipe_items(
+            request_id="mixed-stock-conflict-batch",
+            listing_id="listing-mixed-stock-conflict",
+            config_version_id=config_id,
+            units_by_recipe_item={stock_item.item_id: 1},
+        )
+
+        conflict_order, conflict_config = self.create_recipe_order(
+            "mixed-stock-conflict-owner", (manual_item,)
+        )
+        self.ledger.materialize_recipe_order_lines(conflict_order)
+        conflict_line = self.line_rows(conflict_order)[0]["order_line_id"]
+        with self.database.connect() as db:
+            db.execute(
+                "INSERT INTO gd_resource_reservations "
+                "(reservation_id,owner_type,order_line_id,game_id,app_id,context_id,bot_name,asset_id,units,state) "
+                "VALUES(?,?,?,?,?,?,?,?,?,'active')",
+                ("conflict-reservation", "order", conflict_line, "cs2", 730, "2",
+                 "Bot-A", "conflict-asset", 1),
+            )
+
+        result = self.pipeline.cs2_reservations.reserve_recipe_plan(
+            order_id=order,
+            config_version_id=config_id,
+            planned_by_line={
+                stock_id: PlannedRecipeLine(stock_item.item_id, (), use_listing_stock=True),
+                manual_id: PlannedRecipeLine(
+                    manual_item.item_id,
+                    ((PlannedResource("Bot-A", "conflict-asset", "cs2", 730, "2"),),),
+                ),
+            },
+        )
+        self.assertEqual(result.status, "preflight_blocked")
+        with self.database.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0],
+                "preflight_blocked",
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_stock_transfers WHERE order_line_id IN "
+                    "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                    "WHERE owner_type='order' AND state='active' AND order_line_id IN "
+                    "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND state='active' AND config_version_id=?",
+                    (config_id,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                    "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+                ).fetchone()[0],
+                0,
+            )
+
     def test_listing_stack_amounts_flow_into_delivery_leg_and_canonical_reservation(self):
         item = recipe_item(
             "stacked-redline", 1, "steam_asset", 10,
