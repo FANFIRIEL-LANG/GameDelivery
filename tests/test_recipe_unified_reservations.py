@@ -1406,9 +1406,11 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                 "AND order_line_id IN (SELECT order_line_id FROM gd_order_lines WHERE order_id=?)",
                 (order,),
             ).fetchone()[0], 2)
+            # This scenario reserves CS2 game assets, not Steam Trading Cards;
+            # the legacy card-compatibility table must remain untouched.
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,),
-            ).fetchone()[0], 2)
+            ).fetchone()[0], 0)
 
     def test_unknown_order_keeps_canonical_and_card_compatibility_reserves(self):
         order, _ = self.create_recipe_order(
