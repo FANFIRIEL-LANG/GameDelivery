@@ -160,6 +160,92 @@ class PlayerokDealSyncTests(unittest.TestCase):
                 )
         return order_id
 
+    def test_paid_deal_requires_audited_explicit_config_version_binding(self):
+        config = self.configure_listing("listing-explicit-binding")
+        adapter = FakePlayerok(
+            baseline=[],
+            active=[deal("paid-explicit-binding", "listing-explicit-binding")],
+        )
+        self.syncer.sync(adapter)
+        self.syncer.sync(adapter)
+        normalized_id = self.normalized_deal_id("paid-explicit-binding")
+        with self.database.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_orders WHERE deal_id=?", (normalized_id,)).fetchone()[0],
+                0,
+            )
+
+        result = self.syncer.bind_paid_deal_config_version(
+            account_user_id="seller-account-1",
+            external_deal_id="paid-explicit-binding",
+            config_version_id=config["config_version_id"],
+            operator_id="desktop-operator",
+            reason="Оператор сверил версию объявления на момент оплаты",
+        )
+        self.assertEqual(result["config_version_id"], config["config_version_id"])
+        self.assertEqual(result["status"], "pending")
+        with self.database.connect() as db:
+            binding = db.execute(
+                "SELECT account_user_id,deal_id,listing_id,config_version_id,operator_id,reason "
+                "FROM playerok_paid_config_bindings WHERE binding_id=?",
+                (result["binding_id"],),
+            ).fetchone()
+            self.assertEqual(
+                tuple(binding),
+                ("seller-account-1", normalized_id, config["listing_id"],
+                 config["config_version_id"], "desktop-operator",
+                 "Оператор сверил версию объявления на момент оплаты"),
+            )
+            self.assertEqual(
+                db.execute("SELECT config_version_id FROM gd_deals WHERE deal_id=?",
+                           (normalized_id,)).fetchone()[0],
+                config["config_version_id"],
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_orders WHERE deal_id=?",
+                           (normalized_id,)).fetchone()[0],
+                1,
+            )
+        with self.assertRaisesRegex(ValueError, "уже создан"):
+            self.syncer.bind_paid_deal_config_version(
+                account_user_id="seller-account-1",
+                external_deal_id="paid-explicit-binding",
+                config_version_id=config["config_version_id"],
+                operator_id="desktop-operator",
+                reason="Повторная попытка",
+            )
+
+    def test_paid_deal_config_binding_rejects_version_from_another_listing(self):
+        self.configure_listing("listing-explicit-binding")
+        other = self.configure_listing("other-listing")
+        adapter = FakePlayerok(
+            baseline=[],
+            active=[deal("paid-wrong-version", "listing-explicit-binding")],
+        )
+        self.syncer.sync(adapter)
+        self.syncer.sync(adapter)
+        with self.assertRaisesRegex(ValueError, "не принадлежит"):
+            self.syncer.bind_paid_deal_config_version(
+                account_user_id="seller-account-1",
+                external_deal_id="paid-wrong-version",
+                config_version_id=other["config_version_id"],
+                operator_id="desktop-operator",
+                reason="Проверка неверной версии",
+            )
+        normalized_id = self.normalized_deal_id("paid-wrong-version")
+        with self.database.connect() as db:
+            self.assertIsNone(
+                db.execute("SELECT config_version_id FROM gd_deals WHERE deal_id=?",
+                           (normalized_id,)).fetchone()[0]
+            )
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM playerok_paid_config_bindings WHERE deal_id=?",
+                (normalized_id,),
+            ).fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_orders WHERE deal_id=?", (normalized_id,)
+            ).fetchone()[0], 0)
+
     def test_first_sync_is_full_historical_baseline_and_never_queues_delivery(self):
         adapter = FakePlayerok(
             baseline=[
