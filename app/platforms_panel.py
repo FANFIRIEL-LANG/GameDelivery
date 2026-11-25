@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import QObject, QRunnable, Qt, QSettings, Signal, QThreadPool, QTimer
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QSpinBox,
-    QTableWidget, QTableWidgetItem, QHeaderView,
+    QTableWidget, QTableWidgetItem, QHeaderView, QInputDialog, QMessageBox,
 )
 from app.playerok_browser import PlayerokBrowserPanel
 from integrations.playerok import browser_sales
@@ -171,6 +171,10 @@ class MarketplacePanel(QWidget):
         self.import_order_button.setEnabled(False)
         self.import_order_button.clicked.connect(self._import_selected_order)
         actions.addWidget(self.import_order_button)
+        self.bind_paid_config_button = QPushButton("Выбрать ConfigVersion для PAID")
+        self.bind_paid_config_button.setEnabled(False)
+        self.bind_paid_config_button.clicked.connect(self._bind_selected_paid_config)
+        actions.addWidget(self.bind_paid_config_button)
         actions.addStretch()
         root.addLayout(actions)
         self.diagnostic_sales_report = QLabel("Диагностическое чтение продаж ещё не выполнялось.")
@@ -1010,6 +1014,61 @@ class MarketplacePanel(QWidget):
         self.import_order_button.setEnabled(
             isinstance(order, dict) and bool(order.get("order_id"))
         )
+        self.bind_paid_config_button.setEnabled(
+            self.sync_service is not None
+            and isinstance(order, dict)
+            and str(order.get("status") or "").upper() == "PAID"
+            and bool(order.get("account_user_id"))
+            and bool(order.get("deal_id") or order.get("external_deal_id"))
+        )
+
+    def _bind_selected_paid_config(self) -> None:
+        row = self.orders_table.currentRow()
+        item = self.orders_table.item(row, 0) if row >= 0 else None
+        deal_data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not isinstance(deal_data, dict) or self.sync_service is None:
+            self.status_label.setText("Выбери актуальную PAID-сделку.")
+            return
+        account_id = str(deal_data.get("account_user_id") or "").strip()
+        external_id = str(deal_data.get("deal_id") or deal_data.get("external_deal_id") or "").strip()
+        try:
+            versions = self.sync_service.list_config_versions_for_paid_deal(
+                account_user_id=account_id, external_deal_id=external_id
+            )
+            if not versions:
+                raise ValueError("Для объявления нет сохранённых ConfigVersion.")
+            labels = [
+                f"v{value['version_number']} — {value['config_version_id']}"
+                for value in versions
+            ]
+            selected, accepted = QInputDialog.getItem(
+                self, "ConfigVersion оплаченной сделки",
+                "Выбери точную версию, подтверждённую для момента оплаты:",
+                labels, 0, False,
+            )
+            if not accepted:
+                return
+            selected_index = labels.index(selected)
+            reason, accepted = QInputDialog.getText(
+                self, "Аудит выбора ConfigVersion",
+                "Причина подтверждения версии:",
+            )
+            if not accepted:
+                return
+            result = self.sync_service.bind_paid_deal_config_version(
+                account_user_id=account_id,
+                external_deal_id=external_id,
+                config_version_id=versions[selected_index]["config_version_id"],
+                operator_id="desktop-operator",
+                reason=reason,
+            )
+            self.status_label.setText(
+                f"ConfigVersion {result['config_version_id']} закреплена. "
+                f"Создан заказ {result['order_id']} со статусом {result['status']}."
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Не удалось закрепить ConfigVersion", str(exc))
+            self.status_label.setText(f"Привязка ConfigVersion не выполнена: {exc}")
 
     def _import_selected_order(self) -> None:
         row = self.orders_table.currentRow()
