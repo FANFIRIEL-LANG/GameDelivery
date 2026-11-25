@@ -56,6 +56,8 @@ DELIVERY_LEG_ASSET_AMOUNTS_MIGRATION_ID = "2026-11-delivery-leg-asset-amounts-v1
 DELIVERY_LEG_ASSET_AMOUNTS_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-leg-asset-amounts-v1.bak"
 STEAM_CARD_LISTING_LIMIT_MIGRATION_ID = "2026-11-steam-card-listing-limit-v1"
 STEAM_CARD_LISTING_LIMIT_BACKUP_SUFFIX = ".pre-gamedelivery-steam-card-listing-limit-v1.bak"
+RESERVATION_MANUAL_AUDIT_MIGRATION_ID = "2026-11-reservation-manual-audit-v1"
+RESERVATION_MANUAL_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-reservation-manual-audit-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -1544,6 +1546,7 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
         changed = _apply_quantity_stock_listing_reallocation_migration(connection) or changed
     changed = _apply_delivery_leg_asset_amounts_migration(connection) or changed
     changed = _apply_steam_card_listing_limit_migration(connection) or changed
+    changed = _apply_reservation_manual_audit_migration(connection) or changed
     return changed
 
 
@@ -2650,6 +2653,65 @@ def _apply_steam_card_listing_limit_migration(connection: sqlite3.Connection) ->
         raise
     return True
 
+
+
+def _apply_reservation_manual_audit_migration(connection: sqlite3.Connection) -> bool:
+    """Add durable manual reservation-release audit independent of order rows."""
+    if _migration_applied(connection, RESERVATION_MANUAL_AUDIT_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE gd_reservation_manual_actions (
+                action_id TEXT PRIMARY KEY,
+                resource_kind TEXT NOT NULL
+                    CHECK(resource_kind IN ('resource_reservation','stock_allocation')),
+                resource_id TEXT NOT NULL,
+                owner_type TEXT NOT NULL,
+                order_id TEXT,
+                leg_id TEXT,
+                game_id TEXT NOT NULL,
+                app_id INTEGER NOT NULL CHECK(app_id >= 0),
+                context_id TEXT NOT NULL,
+                bot_name TEXT NOT NULL COLLATE NOCASE,
+                asset_id TEXT NOT NULL,
+                units INTEGER NOT NULL CHECK(units > 0),
+                previous_state TEXT NOT NULL,
+                resulting_state TEXT NOT NULL CHECK(resulting_state IN ('released','consumed')),
+                steam_status TEXT NOT NULL,
+                related_offer_ids_json TEXT NOT NULL,
+                reason_code TEXT NOT NULL CHECK(reason_code IN
+                    ('buyer_rejected','owner_cancelled','expired','offer_absent','unknown','other')),
+                actor TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                confirmed INTEGER NOT NULL CHECK(confirmed=1),
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("""
+            CREATE INDEX idx_gd_reservation_manual_actions_resource
+            ON gd_reservation_manual_actions(resource_kind,resource_id,created_at)
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_reservation_manual_actions_no_update
+            BEFORE UPDATE ON gd_reservation_manual_actions
+            BEGIN SELECT RAISE(ABORT,'Manual reservation audit is append-only'); END
+        """)
+        connection.execute("""
+            CREATE TRIGGER gd_reservation_manual_actions_no_delete
+            BEFORE DELETE ON gd_reservation_manual_actions
+            BEGIN SELECT RAISE(ABORT,'Manual reservation audit is append-only'); END
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (RESERVATION_MANUAL_AUDIT_MIGRATION_ID,),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
 
 def migrate_delivery_ledger(database_path: str | Path) -> bool:
     ensure_pre_migration_backup(database_path)
