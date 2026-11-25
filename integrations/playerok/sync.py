@@ -11,7 +11,7 @@ from integrations.playerok.browser_sales import (
     is_fresh_trusted_browser_sales_snapshot,
 )
 from core.delivery.ledger import DeliveryLedger
-from core.delivery.recipes import UnsupportedLegacyRecipeError
+from core.delivery.recipes import SteamAssetSpec, UnsupportedLegacyRecipeError
 
 
 class PlayerokDealSyncService:
@@ -365,11 +365,70 @@ class PlayerokDealSyncService:
             "VALUES(?,?,'pending',?)", (order_id, normalized_id, quantity),
         ).rowcount
         if inserted == 1 and recipe is not None:
-            # The order and every line share the caller's transaction. A bad
-            # recipe or failed line insert rolls back the whole sync operation.
+            # The order, manifest and payment-time listing-stock handoff share
+            # the caller's BEGIN IMMEDIATE transaction. No ASF/network calls
+            # are made here; this only transfers already-reserved listing units.
             DeliveryLedger.materialize_recipe_order_lines_in_transaction(
                 db, order_id, config_id, allow_legacy=not typed_recipe
             )
+            if typed_recipe:
+                from core.delivery.listing_stock import (
+                    InsufficientListingStock,
+                    ListingStockService,
+                )
+
+                has_listing_batch = db.execute(
+                    "SELECT 1 FROM gd_stock_allocation_batches "
+                    "WHERE listing_id=? AND config_version_id=?",
+                    (listing_id, config_id),
+                ).fetchone() is not None
+                if has_listing_batch:
+                    # All RecipeItem transfers are one savepoint. If any
+                    # required item cannot be transferred in full, roll back
+                    # every transfer but retain the paid Deal, Order and full
+                    # manifest as preflight_blocked for later replenishment.
+                    db.execute("SAVEPOINT playerok_paid_stock_handoff")
+                    try:
+                        stock_service = ListingStockService(self.database)
+                        for item in recipe.items:
+                            if not isinstance(item.spec, SteamAssetSpec):
+                                continue
+                            active_units = int(db.execute(
+                                "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
+                                "WHERE owner_type='listing' AND listing_id=? "
+                                "AND config_version_id=? AND recipe_item_id=? AND state='active'",
+                                (listing_id, config_id, item.item_id),
+                            ).fetchone()[0])
+                            if not item.required and active_units < item.quantity_per_order:
+                                continue
+                            stock_service.transfer_to_order(
+                                transfer_event_id=self._stable(
+                                    "playerok-stock-transfer",
+                                    order_id + "\\x1f" + item.item_id,
+                                ),
+                                listing_id=listing_id,
+                                config_version_id=config_id,
+                                order_line_id=DeliveryLedger._stable_recipe_line_id(
+                                    order_id, config_id, item.item_id
+                                ),
+                                units=item.quantity_per_order,
+                                recipe_item_id=item.item_id,
+                                connection=db,
+                            )
+                    except InsufficientListingStock:
+                        db.execute("ROLLBACK TO SAVEPOINT playerok_paid_stock_handoff")
+                        db.execute("RELEASE SAVEPOINT playerok_paid_stock_handoff")
+                        db.execute(
+                            "UPDATE gd_orders SET status='preflight_blocked', "
+                            "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
+                            (order_id,),
+                        )
+                    except Exception:
+                        db.execute("ROLLBACK TO SAVEPOINT playerok_paid_stock_handoff")
+                        db.execute("RELEASE SAVEPOINT playerok_paid_stock_handoff")
+                        raise
+                    else:
+                        db.execute("RELEASE SAVEPOINT playerok_paid_stock_handoff")
 
     def _baseline(
         self, adapter: Any, account_user_id: str, *, allow_status_mutation: bool = False
