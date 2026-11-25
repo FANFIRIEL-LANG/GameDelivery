@@ -2717,6 +2717,11 @@ def migrate_delivery_ledger(database_path: str | Path) -> bool:
     ensure_pre_migration_backup(database_path)
     ensure_pre_migration_backup(
         database_path,
+        migration_id=RESERVATION_MANUAL_AUDIT_MIGRATION_ID,
+        backup_suffix=RESERVATION_MANUAL_AUDIT_BACKUP_SUFFIX,
+    )
+    ensure_pre_migration_backup(
+        database_path,
         migration_id=STEAM_CARD_LISTING_LIMIT_MIGRATION_ID,
         backup_suffix=STEAM_CARD_LISTING_LIMIT_BACKUP_SUFFIX,
     )
