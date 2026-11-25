@@ -1,3 +1,35 @@
+## C.3 — аудит call sites и тестовой поверхности atomic lifecycle (2026-11-25)
+
+**Проверенная точка:** HEAD `b5d228c87da90b6ecf74bbcc2f0a32b6b5d1f1e0`, ветка `work/local-sync`. Повторно сверены C.3 plan criteria и актуальные callers на этой ветке.
+
+### Call sites
+
+- Основной typed Recipe путь UI: `app/main.py::_prepare_typed_cs2_recipe_order` → `DeliveryOrderPipeline.prepare_recipe_order`. Он использует уже созданный Playerok Order, получает snapshots из локального inventory snapshot store и не вызывает ASF send на этапе подготовки.
+- Legacy CS2 путь UI: `app/main.py::_prepare_ledger_order` → `prepare_cs2_order` → `cs2_reservations.reserve_order`. Это отдельный legacy path; не менять его неявно при refactor typed Recipe.
+- Steam Cards путь UI: `app/main.py::_prepare_steam_card_order_async` получает seller snapshots и verified buyer diagnostics через ASF вне DB transaction → `prepare_steam_card_order`. Внутри метода уже есть одна транзакция, которая создаёт Steam Cards OrderLine (если отсутствует), DeliveryLegs, canonical + compatibility reservations и переводит Order в reserved. Однако сам Order создан раньше в Playerok sync. Сохранить отдельную карточную бизнес-логику; не объединять её с CS2/general stock.
+- Playerok sync: `integrations/playerok/sync.py::_upsert_incremental` → `_upsert_deal` → `_maybe_create_order`. В текущем пути создаются Order и typed Recipe OrderLines, но не DeliveryLeg/reservations.
+- Прямые вызовы `reserve_recipe_plan` помимо pipeline обнаружены в тестах `tests/test_recipe_unified_reservations.py`; production call path идёт через pipeline. `reserve_recipe_plan` и reservation service остаются низкоуровневыми публичными entry points, поэтому их поведение нужно сохранить для тестов/совместимости либо документированно адаптировать.
+
+### Тестовая поверхность, которую нельзя потерять
+
+- `tests/test_recipe_unified_reservations.py`: typed Recipe, недостаток обязательных ресурсов, optional rows, Steam Cards full-set preflight, exact resources, ListingStock transfer, idempotency, reservation conflicts, concurrent preparations, fail-closed states.
+- `tests/test_multi_game_order_preflight.py`: отдельный Steam Cards flow (multi-game selection, full sets, exact legs/reservations, shortage without partial reserve) и legacy CS2 730/2 path.
+- `tests/test_playerok_sync.py`: baseline не создаёт заказы; paid/incremental sync привязывает точную ConfigVersion; повторный sync идемпотентен; invalid/ineligible config не должен создавать order/lines/reservations.
+- `tests/test_playerok_listing_stock_handoff.py`: оплаченный event и ListingStock handoff; проверяет reserve/transfer и повторный preparation.
+- `tests/test_delivery_reservation_service.py`: атомарные reservation-service инварианты и отказные сценарии.
+
+### Вывод для минимального refactor
+
+1. Не переносить ASF/Steam вызовы внутрь транзакции. Snapshot и verified metadata должны быть получены заранее.
+2. Не менять UI/handler маршрутизацию и не объединять Steam Cards с CS2.
+3. Typed Recipe path — первый и основной scope для закрытия конкретного C.3 разрыва. Сохранить стабильный order ID от Playerok deal и exact ConfigVersion binding.
+4. Paid Deal и ConfigVersion должны оставаться надёжно зафиксированными sync-процессом. Создание Order/OrderLines/manifest и initial reservations для успешной подготовки typed Recipe перенести в один короткий transaction commit после pure planning. Для shortage/failed preflight сохранить Order + полный manifest в статусе `preflight_blocked`, но без DeliveryLeg и physical reservations; эта запись также должна быть атомарной.
+5. Текущие `prepare_cs2_order` и `prepare_steam_card_order` — отдельные compatibility paths. Не переписывать их в этом изменении без подтверждения, что конкретный acceptance case C.3 требует их включить; отдельно проверить и зафиксировать, что они не оставляют reservation без Order/manifest при сбое.
+6. Тесты для нового commit boundary должны проверять rollback после создания Order, после OrderLine materialization, во время ListingStock transfer, после первого из нескольких reservation inserts; повторный preparation; недостаток ресурсов; parallel preparation; ConfigVersion/eligibility mismatch. Старые тесты прямого `reserve_recipe_plan` не удалять.
+
+**Статус:** аудит callers завершён на уровне доступных production call sites и основных тестовых модулей. Production code не менялся; тесты не запускались; live Steam/Playerok actions не выполнялись. Следующий кодовый шаг — минимальный typed Recipe refactor, начиная с transaction-aware helper для создания Order + OrderLines и reservation commit, затем целевые тесты и GitHub Actions.
+
+---
 ## C.3 — уточнение Order → preflight → reservation lifecycle (2026-11-25)
 
 **Проверенная точка перед анализом:** HEAD до этой записи `86d2e2c197c953bcf52ed93746fc0225a7d3aee3`, ветка `work/local-sync`. План C.3 перечитан непосредственно из `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`.
