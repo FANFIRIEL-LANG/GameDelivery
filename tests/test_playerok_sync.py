@@ -206,6 +206,19 @@ class PlayerokDealSyncTests(unittest.TestCase):
                            (normalized_id,)).fetchone()[0],
                 1,
             )
+        # A later polling sync must preserve the audited binding and its order.
+        self.syncer.sync(adapter)
+        with self.database.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT config_version_id FROM gd_deals WHERE deal_id=?",
+                           (normalized_id,)).fetchone()[0],
+                config["config_version_id"],
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_orders WHERE deal_id=?",
+                           (normalized_id,)).fetchone()[0],
+                1,
+            )
         with self.assertRaisesRegex(ValueError, "уже создан"):
             self.syncer.bind_paid_deal_config_version(
                 account_user_id="seller-account-1",
