@@ -1,3 +1,28 @@
+## C.3 — перенос Recipe manifest в reservation commit (2026-11-25)
+
+**База:** HEAD `e9f04f3430439d448341d695bc520785046c5162`, ветка `work/local-sync`.
+
+### Изменения
+
+- `DeliveryOrderPipeline.prepare_recipe_order()` больше не материализует OrderLine отдельной транзакцией перед планированием. Он получает Recipe из точной ConfigVersion и строит стабильные OrderLine IDs через существующий deterministic ID helper.
+- `DeliveryReservationService.reserve_recipe_plan()` теперь вызывает `materialize_recipe_order_lines_in_transaction()` после повторной проверки Order/ConfigVersion и внутри своей `BEGIN IMMEDIATE` транзакции. Создание/проверка полного manifest, ListingStock transfer, DeliveryLeg и canonical reservations выполняются в одной транзакции успешного reservation commit.
+- Если pure preflight не обеспечивает обязательные ресурсы, pipeline сохраняет/проверяет полный immutable manifest отдельной короткой транзакцией; DeliveryLeg и физические reservations не создаются.
+- Если ListingStock transfer сообщает о недостаточном остатке, reservation transaction откатывается целиком; после rollback сохраняется только manifest, без частичного transfer/DeliveryLeg/reservation.
+- Публичный `reserve_recipe_plan()` и его прежние прямые callers сохранены. Steam Cards selection/preflight, legacy CS2 path, ASF boundary и Playerok ConfigVersion fail-closed binding не переписывались.
+
+### Regression coverage
+
+- Добавлен тест успешного typed Recipe reservation: до подготовки OrderLine отсутствуют; после commit manifest, DeliveryLeg и canonical reservation присутствуют.
+- Добавлен rollback test: ошибка проверки плана после materialization откатывает OrderLine вместе с транзакцией; Order остаётся pending, DeliveryLeg не появляется.
+
+### Оставшаяся граница C.3
+
+Playerok PAID sync по-прежнему создаёт canonical Order и полный manifest в своей транзакции, когда точная ConfigVersion уже доказана. Этот коммит подтверждает существующий Order в reservation transaction и переносит создание manifest для pipeline-created orders внутрь reservation commit, но не переносит само создание PAID Order из sync: это остаётся отдельным lifecycle gap для дальнейшего решения. Unresolved PAID Deal без точной ConfigVersion по-прежнему не получает Order. Поэтому C.3 остаётся **OPEN**; данный slice не объявляется полным закрытием критерия Order + manifest + initial reservations.
+
+**Проверка:** production code и два regression tests опубликованы в `work/local-sync`. Локальные тесты в этой среде не запускались. Ожидается GitHub Actions для нового HEAD. Реальные Playerok/Steam операции не выполнялись. `main` и PR #4 не сливались.
+
+---
+
 ## C.3 — проверка доступных Playerok timestamps для ConfigVersion binding (2026-11-25)
 
 Проверены реальные поля GraphQL query и browser snapshot mapping:
