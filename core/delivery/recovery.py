@@ -435,6 +435,18 @@ class DeliveryRecoveryService:
                      str(target["context_id"]), target["asset_id"]),
                 )
 
+            if int(target["app_id"]) == 753 and str(target["context_id"]) == "6":
+                snapshot_meta_exists = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='steam_inventory_snapshot_meta'"
+                ).fetchone()
+                if snapshot_meta_exists:
+                    db.execute(
+                        "UPDATE steam_inventory_snapshot_meta "
+                        "SET updated_at='2000-01-01T00:00:00+00:00' WHERE bot_name=? COLLATE NOCASE",
+                        (target["bot_name"],),
+                    )
+
             evidence = {
                 "local_reservation_only": True,
                 "steam_offer_cancelled": False,
