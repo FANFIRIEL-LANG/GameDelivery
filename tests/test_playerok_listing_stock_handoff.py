@@ -69,10 +69,48 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
             active=[deal("stock-transfer-paid", "listing-live")],
         )
         self.syncer.sync(adapter)  # Complete the historical baseline.
-        self.syncer.sync(adapter)  # Persist the first post-baseline PAID deal and order.
-        order_id = self.syncer._stable(
-            "playerok-order", "seller-account-1\x1fstock-transfer-paid"
-        )
+        self.syncer.sync(adapter)  # Persist the first post-baseline PAID deal.
+
+        # A PAID event alone does not prove which ConfigVersion was active at
+        # payment time. Keep the production fail-closed behavior: no order is
+        # created until that exact version has been explicitly bound.
+        with self.database.connect() as db:
+            deal_row = db.execute(
+                "SELECT deal_id FROM gd_deals WHERE source_platform='playerok' "
+                "AND external_deal_id=?",
+                ("stock-transfer-paid",),
+            ).fetchone()
+            self.assertIsNotNone(deal_row)
+            normalized_deal_id = str(deal_row["deal_id"])
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_orders WHERE deal_id=?",
+                           (normalized_deal_id,)).fetchone()[0],
+                0,
+            )
+
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE gd_deals SET config_version_id=? "
+                "WHERE deal_id=? AND listing_id=?",
+                (config["config_version_id"], normalized_deal_id, config["listing_id"]),
+            )
+            version = db.execute(
+                "SELECT recipe_schema_version,delivery_quantity_per_deal,"
+                "item_selectors_json,bot_pool_json FROM gd_config_versions "
+                "WHERE config_version_id=?",
+                (config["config_version_id"],),
+            ).fetchone()
+            self.syncer._maybe_create_order(
+                db, normalized_deal_id, "stock-transfer-paid", "seller-account-1",
+                "PAID", 0, config["listing_id"], config["config_version_id"],
+                dict(version),
+            )
+            order_row = db.execute(
+                "SELECT order_id FROM gd_orders WHERE deal_id=?",
+                (normalized_deal_id,),
+            ).fetchone()
+            self.assertIsNotNone(order_row)
+            order_id = str(order_row["order_id"])
 
         pipeline = DeliveryOrderPipeline(self.database)
         prepared = pipeline.prepare_recipe_order(order_id=order_id, snapshots={})
