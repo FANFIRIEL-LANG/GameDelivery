@@ -339,6 +339,40 @@ class PlayerokDealSyncService:
             )
         return {"deal_id": deal_id, "listing_id": listing_external_id, "resolved": True}
 
+    def list_config_versions_for_paid_deal(
+        self, *, account_user_id: str, external_deal_id: str
+    ) -> list[dict[str, Any]]:
+        """Return exact ConfigVersions belonging to this unresolved PAID Deal's listing."""
+        account = str(account_user_id or "").strip()
+        external = str(external_deal_id or "").strip()
+        if not account or not external:
+            raise ValueError("Account ID и Deal ID обязательны")
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT listing_id,platform_status,is_historical FROM gd_deals "
+                "WHERE source_platform='playerok' AND playerok_account_id=? AND external_deal_id=?",
+                (account, external),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Playerok Deal не найден")
+            if str(row["platform_status"] or "").upper() != "PAID" or bool(row["is_historical"]):
+                raise ValueError("Выбор ConfigVersion доступен только для актуальной PAID-сделки")
+            if not row["listing_id"]:
+                raise ValueError("Сначала необходимо сопоставить Deal с точным объявлением")
+            if db.execute("SELECT 1 FROM gd_orders WHERE deal_id=(SELECT deal_id FROM gd_deals "
+                          "WHERE source_platform='playerok' AND playerok_account_id=? "
+                          "AND external_deal_id=?) LIMIT 1", (account, external)).fetchone():
+                raise ValueError("Заказ уже создан")
+            return [
+                {"config_version_id": str(value["config_version_id"]),
+                 "version_number": int(value["version_number"])}
+                for value in db.execute(
+                    "SELECT config_version_id,version_number FROM gd_config_versions "
+                    "WHERE listing_id=? ORDER BY version_number DESC",
+                    (str(row["listing_id"]),),
+                ).fetchall()
+            ]
+
     def bind_paid_deal_config_version(
         self, *, account_user_id: str, external_deal_id: str,
         config_version_id: str, operator_id: str, reason: str,
