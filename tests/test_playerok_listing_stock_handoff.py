@@ -136,8 +136,12 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
 
             allocations = db.execute(
                 "SELECT owner_type,state,units FROM gd_stock_allocations "
-                "WHERE config_version_id=? ORDER BY owner_type",
-                (config["config_version_id"],),
+                "WHERE owner_type='listing' AND config_version_id=? "
+                "UNION ALL "
+                "SELECT owner_type,state,units FROM gd_stock_allocations "
+                "WHERE owner_type='order' AND order_line_id=? "
+                "ORDER BY owner_type",
+                (config["config_version_id"], line["order_line_id"]),
             ).fetchall()
             self.assertEqual(
                 sorted((row["owner_type"], row["state"], row["units"]) for row in allocations),
