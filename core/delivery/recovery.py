@@ -304,7 +304,7 @@ class DeliveryRecoveryService:
         result = []
         for row in rows:
             item = dict(row)
-            item["orphaned"] = item["owner_type"] == "order" and (
+            item["orphaned"] = item["owner_type"] in {"order", "legacy"} and (
                 not item.get("order_line_id") or not item.get("order_id")
             )
             result.append(item)
