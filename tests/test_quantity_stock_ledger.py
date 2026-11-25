@@ -398,9 +398,6 @@ class QuantityStockLedgerTests(unittest.TestCase):
                 )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
     def test_quantity_stock_migration_rolls_back_partial_ddl_on_trigger_conflict(self):
         from core.database.ledger_migrations import (
             QUANTITY_STOCK_MIGRATION_ID,
@@ -457,3 +454,7 @@ if __name__ == "__main__":
             )
         finally:
             connection.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
