@@ -724,8 +724,12 @@ class DeliveryReservationService:
                     else ()
                 ) or tuple(config_bot_pool)
                 allowed_keys = {bot.strip().casefold() for bot in allowed_bots}
-                if line_plan.units and not allowed_keys:
+                if line_plan.units and not allowed_keys and not isinstance(item.spec, SteamCardSetSpec):
                     raise ValueError("RecipeItem не имеет допустимого bot_pool")
+                # For Steam Cards, an empty configured pool is intentional:
+                # the buyer-specific preflight has already selected exact cards
+                # from verified 753/6 bot snapshots, and the checks below bind
+                # every reserved resource to that immutable preflight result.
                 if isinstance(item.spec, SteamCardSetSpec):
                     preflight = line_plan.steam_card_preflight
                     if line_plan.units and (
