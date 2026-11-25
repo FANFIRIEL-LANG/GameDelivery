@@ -1,3 +1,27 @@
+## C.3 preflight status persistence correction (2026-11-25)
+
+**Проверенная база:** `work/local-sync`, HEAD перед исправлением `fba652b4536cb162d026e73a4253f9a316e4a355`.
+
+### Найденная ошибка
+
+`prepare_recipe_order()` возвращал `preflight_blocked` при недостатке обязательных ресурсов, но в БД заказ оставался `pending`. Это расходилось с фактическим результатом pipeline и делало состояние заказа неверным для очереди/повторной обработки.
+
+### Исправление
+
+- `_persist_preflight_manifest()` теперь в одной `BEGIN IMMEDIATE` транзакции проверяет/сохраняет полный immutable OrderLine manifest и переводит заказ в `preflight_blocked`.
+- Переход разрешён только из `pending`, `insufficient_stock` или `preflight_blocked`; если другой worker уже изменил состояние (например, успешно зарезервировал заказ), транзакция откатывается и состояние не перезаписывается.
+- Добавлены regression assertions для нехватки обязательных CS2 ресурсов и нехватки полного Steam Cards preflight: в обоих случаях нет DeliveryLeg/активных резервов, а persisted Order status равен `preflight_blocked`.
+
+### Проверка и ограничения
+
+- GitHub branch head после двух последовательных file commits: `7d35d8d02138a10c88f675f3e6eeb338e382d6c0`.
+- Production diff и тестовые assertions перечитаны с GitHub.
+- Локальные тесты и GitHub Actions для этого HEAD ещё не подтверждены; не объявлять исправление CI-verified.
+- C.3 остаётся OPEN: payment sync по-прежнему создаёт PAID Order + manifest до pure planning, а единая транзакция должна охватывать создание/подтверждение Order, manifest и initial reservations. Этот lifecycle gap не закрыт данным исправлением.
+- `main` и PR #4 не изменялись/не сливались; реальные Steam/Playerok операции не выполнялись.
+
+---
+
 ## C.3 — перенос Recipe manifest в reservation commit (2026-11-25)
 
 **База:** HEAD `e9f04f3430439d448341d695bc520785046c5162`, ветка `work/local-sync`.
