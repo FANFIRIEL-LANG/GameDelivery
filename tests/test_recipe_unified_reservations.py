@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1346,6 +1347,67 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
         with self.database.connect() as db:
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'"
+            ).fetchone()[0], 2)
+
+    def test_parallel_preparations_of_same_order_are_idempotent(self):
+        spec = (recipe_item(
+            "cs2", 1, "steam_asset", 2,
+            SteamAssetSpec("cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)),
+        ),)
+        order, _ = self.create_recipe_order("parallel-same-order", spec)
+        snapshots = {
+            ("Bot-A", 730, "2"): InventorySnapshot(
+                "Bot-A", "cs2", 730, "2", NOW,
+                (self.cs2("Bot-A", "same-order-1"), self.cs2("Bot-A", "same-order-2")), True,
+            ),
+        }
+
+        # Force both calls past the initial order/config lookup together, so
+        # both resource plans are built before either reservation is committed.
+        barrier = Barrier(2)
+        original_config_for_order = self.pipeline._config_for_order
+
+        def synchronized_config_lookup(order_id):
+            config = original_config_for_order(order_id)
+            barrier.wait(timeout=10)
+            return config
+
+        self.pipeline._config_for_order = synchronized_config_lookup
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(
+                    lambda _index: self.pipeline.prepare_recipe_order(
+                        order_id=order, snapshots=snapshots,
+                    ),
+                    range(2),
+                ))
+        finally:
+            self.pipeline._config_for_order = original_config_for_order
+
+        self.assertEqual([result.status for result in results], ["reserved", "reserved"])
+        self.assertEqual(results[0].legs, results[1].legs)
+        self.assertEqual(set(results[0].reserved_assets), set(results[1].reserved_assets))
+        self.assertEqual(set(results[0].reserved_assets), {
+            ("Bot-A", "same-order-1"), ("Bot-A", "same-order-2"),
+        })
+        with self.database.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_orders WHERE order_id=?", (order,),
+            ).fetchone()[0], "reserved")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_order_lines WHERE order_id=?", (order,),
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
+                "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
+            ).fetchone()[0], 1)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active' "
+                "AND order_line_id IN (SELECT order_line_id FROM gd_order_lines WHERE order_id=?)",
+                (order,),
+            ).fetchone()[0], 2)
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,),
             ).fetchone()[0], 2)
 
     def test_unknown_order_keeps_canonical_and_card_compatibility_reserves(self):
