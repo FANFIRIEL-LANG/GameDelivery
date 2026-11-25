@@ -1,3 +1,17 @@
+## C.3 — перенос ListingStock в reservation commit (2026-11-25)
+
+**База изменения:** HEAD `404290cdac6f26d0cd6d581ffc723febbe9bdfb1`, ветка `work/local-sync`.
+
+- Удалён ранний ListingStock transfer из Playerok PAID sync. Sync сохраняет Deal, Order и полный immutable OrderLine manifest, но не переводит listing allocations на заказ.
+- Передача ListingStock остаётся в `DeliveryReservationService.reserve_recipe_plan()`, внутри той же `BEGIN IMMEDIATE` транзакции, что создаёт DeliveryLeg и физические reservations. ASF/network calls не добавляются в транзакцию.
+- Обновлён handoff test: до подготовки нет transfer/order allocation; после успешного reservation commit transfer, allocation и DeliveryLeg должны существовать; повторная подготовка не создаёт второй transfer.
+- Поведение fail-closed для PAID Deal без точной ConfigVersion не менялось. Steam Cards и legacy CS2 paths не менялись.
+- Локальные тесты не запускались в этой среде. CI будет проверен после публикации коммита.
+
+**Статус C.3:** OPEN. Этот перенос закрывает только преждевременный ListingStock handoff. Order + manifest всё ещё создаются при PAID sync отдельно от позднего pure planning/reservation commit; полный атомарный lifecycle C.3 остаётся незавершённым.
+
+---
+
 ## C.3 — аудит call sites и тестовой поверхности atomic lifecycle (2026-11-25)
 
 **Проверенная точка:** HEAD `b5d228c87da90b6ecf74bbcc2f0a32b6b5d1f1e0`, ветка `work/local-sync`. Повторно сверены C.3 plan criteria и актуальные callers на этой ветке.
