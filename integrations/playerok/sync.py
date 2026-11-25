@@ -49,6 +49,17 @@ class PlayerokDealSyncService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_playerok_outbox_poll
                     ON playerok_status_outbox(account_user_id,state,updated_at);
+                CREATE TABLE IF NOT EXISTS playerok_paid_config_bindings (
+                    binding_id TEXT PRIMARY KEY,
+                    account_user_id TEXT NOT NULL,
+                    deal_id TEXT NOT NULL REFERENCES gd_deals(deal_id) ON DELETE RESTRICT,
+                    listing_id TEXT NOT NULL REFERENCES gd_listings(listing_id) ON DELETE RESTRICT,
+                    config_version_id TEXT NOT NULL REFERENCES gd_config_versions(config_version_id) ON DELETE RESTRICT,
+                    operator_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    bound_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    UNIQUE(account_user_id,deal_id)
+                );
                 DROP TRIGGER IF EXISTS gd_orders_playerok_delivered;
                 CREATE TRIGGER gd_orders_playerok_delivered
                 AFTER UPDATE OF status ON gd_orders
@@ -311,6 +322,96 @@ class PlayerokDealSyncService:
                 (listing_id, config_id, row["deal_id"], account_id),
             )
         return {"deal_id": deal_id, "listing_id": listing_external_id, "resolved": True}
+
+    def bind_paid_deal_config_version(
+        self, *, account_user_id: str, external_deal_id: str,
+        config_version_id: str, operator_id: str, reason: str,
+    ) -> dict[str, Any]:
+        """Explicitly bind a PAID deal to an operator-selected immutable ConfigVersion.
+
+        The binding audit, deal snapshot and initial order creation share one
+        BEGIN IMMEDIATE transaction. No latest-version fallback is performed.
+        """
+        account = str(account_user_id or "").strip()
+        external = str(external_deal_id or "").strip()
+        config_id = str(config_version_id or "").strip()
+        operator = str(operator_id or "").strip()
+        why = str(reason or "").strip()
+        if not all((account, external, config_id, operator, why)):
+            raise ValueError("Account, Deal, ConfigVersion, operator и причина обязательны")
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT deal_id,listing_id,config_version_id,platform_status,is_historical "
+                "FROM gd_deals WHERE source_platform='playerok' AND playerok_account_id=? "
+                "AND external_deal_id=?",
+                (account, external),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Playerok Deal не найден для указанного аккаунта")
+            if str(row["platform_status"] or "").upper() != "PAID" or bool(row["is_historical"]):
+                raise ValueError("ConfigVersion можно привязать только к актуальной PAID-сделке")
+            deal_pk = str(row["deal_id"])
+            listing_id = str(row["listing_id"] or "")
+            if not listing_id:
+                raise ValueError("Сначала необходимо точно сопоставить Deal с объявлением Playerok")
+            baseline = db.execute(
+                "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id=?",
+                (account,),
+            ).fetchone()
+            if baseline is None or int(baseline["baseline_completed"]) != 1:
+                raise ValueError("Исторический baseline аккаунта ещё не завершён")
+            version = db.execute(
+                "SELECT config_version_id,listing_id FROM gd_config_versions WHERE config_version_id=?",
+                (config_id,),
+            ).fetchone()
+            if version is None or str(version["listing_id"]) != listing_id:
+                raise ValueError("Выбранная ConfigVersion не принадлежит объявлению этой сделки")
+            existing_order = db.execute(
+                "SELECT order_id FROM gd_orders WHERE deal_id=? LIMIT 1", (deal_pk,)
+            ).fetchone()
+            if existing_order is not None:
+                raise ValueError("Заказ уже создан; ConfigVersion нельзя менять задним числом")
+            existing_binding = db.execute(
+                "SELECT config_version_id FROM playerok_paid_config_bindings "
+                "WHERE account_user_id=? AND deal_id=?", (account, deal_pk)
+            ).fetchone()
+            if existing_binding is not None:
+                raise ValueError("Для этой PAID-сделки ConfigVersion уже зафиксирована")
+            config = db.execute(
+                "SELECT config_version_id,recipe_schema_version,delivery_quantity_per_deal,"
+                "item_selectors_json,bot_pool_json FROM gd_config_versions WHERE config_version_id=?",
+                (config_id,),
+            ).fetchone()
+            db.execute(
+                "UPDATE gd_deals SET config_version_id=? WHERE deal_id=? AND listing_id=? "
+                "AND (config_version_id IS NULL OR config_version_id='')",
+                (config_id, deal_pk, listing_id),
+            )
+            if db.execute("SELECT changes()").fetchone()[0] != 1:
+                raise ValueError("Deal уже имеет закреплённую ConfigVersion; перезапись запрещена")
+            binding_id = self._stable("playerok-paid-config-binding", account + "\\x1f" + external)
+            db.execute(
+                "INSERT INTO playerok_paid_config_bindings "
+                "(binding_id,account_user_id,deal_id,listing_id,config_version_id,operator_id,reason) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (binding_id, account, deal_pk, listing_id, config_id, operator, why),
+            )
+            self._maybe_create_order(
+                db, deal_pk, external, account, "PAID", 0,
+                listing_id, config_id, dict(config),
+            )
+            order = db.execute(
+                "SELECT order_id,status,total_quantity FROM gd_orders WHERE deal_id=?",
+                (deal_pk,),
+            ).fetchone()
+            if order is None:
+                raise ValueError("Выбранная ConfigVersion не позволяет создать безопасный заказ")
+            return {
+                "deal_id": external, "listing_id": listing_id,
+                "config_version_id": config_id, "order_id": str(order["order_id"]),
+                "status": str(order["status"]), "binding_id": binding_id,
+            }
 
     def _maybe_create_order(
         self, db, normalized_id, external_id, account_id, status, historical,
