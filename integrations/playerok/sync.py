@@ -401,16 +401,21 @@ class PlayerokDealSyncService:
                             ).fetchone()[0])
                             if not item.required and active_units < item.quantity_per_order:
                                 continue
+                            from core.delivery.reservation_service import DeliveryReservationService
+
+                            line_id = DeliveryLedger._stable_recipe_line_id(
+                                order_id, config_id, item.item_id
+                            )
                             stock_service.transfer_to_order(
-                                transfer_event_id=self._stable(
-                                    "playerok-stock-transfer",
-                                    order_id + "\\x1f" + item.item_id,
+                                # Match the existing reservation-service key so
+                                # its later preparation call is idempotent.
+                                transfer_event_id=DeliveryReservationService._stable_id(
+                                    "stock-transfer",
+                                    f"{order_id}:{line_id}:{item.item_id}",
                                 ),
                                 listing_id=listing_id,
                                 config_version_id=config_id,
-                                order_line_id=DeliveryLedger._stable_recipe_line_id(
-                                    order_id, config_id, item.item_id
-                                ),
+                                order_line_id=line_id,
                                 units=item.quantity_per_order,
                                 recipe_item_id=item.item_id,
                                 connection=db,
