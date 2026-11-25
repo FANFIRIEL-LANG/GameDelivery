@@ -362,7 +362,7 @@ class DeliveryRecoveryTests(unittest.TestCase):
             resource_kind="stock_allocation", resource_id="stock-recovery",
             actor="operator-3", reason="Unknown offer reviewed manually",
             reason_code="unknown", steam_status="unknown",
-            related_offer_ids=["offer-unknown-1"], confirmed=True,
+            related_offer_ids=["offer-unknown-1"], confirmed=True, override_confirmed=True,
         )
         self.assertTrue(result["local_only"])
         self.assertFalse(result["steam_offer_cancelled"])
@@ -429,7 +429,7 @@ class DeliveryRecoveryTests(unittest.TestCase):
         result = self.service.manual_release_reservation(
             resource_kind="resource_reservation", resource_id="reservation-orphan",
             actor="operator-5", reason="Legacy orphan reviewed",
-            reason_code="other", steam_status="unknown", confirmed=True,
+            reason_code="other", steam_status="unknown", confirmed=True, override_confirmed=True,
         )
         self.assertIsNone(result["order_id"])
         self.assertEqual(result["status"], "released")
