@@ -1,3 +1,116 @@
+## Рабочий план завершения GameDelivery — зафиксировано 2026-11-25
+
+**Назначение записи:** прекратить параллельное выполнение разрозненных задач и вести разработку по одной последовательности до завершения программы. Эта запись фиксирует рабочий порядок и правила управления задачами; она не объявляет незавершённые блоки закрытыми и не заменяет критерии приёмки разделов C.1–C.11.
+
+### 1. Правило актуального состояния проекта
+
+- Единственный обязательный источник текущего состояния перед началом каждой новой задачи — этот файл `PROJECT_MASTER_LOG.md` в GitHub, ветка `work/local-sync`.
+- Перед началом работы перечитать актуальную верхнюю часть журнала и относящиеся к задаче разделы, а также соответствующий план `docs/superpowers/plans/2026-11-06-delivery-system-stage-c.md`.
+- Сверить фактический HEAD ветки, рабочее состояние, связанные файлы, тесты и CI. Не полагаться на старые сообщения чата или память как на более авторитетный источник, чем актуальный журнал и код.
+- После каждого подтверждённого существенного изменения записывать сюда дату, точный результат, затронутые области, commit SHA, тесты/CI и оставшиеся ограничения.
+- В начале каждой следующей рабочей сессии сначала восстановить позицию по этому журналу. Не просить пользователя повторно объяснять уже зафиксированные требования.
+- Если журнал, план и код противоречат друг другу, остановиться, выявить расхождение и зафиксировать его; не выбирать трактовку самостоятельно и не переписывать бизнес-правила.
+
+### 2. Что уже существует — не начинать заново
+
+По истории реализации и CI в этом журнале проект уже содержит существенные части следующих подсистем:
+
+- ASF Generic integration и собственный `GameDelivery.ASFPlugin`, включая существующие механизмы preview/send и обработку результата.
+- Игровой каталог, парсер и снимки инвентарей, `GameInventoryStore` и существующий интерфейс инвентаря.
+- Существующие игровые/CS2 модели и селекторы, AppID 730 / ContextID 2, часть логики Listing Stock и распределения ресурсов.
+- Отдельную Steam Cards подсистему с inventory snapshots, badge/set analysis, selection, reservations и preflight.
+- Playerok adapter/browser-related workflow, Safe Sync, baseline, deduplication и разделение Deal ID / Chat ID / Listing ID.
+- Delivery orders/lines, listing stock allocations, canonical reservations, delivery legs/attempts, ledger/reconciliation и SQLite migrations.
+- Ручной reservation override/orphan audit service и durable Telegram outbox.
+- Windows packaging/EXE smoke-test pipeline и GitHub Actions Tests / Windows Build.
+
+Наличие этих компонентов не означает автоматического закрытия всей функции. Для каждого пункта отдельно проверять: код существует; подключён к реальному call path/UI; покрыт тестами; прошёл CI на конкретном SHA; прошёл требуемую безопасную live-проверку. Уже реализованное повторно не переписывать без выявленного дефекта или конкретного незакрытого критерия.
+
+### 3. Последовательность завершения — один этап за раз
+
+**Этап 1 — закрыть C.3: ledger, listing stock, reservations и recovery.**
+- Провести точную сверку каждого acceptance criterion C.3 с кодом и тестами.
+- Не переписывать уже работающие миграции, listing stock → order handoff, атомарные резервы и audit.
+- Выявить только реальные незакрытые сценарии: cancellation/failure boundaries, order/reservation lifecycle, orphan/unknown recovery, backup/rollback, отсутствие скрытых резервов.
+- Ручное снятие резерва должно оставаться отдельным локальным override с предупреждением, аудитом и последующим обновлением snapshot.
+- Не создавать отдельную операторскую панель. Управление оператором планируется через Telegram в соответствующем этапе.
+- Закрыть C.3 только после выполнения его acceptance criteria и фиксации доказательств.
+
+**Этап 2 — закрыть C.4: единый исполняемый delivery path.**
+- Уже добавленные `DeliveryHandlerV1` / `DeliveryHandlerRegistry` считать фундаментом, а не завершённым диспетчером.
+- Проверить, чего не хватает для фактического dispatcher, попыток, parent order + delivery legs, idempotency, partial result, UNKNOWN/reconcile и restart recovery.
+- Реализовывать только минимальные необходимые части, чтобы подключить существующие способы доставки.
+- Завершить contract/regression tests и зафиксировать критерии.
+
+**Этап 3 — закрыть C.5: подключить существующую Steam Cards доставку.**
+- Не переписывать существующий Steam Cards flow.
+- Сохранить согласованные правила: пользователь указывает для каждого Playerok объявления только общее числовое количество полных наборов; физические карточки, AssetID, разбиение по играм и ботам в настройках объявления не задаются.
+- Сохранить автоматический подбор по существующим правилам, точные asset ownership, preview → live preflight → подтверждение → ASF send → offer/result, reservations и ledger sync.
+- Foil cards/foil badges не участвуют. Не использовать buyer inventory как вход allocator-а; проверять обычный badge progress покупателя, состав обычного набора по подтверждённому обычному значку наших ботов и seller inventories наших ботов согласно утверждённому C.2.9.
+- Закрыть точное сопоставление типов карточек, stale/unknown gates, idempotency, cancellation и unknown outcomes.
+- Live-тестирование только отдельно на тестовом аккаунте и после явного разрешения.
+
+**Этап 4 — закрыть существующую доставку игровых предметов / CS2 (C.6).**
+- Это не новый проект и не повторное начало CS2: переиспользовать существующие каталог, парсер, inventory snapshots, selectors, Listing Stock, UI и ASF plugin.
+- Не менять карточную подсистему и не смешивать Steam Cards 753/6 с игровыми активами.
+- Проверить фактическую transfer capability ASF для AppID 730 / ContextID 2.
+- Подключить существующий игровой путь к общему delivery contract; обеспечить exact asset identity, свежий snapshot, tradable gate, точный quantity, распределение между ботами/trade legs, attempts/reconcile и безопасное восстановление.
+- Никаких live offers без отдельного разрешения.
+
+**Этап 5 — завершить Playerok workflow.**
+- Сохранить уже реализованные Safe Sync, baseline, deduplication и раздельные deal/chat/listing identities.
+- Закрыть только недостающие части цепочки: точная привязка payment-time ConfigVersion, заказ и доставка, внутренний browser workflow, Trade URL, сообщения/статусы и безопасная обработка неизвестного результата.
+- Не запускать автоматические действия с объявлениями, отправку сообщений или status mutation без соответствующего проверенного этапа и явного разрешения.
+
+**Этап 6 — Telegram как канал оператора.**
+- Переиспользовать существующий durable Telegram outbox и внутренние delivery events; не создавать второй источник состояния заказа.
+- Реализовать настройки, защищённое хранение секретов, proxy support после проверки, connection test и test message, event notifications, allowlist, audit, deduplication/retry и безопасные operator commands.
+- Telegram outage не должен останавливать Playerok sync или delivery.
+- Не создавать отдельную операторскую панель вместо согласованного Telegram-интерфейса.
+
+**Этап 7 — остальные категории fulfillment по плану.**
+- C.7 цифровые ключи/коды.
+- C.8 файловая доставка.
+- C.9 услуги и ручное исполнение.
+- Для каждой категории отдельно определить реальную передачу, резервирование, audit, idempotency и честные статусы automated / operator-assisted / unsupported.
+
+**Этап 8 — C.10/C.11: итоговый интерфейс, интеграция, регрессия и приёмка.**
+- Свести существующие экраны и подсистемы в целостный рабочий поток без потери текущих функций.
+- Проверить UI, настройки объявлений, inventory views/filters, orders, reservations, reconciliation, Telegram и упаковку.
+- Выполнить полную регрессию Tests, Windows package/smoke test и ASF plugin build.
+- Миграции проверять на копии базы; live-проверки выполнять только на тестовых ресурсах и после отдельного разрешения.
+- Этап C не объявлять завершённым только на основании зелёного CI: нужны все требуемые acceptance и live gates.
+
+### 4. Обязательный рабочий протокол
+
+1. Один этап за раз. Не переходить к следующему, пока текущий не закрыт по критериям.
+2. Внутри этапа — одна конкретная задача за раз; не распыляться на параллельные функции.
+3. Перед изменением — коротко назвать точную цель, разрешённые файлы/область и критерий готовности.
+4. Сначала изучить существующий call path и тесты; затем TDD и минимальное изменение.
+5. Не повторять уже успешные диагностики без причины.
+6. После изменения — целевые тесты, нужная регрессия, затем CI на точном SHA, если он требуется.
+7. Записать результат в этот журнал и остановиться на границе задачи/этапа.
+8. Не заявлять «готово», если функция существует только как отдельный модуль, не подключена к рабочему пути, не проверена или имеет незакрытые обязательные gates.
+9. Не придумывать новые пользовательские настройки, сущности, роли, склады, per-bot selection или правила распределения. Следовать зафиксированным требованиям.
+10. Не менять `main`, не сливать PR #4 без прямого разрешения. Рабочая ветка — `work/local-sync`.
+11. Не выполнять реальные Steam trades, Playerok публикации/сообщения/status mutations без отдельного разрешения.
+
+### 5. Текущая рабочая позиция на 2026-11-25
+
+- В работе находится C.3. Последние зафиксированные изменения затрагивают listing stock → order handoff, SQLite migration safety и manual reservation override/orphan audit.
+- На HEAD `4b1f6582a5b3be4ac3e8fa88f998a95092b2d72d` Tests run `45657277445` и Windows Build run `45657277545` прошли успешно для manual reservation override/orphan audit. Более ранний listing-stock handoff CI на HEAD `b1bd50e75fd4ab0eb57e392e6ebad913765d3654`: Tests run `45654999701` и Windows Build run `45654999695` прошли успешно (1,062 tests).
+- Это не доказывает закрытие C.3 целиком: UI/operator connection и оставшиеся lifecycle/failure-recovery acceptance items открыты.
+- C.4: контракт и registry добавлены, но фактическое подключение полного dispatcher/attempt/recovery path не подтверждено как завершённое.
+- C.5: Steam Cards listing quota реализована и проверена CI, но подключение полного существующего Steam Cards flow к общей delivery system и оставшиеся live/technical gates ещё требуют аудита.
+- C.6: существующие inventory/CS2 компоненты сохраняются; готовность полного delivery handler и ASF transfer acceptance не объявляется без проверки.
+- Последняя известная зафиксированная позиция: сначала завершить аудит и закрытие C.3; не начинать C.4/C.5/C.6 параллельно.
+- На момент этой записи точный HEAD ветки отдельно не подтверждён этим checkpoint; перед следующими изменениями обязательно получить актуальный HEAD и состояние CI.
+- `main` и PR #4 не изменять.
+
+**Следующее действие:** провести детальную таблицу C.3 acceptance criteria → существующий код → тесты/CI → статус → конкретный остаток. Не менять код до завершения этой сверки.
+
+---
+
 **C.3 Manual reservation override and orphan audit (2026-11-25):** Audited `DeliveryRecoveryService` against the C.3 lifecycle requirements and found the existing `release()` only handled linked ACTION_REQUIRED orders/legs after terminal attempt, recipient verification, confirmed offer absence, and fresh inventory. Added an additive `gd_reservation_manual_actions` append-only audit table without order/leg foreign keys so manual actions remain recordable for orphaned/legacy reservations. `Database.initialize()` and standalone ledger migration now create a pre-migration backup for this migration. Added `list_active_reservations()` to enumerate canonical reservations and quantity-stock allocations, including legacy/orphaned entries, and `manual_release_reservation()` for explicit local-only override by exact reservation/allocation ID. It requires actor, reason, reason code, and confirmation; active, CreatedNeedsConfirmation, InEscrow, and unknown Steam states require a separate second override confirmation with an explicit warning that local release does not cancel the Steam offer. Accepted is recorded as `consumed`, never returned as free. Quantity-stock observations are marked stale; Steam Cards snapshot metadata is invalidated for the affected bot. Added tests for unknown override, InEscrow second confirmation, accepted→consumed, orphaned legacy reservation visibility/removal, Steam Cards snapshot invalidation, and append-only audit. Commits: migration `2af08340`, backup wiring `870c5aa3` / `9a3842fd`, service `2681473d` / `f38de8a7` / `2ecf7f82` / `f980d406` / `afe83703`, tests `5e25ace0` / `738be970` / `d6d4a290` / `1fbf06b9`. CI verification completed successfully on HEAD `4b1f6582a5b3be4ac3e8fa88f998a95092b2d72d`: Tests run `45657277445` and Windows Build run `45657277545` both passed, including the full unit suite, isolated-module fallback, packaged executable smoke test, and artifact upload. **The UI/operator screen is not yet connected to these service methods**, so the C.3 UI acceptance item remains open; no claim of full completion. No Steam offers or Playerok actions were performed. Work remains on `work/local-sync`; `main` and PR #4 untouched.
 
 **C.3 Listing Stock → Order handoff CI verification (2026-11-25):** On branch `work/local-sync`, HEAD `b1bd50e75fd4ab0eb57e392e6ebad913765d3654`, GitHub Actions Tests run `45654999701` completed **success**: Python compilation, credential/migration checks, delivery reconciliation/operator recovery, Steam trade UI flow, full unit suite (**1,062 tests in 42.281s**), and isolated-module fallback all passed. Windows Build run `45654999695` completed **success**: compile, Windows trade-secret ACL hardening, GUI executable build, packaged smoke test, package metadata/instructions, and artifact upload. The immediately preceding correction `1dcdfcf58e83990169853b8e9dfbed39757a4215` adjusts the regression assertion to inspect listing remainder by `config_version_id` and transferred order allocations by exact `order_line_id`; no production logic changed in that correction. Existing Listing Stock tests also cover shared physical stock 100 units split as listing quantities 3/5/10 (free remainder 82), concurrent listing allocation overbooking prevention, concurrent paid-event transfer of one listing slice, transfer idempotency, caller-transaction rollback, stale observations, typed RecipeItem pinning, and exact cross-bot selection without user bot selection. This CI success does not by itself close every C.3 lifecycle acceptance item (notably broader cancellation/recovery/manual operator override and all failure-recovery boundaries); work remains in C.3. No live Steam offers or Playerok actions were performed. `main` and PR #4 remain untouched.
