@@ -349,6 +349,104 @@ class DeliveryRecoveryTests(unittest.TestCase):
         self.assertEqual(tuple(action), ("release", "operator-2", "Order canceled after operator review"))
 
 
+    def test_manual_override_releases_unknown_quantity_stock_and_invalidates_snapshot(self):
+        self.attach_quantity_stock()
+        with self.assertRaises(DeliveryRecoveryBlocked):
+            self.service.manual_release_reservation(
+                resource_kind="stock_allocation", resource_id="stock-recovery",
+                actor="operator-3", reason="Unknown offer reviewed",
+                reason_code="unknown", steam_status="unknown", confirmed=False,
+            )
+
+        result = self.service.manual_release_reservation(
+            resource_kind="stock_allocation", resource_id="stock-recovery",
+            actor="operator-3", reason="Unknown offer reviewed manually",
+            reason_code="unknown", steam_status="unknown",
+            related_offer_ids=["offer-unknown-1"], confirmed=True,
+        )
+        self.assertTrue(result["local_only"])
+        self.assertFalse(result["steam_offer_cancelled"])
+        self.assertTrue(result["snapshot_refresh_required"])
+        with self.database.connect() as db:
+            allocation = db.execute(
+                "SELECT state FROM gd_stock_allocations WHERE allocation_id='stock-recovery'"
+            ).fetchone()
+            observation = db.execute(
+                "SELECT availability_state FROM gd_stock_observations "
+                "WHERE observation_id=(SELECT observation_id FROM gd_stock_allocations "
+                "WHERE allocation_id='stock-recovery')"
+            ).fetchone()
+            action = db.execute(
+                "SELECT order_id,leg_id,previous_state,resulting_state,steam_status,"
+                "related_offer_ids_json,reason_code,actor,confirmed,evidence_json "
+                "FROM gd_reservation_manual_actions WHERE action_id=?",
+                (result["action_id"],),
+            ).fetchone()
+        self.assertEqual(allocation["state"], "released")
+        self.assertEqual(observation["availability_state"], "stale")
+        self.assertEqual(action["order_id"], "order-recovery")
+        self.assertEqual(action["leg_id"], "leg-recovery")
+        self.assertEqual(action["previous_state"], "active")
+        self.assertEqual(action["resulting_state"], "released")
+        self.assertEqual(action["steam_status"], "unknown")
+        self.assertEqual(action["related_offer_ids_json"], '["offer-unknown-1"]')
+        self.assertEqual(action["reason_code"], "unknown")
+        self.assertEqual(action["actor"], "operator-3")
+        self.assertEqual(action["confirmed"], 1)
+        evidence = __import__("json").loads(action["evidence_json"])
+        self.assertTrue(evidence["local_reservation_only"])
+        self.assertFalse(evidence["steam_offer_cancelled"])
+        self.assertTrue(evidence["snapshot_refresh_required"])
+
+    def test_manual_override_marks_accepted_stock_consumed_not_free(self):
+        self.attach_quantity_stock()
+        result = self.service.manual_release_reservation(
+            resource_kind="stock_allocation", resource_id="stock-recovery",
+            actor="operator-4", reason="Steam acceptance confirmed",
+            reason_code="other", steam_status="accepted", confirmed=True,
+        )
+        self.assertEqual(result["status"], "consumed")
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT state,consumed_revision FROM gd_stock_allocations "
+                "WHERE allocation_id='stock-recovery'"
+            ).fetchone()
+        self.assertEqual(row["state"], "consumed")
+        self.assertGreater(row["consumed_revision"], 0)
+
+    def test_orphaned_legacy_reservation_is_visible_and_manually_removable(self):
+        with self.database.connect() as db:
+            db.execute(
+                "INSERT INTO gd_resource_reservations "
+                "(reservation_id,owner_type,legacy_owner_id,game_id,app_id,context_id,"
+                "bot_name,asset_id,units,state) "
+                "VALUES('reservation-orphan','legacy','missing-order-legacy','cs2',730,'2',"
+                "'Bot-A','asset-orphan',1,'active')"
+            )
+        visible = self.service.list_active_reservations()
+        orphan = next(row for row in visible if row["resource_id"] == "reservation-orphan")
+        self.assertTrue(orphan["orphaned"])
+        result = self.service.manual_release_reservation(
+            resource_kind="resource_reservation", resource_id="reservation-orphan",
+            actor="operator-5", reason="Legacy orphan reviewed",
+            reason_code="other", steam_status="unknown", confirmed=True,
+        )
+        self.assertIsNone(result["order_id"])
+        self.assertEqual(result["status"], "released")
+        with self.database.connect() as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT state FROM gd_resource_reservations WHERE reservation_id='reservation-orphan'"
+                ).fetchone()[0],
+                "released",
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_reservation_manual_actions WHERE resource_id='reservation-orphan'"
+                ).fetchone()[0],
+                1,
+            )
+
     def test_retry_rejects_inventory_snapshot_for_another_app_context(self):
         wrong_context = InventorySnapshot(
             bot_name="Bot-A", game_id="cs2", app_id=753, context_id="6",
