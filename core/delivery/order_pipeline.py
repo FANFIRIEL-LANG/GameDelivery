@@ -390,6 +390,14 @@ class DeliveryOrderPipeline:
             self.ledger.materialize_recipe_order_lines_in_transaction(
                 connection, order_id, config_version_id, allow_legacy=True
             )
+            changed = connection.execute(
+                "UPDATE gd_orders SET status='preflight_blocked', "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE order_id=? AND status IN ('pending','insufficient_stock','preflight_blocked')",
+                (order_id,),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Статус заказа изменился во время preflight; блокировка не сохранена")
 
     def prepare_recipe_order(
         self,
