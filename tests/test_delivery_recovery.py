@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -463,6 +464,41 @@ class DeliveryRecoveryTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
+
+    def test_manual_override_invalidates_steam_card_snapshot_and_audit_is_append_only(self):
+        with self.database.connect() as db:
+            db.execute("""
+                CREATE TABLE steam_inventory_snapshot_meta (
+                    bot_name TEXT PRIMARY KEY, updated_at TEXT NOT NULL, item_count INTEGER NOT NULL
+                )
+            """)
+            db.execute(
+                "INSERT INTO steam_inventory_snapshot_meta(bot_name,updated_at,item_count) "
+                "VALUES('Bot-A','2026-11-25T12:00:00+00:00',1)"
+            )
+            db.execute(
+                "INSERT INTO gd_resource_reservations "
+                "(reservation_id,owner_type,legacy_owner_id,game_id,app_id,context_id,"
+                "bot_name,asset_id,units,state) "
+                "VALUES('card-reservation','legacy','card-order-legacy','steam_cards',753,'6',"
+                "'Bot-A','card-asset-1',1,'active')"
+            )
+        result = self.service.manual_release_reservation(
+            resource_kind="resource_reservation", resource_id="card-reservation",
+            actor="operator-7", reason="Card reservation manually reviewed",
+            reason_code="unknown", steam_status="unknown",
+            confirmed=True, override_confirmed=True,
+        )
+        with self.database.connect() as db:
+            updated_at = db.execute(
+                "SELECT updated_at FROM steam_inventory_snapshot_meta WHERE bot_name='Bot-A'"
+            ).fetchone()[0]
+            with self.assertRaises(sqlite3.IntegrityError):
+                db.execute(
+                    "UPDATE gd_reservation_manual_actions SET reason='rewritten' WHERE action_id=?",
+                    (result["action_id"],),
+                )
+        self.assertEqual(updated_at, "2000-01-01T00:00:00+00:00")
 
     def test_retry_rejects_inventory_snapshot_for_another_app_context(self):
         wrong_context = InventorySnapshot(
