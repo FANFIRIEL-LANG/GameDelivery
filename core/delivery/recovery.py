@@ -321,14 +321,14 @@ class DeliveryRecoveryService:
         identity = str(resource_id).strip()
         actor, reason = str(actor).strip(), str(reason).strip()
         code = str(reason_code).strip().casefold()
-        status = str(steam_status or "unknown").strip().casefold()
+        status = str(steam_status or "unknown").strip().casefold().replace("_", "").replace(" ", "")
         allowed_kinds = {"resource_reservation", "stock_allocation"}
         allowed_reasons = {
             "buyer_rejected", "owner_cancelled", "expired",
             "offer_absent", "unknown", "other",
         }
         allowed_statuses = {
-            "active", "createdneedsconfirmation", "in_escrow", "accepted",
+            "active", "createdneedsconfirmation", "inescrow", "accepted",
             "canceled", "canceledbysecondfactor", "declined", "expired",
             "countered", "invaliditems", "absent", "unknown",
         }
