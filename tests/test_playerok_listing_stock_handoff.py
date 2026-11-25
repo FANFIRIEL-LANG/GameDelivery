@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -128,6 +129,58 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
             )
 
         pipeline = DeliveryOrderPipeline(self.database)
+
+        # Inject a failure after ListingStock has been transferred but before
+        # the DeliveryLeg can be committed. The transaction must roll back the
+        # OrderLine manifest, transfer event, and order-owned allocations too.
+        with self.database.connect() as db:
+            db.execute("""
+                CREATE TRIGGER forced_delivery_leg_failure
+                BEFORE INSERT ON gd_delivery_legs
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced delivery leg failure');
+                END
+            """)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "forced delivery leg failure"):
+            pipeline.prepare_recipe_order(order_id=order_id, snapshots={})
+
+        with self.database.connect() as db:
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order_id,)).fetchone()[0],
+                "pending",
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_order_lines WHERE order_id=?", (order_id,)).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_stock_transfers").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_stock_allocations "
+                    "WHERE owner_type='listing' AND config_version_id=? AND state='active'",
+                    (config["config_version_id"],),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT COUNT(*) FROM gd_stock_allocations WHERE owner_type='order'",
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_delivery_legs").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_resource_reservations").fetchone()[0],
+                0,
+            )
+            db.execute("DROP TRIGGER forced_delivery_leg_failure")
+
         prepared = pipeline.prepare_recipe_order(order_id=order_id, snapshots={})
         self.assertEqual(prepared.status, "reserved")
 
