@@ -231,10 +231,26 @@ class PlayerokDealSyncService:
                     raise RuntimeError("ConfigVersion сохранённой сделки не найден")
                 config = dict(frozen_config)
             elif deal_status == "PAID":
-                # Without an authoritative payment timestamp, the latest
-                # listing version cannot be proven to match the paid deal.
-                config_id = None
-                config = None
+                # Preserve only an explicit, audited operator binding. Otherwise
+                # no payment-time ConfigVersion can be inferred from createdAt.
+                binding = db.execute(
+                    "SELECT config_version_id FROM playerok_paid_config_bindings "
+                    "WHERE account_user_id=? AND deal_id=?",
+                    (account_id, normalized_id),
+                ).fetchone()
+                if binding is not None:
+                    config_id = str(binding["config_version_id"])
+                    bound_config = db.execute(
+                        "SELECT config_version_id,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
+                        "FROM gd_config_versions WHERE config_version_id=? AND listing_id=?",
+                        (config_id, listing_id),
+                    ).fetchone()
+                    if bound_config is None:
+                        raise RuntimeError("Закреплённая оператором ConfigVersion не найдена")
+                    config = dict(bound_config)
+                else:
+                    config_id = None
+                    config = None
         elif deal_status == "PAID":
             # Keep the exact listing link, but wait for explicit version
             # resolution before materializing an order snapshot.
