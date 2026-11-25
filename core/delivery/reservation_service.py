@@ -910,6 +910,22 @@ class DeliveryReservationService:
                 )).fetchall()
                 if conflicts:
                     if all(str(row["conflict_owner"]) == "order" for row in conflicts):
+                        # A ListingStock transfer may already have been staged earlier
+                        # in this transaction. Roll it back before persisting only the
+                        # immutable manifest and blocked status.
+                        connection.rollback()
+                        connection.execute("BEGIN IMMEDIATE")
+                        DeliveryLedger.materialize_recipe_order_lines_in_transaction(
+                            connection, order, config_id, allow_legacy=True
+                        )
+                        changed = connection.execute(
+                            "UPDATE gd_orders SET status='preflight_blocked', "
+                            "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                            "WHERE order_id=? AND status IN ('pending','insufficient_stock','preflight_blocked')",
+                            (order,),
+                        ).rowcount
+                        if changed != 1:
+                            raise ValueError("Статус заказа изменился во время reservation; конфликт не сохранён")
                         return OrderReservationResult(
                             order, "preflight_blocked", (), (), (),
                             "Один из выбранных ресурсов уже имеет активный резерв.",
