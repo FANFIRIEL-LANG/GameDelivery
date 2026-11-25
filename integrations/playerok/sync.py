@@ -341,6 +341,7 @@ class PlayerokDealSyncService:
         if typed_recipe:
             recipe = DeliveryLedger.recipe_for_config_version(db, config_id, allow_legacy=False)
             quantity = sum(item.quantity_per_order for item in recipe.items)
+            materialize_legacy_manifest = False
         else:
             quantity = version["delivery_quantity_per_deal"]
             try:
@@ -359,18 +360,18 @@ class PlayerokDealSyncService:
                 # Preserve the old selector-driven path for configurations that
                 # are not a single unambiguous RecipeItem.
                 recipe = None
+            materialize_legacy_manifest = recipe is not None
         order_id = self._stable("playerok-order", account_id + "\x1f" + external_id)
-        inserted = db.execute(
+        db.execute(
             "INSERT OR IGNORE INTO gd_orders(order_id,deal_id,status,total_quantity) "
             "VALUES(?,?,'pending',?)", (order_id, normalized_id, quantity),
-        ).rowcount
-        if inserted == 1 and recipe is not None:
-            # Persist the complete immutable manifest with the paid order.
-            # ListingStock transfer is deferred to reserve_recipe_plan(), where
-            # transfer, DeliveryLeg creation and physical reservations share
-            # one BEGIN IMMEDIATE transaction.
+        )
+        if materialize_legacy_manifest:
+            # Keep the legacy selector path unchanged. Typed Recipe OrderLines
+            # are created only by reserve_recipe_plan(), in the same transaction
+            # as ListingStock transfer, DeliveryLegs and canonical reservations.
             DeliveryLedger.materialize_recipe_order_lines_in_transaction(
-                db, order_id, config_id, allow_legacy=not typed_recipe
+                db, order_id, config_id, allow_legacy=True
             )
 
     def _baseline(
