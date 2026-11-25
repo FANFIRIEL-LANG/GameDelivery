@@ -314,7 +314,8 @@ class DeliveryRecoveryService:
         self, *, resource_kind: str, resource_id: str, actor: str, reason: str,
         reason_code: str, steam_status: str = "unknown",
         related_offer_ids: list[str] | tuple[str, ...] = (),
-        confirmed: bool = False, steam_status_checked_at: str | None = None,
+        confirmed: bool = False, override_confirmed: bool = False,
+        steam_status_checked_at: str | None = None,
     ) -> dict[str, Any]:
         """Explicit local-only override; never claims to cancel a Steam offer."""
         kind = str(resource_kind).strip()
@@ -338,7 +339,15 @@ class DeliveryRecoveryService:
             raise ValueError("Некорректный reason_code или последний известный Steam status")
         if confirmed is not True:
             raise DeliveryRecoveryBlocked(
-                "Ручное снятие требует явного второго подтверждения; Steam offer не отменяется"
+                "Ручное снятие требует явного подтверждения; Steam offer не отменяется"
+            )
+        requires_override = status in {
+            "active", "createdneedsconfirmation", "inescrow", "unknown"
+        }
+        if requires_override and override_confirmed is not True:
+            raise DeliveryRecoveryBlocked(
+                "Steam offer активен или его статус неизвестен. Требуется отдельное второе подтверждение "
+                "ручного снятия; Steam offer не будет отменён"
             )
         offers = [str(value).strip() for value in related_offer_ids]
         if any(not value for value in offers) or len(set(offers)) != len(offers):
@@ -431,7 +440,12 @@ class DeliveryRecoveryService:
                 "steam_offer_cancelled": False,
                 "snapshot_refresh_required": True,
                 "steam_status_checked_at": steam_status_checked_at,
-                "explicit_override_confirmed": True,
+                "explicit_confirmation": True,
+                "explicit_override_confirmed": bool(override_confirmed),
+                "warning": (
+                    "Steam offer may still be active; local release does not cancel it"
+                    if requires_override else None
+                ),
             }
             db.execute("""
                 INSERT INTO gd_reservation_manual_actions
@@ -454,6 +468,11 @@ class DeliveryRecoveryService:
             "order_id": target.get("order_id"), "leg_id": target.get("leg_id"),
             "status": resulting_state, "local_only": True,
             "steam_offer_cancelled": False, "snapshot_refresh_required": True,
+            "requires_warning": requires_override,
+            "warning": (
+                "Steam offer may still be active; local release does not cancel it"
+                if requires_override else None
+            ),
         }
 
     def retry(self, *, order_id: str, leg_id: str, actor: str, reason: str) -> dict[str, Any]:
