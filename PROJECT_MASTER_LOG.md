@@ -1,3 +1,24 @@
+## C.3 — проверка доступных Playerok timestamps для ConfigVersion binding (2026-11-25)
+
+Проверены реальные поля GraphQL query и browser snapshot mapping:
+
+- `integrations/playerok/client.py::fetch_sales()` запрашивает у Playerok для Deal только `id`, `status`, `createdAt`, `item { id name }`, `user { id username }`, `chat { id }`, `transaction { value }`.
+- `PlayerokAdapter._map_deal()` сохраняет `createdAt` как `created_at`; отдельного `paidAt`/payment timestamp в запрошенной схеме и mapped deal нет.
+- `integrations/playerok/browser_sales.py` использует тот же `PlayerokAdapter._map_deal()`; browser snapshot не добавляет независимого payment timestamp.
+- Следовательно, `createdAt` — время создания Deal, а не доказанное время перехода в PAID. Использовать его для выбора ConfigVersion нельзя.
+- В текущей схеме sync не хранит историю интервалов действия ConfigVersion и не может восстановить, какая версия была опубликована в момент фактической оплаты.
+- Автоматический выбор latest ConfigVersion при первом наблюдении PAID остаётся некорректным: первая синхронизация может увидеть уже существующую оплату после нескольких изменений объявления.
+
+### Безопасная граница следующего изменения
+
+Автоматическое закрепление версии допустимо только при наличии авторитетного payment timestamp/event и истории эффективных периодов ConfigVersion, позволяющей однозначно определить одну версию. В проверенном Playerok read-only API такого timestamp сейчас не получаем. Добавление поля/запроса наугад или трактовка `createdAt` как `paidAt` не допускаются.
+
+Альтернатива — отдельное явное операторское решение о ConfigVersion для конкретной PAID Deal с проверкой принадлежности версии точному listing, записью audit trail и неизменяемым binding после подтверждения. Это меняет бизнес-процесс и пока не подтверждено пользователем; до такого подтверждения не реализовывать выбор версии и не создавать Order из unresolved PAID Deal.
+
+**Production code:** без изменений. **Тесты:** не запускались. **Steam/Playerok mutations:** не выполнялись.
+
+---
+
 ## C.3 — проверка безопасного входа PAID Deal без Order (2026-11-25)
 
 **Проверенная точка:** HEAD `2c9f777f1322bb9ef3c683efe271fa3a025b050f`, ветка `work/local-sync`. Проверены `integrations/playerok/sync.py`, `integrations/playerok/listing_config.py`, `core/delivery/playerok_eligibility.py`, `core/delivery/order_pipeline.py`, участки `app/main.py` с загрузкой/выбором/подготовкой заказов и тесты Playerok sync/listing-stock handoff.
