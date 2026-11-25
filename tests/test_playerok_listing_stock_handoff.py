@@ -111,26 +111,19 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
             ).fetchone()
             self.assertIsNotNone(order_row)
             order_id = str(order_row["order_id"])
-            line_row = db.execute(
-                "SELECT order_line_id FROM gd_order_lines WHERE order_id=?",
-                (order_id,),
-            ).fetchone()
-            self.assertIsNotNone(line_row)
-            # Payment sync persists the paid order and immutable manifest,
-            # but must not transfer ListingStock before the reservation commit.
+            # Payment sync creates only the PAID order shell. Typed OrderLines
+            # are materialized by the final reservation transaction.
             self.assertEqual(
-                db.execute(
-                    "SELECT COUNT(*) FROM gd_stock_transfers WHERE order_line_id=?",
-                    (line_row["order_line_id"],),
-                ).fetchone()[0],
+                db.execute("SELECT COUNT(*) FROM gd_order_lines WHERE order_id=?", (order_id,)).fetchone()[0],
                 0,
             )
             self.assertEqual(
-                db.execute(
-                    "SELECT COALESCE(SUM(units),0) FROM gd_stock_allocations "
-                    "WHERE owner_type='order' AND order_line_id=? AND state='active'",
-                    (line_row["order_line_id"],),
-                ).fetchone()[0],
+                db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order_id,)).fetchone()[0],
+                "pending",
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM gd_stock_transfers WHERE order_line_id IN "
+                           "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order_id,)).fetchone()[0],
                 0,
             )
 
@@ -143,6 +136,7 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
                 "SELECT order_line_id FROM gd_order_lines WHERE order_id=?",
                 (order_id,),
             ).fetchone()
+            self.assertIsNotNone(line)
             self.assertIsNotNone(line)
             transfer = db.execute(
                 "SELECT units,listing_id,config_version_id,order_line_id "
