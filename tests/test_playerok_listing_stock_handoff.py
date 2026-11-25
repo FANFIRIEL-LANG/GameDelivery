@@ -6,7 +6,6 @@ from pathlib import Path
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
-from core.delivery.listing_stock import ListingStockService
 from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.recipes import RecipeItem, SteamAssetSpec
 from core.delivery.stock_identity import StockItemIdentity
@@ -29,7 +28,7 @@ class PlayerokListingStockHandoffTests(unittest.TestCase):
 
     def test_paid_playerok_recipe_transfers_listing_stock_through_order_preflight_atomically(self):
         recipe_item = RecipeItem(
-            "cs2-redline", 1, "steam_asset", 1, 2, True, None,
+            "cs2-redline", 1, "steam_asset", 1, 2, True, "shared-asf-stock",
             "steam_trade_offer",
             SteamAssetSpec(
                 "cs2", 730, "2",
