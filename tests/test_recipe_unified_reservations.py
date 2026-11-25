@@ -1086,6 +1086,10 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                                         "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,)).fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_resource_reservations WHERE state='active'").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM steam_asset_reservations WHERE order_id=?", (order,)).fetchone()[0], 0)
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0],
+                "preflight_blocked",
+            )
 
     def test_card_shortage_keeps_planned_cs2_assets_unreserved(self):
         order, _ = self.create_recipe_order("cards-short", self.mixed_recipe())
@@ -1103,6 +1107,10 @@ class UnifiedRecipeReservationTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM gd_delivery_legs WHERE order_line_id IN "
                 "(SELECT order_line_id FROM gd_order_lines WHERE order_id=?)", (order,),
             ).fetchone()[0], 0)
+            self.assertEqual(
+                db.execute("SELECT status FROM gd_orders WHERE order_id=?", (order,)).fetchone()[0],
+                "preflight_blocked",
+            )
 
     def test_insert_failure_after_card_plan_rolls_back_every_resource_and_leg(self):
         order, _ = self.create_recipe_order("rollback", self.mixed_recipe())
