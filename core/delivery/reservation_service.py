@@ -566,6 +566,11 @@ class DeliveryReservationService:
             if order_row["status"] not in {"pending", "insufficient_stock", "preflight_blocked"}:
                 raise ValueError(f"Заказ имеет недопустимый статус для резерва: {order_row['status']}")
 
+            # OrderLine/manifest creation joins this exact transaction. A failed
+            # reservation therefore cannot leave a partial manifest behind.
+            DeliveryLedger.materialize_recipe_order_lines_in_transaction(
+                connection, order, config_id, allow_legacy=True
+            )
             recipe = DeliveryLedger.recipe_for_config_version(
                 connection, config_id, allow_legacy=True
             )
