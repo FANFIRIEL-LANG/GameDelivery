@@ -274,6 +274,188 @@ class DeliveryRecoveryService:
             raise DeliveryRecoveryBlocked("Для leg существует активная или неопределённая попытка")
         return int(rows[0]["retry_generation"])
 
+    def list_active_reservations(self) -> list[dict[str, Any]]:
+        """Return active reservations, including rows without a resolvable order/leg."""
+        with self.database.connect() as db:
+            rows = db.execute("""
+                SELECT 'resource_reservation' AS resource_kind,
+                       r.reservation_id AS resource_id,r.owner_type,r.order_line_id,
+                       ol.order_id,
+                       (SELECT l.leg_id FROM gd_delivery_legs l
+                        WHERE l.order_line_id=r.order_line_id ORDER BY l.leg_id LIMIT 1) AS leg_id,
+                       r.game_id,r.app_id,r.context_id,r.bot_name,r.asset_id,r.units,
+                       r.state,NULL AS observation_id
+                FROM gd_resource_reservations r
+                LEFT JOIN gd_order_lines ol ON ol.order_line_id=r.order_line_id
+                WHERE r.state IN ('active','legacy_conflict')
+                UNION ALL
+                SELECT 'stock_allocation' AS resource_kind,
+                       a.allocation_id AS resource_id,a.owner_type,a.order_line_id,
+                       ol.order_id,
+                       (SELECT l.leg_id FROM gd_delivery_legs l
+                        WHERE l.order_line_id=a.order_line_id ORDER BY l.leg_id LIMIT 1) AS leg_id,
+                       a.game_id,a.app_id,a.context_id,a.bot_name,a.asset_id,a.units,
+                       a.state,a.observation_id
+                FROM gd_stock_allocations a
+                LEFT JOIN gd_order_lines ol ON ol.order_line_id=a.order_line_id
+                WHERE a.state IN ('active','pending','unknown','legacy_conflict')
+                ORDER BY bot_name COLLATE NOCASE,app_id,context_id,asset_id,resource_kind
+            """).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["orphaned"] = item["owner_type"] == "order" and (
+                not item.get("order_line_id") or not item.get("order_id")
+            )
+            result.append(item)
+        return result
+
+    def manual_release_reservation(
+        self, *, resource_kind: str, resource_id: str, actor: str, reason: str,
+        reason_code: str, steam_status: str = "unknown",
+        related_offer_ids: list[str] | tuple[str, ...] = (),
+        confirmed: bool = False, steam_status_checked_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Explicit local-only override; never claims to cancel a Steam offer."""
+        kind = str(resource_kind).strip()
+        identity = str(resource_id).strip()
+        actor, reason = str(actor).strip(), str(reason).strip()
+        code = str(reason_code).strip().casefold()
+        status = str(steam_status or "unknown").strip().casefold()
+        allowed_kinds = {"resource_reservation", "stock_allocation"}
+        allowed_reasons = {
+            "buyer_rejected", "owner_cancelled", "expired",
+            "offer_absent", "unknown", "other",
+        }
+        allowed_statuses = {
+            "active", "createdneedsconfirmation", "in_escrow", "accepted",
+            "canceled", "canceledbysecondfactor", "declined", "expired",
+            "countered", "invaliditems", "absent", "unknown",
+        }
+        if kind not in allowed_kinds or not identity or not actor or not reason:
+            raise ValueError("resource_kind, resource_id, actor и reason обязательны")
+        if code not in allowed_reasons or status not in allowed_statuses:
+            raise ValueError("Некорректный reason_code или последний известный Steam status")
+        if confirmed is not True:
+            raise DeliveryRecoveryBlocked(
+                "Ручное снятие требует явного второго подтверждения; Steam offer не отменяется"
+            )
+        offers = [str(value).strip() for value in related_offer_ids]
+        if any(not value for value in offers) or len(set(offers)) != len(offers):
+            raise ValueError("related_offer_ids содержит пустые или повторяющиеся ID")
+
+        action_id = "reservation-manual-action:" + uuid.uuid4().hex
+        accepted = status == "accepted"
+        resulting_state = "consumed" if accepted else "released"
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if kind == "resource_reservation":
+                row = db.execute("""
+                    SELECT r.*,ol.order_id,
+                           (SELECT l.leg_id FROM gd_delivery_legs l
+                            WHERE l.order_line_id=r.order_line_id ORDER BY l.leg_id LIMIT 1) AS leg_id
+                    FROM gd_resource_reservations r
+                    LEFT JOIN gd_order_lines ol ON ol.order_line_id=r.order_line_id
+                    WHERE r.reservation_id=?
+                """, (identity,)).fetchone()
+                table, id_column, state_column = (
+                    "gd_resource_reservations", "reservation_id", "state"
+                )
+            else:
+                row = db.execute("""
+                    SELECT a.*,ol.order_id,
+                           (SELECT l.leg_id FROM gd_delivery_legs l
+                            WHERE l.order_line_id=a.order_line_id ORDER BY l.leg_id LIMIT 1) AS leg_id
+                    FROM gd_stock_allocations a
+                    LEFT JOIN gd_order_lines ol ON ol.order_line_id=a.order_line_id
+                    WHERE a.allocation_id=?
+                """, (identity,)).fetchone()
+                table, id_column, state_column = (
+                    "gd_stock_allocations", "allocation_id", "state"
+                )
+            if row is None:
+                raise DeliveryRecoveryBlocked("Резерв не найден")
+            target = dict(row)
+            prior_state = str(target["state"])
+            allowed_states = (
+                {"active", "legacy_conflict"} if kind == "resource_reservation"
+                else {"active", "pending", "unknown", "legacy_conflict"}
+            )
+            if prior_state not in allowed_states:
+                raise DeliveryRecoveryBlocked(
+                    f"Резерв уже не активен (state={prior_state})"
+                )
+
+            if kind == "stock_allocation":
+                if accepted:
+                    revision = db.execute(
+                        "SELECT revision FROM gd_stock_observations WHERE observation_id=?",
+                        (target["observation_id"],),
+                    ).fetchone()
+                    if revision is None:
+                        raise DeliveryRecoveryBlocked("Не найден snapshot для consumed allocation")
+                    db.execute(
+                        "UPDATE gd_stock_allocations SET state='consumed',consumed_revision=?,"
+                        "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                        "WHERE allocation_id=? AND state=?",
+                        (int(revision["revision"]), identity, prior_state),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE gd_stock_allocations SET state='released',"
+                        "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                        "WHERE allocation_id=? AND state=?",
+                        (identity, prior_state),
+                    )
+                db.execute(
+                    "UPDATE gd_stock_observations SET availability_state='stale' "
+                    "WHERE observation_id=?",
+                    (target["observation_id"],),
+                )
+            else:
+                db.execute(
+                    f"UPDATE {table} SET state=? ,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    f"WHERE {id_column}=? AND {state_column}=?",
+                    (resulting_state, identity, prior_state),
+                )
+                db.execute(
+                    "UPDATE gd_stock_observations SET availability_state='stale' "
+                    "WHERE bot_name=? COLLATE NOCASE AND app_id=? AND context_id=? "
+                    "AND asset_id_key=gd_asset_id_key(?)",
+                    (target["bot_name"], int(target["app_id"]),
+                     str(target["context_id"]), target["asset_id"]),
+                )
+
+            evidence = {
+                "local_reservation_only": True,
+                "steam_offer_cancelled": False,
+                "snapshot_refresh_required": True,
+                "steam_status_checked_at": steam_status_checked_at,
+                "explicit_override_confirmed": True,
+            }
+            db.execute("""
+                INSERT INTO gd_reservation_manual_actions
+                    (action_id,resource_kind,resource_id,owner_type,order_id,leg_id,
+                     game_id,app_id,context_id,bot_name,asset_id,units,
+                     previous_state,resulting_state,steam_status,related_offer_ids_json,
+                     reason_code,actor,reason,confirmed,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)
+            """, (
+                action_id, kind, identity, target["owner_type"],
+                target.get("order_id"), target.get("leg_id"),
+                target["game_id"], int(target["app_id"]), str(target["context_id"]),
+                target["bot_name"], target["asset_id"], int(target["units"]),
+                prior_state, resulting_state, status,
+                json.dumps(offers, separators=(",", ":")), code, actor, reason,
+                json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+            ))
+        return {
+            "action_id": action_id, "resource_kind": kind, "resource_id": identity,
+            "order_id": target.get("order_id"), "leg_id": target.get("leg_id"),
+            "status": resulting_state, "local_only": True,
+            "steam_offer_cancelled": False, "snapshot_refresh_required": True,
+        }
+
     def retry(self, *, order_id: str, leg_id: str, actor: str, reason: str) -> dict[str, Any]:
         order, leg = str(order_id).strip(), str(leg_id).strip()
         actor, reason = str(actor).strip(), str(reason).strip()
