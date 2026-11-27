@@ -8,6 +8,7 @@ from core.delivery.handler_contract import (
     DeliveryHandlerRegistry,
     DeliveryHandlerResult,
 )
+from core.delivery.asf_trade_handler import ASFTradeOfferHandler
 
 
 class FakeHandler:
@@ -87,6 +88,35 @@ class DeliveryHandlerContractTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             DeliveryHandlerRegistry().register(WrongVersion())
+
+    def test_asf_handler_runs_lifecycle_and_preserves_existing_dispatch_result(self):
+        calls = []
+        handler = ASFTradeOfferHandler(
+            item_type="steam_asset",
+            execute_callback=lambda request: calls.append(request) or {
+                "dispatched": True, "status": "SENT_TO_STEAM",
+                "trade_offer_id": "offer-1",
+            },
+            reconcile_callback=lambda attempt: [{
+                "leg_id": attempt["leg_id"], "status": "ACCEPTED", "reconciled": True,
+            }],
+        )
+        request = {
+            "item_type": "steam_asset", "delivery_method": "steam_trade_offer",
+            "order_id": "order-1", "leg_id": "leg-1",
+        }
+
+        self.assertEqual(handler.preview(request).status, "READY")
+        self.assertEqual(handler.prepare(request).status, "PREPARED")
+        result = handler.execute(request)
+        self.assertEqual(result.status, "SENT_TO_STEAM")
+        self.assertTrue(result.external_action_started)
+        self.assertEqual(result.external_reference, "offer-1")
+        self.assertEqual(result.details["trade_offer_id"], "offer-1")
+        reconciled = handler.reconcile(request)
+        self.assertEqual(reconciled.status, "ACCEPTED")
+        self.assertTrue(reconciled.details["reconciled"])
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

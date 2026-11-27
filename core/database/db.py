@@ -5,6 +5,8 @@ from pathlib import Path
 
 from core.database.connection import connect_sqlite
 from core.database.ledger_migrations import (
+    DELIVERY_ORDER_ATTEMPT_BACKUP_SUFFIX,
+    DELIVERY_ORDER_ATTEMPT_MIGRATION_ID,
     PLAYEROK_SYNC_BACKUP_SUFFIX,
     PLAYEROK_SYNC_MIGRATION_ID,
     ORDER_LINE_CONFIG_BACKUP_SUFFIX,
@@ -120,6 +122,11 @@ class Database:
             self.path,
             migration_id=RECIPIENT_SNAPSHOT_MIGRATION_ID,
             backup_suffix=RECIPIENT_SNAPSHOT_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=DELIVERY_ORDER_ATTEMPT_MIGRATION_ID,
+            backup_suffix=DELIVERY_ORDER_ATTEMPT_BACKUP_SUFFIX,
         )
         ensure_pre_migration_backup(
             self.path,

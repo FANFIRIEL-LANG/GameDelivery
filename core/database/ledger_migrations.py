@@ -58,6 +58,8 @@ STEAM_CARD_LISTING_LIMIT_MIGRATION_ID = "2026-11-steam-card-listing-limit-v1"
 STEAM_CARD_LISTING_LIMIT_BACKUP_SUFFIX = ".pre-gamedelivery-steam-card-listing-limit-v1.bak"
 RESERVATION_MANUAL_AUDIT_MIGRATION_ID = "2026-11-reservation-manual-audit-v1"
 RESERVATION_MANUAL_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-reservation-manual-audit-v1.bak"
+DELIVERY_ORDER_ATTEMPT_MIGRATION_ID = "2026-11-delivery-order-attempt-v1"
+DELIVERY_ORDER_ATTEMPT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-order-attempt-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -832,6 +834,38 @@ def _apply_recipient_snapshot_migration(connection: sqlite3.Connection) -> bool:
     return True
 
 
+def _apply_delivery_order_attempt_migration(connection: sqlite3.Connection) -> bool:
+    if _migration_applied(connection, DELIVERY_ORDER_ATTEMPT_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS gd_delivery_order_attempts (
+                order_attempt_id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL REFERENCES gd_orders(order_id) ON DELETE RESTRICT,
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                idempotency_key TEXT NOT NULL UNIQUE,
+                expected_leg_ids_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'dispatching'
+                    CHECK(status IN ('dispatching','completed','partial','unknown','failed')),
+                started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                finished_at TEXT,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                UNIQUE(order_id,generation),
+                CHECK(idempotency_key=order_id||':'||CAST(generation AS TEXT))
+            )
+        """)
+        connection.execute(
+            "INSERT INTO gd_schema_migrations(migration_id) VALUES(?)",
+            (DELIVERY_ORDER_ATTEMPT_MIGRATION_ID,),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
+
+
 
 def _apply_operator_recovery_audit_migration(connection: sqlite3.Connection) -> bool:
     """Persist append-only operator retry/release decisions with evidence metadata."""
@@ -1528,6 +1562,7 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_asset_id_key_migration(connection) or changed
     changed = _apply_asset_id_blocking_state_migration(connection) or changed
     changed = _apply_recipient_snapshot_migration(connection) or changed
+    changed = _apply_delivery_order_attempt_migration(connection) or changed
     changed = _apply_operator_recovery_audit_migration(connection) or changed
     if (
         _migration_applied(connection, ASSET_ID_KEY_MIGRATION_ID)

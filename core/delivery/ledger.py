@@ -457,3 +457,98 @@ class DeliveryLedger:
         if row is None:
             raise RuntimeError("Не удалось прочитать DeliveryAttempt после записи")
         return dict(row), created
+
+    def start_delivery_order_attempt(self, order_id: str) -> dict[str, Any]:
+        order = str(order_id or "").strip()
+        if not order:
+            raise ValueError("order_id обязателен")
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM gd_orders WHERE order_id=?", (order,)).fetchone() is None:
+                raise KeyError(f"Заказ {order} не найден")
+            expected = [str(row[0]) for row in db.execute(
+                "SELECT l.leg_id FROM gd_delivery_legs l "
+                "JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                "WHERE ol.order_id=? ORDER BY l.leg_id", (order,)
+            ).fetchall()]
+            if not expected:
+                raise ValueError("Заказ не содержит DeliveryLeg")
+            active = db.execute(
+                "SELECT * FROM gd_delivery_order_attempts WHERE order_id=? "
+                "AND status='dispatching' ORDER BY generation DESC LIMIT 1", (order,)
+            ).fetchone()
+            if active is not None:
+                if json.loads(active["expected_leg_ids_json"]) != expected:
+                    raise ValueError("Состав DeliveryLeg изменился во время попытки заказа")
+                return dict(active)
+            generation = int(db.execute(
+                "SELECT COALESCE(MAX(generation),-1)+1 FROM gd_delivery_order_attempts WHERE order_id=?",
+                (order,),
+            ).fetchone()[0])
+            key = f"{order}:{generation}"
+            attempt_id = f"order-attempt:{hashlib.sha256(key.encode()).hexdigest()[:24]}"
+            db.execute(
+                "INSERT INTO gd_delivery_order_attempts "
+                "(order_attempt_id,order_id,generation,idempotency_key,expected_leg_ids_json) "
+                "VALUES(?,?,?,?,?)",
+                (attempt_id, order, generation, key, _json(expected)),
+            )
+            return dict(db.execute(
+                "SELECT * FROM gd_delivery_order_attempts WHERE order_attempt_id=?",
+                (attempt_id,),
+            ).fetchone())
+
+    def record_delivery_order_attempt_leg(
+        self, order_attempt_id: str, leg_id: str, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            raise TypeError("result должен быть объектом")
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM gd_delivery_order_attempts WHERE order_attempt_id=?",
+                (order_attempt_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Попытка заказа не найдена")
+            expected = json.loads(row["expected_leg_ids_json"])
+            if leg_id not in expected:
+                raise ValueError("DeliveryLeg не входит в состав попытки заказа")
+            try:
+                outcomes = json.loads(row["result_json"] or "{}")
+            except (TypeError, ValueError):
+                outcomes = {}
+            outcomes = outcomes if isinstance(outcomes, dict) else {}
+            leg_results = outcomes.setdefault("legs", {})
+            if not isinstance(leg_results, dict):
+                leg_results = outcomes["legs"] = {}
+            # The first durable result wins; a replay cannot rewrite history.
+            leg_results.setdefault(leg_id, result)
+            complete = all(
+                isinstance(leg_results.get(expected_leg), dict) for expected_leg in expected
+            )
+            statuses = [
+                str(leg_results[expected_leg].get("status") or "UNKNOWN").upper()
+                for expected_leg in expected if isinstance(leg_results.get(expected_leg), dict)
+            ]
+            success = {"SENT_TO_STEAM", "ACCEPTED", "DELIVERED"}
+            if not complete:
+                status = "dispatching"
+            elif any(value == "UNKNOWN" for value in statuses):
+                status = "unknown"
+            elif any(value in success for value in statuses) and not all(value in success for value in statuses):
+                status = "partial"
+            elif all(value in success for value in statuses):
+                status = "completed"
+            else:
+                status = "failed"
+            db.execute(
+                "UPDATE gd_delivery_order_attempts SET result_json=?,status=?,"
+                "finished_at=CASE WHEN ? THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "ELSE finished_at END WHERE order_attempt_id=? AND status='dispatching'",
+                (_json(outcomes), status, int(complete), order_attempt_id),
+            )
+            return dict(db.execute(
+                "SELECT * FROM gd_delivery_order_attempts WHERE order_attempt_id=?",
+                (order_attempt_id,),
+            ).fetchone())

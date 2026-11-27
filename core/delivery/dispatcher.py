@@ -7,6 +7,9 @@ from typing import Any, Callable
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
+from core.delivery.asf_trade_handler import register_asf_trade_offer_handlers
+from core.delivery.handler_contract import DeliveryHandlerRegistry
+from core.delivery.handler_routing import DeliveryHandlerRouteError, load_leg_handler_request
 from core.delivery.playerok_eligibility import (
     PlayerokDeliveryBlocked,
     require_canonical_playerok_delivery_eligible,
@@ -51,10 +54,25 @@ class DeliveryDispatcher:
         self.send_policy = send_policy
         self.playerok_freshness_gate = playerok_freshness_gate
         self.ledger = DeliveryLedger(database)
+        self.handlers = DeliveryHandlerRegistry()
+        register_asf_trade_offer_handlers(
+            self.handlers,
+            execute_callback=lambda prepared: self._dispatch_leg_core(
+                **prepared["dispatch_kwargs"]
+            ),
+        )
         self._ensure_events()
 
     def auto_send_enabled(self) -> bool:
         return bool(self.send_policy and self.send_policy.auto_send_enabled())
+
+    def record_order_leg_outcome(
+        self, *, order_id: str, leg_id: str, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        attempt = self.ledger.start_delivery_order_attempt(order_id)
+        return self.ledger.record_delivery_order_attempt_leg(
+            attempt["order_attempt_id"], leg_id, result
+        )
 
     def _ensure_events(self) -> None:
         with self.database.connect() as db:
@@ -103,6 +121,84 @@ class DeliveryDispatcher:
         return ""
 
     def dispatch_leg(
+        self,
+        *,
+        order_id: str,
+        leg_id: str,
+        stored_trade_url: str,
+        retry_generation: int = 0,
+        manual_authorization: ManualDispatchAuthorization | None = None,
+        playerok_freshness_authorization: PlayerokFreshnessProof | None = None,
+        playerok_order_lease: PlayerokOrderLease | None = None,
+    ) -> dict[str, Any]:
+        try:
+            order_attempt = self.ledger.start_delivery_order_attempt(order_id)
+        except (KeyError, ValueError) as exc:
+            return {"dispatched": False, "status": "ORDER_ATTEMPT_INVALID", "reason": str(exc)}
+
+        def record(response: dict[str, Any]) -> dict[str, Any]:
+            response.setdefault("leg_id", leg_id)
+            self.ledger.record_delivery_order_attempt_leg(
+                order_attempt["order_attempt_id"], leg_id, response
+            )
+            return response
+
+        try:
+            with self.database.connect() as db:
+                request = load_leg_handler_request(db, order_id=order_id.strip(), leg_id=leg_id.strip())
+            handler = self.handlers.resolve(
+                item_type=request["item_type"],
+                delivery_method=request["delivery_method"],
+                request=request,
+            )
+        except DeliveryHandlerRouteError as exc:
+            return record({"dispatched": False, "status": "HANDLER_ROUTE_INVALID", "reason": str(exc)})
+        except LookupError as exc:
+            return record({"dispatched": False, "status": "HANDLER_UNAVAILABLE", "reason": str(exc)})
+        try:
+            preview = handler.preview(request)
+            prepared = handler.prepare(request) if preview.status == "READY" else None
+        except Exception as exc:
+            return record({
+                "dispatched": False, "status": "FAILED",
+                "reason": "handler preflight failed: " + type(exc).__name__,
+            })
+        if preview.status != "READY":
+            return record({"dispatched": False, "status": preview.status, "reason": preview.reason})
+        if prepared is None or prepared.status != "PREPARED":
+            if prepared is None:
+                return record({"dispatched": False, "status": "FAILED", "reason": "handler returned no preparation result"})
+            return record({"dispatched": False, "status": prepared.status, "reason": prepared.reason})
+        try:
+            result = handler.execute({
+                **request,
+                "dispatch_kwargs": {
+                    "order_id": order_id,
+                    "leg_id": leg_id,
+                    "stored_trade_url": stored_trade_url,
+                    "retry_generation": retry_generation,
+                    "manual_authorization": manual_authorization,
+                    "playerok_freshness_authorization": playerok_freshness_authorization,
+                    "playerok_order_lease": playerok_order_lease,
+                },
+            })
+        except Exception as exc:
+            # The handler may have crossed an external boundary before failing.
+            return record({
+                "dispatched": False, "status": "UNKNOWN",
+                "error_type": type(exc).__name__,
+            })
+        if result.details is not None:
+            response = dict(result.details)
+        else:
+            response = {"dispatched": result.status == "SENT_TO_STEAM", "status": result.status}
+        if result.reason:
+            response["reason"] = result.reason
+        if result.external_reference:
+            response["trade_offer_id"] = result.external_reference
+        return record(response)
+
+    def _dispatch_leg_core(
         self,
         *,
         order_id: str,

@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from core.database.db import Database
+from core.delivery.asf_trade_handler import register_asf_trade_offer_handlers
+from core.delivery.handler_contract import DeliveryHandlerRegistry
+from core.delivery.handler_routing import DeliveryHandlerRouteError, load_leg_handler_request
 from integrations.asf.client import ASFClient
 
 
@@ -25,6 +28,10 @@ class DeliveryReconciliation:
             local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
             sent_offers_path = Path(local) / "GameDelivery" / "ASFPlugin" / "sent_offers.json"
         self.sent_offers_path = Path(sent_offers_path)
+        self.handlers = DeliveryHandlerRegistry()
+        register_asf_trade_offer_handlers(
+            self.handlers, reconcile_callback=self._reconcile_handler_attempt
+        )
 
     @staticmethod
     def recover_interrupted_dispatches(database: Database) -> int:
@@ -48,6 +55,25 @@ class DeliveryReconciliation:
                     "UPDATE gd_delivery_attempts SET status='unknown' "
                     "WHERE order_id=? AND leg_id=? AND status='dispatching'",
                     (row["order_id"], row["leg_id"]),
+                )
+            parent_attempts = db.execute(
+                "SELECT order_attempt_id,result_json FROM gd_delivery_order_attempts "
+                "WHERE status='dispatching'"
+            ).fetchall()
+            for attempt in parent_attempts:
+                try:
+                    evidence = json.loads(attempt["result_json"] or "{}")
+                except (TypeError, ValueError):
+                    evidence = {}
+                if not isinstance(evidence, dict):
+                    evidence = {"previous_result": evidence}
+                evidence["interrupted_after_restart"] = True
+                db.execute(
+                    "UPDATE gd_delivery_order_attempts SET status='unknown',result_json=?,"
+                    "finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                    "WHERE order_attempt_id=? AND status='dispatching'",
+                    (json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+                     attempt["order_attempt_id"]),
                 )
             return len(rows)
 
@@ -81,6 +107,56 @@ class DeliveryReconciliation:
     def reconcile(self, *, order_id: str | None = None) -> list[dict[str, Any]]:
         with self.database.connect() as db:
             sql = """
+                SELECT l.leg_id,ol.order_id,l.status
+                FROM gd_delivery_legs l
+                JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
+                WHERE l.status IN ('UNKNOWN','SENT_TO_STEAM')
+            """
+            params: tuple[Any, ...] = ()
+            if order_id:
+                sql += " AND ol.order_id=?"
+                params = (order_id,)
+            legs = [dict(row) for row in db.execute(sql, params).fetchall()]
+        results: list[dict[str, Any]] = []
+        for leg in legs:
+            try:
+                with self.database.connect() as db:
+                    request = load_leg_handler_request(
+                        db, order_id=str(leg["order_id"]), leg_id=str(leg["leg_id"]),
+                        allow_legacy_reconcile=True,
+                    )
+                handler = self.handlers.resolve(
+                    item_type=request["item_type"],
+                    delivery_method=request["delivery_method"],
+                    request=request,
+                )
+                outcome = handler.reconcile(request)
+                results.append(dict(outcome.details) if outcome.details is not None else {
+                    "leg_id": leg["leg_id"], "status": outcome.status,
+                    "recovered": False, "reason": outcome.reason,
+                })
+            except (DeliveryHandlerRouteError, LookupError) as exc:
+                results.append({
+                    "leg_id": leg["leg_id"], "status": leg["status"],
+                    "recovered": False, "reason": str(exc),
+                })
+            except Exception as exc:
+                results.append({
+                    "leg_id": leg["leg_id"], "status": "UNKNOWN",
+                    "recovered": False, "error": type(exc).__name__,
+                })
+        return results
+
+    def _reconcile_handler_attempt(self, attempt: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return self._reconcile_core(
+            order_id=str(attempt["order_id"]), leg_id=str(attempt["leg_id"])
+        )
+
+    def _reconcile_core(
+        self, *, order_id: str | None = None, leg_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        with self.database.connect() as db:
+            sql = """
                 SELECT l.*, ol.order_id
                 FROM gd_delivery_legs l
                 JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
@@ -90,6 +166,9 @@ class DeliveryReconciliation:
             if order_id:
                 sql += " AND ol.order_id=?"
                 params = (order_id,)
+            if leg_id:
+                sql += " AND l.leg_id=?"
+                params += (leg_id,)
             rows = [dict(row) for row in db.execute(sql, params).fetchall()]
 
         results = []

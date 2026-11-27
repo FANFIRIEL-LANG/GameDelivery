@@ -35,6 +35,7 @@ class DeliveryHandlerResult:
     external_action_started: bool = False
     external_reference: str | None = None
     reason: str = ""
+    details: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         status = self.status.strip().upper() if isinstance(self.status, str) else ""
@@ -49,8 +50,12 @@ class DeliveryHandlerResult:
             reference = reference.strip()
         if not isinstance(self.reason, str):
             raise TypeError("reason должен быть строкой")
+        details = self.details
+        if details is not None and not isinstance(details, Mapping):
+            raise TypeError("details должен быть отображением или None")
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "external_reference", reference)
+        object.__setattr__(self, "details", dict(details) if details is not None else None)
 
 
 @runtime_checkable

@@ -2341,12 +2341,18 @@ class MainWindow(QMainWindow):
                 try:
                     for leg in legs:
                         leg_id = str(leg["leg_id"])
-                        results.append(dispatcher.dispatch_leg(
-                            order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
-                            manual_authorization=manual_authorization,
-                        ))
-                        if not automatic and not results[-1].get("dispatched"):
-                            break
+                        try:
+                            outcome = dispatcher.dispatch_leg(
+                                order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
+                                manual_authorization=manual_authorization,
+                            )
+                        except Exception as exc:
+                            outcome = {
+                                "dispatched": False, "status": "UNKNOWN",
+                                "reason": type(exc).__name__,
+                            }
+                        outcome.setdefault("leg_id", leg_id)
+                        results.append(outcome)
                     return results
                 finally:
                     self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
@@ -2377,6 +2383,20 @@ class MainWindow(QMainWindow):
             if error is not None:
                 self._playerok_freshness_gate.revoke(proof)
                 self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
+                try:
+                    dispatcher.record_order_leg_outcome(
+                        order_id=order_id, leg_id=leg_id,
+                        result={
+                            "dispatched": False,
+                            "status": "PLAYEROK_FRESHNESS_REQUIRED",
+                            "reason": type(error).__name__,
+                        },
+                    )
+                except Exception as record_error:
+                    logger.warning(
+                        "Could not persist parent delivery attempt; exception_type=%s",
+                        type(record_error).__name__,
+                    )
                 results.append({
                     "dispatched": False,
                     "status": "PLAYEROK_FRESHNESS_REQUIRED",
@@ -2399,6 +2419,19 @@ class MainWindow(QMainWindow):
                 if send_error is not None:
                     self._playerok_freshness_gate.revoke(proof)
                     self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
+                    try:
+                        dispatcher.record_order_leg_outcome(
+                            order_id=order_id, leg_id=leg_id,
+                            result={
+                                "dispatched": False, "status": "UNKNOWN",
+                                "reason": type(send_error).__name__,
+                            },
+                        )
+                    except Exception as record_error:
+                        logger.warning(
+                            "Could not persist parent delivery attempt; exception_type=%s",
+                            type(record_error).__name__,
+                        )
                     results.append({
                         "dispatched": False,
                         "status": "UNKNOWN",

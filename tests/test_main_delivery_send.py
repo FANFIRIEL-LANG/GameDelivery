@@ -358,6 +358,51 @@ class DeliverySendFlowTests(unittest.TestCase):
         self.assertEqual(completed[0][0], "order-1")
         self.assertEqual(len(completed[0][1]), 2)
 
+    def test_manual_order_continues_other_legs_after_one_leg_exception(self):
+        policy = DeliverySendPolicy(self.MemorySettings())
+        attempted = []
+        completed = []
+
+        class Dispatcher:
+            def dispatch_leg(_self, **kwargs):
+                attempted.append(kwargs["leg_id"])
+                if kwargs["leg_id"] == "leg-a":
+                    raise TimeoutError("simulated transport timeout")
+                return {"dispatched": True, "status": "SENT_TO_STEAM"}
+
+        window = SimpleNamespace(
+            _delivery_send_policy=policy,
+            _trade_credentials=SimpleNamespace(store_trade_url=lambda order, url: "safe-url"),
+            delivery_pipeline=SimpleNamespace(
+                ledger=SimpleNamespace(bind_order_recipient=MagicMock())
+            ),
+            _database_path=":temporary:", _playerok_freshness_gate=None,
+            _finish_async_send_ui=MagicMock(),
+            _on_ledger_dispatch_complete=lambda order, result, error: completed.append(result),
+            statusBar=lambda: MagicMock(),
+            _run_asf_call_async=lambda operation, callback: callback(operation(), None),
+        )
+        legs = [{"leg_id": "leg-a"}, {"leg_id": "leg-b"}]
+        previews = [
+            {"leg_id": "leg-a", "bot_name": "Bot A", "app_id": 753,
+             "context_id": 6, "asset_ids": ["asset-a"], "steam_id64": "7656119"},
+            {"leg_id": "leg-b", "bot_name": "Bot B", "app_id": 730,
+             "context_id": 2, "asset_ids": ["asset-b"], "steam_id64": "7656119"},
+        ]
+
+        with patch("app.main.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as question, \
+             patch("app.main.Database"), \
+             patch("app.main.DeliveryDispatcher", return_value=Dispatcher()):
+            MainWindow._on_ledger_previews_ready(
+                window, "order-1", "https://steamcommunity.com/tradeoffer/new/",
+                legs, object(), previews, None, automatic=False,
+            )
+
+        question.assert_called_once()
+        self.assertEqual(attempted, ["leg-a", "leg-b"])
+        self.assertEqual(completed[0][0]["status"], "UNKNOWN")
+        self.assertEqual(completed[0][1]["status"], "SENT_TO_STEAM")
+
     def test_canonical_playerok_flow_refreshes_each_leg_and_stops_after_second_check_fails(self):
         gate = PlayerokFreshnessGate()
         lease = gate.try_acquire_order("order-1")
@@ -365,11 +410,15 @@ class DeliverySendFlowTests(unittest.TestCase):
         grant = policy.issue_order_manual_authorization("order-1", ("leg-1", "leg-2"))
         checks = []
         dispatches = []
+        parent_results = []
         completed = []
         legs = [{"leg_id": "leg-1"}, {"leg_id": "leg-2"}]
         identity = {"account_user_id": "account-1", "deal_id": "deal-1"}
 
         class Dispatcher:
+            def record_order_leg_outcome(_self, **kwargs):
+                parent_results.append(kwargs)
+
             def dispatch_leg(self, **kwargs):
                 dispatches.append((kwargs["leg_id"], kwargs["manual_authorization"]))
                 policy.consume_manual_authorization(
@@ -412,6 +461,8 @@ class DeliverySendFlowTests(unittest.TestCase):
 
         self.assertEqual(checks, ["leg-1", "leg-2"])
         self.assertEqual(dispatches, [("leg-1", grant)])
+        self.assertEqual(parent_results[0]["leg_id"], "leg-2")
+        self.assertEqual(parent_results[0]["result"]["status"], "PLAYEROK_FRESHNESS_REQUIRED")
         self.assertEqual(completed[0][1][0]["status"], "SENT_TO_STEAM")
         self.assertEqual(completed[0][1][1]["status"], "PLAYEROK_FRESHNESS_REQUIRED")
 

@@ -100,7 +100,10 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         config = self.ledger.create_listing_config_version(
             listing_id="listing-1", source_platform="playerok",
             external_listing_id="listing-external-1", delivery_quantity_per_deal=1,
-            item_selectors={"app_id": 730, "context_id": 2}, bot_pool=["Bot-A"],
+            item_selectors={
+                "game_id": "cs2", "app_id": 730, "context_id": 2,
+                "market_hash_name": "Skin",
+            }, bot_pool=["Bot-A"],
         )
         self.ledger.create_deal(
             deal_id="deal-1", source_platform="playerok", external_deal_id="deal-ext-1",
@@ -110,10 +113,18 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
                      "stored_trade_url": "https://steamcommunity.com/tradeoffer/new/?partner=123"},
         )
         self.ledger.create_order(order_id="order-1", deal_id="deal-1", total_quantity=1, status="reserved")
+        with self.db.connect() as db:
+            recipe = self.ledger.recipe_for_config_version(
+                db, config["config_version_id"], allow_legacy=True
+            )
+        item = recipe.items[0]
         self.ledger.add_order_line(
             order_line_id="line-1", order_id="order-1", line_number=1,
-            item_type="cs2_item", item_name="Skin",
-            item_selector={"app_id": 730, "context_id": 2}, quantity=1,
+            item_type=item.kind, item_name=item.display_name,
+            item_selector={
+                "config_version_id": config["config_version_id"],
+                "recipe_item_id": item.item_id, "recipe_item": item.to_dict(),
+            }, quantity=item.quantity_per_order,
         )
         self.ledger.add_delivery_leg(
             leg_id="leg-1", order_line_id="line-1", bot_name="Bot-A",

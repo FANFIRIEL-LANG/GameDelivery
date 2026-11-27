@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
+from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.send_policy import DeliverySendPolicy
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
@@ -112,8 +114,11 @@ class DeliveryDispatchTests(unittest.TestCase):
             listing_id=f"listing-{order_id}",
             source_platform="playerok",
             external_listing_id=f"listing-external-{order_id}",
-            delivery_quantity_per_deal=1,
-            item_selectors={"game_id": "cs2", "app_id": 730, "context_id": 2},
+            delivery_quantity_per_deal=len(bots),
+            item_selectors={
+                "game_id": "cs2", "app_id": 730, "context_id": 2,
+                "market_hash_name": "AK-47",
+            },
             bot_pool=list(bots),
         )
         self.ledger.create_deal(
@@ -135,13 +140,24 @@ class DeliveryDispatchTests(unittest.TestCase):
                 "INSERT INTO playerok_sync_state(account_user_id,baseline_completed) VALUES(?,1)",
                 (f"account-{order_id}",),
             )
-        self.ledger.create_order(order_id=order_id, deal_id=f"deal-{order_id}", total_quantity=1)
+        self.ledger.create_order(
+            order_id=order_id, deal_id=f"deal-{order_id}", total_quantity=len(bots)
+        )
         line_id = f"line-{order_id}"
+        with self.db.connect() as db:
+            recipe = self.ledger.recipe_for_config_version(
+                db, config["config_version_id"], allow_legacy=True
+            )
+        item = recipe.items[0]
+        selector_snapshot = {
+            "config_version_id": config["config_version_id"],
+            "recipe_item_id": item.item_id,
+            "recipe_item": item.to_dict(),
+        }
         self.ledger.add_order_line(
             order_line_id=line_id, order_id=order_id, line_number=1,
-            item_type="cs2_item", item_name="AK-47",
-            item_selector={"game_id": "cs2", "app_id": 730, "context_id": 2},
-            quantity=len(bots),
+            item_type=item.kind, item_name=item.display_name,
+            item_selector=selector_snapshot, quantity=item.quantity_per_order,
         )
         legs = []
         for index, bot in enumerate(bots, start=1):
@@ -219,6 +235,11 @@ class DeliveryDispatchTests(unittest.TestCase):
         retry = self.dispatch("order-1", leg)
         self.assertFalse(retry["dispatched"])
         self.assertEqual(len(self.asf.sent), 1, "UNKNOWN must prohibit automatic resend")
+        with self.db.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM gd_delivery_order_attempts WHERE order_id='order-1' "
+                "ORDER BY generation DESC LIMIT 1"
+            ).fetchone()[0], "unknown")
 
         self.sent_offers.write_text(json.dumps({
             "order-1": {
@@ -324,6 +345,131 @@ class DeliveryDispatchTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM gd_delivery_events WHERE order_id='order-1'"
             ).fetchone()[0], 0)
+
+    def test_dispatch_requires_recipe_derived_handler_route_not_display_name(self):
+        leg_id = self.create_order()[0]
+        self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["must-not-send"]}
+        with self.db.connect() as db:
+            db.execute("UPDATE gd_order_lines SET item_name='steam_asset' WHERE order_id='order-1'")
+
+        result = self.dispatch("order-1", leg_id)
+
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["status"], "HANDLER_ROUTE_INVALID")
+        self.assertEqual(self.asf.sent, [])
+
+    def test_parent_order_attempt_aggregates_multi_leg_results_once(self):
+        legs = self.create_order(bots=("Bot-A", "Bot-B"))
+        self.asf.send_result.update({
+            "Bot-A": {"success": True, "offerIds": ["offer-a"]},
+            "Bot-B": {"success": True, "offerIds": ["offer-b"]},
+        })
+
+        self.assertTrue(self.dispatch("order-1", legs[0])["dispatched"])
+        with self.db.connect() as db:
+            parent = db.execute(
+                "SELECT status,result_json FROM gd_delivery_order_attempts WHERE order_id='order-1'"
+            ).fetchone()
+            self.assertEqual(parent["status"], "dispatching")
+            self.assertEqual(len(json.loads(parent["result_json"])["legs"]), 1)
+
+        self.assertTrue(self.dispatch("order-1", legs[1])["dispatched"])
+        with self.db.connect() as db:
+            rows = db.execute(
+                "SELECT status,result_json,idempotency_key FROM gd_delivery_order_attempts "
+                "WHERE order_id='order-1'"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "completed")
+        self.assertEqual(rows[0]["idempotency_key"], "order-1:0")
+        self.assertEqual(set(json.loads(rows[0]["result_json"])["legs"]), set(legs))
+
+    def test_concurrent_parent_attempt_starts_share_one_idempotency_record(self):
+        self.create_order()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            attempts = list(pool.map(
+                lambda _index: self.ledger.start_delivery_order_attempt("order-1"),
+                range(4),
+            ))
+
+        self.assertEqual(len({row["order_attempt_id"] for row in attempts}), 1)
+        with self.db.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM gd_delivery_order_attempts WHERE order_id='order-1'"
+            ).fetchone()[0], 1)
+
+    def test_parent_order_attempt_reports_partial_multi_leg_outcome(self):
+        legs = self.create_order(bots=("Bot-A", "Bot-B"))
+        self.asf.send_result.update({
+            "Bot-A": {"success": True, "offerIds": ["offer-a"]},
+            "Bot-B": {"success": False, "error": "known rejected before offer"},
+        })
+
+        self.assertEqual(self.dispatch("order-1", legs[0])["status"], "SENT_TO_STEAM")
+        self.assertEqual(self.dispatch("order-1", legs[1])["status"], "FAILED")
+        with self.db.connect() as db:
+            row = db.execute(
+                "SELECT status,result_json FROM gd_delivery_order_attempts WHERE order_id='order-1'"
+            ).fetchone()
+        self.assertEqual(row["status"], "partial")
+        self.assertEqual(
+            {value["status"] for value in json.loads(row["result_json"])["legs"].values()},
+            {"SENT_TO_STEAM", "FAILED"},
+        )
+
+    def test_one_order_unknown_does_not_block_dispatch_of_another_order(self):
+        first_leg = self.create_order(order_id="order-1", bots=("Bot-A",))[0]
+        second_leg = self.create_order(order_id="order-2", bots=("Bot-B",))[0]
+        self.asf.send_error["Bot-A"] = TimeoutError("simulated timeout")
+        self.asf.send_result["Bot-B"] = {"success": True, "offerIds": ["offer-b"]}
+
+        self.assertEqual(self.dispatch("order-1", first_leg)["status"], "UNKNOWN")
+        self.assertTrue(self.dispatch("order-2", second_leg)["dispatched"])
+        self.assertEqual(len(self.asf.sent), 2)
+
+    def test_restart_recovery_marks_interrupted_parent_attempt_unknown(self):
+        self.create_order()
+        attempt = self.ledger.start_delivery_order_attempt("order-1")
+
+        self.assertEqual(DeliveryReconciliation.recover_interrupted_dispatches(self.db), 0)
+
+        with self.db.connect() as db:
+            row = db.execute(
+                "SELECT status,result_json FROM gd_delivery_order_attempts WHERE order_attempt_id=?",
+                (attempt["order_attempt_id"],),
+            ).fetchone()
+        self.assertEqual(row["status"], "unknown")
+        self.assertTrue(json.loads(row["result_json"])["interrupted_after_restart"])
+
+    def test_unregistered_recipe_method_fails_closed_without_display_name_fallback(self):
+        recipe_item = RecipeItem(
+            item_id="code", position=1, kind="digital_text_unit", spec_version=1,
+            quantity_per_order=1, required=True, stock_source_id="codes",
+            executor_key="text_delivery", spec=DigitalTextUnitSpec(),
+        )
+        config = self.ledger.create_recipe_config_version(
+            listing_id="listing-text", source_platform="playerok",
+            external_listing_id="listing-external-text", recipe_items=[recipe_item],
+        )
+        self.ledger.create_deal(
+            deal_id="deal-text", source_platform="playerok", external_deal_id="deal-text-ext",
+            chat_id="chat-text", listing_id=config["listing_id"],
+            config_version_id=config["config_version_id"], platform_status="PAID",
+        )
+        self.ledger.create_order(order_id="order-text", deal_id="deal-text", total_quantity=1)
+        line = self.ledger.materialize_recipe_order_lines("order-text")[0]
+        leg = self.ledger.add_delivery_leg(
+            leg_id="leg-text", order_line_id=line["order_line_id"], bot_name="Bot-A",
+            app_id=730, context_id=2, asset_ids=["asset-text"], status="reserved",
+        )
+
+        result = self.dispatcher.dispatch_leg(
+            order_id="order-text", leg_id=leg["leg_id"], stored_trade_url=self.trade_url,
+        )
+
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["status"], "HANDLER_UNAVAILABLE")
+        self.assertEqual(self.asf.sent, [])
 
     def test_manual_grant_dispatches_exact_leg_while_global_auto_is_off_and_is_audited(self):
         leg = self.create_order()[0]
