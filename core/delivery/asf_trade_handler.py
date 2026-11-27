@@ -85,7 +85,7 @@ def register_asf_trade_offer_handlers(
     execute_callback: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
     reconcile_callback: Callable[[Mapping[str, Any]], list[dict[str, Any]]] | None = None,
 ) -> None:
-    for item_type in ("steam_asset",):
+    for item_type in ("steam_asset", "steam_card_set"):
         registry.register(ASFTradeOfferHandler(
             item_type=item_type,
             execute_callback=execute_callback,

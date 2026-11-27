@@ -8,7 +8,7 @@ from core.delivery.handler_contract import (
     DeliveryHandlerRegistry,
     DeliveryHandlerResult,
 )
-from core.delivery.asf_trade_handler import ASFTradeOfferHandler
+from core.delivery.asf_trade_handler import ASFTradeOfferHandler, register_asf_trade_offer_handlers
 
 
 class FakeHandler:
@@ -35,6 +35,14 @@ class FakeHandler:
 
 
 class DeliveryHandlerContractTests(unittest.TestCase):
+    def test_asf_trade_offer_registry_includes_steam_card_sets(self):
+        registry = DeliveryHandlerRegistry()
+        register_asf_trade_offer_handlers(registry)
+        self.assertEqual(
+            [(key.item_type, key.delivery_method) for key in registry.registered_keys()],
+            [("steam_asset", "steam_trade_offer"), ("steam_card_set", "steam_trade_offer")],
+        )
+
     def test_key_normalizes_category_and_method(self):
         key = DeliveryHandlerKey(" CS2_ITEM ", " ASF_Trade ")
         self.assertEqual((key.item_type, key.delivery_method), ("cs2_item", "asf_trade"))

@@ -843,3 +843,27 @@ C.4 is **DONE** for the registered `steam_asset / steam_trade_offer` handler fou
 Next block: C.5, connect existing Steam Cards preflight/quota/reservation path to the handler contract without changing selection rules; require existing mock tests and explicit manual/live-test boundaries. Do not start live offers from this code-only checkpoint.
 
 Final C.4 verification note: the first full-suite run found one old `cs2_item` read-only reconciliation fixture with no Recipe snapshot; it was corrected with a reconciliation-only route derived from the pinned legacy ConfigVersion and verified leg bot/app/context. Full `python -m unittest discover -s tests -q` then passed **1096 tests**. After the final small change that records Playerok freshness failures in the parent result, `tests.test_main_delivery_send`, `tests.test_delivery_dispatcher`, `tests.test_delivery_ledger` passed **64 tests**; targeted compileall and diff-check passed. Full suite was not repeated after that last localized change.
+
+## 2026-11-27 — C.5 Steam Cards handler connection
+
+C.5 implementation now routes the typed Recipe `steam_card_set / steam_trade_offer` key through the existing ASF handler contract and shared reconciliation registry. Existing `SteamCardOrderPreflight`, complete-set selection, listing quota and canonical reservations were reused unchanged. The one whole-order manual confirmation remains intact.
+
+Before dispatch, the UI retains ASF's read-only preview result per leg. Inside the same transactional claim that verifies canonical reservations, dispatch requires that preview to match the current leg, bot, AppID, context, exact asset list and order-bound recipient. A missing/changed preview fails closed before ASF. The existing attempt idempotency, UNKNOWN handling, cancellation path and Playerok freshness rules are retained.
+
+Validation: relevant handler, dispatcher, MainWindow, selection, preflight, reservation and paid handoff tests — **141 passed**; full suite — **1101 passed**; compileall and diff-check — **PASS**. A first test invocation had a typo naming a nonexistent module; the corrected targeted invocation passed. The tests used isolated SQLite/fakes only.
+
+| Stage C item | Status at this checkpoint | Remaining gate |
+|---|---|---|
+| C.1 Current delivery map | DONE | None for the scoped architecture map. |
+| C.2 Domain/allocation rules | PARTIAL | Required authoritative/live policy evidence remains as recorded in the Stage C plan. |
+| C.3 Atomic paid preparation | DONE | Only supported typed and recognized unambiguous legacy Recipe paths; unknown/manual formats remain fail-closed. |
+| C.4 Handler contract and parent attempts | DONE | Exact-SHA CI passed on `b554274168eb6d2765085d73c373b631be407e8e` (Tests `45989582962`, ASF plugin `45989582968`, Windows Build `45989582972`, all success). |
+| C.5 Steam Cards | PARTIAL | Contract dispatch/preview binding and regression coverage implemented; separate permitted test-account live end-to-end offer remains unverified and is not claimed. |
+| C.6 Game inventory/CS2 | PARTIAL | Inventory and reservation foundations exist; a dedicated verified dispatch path and end-to-end gate remain. |
+| C.7 Digital codes | OPEN | Protected import, unique reservation and reveal/reconcile lifecycle. |
+| C.8 File delivery | OPEN | Managed file source, integrity and delivery lifecycle. |
+| C.9 Services/manual execution | OPEN | Full operator execution and audit lifecycle. |
+| C.10 Operator interface/Telegram | PARTIAL | Existing pieces exist; unified multi-handler operational flow and acceptance remain. |
+| C.11 Full acceptance | OPEN | Final cross-handler tests, exact-SHA CI/package checks and explicit live gates. |
+
+No live Steam/ASF/Playerok operation, GUI launch or user database access occurred. The Stage C C.5 live acceptance is a release gate; continue safe code/test work in C.6 without making a live-ready claim. Exact-SHA CI for this C.5 commit is pending.

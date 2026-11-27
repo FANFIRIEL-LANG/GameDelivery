@@ -2323,6 +2323,9 @@ class MainWindow(QMainWindow):
             )
         try:
             safe_url = self._trade_credentials.store_trade_url(order_id, trade_url)
+            confirmed_previews = {
+                str(item["leg_id"]): item for item in previews
+            }
             dispatcher = DeliveryDispatcher(
                 Database(self._database_path), client, self._trade_credentials,
                 send_policy=self._delivery_send_policy,
@@ -2333,6 +2336,7 @@ class MainWindow(QMainWindow):
                 self._dispatch_playerok_legs_sequentially(
                     order_id, trade_url, legs, dispatcher, safe_url,
                     playerok_identity, playerok_lease, manual_authorization, 0, [],
+                    confirmed_previews,
                 )
                 return
 
@@ -2345,6 +2349,7 @@ class MainWindow(QMainWindow):
                             outcome = dispatcher.dispatch_leg(
                                 order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
                                 manual_authorization=manual_authorization,
+                                confirmed_preview=confirmed_previews.get(leg_id),
                             )
                         except Exception as exc:
                             outcome = {
@@ -2370,7 +2375,7 @@ class MainWindow(QMainWindow):
 
     def _dispatch_playerok_legs_sequentially(
         self, order_id, trade_url, legs, dispatcher, safe_url, identity, lease,
-        manual_authorization, index, results,
+        manual_authorization, index, results, confirmed_previews,
     ):
         if index >= len(legs):
             self._delivery_send_policy.revoke_manual_authorization(manual_authorization)
@@ -2413,6 +2418,7 @@ class MainWindow(QMainWindow):
                     manual_authorization=manual_authorization,
                     playerok_freshness_authorization=proof,
                     playerok_order_lease=lease,
+                    confirmed_preview=confirmed_previews.get(leg_id),
                 )
 
             def sent_one(_worker, result, send_error):
@@ -2445,6 +2451,7 @@ class MainWindow(QMainWindow):
                     self._dispatch_playerok_legs_sequentially(
                         order_id, trade_url, legs, dispatcher, safe_url, identity,
                         lease, manual_authorization, index + 1, results,
+                        confirmed_previews,
                     )
                 else:
                     self._playerok_freshness_gate.revoke(proof)

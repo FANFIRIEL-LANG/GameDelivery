@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
@@ -130,6 +130,7 @@ class DeliveryDispatcher:
         manual_authorization: ManualDispatchAuthorization | None = None,
         playerok_freshness_authorization: PlayerokFreshnessProof | None = None,
         playerok_order_lease: PlayerokOrderLease | None = None,
+        confirmed_preview: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             order_attempt = self.ledger.start_delivery_order_attempt(order_id)
@@ -180,6 +181,7 @@ class DeliveryDispatcher:
                     "manual_authorization": manual_authorization,
                     "playerok_freshness_authorization": playerok_freshness_authorization,
                     "playerok_order_lease": playerok_order_lease,
+                    "confirmed_preview": confirmed_preview,
                 },
             })
         except Exception as exc:
@@ -208,6 +210,7 @@ class DeliveryDispatcher:
         manual_authorization: ManualDispatchAuthorization | None = None,
         playerok_freshness_authorization: PlayerokFreshnessProof | None = None,
         playerok_order_lease: PlayerokOrderLease | None = None,
+        confirmed_preview: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         order, leg = order_id.strip(), leg_id.strip()
         if not order or not leg:
@@ -222,6 +225,8 @@ class DeliveryDispatcher:
 
         recipient_from_url = self.credentials.recipient_steam_id64_from_url(stored_trade_url)
         trade_url = self.credentials.load_trade_url(order, stored_trade_url)
+        if not isinstance(confirmed_preview, Mapping):
+            confirmed_preview = None
         authorization = {
             "mode": "manual" if manual_authorization is not None else "automatic",
         }
@@ -236,7 +241,7 @@ class DeliveryDispatcher:
                 row = db.execute(
                     """
                     SELECT l.*, o.status AS order_status, o.recipient_steam_id64,
-                           d.chat_id, ol.order_line_id, d.source_platform,
+                           d.chat_id, ol.order_line_id, ol.item_type, d.source_platform,
                            d.external_deal_id, d.playerok_account_id
                     FROM gd_delivery_legs l
                     JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
@@ -261,6 +266,27 @@ class DeliveryDispatcher:
                         "dispatched": False,
                         "status": "RECIPIENT_MISMATCH",
                         "reason": "Steam Trade URL указывает на другого получателя; отправка заблокирована.",
+                    }}
+                try:
+                    requested_assets = json.loads(row["asset_ids_json"])
+                except (TypeError, ValueError):
+                    requested_assets = None
+                preview_matches = (
+                    confirmed_preview is not None
+                    and confirmed_preview.get("leg_id") == leg
+                    and str(confirmed_preview.get("bot_name") or "").casefold()
+                    == str(row["bot_name"]).casefold()
+                    and type(confirmed_preview.get("app_id")) is int
+                    and confirmed_preview.get("app_id") == int(row["app_id"])
+                    and str(confirmed_preview.get("context_id")) == str(row["context_id"])
+                    and isinstance(confirmed_preview.get("asset_ids"), list)
+                    and confirmed_preview.get("asset_ids") == requested_assets
+                    and str(confirmed_preview.get("steam_id64") or "") == str(stored_recipient)
+                )
+                if row["item_type"] == "steam_card_set" and not preview_matches:
+                    return {"_claimed": False, "response": {
+                        "dispatched": False, "status": "CONFIRMED_PREVIEW_MISMATCH",
+                        "reason": "Текущая DeliveryLeg отличается от подтверждённого ASF preview.",
                     }}
                 is_playerok = str(row["source_platform"] or "").strip().casefold() == "playerok"
                 if (

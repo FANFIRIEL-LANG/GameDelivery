@@ -310,7 +310,7 @@ class DeliverySendFlowTests(unittest.TestCase):
 
         class Dispatcher:
             def dispatch_leg(_self, **kwargs):
-                dispatched.append((kwargs["leg_id"], kwargs["manual_authorization"]))
+                dispatched.append((kwargs["leg_id"], kwargs["manual_authorization"], kwargs["confirmed_preview"]))
                 self.assertTrue(policy.run_manual_dispatch_claim(
                     kwargs["manual_authorization"], kwargs["order_id"], kwargs["leg_id"],
                     lambda: {"_claimed": True},
@@ -353,8 +353,10 @@ class DeliverySendFlowTests(unittest.TestCase):
 
         question.assert_called_once()
         self.assertEqual(question.call_args.args[1], "Подтвердить отправку всего заказа")
-        self.assertEqual([leg for leg, _grant in dispatched], ["leg-a", "leg-b"])
+        self.assertEqual([leg for leg, _grant, _preview in dispatched], ["leg-a", "leg-b"])
         self.assertIs(dispatched[0][1], dispatched[1][1])
+        self.assertEqual(dispatched[0][2], previews[0])
+        self.assertEqual(dispatched[1][2], previews[1])
         self.assertEqual(completed[0][0], "order-1")
         self.assertEqual(len(completed[0][1]), 2)
 
@@ -454,7 +456,7 @@ class DeliverySendFlowTests(unittest.TestCase):
         try:
             MainWindow._dispatch_playerok_legs_sequentially(
                 window, "order-1", "https://steamcommunity.com/tradeoffer/new/",
-                legs, Dispatcher(), "safe-url", identity, lease, grant, 0, [],
+                legs, Dispatcher(), "safe-url", identity, lease, grant, 0, [], {},
             )
         finally:
             gate.release_order(lease)
@@ -509,7 +511,7 @@ class DeliverySendFlowTests(unittest.TestCase):
             MainWindow._dispatch_playerok_legs_sequentially(
                 window, "order-1", "https://steamcommunity.com/tradeoffer/new/",
                 [{"leg_id": "leg-1"}, {"leg_id": "leg-2"}], Dispatcher(),
-                "safe-url", identity, lease, grant, 0, [],
+                "safe-url", identity, lease, grant, 0, [], {},
             )
         finally:
             gate.release_order(lease)

@@ -10,7 +10,7 @@ from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
-from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem
+from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem, SteamCardSetSpec
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.send_policy import DeliverySendPolicy
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
@@ -224,6 +224,98 @@ class DeliveryDispatchTests(unittest.TestCase):
         finally:
             if freshness.get("playerok_order_lease") is not None:
                 self.freshness_gate.release_order(freshness["playerok_order_lease"])
+
+    def create_steam_card_order(self):
+        item = RecipeItem(
+            item_id="cards", position=1, kind="steam_card_set", spec_version=1,
+            quantity_per_order=1, required=True, stock_source_id=None,
+            executor_key="steam_trade_offer",
+            spec=SteamCardSetSpec(allowed_bot_pool=("Bot-A",)),
+        )
+        config = self.ledger.create_recipe_config_version(
+            listing_id="listing-card-order", source_platform="manual",
+            external_listing_id="listing-card-order-ext", recipe_items=[item],
+        )
+        self.ledger.create_deal(
+            deal_id="deal-card-order", source_platform="manual",
+            external_deal_id="deal-card-order-ext", chat_id="chat-card-order",
+            listing_id=config["listing_id"], config_version_id=config["config_version_id"],
+            platform_status="manual",
+        )
+        self.ledger.create_order(order_id="card-order", deal_id="deal-card-order", total_quantity=1)
+        line = self.ledger.materialize_recipe_order_lines("card-order")[0]
+        leg = self.ledger.add_delivery_leg(
+            leg_id="card-leg", order_line_id=line["order_line_id"], bot_name="Bot-A",
+            app_id=753, context_id=6, asset_ids=["500"], status="reserved",
+        )
+        with self.db.connect() as db:
+            db.execute(
+                "INSERT INTO gd_resource_reservations "
+                "(reservation_id,owner_type,order_line_id,game_id,app_id,context_id,bot_name,asset_id,units,state) "
+                "VALUES('card-reservation','order',?,'steam_cards',753,'6','Bot-A','500',1,'active')",
+                (line["order_line_id"],),
+            )
+            db.execute("UPDATE gd_orders SET status='reserved' WHERE order_id='card-order'")
+        self.ledger.bind_order_recipient("card-order", 76561197960265851)
+        self.credentials.store_trade_url(
+            "card-order", "https://steamcommunity.com/tradeoffer/new/?partner=123&token=secret_token"
+        )
+        return leg
+
+    @staticmethod
+    def steam_card_preview(leg):
+        return {
+            "leg_id": leg["leg_id"], "bot_name": leg["bot_name"],
+            "app_id": leg["app_id"], "context_id": int(leg["context_id"]),
+            "asset_ids": json.loads(leg["asset_ids_json"]),
+            "steam_id64": "76561197960265851",
+        }
+
+    def test_typed_steam_card_dispatch_requires_and_uses_confirmed_exact_preview(self):
+        leg = self.create_steam_card_order()
+        self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["card-offer"]}
+        result = self.dispatcher.dispatch_leg(
+            order_id="card-order", leg_id="card-leg",
+            stored_trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123",
+            confirmed_preview=self.steam_card_preview(leg),
+        )
+        self.assertTrue(result["dispatched"])
+        self.assertEqual(self.asf.sent[0][1], "Bot-A")
+        self.assertEqual(self.asf.sent[0][3], ("500",))
+        self.assertEqual(self.asf.sent[0][-2:], (753, 6))
+
+    def test_typed_steam_card_dispatch_blocks_leg_changed_after_preview(self):
+        leg = self.create_steam_card_order()
+        preview = self.steam_card_preview(leg)
+        with self.db.connect() as db:
+            db.execute("UPDATE gd_delivery_legs SET asset_ids_json='[\"501\"]' WHERE leg_id='card-leg'")
+        result = self.dispatcher.dispatch_leg(
+            order_id="card-order", leg_id="card-leg",
+            stored_trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123",
+            confirmed_preview=preview,
+        )
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["status"], "CONFIRMED_PREVIEW_MISMATCH")
+        self.assertEqual(self.asf.sent, [])
+
+    def test_typed_steam_card_dispatch_blocks_unconfirmed_bot_context_and_recipient(self):
+        leg = self.create_steam_card_order()
+        preview = self.steam_card_preview(leg)
+        for field, replacement in (
+            ("bot_name", "Other-Bot"), ("app_id", 730),
+            ("context_id", 2), ("steam_id64", "76561197960265852"),
+        ):
+            with self.subTest(field=field):
+                changed = dict(preview)
+                changed[field] = replacement
+                result = self.dispatcher.dispatch_leg(
+                    order_id="card-order", leg_id="card-leg",
+                    stored_trade_url="https://steamcommunity.com/tradeoffer/new/?partner=123",
+                    confirmed_preview=changed,
+                )
+                self.assertFalse(result["dispatched"])
+                self.assertEqual(result["status"], "CONFIRMED_PREVIEW_MISMATCH")
+        self.assertEqual(self.asf.sent, [])
 
     def test_transport_failure_becomes_unknown_and_reconciliation_recovers_offer_without_resend(self):
         leg = self.create_order()[0]
