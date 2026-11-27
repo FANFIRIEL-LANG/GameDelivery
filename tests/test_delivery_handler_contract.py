@@ -9,6 +9,7 @@ from core.delivery.handler_contract import (
     DeliveryHandlerResult,
 )
 from core.delivery.asf_trade_handler import ASFTradeOfferHandler, register_asf_trade_offer_handlers
+from games.cs2.delivery_handler import CS2CapabilityAcceptance, CS2TradeOfferHandler, register_cs2_trade_offer_handler
 
 
 class FakeHandler:
@@ -35,6 +36,30 @@ class FakeHandler:
 
 
 class DeliveryHandlerContractTests(unittest.TestCase):
+    def test_cs2_handler_requires_all_capability_evidence(self):
+        registry = DeliveryHandlerRegistry()
+        capability = CS2CapabilityAcceptance(preview_verified=True)
+        self.assertFalse(register_cs2_trade_offer_handler(registry, capability=capability))
+        self.assertEqual(registry.registered_keys(), ())
+        with self.assertRaises(ValueError):
+            CS2TradeOfferHandler(capability=capability)
+
+    def test_cs2_handler_is_exact_730_2_route_after_acceptance(self):
+        capability = CS2CapabilityAcceptance(True, True, True, True)
+        registry = DeliveryHandlerRegistry()
+        self.assertTrue(register_cs2_trade_offer_handler(registry, capability=capability))
+        handler = registry.resolve(
+            item_type="cs2_item", delivery_method="steam_trade_offer",
+            request={"item_type": "cs2_item", "delivery_method": "steam_trade_offer",
+                     "order_id": "order-1", "leg_id": "leg-1", "app_id": 730, "context_id": "2"},
+        )
+        self.assertIsInstance(handler, CS2TradeOfferHandler)
+        with self.assertRaises(LookupError):
+            registry.resolve(
+                item_type="cs2_item", delivery_method="steam_trade_offer",
+                request={"item_type": "cs2_item", "delivery_method": "steam_trade_offer",
+                         "order_id": "order-1", "leg_id": "leg-1", "app_id": 753, "context_id": "6"},
+            )
     def test_asf_trade_offer_registry_includes_steam_card_sets(self):
         registry = DeliveryHandlerRegistry()
         register_asf_trade_offer_handlers(registry)
@@ -129,3 +154,13 @@ class DeliveryHandlerContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DigitalCodeHandlerRegistrationTests(unittest.TestCase):
+    def test_digital_handler_is_explicitly_opt_in(self):
+        from core.delivery.handler_contract import DeliveryHandlerRegistry
+        from core.delivery.digital_code_handler import DigitalCodeHandler
+        registry = DeliveryHandlerRegistry()
+        registry.register(DigitalCodeHandler())
+        handler = registry.resolve(item_type="digital_text_unit", delivery_method="text_delivery", request={"item_type":"digital_text_unit","delivery_method":"text_delivery","order_id":"o","leg_id":"l"})
+        self.assertEqual(handler.execute({"item_type":"digital_text_unit","delivery_method":"text_delivery","order_id":"o","leg_id":"l"}).status, "ACTION_REQUIRED")

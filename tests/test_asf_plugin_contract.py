@@ -37,6 +37,18 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn("Проверка инвентаря ASF", inventory_region)
         self.assertIn("resultUnknown: false", inventory_region)
 
+    def test_preview_waits_for_selected_bot_to_finish_login_before_actions_inventory(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        preview_start = source.index("if (isDiagnostic)")
+        preview_start = source.index("if (!await WaitForBotReadyAsync", preview_start)
+        inventory_call = source.index("targetBot.Actions.GetInventory", preview_start)
+        readiness_region = source[preview_start:inventory_call]
+
+        self.assertIn("WaitForBotReadyAsync(targetBot, PreviewBotReadyTimeoutSeconds)", readiness_region)
+        self.assertIn("PreviewBotReadyTimeoutSeconds = 15", source)
+        self.assertIn("PreviewBotReadyPollMilliseconds = 250", source)
+        self.assertIn("ограниченного ожидания готовности", readiness_region)
+
     def test_send_trade_offer_has_no_custom_message_and_does_not_wait_for_mobile_confirmation(self):
         delivery = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         send_call = delivery.index("await targetBot.ArchiWebHandler.SendTradeOffer(")
@@ -173,6 +185,20 @@ class ASFPluginContractTests(unittest.TestCase):
         self.assertIn('"IsRuntimeTrimmed"', probe)
         self.assertIn("property.GetValue(null)", probe)
         self.assertNotIn("SharedInfo.IsRuntimeTrimmed", source)
+
+    def test_diagnostic_command_reads_sent_offers_without_trade_mutation(self):
+        source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")
+        start = source.index("private static async Task<string> RunDiagnosticCommand")
+        end = source.index("private static async Task<string> RunBadgeDiagnosticCommand", start)
+        diagnostic = source[start:end]
+        self.assertIn("GetTradeOffers(", diagnostic)
+        self.assertIn("sentOffers: true", diagnostic)
+        self.assertIn("TradeDelivery.GetTradeOfferStatusName(offer.State)", diagnostic)
+        self.assertIn("sentOffersReadOnly = sentOffers is not null", diagnostic)
+        self.assertIn("sentOfferTimestampsAvailable = false", diagnostic)
+        self.assertNotIn("SendTradeOffer(", diagnostic)
+        self.assertNotIn("AcceptTradeOffer(", diagnostic)
+        self.assertNotIn("CancelTradeOffer(", diagnostic)
 
     def test_diagnostic_command_checks_inventory_without_trade_send(self):
         source = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")

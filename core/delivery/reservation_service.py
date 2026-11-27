@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
+from core.delivery.digital_codes import DigitalCodeError, DigitalCodeStore
 from core.delivery.playerok_eligibility import (
     PlayerokPaidPreparation,
     create_playerok_order_for_preparation,
@@ -713,7 +714,7 @@ class DeliveryReservationService:
                     raise ValueError("Планируемые ресурсы относятся к другому RecipeItem")
                 if line_plan.use_listing_stock:
                     raise ValueError("Listing stock plan не был перенесён в order allocation")
-                if item.required and not line_plan.units:
+                if item.required and not line_plan.units and not isinstance(item.spec, DigitalTextUnitSpec):
                     raise ValueError("Обязательная RecipeItem не имеет ресурсов")
                 stock_backed_line = (
                     isinstance(item.spec, SteamAssetSpec)
@@ -903,11 +904,17 @@ class DeliveryReservationService:
                         )))
                 elif isinstance(item.spec, DigitalTextUnitSpec):
                     if line_plan.units or line_plan.steam_card_count_per_set is not None or line_plan.steam_card_preflight is not None:
-                        raise ValueError("Для DigitalTextUnit пока нет подтверждённого физического stock source")
+                        raise ValueError("DigitalTextUnit не должен содержать физические ресурсы")
+                    if not item.stock_source_id:
+                        raise ValueError("DigitalTextUnit требует product stock_source_id")
                 else:
                     raise ValueError("Для RecipeItem нет поддерживаемого валидатора ресурсов")
-            if not flattened:
-                raise ValueError("Recipe plan не содержит резервируемых физических ресурсов")
+            digital_lines = [
+                (line_id, item) for line_id, item in item_by_line.items()
+                if isinstance(item.spec, DigitalTextUnitSpec)
+            ]
+            if not flattened and not digital_lines:
+                raise ValueError("Recipe plan не содержит резервируемых ресурсов")
 
             for line_id, resource in flattened:
                 conflicts = connection.execute("""
@@ -969,6 +976,28 @@ class DeliveryReservationService:
                     for allocation_id in resource.stock_allocation_ids:
                         stock_backed_assets.add((key, resource.asset_id))
 
+
+            # Digital codes are non-physical resources and use the same order transaction.
+            digital_legs: list[PlannedLeg] = []
+            for line_id, item in digital_lines:
+                try:
+                    code_ids = DigitalCodeStore.reserve_for_order_line(
+                        connection, product_id=str(item.stock_source_id),
+                        order_id=order, order_line_id=line_id,
+                        quantity=item.quantity_per_order,
+                    )
+                except DigitalCodeError:
+                    if item.required:
+                        raise
+                    continue
+                leg_id = self._stable_id("leg", f"{order}:{line_id}:digital-code:1:code")
+                connection.execute(
+                    "INSERT INTO gd_delivery_legs (leg_id,order_line_id,bot_name,app_id,context_id,asset_ids_json,status) VALUES(?,?,?,?,?,?, 'reserved')",
+                    (leg_id, line_id, "digital-code", 1, "code", json.dumps(list(code_ids))),
+                )
+                digital_legs.append(PlannedLeg("digital-code", 1, "code", code_ids, line_id))
+            if not flattened and not digital_legs:
+                raise DigitalCodeError("В Recipe нет обязательных физических ресурсов; доступных цифровых кодов также нет.")
 
             # Listing-level Steam Card quota is a count of complete sets, not physical cards.
             # Claim it in this same transaction as the verified card reservations.
@@ -1066,6 +1095,7 @@ class DeliveryReservationService:
                     bot, app_id, context_id, asset_ids, line_id,
                     amount_manifest if amount_json is not None else None,
                 ))
+            legs.extend(digital_legs)
             connection.execute(
                 "UPDATE gd_orders SET status='reserved',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE order_id=?",
                 (order,),

@@ -328,6 +328,7 @@ class BuyerPlatformMessageOutbox:
                     message_text TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 )
             """)
@@ -387,3 +388,55 @@ class TelegramOperatorReplyRouter:
         row = rows[0]
         self.buyer_message_enqueue(row["deal_id"], row["chat_id"], str(text).strip())
         return True
+
+
+
+def telegram_api_request(token, method, payload=None, proxy=None):
+    import requests
+    if not token or not method: raise ValueError("Telegram credentials invalid")
+    try:
+        r=requests.post("https://api.telegram.org/bot"+token+"/"+method,json=payload or {},timeout=(5,20)); r.raise_for_status(); data=r.json()
+    except Exception as exc: raise RuntimeError("Telegram API request failed: "+type(exc).__name__) from None
+    if not isinstance(data,dict) or data.get("ok") is not True: raise RuntimeError("Telegram API did not confirm method")
+    return data
+
+def telegram_test_connection(token, proxy=None):
+    data=telegram_api_request(token,"getMe",proxy=proxy); user=data.get("result",{}); return {"ok":isinstance(user,dict),"username_present":bool(user.get("username"))}
+
+class BuyerPlatformMessageDispatcher:
+    def __init__(self,database): self.database=database; BuyerPlatformMessageOutbox(database)
+    def dispatch_once(self,send_text,*,limit=20):
+        with self.database.connect() as db:
+            cols={r[1] for r in db.execute("PRAGMA table_info(gd_buyer_message_outbox)")}
+            if "created_at" not in cols: db.execute("ALTER TABLE gd_buyer_message_outbox ADD COLUMN created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'")
+            if "last_error" not in cols: db.execute("ALTER TABLE gd_buyer_message_outbox ADD COLUMN last_error TEXT")
+            rows=[dict(r) for r in db.execute("SELECT * FROM gd_buyer_message_outbox WHERE COALESCE(status,'pending') IN ('pending','retry') ORDER BY created_at LIMIT ?",(limit,)).fetchall()]
+        for row in rows:
+            def cb(result,error,message_id=row["message_id"]):
+                ok=error is None and result is not False; status="sent" if ok else ("unknown" if error=="unknown_result" else "retry"); detail=None if ok else (error if isinstance(error,str) else type(error).__name__)
+                with self.database.connect() as db: db.execute("UPDATE gd_buyer_message_outbox SET status=?,last_error=? WHERE message_id=?",(status,detail,message_id))
+            try: send_text(str(row["chat_id"]),str(row["message_text"]),cb)
+            except Exception as exc: cb(None,exc)
+        return len(rows)
+
+class TelegramUpdateProcessor:
+    def __init__(self, database, reply_router):
+        self.database = database
+        self.reply_router = reply_router
+        with self.database.connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS telegram_updates (update_id INTEGER PRIMARY KEY, processed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))")
+
+    def process(self, update):
+        if not isinstance(update, dict) or isinstance(update.get("update_id"), bool): return False
+        try: update_id = int(update["update_id"])
+        except (KeyError, TypeError, ValueError): return False
+        with self.database.connect() as db:
+            cur = db.execute("INSERT OR IGNORE INTO telegram_updates(update_id) VALUES(?)", (update_id,))
+            if cur.rowcount != 1: return False
+        message = update.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("reply_to_message"), dict): return True
+        user = message.get("from") or {}; chat = message.get("chat") or {}; replied = message["reply_to_message"]
+        return bool(self.reply_router.handle_reply(
+            from_user_id=str(user.get("id") or ""), operator_chat_id=str(chat.get("id") or ""),
+            reply_to_message_id=str(replied.get("message_id") or ""), text=str(message.get("text") or "")))
+

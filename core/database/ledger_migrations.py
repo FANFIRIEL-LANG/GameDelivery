@@ -60,6 +60,8 @@ RESERVATION_MANUAL_AUDIT_MIGRATION_ID = "2026-11-reservation-manual-audit-v1"
 RESERVATION_MANUAL_AUDIT_BACKUP_SUFFIX = ".pre-gamedelivery-reservation-manual-audit-v1.bak"
 DELIVERY_ORDER_ATTEMPT_MIGRATION_ID = "2026-11-delivery-order-attempt-v1"
 DELIVERY_ORDER_ATTEMPT_BACKUP_SUFFIX = ".pre-gamedelivery-delivery-order-attempt-v1.bak"
+DIGITAL_CODE_MIGRATION_ID = "2026-11-digital-code-stock-v1"
+DIGITAL_CODE_BACKUP_SUFFIX = ".pre-gamedelivery-digital-code-stock-v1.bak"
 
 
 SCHEMA_STATEMENTS = (
@@ -1582,8 +1584,44 @@ def apply_delivery_ledger_migrations(connection: sqlite3.Connection) -> bool:
     changed = _apply_delivery_leg_asset_amounts_migration(connection) or changed
     changed = _apply_steam_card_listing_limit_migration(connection) or changed
     changed = _apply_reservation_manual_audit_migration(connection) or changed
+    changed = _apply_digital_code_migration(connection) or changed
     return changed
 
+
+
+def _apply_digital_code_migration(connection: sqlite3.Connection) -> bool:
+    """Create protected digital-code metadata and append-only audit tables."""
+    if _migration_applied(connection, DIGITAL_CODE_MIGRATION_ID):
+        return False
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS gd_digital_codes (
+                code_id TEXT PRIMARY KEY, product_id TEXT NOT NULL, batch_id TEXT NOT NULL,
+                code_hash TEXT NOT NULL UNIQUE,
+                state TEXT NOT NULL DEFAULT 'available'
+                    CHECK(state IN ('available','reserved','revealed','unknown','released','consumed')),
+                order_id TEXT, reserved_at TEXT, revealed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_gd_digital_codes_stock ON gd_digital_codes(product_id,state,batch_id)")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS gd_digital_code_audit (
+                audit_id TEXT PRIMARY KEY, code_id TEXT NOT NULL REFERENCES gd_digital_codes(code_id),
+                action TEXT NOT NULL, order_id TEXT, actor TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_gd_digital_code_audit_code ON gd_digital_code_audit(code_id,created_at)")
+        connection.execute("INSERT INTO gd_schema_migrations(migration_id) VALUES(?)", (DIGITAL_CODE_MIGRATION_ID,))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return True
 
 
 def _preflight_asset_id_alias_conflicts(connection: sqlite3.Connection) -> None:

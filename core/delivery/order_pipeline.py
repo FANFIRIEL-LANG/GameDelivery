@@ -681,14 +681,20 @@ class DeliveryOrderPipeline:
                     planned[line_id] = PlannedRecipeLine(item.item_id, units)
                     resources = [unit[0] for unit in units]
             elif isinstance(item.spec, DigitalTextUnitSpec):
-                # No digital stock source exists yet. Required rows fail closed;
-                # optional rows are explicitly omitted from this reservation plan.
                 resources = []
+                with self.database.connect() as connection:
+                    available = connection.execute(
+                        "SELECT count(*) FROM gd_digital_codes WHERE product_id=? AND state='available'",
+                        (str(item.stock_source_id or ""),),
+                    ).fetchone()[0]
+                if type(available) is not int or available < item.quantity_per_order:
+                    if item.required:
+                        failed_required.append(f"Недостаточно цифровых кодов для RecipeItem {item.item_id}.")
                 planned[line_id] = PlannedRecipeLine(item.item_id, ())
             else:
                 raise RecipeValidationError("Для RecipeItem нет поддерживаемого планировщика ресурсов")
 
-            if not resources and item.required and not (
+            if not resources and item.required and not isinstance(item.spec, DigitalTextUnitSpec) and not (
                 isinstance(item.spec, SteamAssetSpec)
                 and listing_stock_batch
                 and planned.get(line_id) is not None
@@ -714,7 +720,9 @@ class DeliveryOrderPipeline:
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (), " ".join(failed_required)
             )
-        if not any(line_plan.units or line_plan.use_listing_stock for line_plan in planned.values()):
+        if not any(line_plan.units or line_plan.use_listing_stock for line_plan in planned.values()) and not any(
+            isinstance(item.spec, DigitalTextUnitSpec) for item in recipe.items
+        ):
             self._persist_preflight_manifest(order, config_id, _paid_context)
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (),
@@ -729,14 +737,16 @@ class DeliveryOrderPipeline:
             )
         except Exception as exc:
             from core.delivery.listing_stock import InsufficientListingStock
-            if isinstance(exc, (InsufficientListingStock, ResourceReservationConflict)):
+            from core.delivery.digital_codes import DigitalCodeError
+            if isinstance(exc, (InsufficientListingStock, ResourceReservationConflict, DigitalCodeError)):
                 # The reservation transaction rolled back in full. Persist the
                 # immutable manifest separately, with no DeliveryLeg/reservation.
                 self._persist_preflight_manifest(order, config_id, _paid_context)
                 reason = (
                     f"Ресурс уже занят другим заказом: {exc}"
                     if isinstance(exc, ResourceReservationConflict)
-                    else f"Недостаточно закреплённого складского остатка: {exc}"
+                    else (f"Недостаточно цифровых кодов: {exc}" if isinstance(exc, DigitalCodeError)
+                          else f"Недостаточно закреплённого складского остатка: {exc}")
                 )
                 return OrderReservationResult(
                     order, "preflight_blocked", (), (), (),

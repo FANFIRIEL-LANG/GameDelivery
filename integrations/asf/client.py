@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import hashlib
 import os
 import re
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,7 @@ from urllib.request import Request, urlopen
 from app.diagnostics import get_logger
 
 logger = get_logger('asf.ipc')
+_SEND_OPERATION_LOCK = threading.Lock()
 
 
 TEST_ASF_IPC_URL_ENV = "GAMEDELIVERY_TEST_ASF_IPC_URL"
@@ -98,6 +101,63 @@ def resolve_asf_ipc_base_url(
 
 class ASFError(RuntimeError):
     """Raised when ASF IPC cannot complete a request."""
+
+
+def _send_operation_journal_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(local_app_data) / "GameDelivery" / "ASFPlugin" / "send_operations.json"
+
+
+def _send_operation_fingerprint(order: str, bot: str, target: int, app_id: int, context_id: int, asset_ids: list[str], amounts: Mapping[str, int] | None) -> str:
+    payload = "\n".join((order, bot.casefold(), str(target), str(app_id), str(context_id), ",".join(sorted(asset_ids))))
+    if amounts is not None:
+        payload += "\namounts=" + ",".join(f"{key}:{amounts[key]}" for key in sorted(amounts))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_send_operation_journal(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _save_send_operation_journal(path: Path, records: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp-" + secrets.token_hex(8))
+    try:
+        temporary.write_text(json.dumps(records, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _claim_send_operation(path: Path, order: str, record: dict[str, Any]) -> dict[str, Any] | None:
+    with _SEND_OPERATION_LOCK:
+        journal = _load_send_operation_journal(path)
+        prior = journal.get(order)
+        if isinstance(prior, dict):
+            if prior.get("fingerprint") != record.get("fingerprint"):
+                raise ASFError("Заказ уже связан с другой операцией отправки; повтор заблокирован.")
+            if prior.get("state") in {"dispatching", "unknown", "sent", "awaiting_confirmation"}:
+                return prior
+        journal[order] = record
+        _save_send_operation_journal(path, journal)
+        return None
+
+
+def _update_send_operation(path: Path, order: str, updates: dict[str, Any]) -> None:
+    with _SEND_OPERATION_LOCK:
+        journal = _load_send_operation_journal(path)
+        current = journal.get(order)
+        if isinstance(current, dict):
+            current.update(updates)
+            journal[order] = current
+            _save_send_operation_journal(path, journal)
 
 
 def _restrict_pending_trade_permissions(path: Path, *, directory: bool = False) -> None:
@@ -841,6 +901,22 @@ class ASFClient:
             json.dumps(command_payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         ).decode("ascii").rstrip("=")
 
+        journal_path = _send_operation_journal_path()
+        operation_fingerprint = _send_operation_fingerprint(
+            order, bot, target_steam_id64, app_id, context_id, normalized_ids, normalized_amounts
+        )
+        operation_record = {
+            "orderId": order, "botName": bot, "targetSteamId64": target_steam_id64,
+            "appId": app_id, "contextId": context_id, "assetIds": normalized_ids,
+            "assetAmounts": normalized_amounts, "fingerprint": operation_fingerprint,
+            "state": "dispatching", "updatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        prior = _claim_send_operation(journal_path, order, operation_record)
+        if prior is not None:
+            return {"success": False, "mode": "send", "sendEnabled": True,
+                    "resultUnknown": True, "operationState": prior.get("state"),
+                    "orderId": order,
+                    "error": "Для этого заказа уже существует зафиксированная операция; повторная отправка запрещена."}
         secret_file_created = False
         command_dispatched = False
         try:
@@ -887,6 +963,7 @@ class ASFClient:
                     raise ASFError("Состав активов в ответе ASF не совпадает с заказом.")
                 if not _response_asset_amounts_match(returned_assets, normalized_amounts):
                     raise ASFError("ASF не подтвердил точные количества отправляемых стеков.")
+                _update_send_operation(journal_path, order, {"state": "sent", "offerIds": outcome.get("offerIds", []), "updatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
                 return outcome
 
             # A known offer ID must be tied to this exact order, recipient, bot, and asset list.
@@ -918,11 +995,18 @@ class ASFClient:
                     raise ASFError("Неизвестный результат ASF содержит другие количества стека.")
 
             # Preserve the structured uncertainty flag so the UI can lock this order if needed.
+            _update_send_operation(journal_path, order, {"state": "unknown", "updatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             return outcome
         except Exception as exception:
+            if not command_dispatched:
+                with _SEND_OPERATION_LOCK:
+                    journal = _load_send_operation_journal(journal_path)
+                    journal.pop(order, None)
+                    _save_send_operation_journal(journal_path, journal)
             # Any failure after dispatch (including timeout/connection loss reported as
             # ASFError) is ambiguous: ASF may already have created the Steam offer.
             if command_dispatched:
+                _update_send_operation(journal_path, order, {"state": "unknown", "updatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
                 detail = str(exception).strip()
                 if len(detail) > 500:
                     detail = detail[:500]

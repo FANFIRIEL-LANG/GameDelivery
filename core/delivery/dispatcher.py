@@ -8,8 +8,10 @@ from typing import Any, Callable, Mapping
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.asf_trade_handler import register_asf_trade_offer_handlers
+from core.delivery.digital_code_handler import DigitalCodeHandler
 from core.delivery.handler_contract import DeliveryHandlerRegistry
 from core.delivery.handler_routing import DeliveryHandlerRouteError, load_leg_handler_request
+from games.cs2.delivery_handler import CS2CapabilityAcceptance, register_cs2_trade_offer_handler
 from core.delivery.playerok_eligibility import (
     PlayerokDeliveryBlocked,
     require_canonical_playerok_delivery_eligible,
@@ -45,6 +47,8 @@ class DeliveryDispatcher:
         telegram_event: Callable[[str, dict[str, Any]], None] | None = None,
         send_policy: DeliverySendPolicy | None = None,
         playerok_freshness_gate: PlayerokFreshnessGate | None = None,
+        cs2_capability: CS2CapabilityAcceptance | None = None,
+        digital_code_enabled: bool = False,
     ) -> None:
         self.database = database
         self.asf = asf_client
@@ -61,6 +65,16 @@ class DeliveryDispatcher:
                 **prepared["dispatch_kwargs"]
             ),
         )
+        if digital_code_enabled:
+            self.handlers.register(DigitalCodeHandler())
+        if cs2_capability is not None:
+            register_cs2_trade_offer_handler(
+                self.handlers,
+                capability=cs2_capability,
+                execute_callback=lambda prepared: self._dispatch_leg_core(
+                    **prepared["dispatch_kwargs"]
+                ),
+            )
         self._ensure_events()
 
     def auto_send_enabled(self) -> bool:
@@ -182,6 +196,7 @@ class DeliveryDispatcher:
                     "playerok_freshness_authorization": playerok_freshness_authorization,
                     "playerok_order_lease": playerok_order_lease,
                     "confirmed_preview": confirmed_preview,
+                    "handler_item_type": request["item_type"],
                 },
             })
         except Exception as exc:
@@ -211,6 +226,7 @@ class DeliveryDispatcher:
         playerok_freshness_authorization: PlayerokFreshnessProof | None = None,
         playerok_order_lease: PlayerokOrderLease | None = None,
         confirmed_preview: Mapping[str, Any] | None = None,
+        handler_item_type: str = "",
     ) -> dict[str, Any]:
         order, leg = order_id.strip(), leg_id.strip()
         if not order or not leg:
@@ -283,7 +299,7 @@ class DeliveryDispatcher:
                     and confirmed_preview.get("asset_ids") == requested_assets
                     and str(confirmed_preview.get("steam_id64") or "") == str(stored_recipient)
                 )
-                if row["item_type"] == "steam_card_set" and not preview_matches:
+                if (row["item_type"] == "steam_card_set" or handler_item_type == "cs2_item") and not preview_matches:
                     return {"_claimed": False, "response": {
                         "dispatched": False, "status": "CONFIRMED_PREVIEW_MISMATCH",
                         "reason": "Текущая DeliveryLeg отличается от подтверждённого ASF preview.",

@@ -9,8 +9,10 @@ from pathlib import Path
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
 from core.delivery.dispatcher import DeliveryDispatcher
+from core.delivery.asf_trade_handler import ASFTradeOfferHandler
+from games.cs2.delivery_handler import CS2CapabilityAcceptance
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
-from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem, SteamCardSetSpec
+from core.delivery.recipes import DigitalTextUnitSpec, RecipeItem, SteamAssetSpec, SteamCardSetSpec
 from core.delivery.reconciliation import DeliveryReconciliation
 from core.delivery.send_policy import DeliverySendPolicy
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
@@ -109,18 +111,31 @@ class DeliveryDispatchTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def create_order(self, order_id="order-1", bots=("Bot-A",), asset_amounts=None):
-        config = self.ledger.create_listing_config_version(
-            listing_id=f"listing-{order_id}",
-            source_platform="playerok",
-            external_listing_id=f"listing-external-{order_id}",
-            delivery_quantity_per_deal=len(bots),
-            item_selectors={
-                "game_id": "cs2", "app_id": 730, "context_id": 2,
-                "market_hash_name": "AK-47",
-            },
-            bot_pool=list(bots),
+    def create_order(self, order_id="order-1", bots=("Bot-A",), asset_amounts=None,
+                     game_id="dispatcher-test", market_hash_name="AK-47", legacy=False):
+        item = RecipeItem(
+            item_id="asset", position=1, kind="steam_asset", spec_version=1,
+            quantity_per_order=len(bots), required=True, stock_source_id=None,
+            executor_key="steam_trade_offer",
+            spec=SteamAssetSpec(
+                game_id, 730, "2", {"market_hash_name": market_hash_name}, tuple(bots)
+            ),
         )
+        if legacy:
+            config = self.ledger.create_listing_config_version(
+                listing_id=f"listing-{order_id}", source_platform="playerok",
+                external_listing_id=f"listing-external-{order_id}",
+                delivery_quantity_per_deal=len(bots),
+                item_selectors={
+                    "game_id": game_id, "app_id": 730, "context_id": 2,
+                    "market_hash_name": market_hash_name,
+                }, bot_pool=list(bots),
+            )
+        else:
+            config = self.ledger.create_recipe_config_version(
+                listing_id=f"listing-{order_id}", source_platform="playerok",
+                external_listing_id=f"listing-external-{order_id}", recipe_items=[item],
+            )
         self.ledger.create_deal(
             deal_id=f"deal-{order_id}",
             source_platform="playerok",
@@ -210,7 +225,8 @@ class DeliveryDispatchTests(unittest.TestCase):
         )
         return {"playerok_freshness_authorization": proof, "playerok_order_lease": lease}
 
-    def dispatch(self, order_id, leg_id, *, manual_authorization=None, retry_generation=0):
+    def dispatch(self, order_id, leg_id, *, manual_authorization=None, retry_generation=0,
+                 confirmed_preview=None):
         safe_url = self.trade_url if order_id == "order-1" else (
             "https://steamcommunity.com/tradeoffer/new/?partner=123"
         )
@@ -219,11 +235,35 @@ class DeliveryDispatchTests(unittest.TestCase):
             return self.dispatcher.dispatch_leg(
                 order_id=order_id, leg_id=leg_id, stored_trade_url=safe_url,
                 retry_generation=retry_generation,
-                manual_authorization=manual_authorization, **freshness,
+                manual_authorization=manual_authorization, confirmed_preview=confirmed_preview,
+                **freshness,
             )
         finally:
             if freshness.get("playerok_order_lease") is not None:
                 self.freshness_gate.release_order(freshness["playerok_order_lease"])
+
+    def leg_preview(self, leg_id):
+        with self.db.connect() as db:
+            row = db.execute(
+                "SELECT l.leg_id,l.bot_name,l.app_id,l.context_id,l.asset_ids_json,o.recipient_steam_id64 "
+                "FROM gd_delivery_legs l JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id "
+                "JOIN gd_orders o ON o.order_id=ol.order_id WHERE l.leg_id=?",
+                (leg_id,),
+            ).fetchone()
+        return {
+            "leg_id": str(row["leg_id"]), "bot_name": str(row["bot_name"]),
+            "app_id": int(row["app_id"]), "context_id": int(row["context_id"]),
+            "asset_ids": json.loads(row["asset_ids_json"]),
+            "steam_id64": str(row["recipient_steam_id64"]),
+        }
+
+    def register_fake_cs2_handler(self):
+        self.dispatcher.handlers.register(ASFTradeOfferHandler(
+            item_type="cs2_item",
+            execute_callback=lambda prepared: self.dispatcher._dispatch_leg_core(
+                **prepared["dispatch_kwargs"]
+            ),
+        ))
 
     def create_steam_card_order(self):
         item = RecipeItem(
@@ -563,6 +603,54 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.assertEqual(result["status"], "HANDLER_UNAVAILABLE")
         self.assertEqual(self.asf.sent, [])
 
+    def test_dispatcher_registers_cs2_only_for_fully_accepted_capability(self):
+        incomplete = DeliveryDispatcher(
+            self.db, self.asf, self.credentials,
+            send_policy=self.send_policy,
+            playerok_freshness_gate=self.freshness_gate,
+            cs2_capability=CS2CapabilityAcceptance(preview_verified=True),
+        )
+        self.assertNotIn(
+            ("cs2_item", "steam_trade_offer"),
+            {(key.item_type, key.delivery_method) for key in incomplete.handlers.registered_keys()},
+        )
+        accepted = DeliveryDispatcher(
+            self.db, self.asf, self.credentials,
+            send_policy=self.send_policy,
+            playerok_freshness_gate=self.freshness_gate,
+            cs2_capability=CS2CapabilityAcceptance(True, True, True, True),
+        )
+        self.assertIn(
+            ("cs2_item", "steam_trade_offer"),
+            {(key.item_type, key.delivery_method) for key in accepted.handlers.registered_keys()},
+        )
+    def test_accepted_cs2_capability_uses_guarded_dispatch_core_with_exact_preview(self):
+        leg = self.create_order(order_id="order-1", game_id="cs2")[0]
+        self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["cs2-offer"]}
+        accepted = DeliveryDispatcher(
+            self.db, self.asf, self.credentials,
+            send_policy=self.send_policy,
+            playerok_freshness_gate=self.freshness_gate,
+            cs2_capability=CS2CapabilityAcceptance(True, True, True, True),
+        )
+        old_dispatcher = self.dispatcher
+        self.dispatcher = accepted
+        try:
+            result = self.dispatch(
+                "order-1", leg, confirmed_preview=self.leg_preview(leg)
+            )
+        finally:
+            self.dispatcher = old_dispatcher
+        self.assertTrue(result["dispatched"])
+        self.assertEqual(self.asf.sent[0][5:], (730, 2))
+    def test_cs2_send_stays_disabled_until_dedicated_handler_acceptance(self):
+        leg = self.create_order(order_id="cs2-disabled", game_id="cs2")[0]
+        result = self.dispatch("cs2-disabled", leg)
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["status"], "HANDLER_UNAVAILABLE")
+        self.assertIn("cs2_item", result["reason"])
+        self.assertEqual(self.asf.sent, [])
+
     def test_manual_grant_dispatches_exact_leg_while_global_auto_is_off_and_is_audited(self):
         leg = self.create_order()[0]
         self.send_policy.set_auto_send_enabled(False)
@@ -752,7 +840,10 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.assertEqual(self.asf.sent[0][-2:], (730, 2))
 
     def test_dispatches_and_reconciles_from_shared_quantity_stock_allocation(self):
-        leg = self.create_order(asset_amounts={"100": 3})[0]
+        leg = self.create_order(
+            asset_amounts={"100": 3}, game_id="cs2", market_hash_name="AK-47 | Redline", legacy=True
+        )[0]
+        self.register_fake_cs2_handler()
         with self.db.connect() as db:
             db.execute(
                 "UPDATE gd_resource_reservations SET state='released' "
@@ -788,7 +879,7 @@ class DeliveryDispatchTests(unittest.TestCase):
             )
         self.asf.send_result["Bot-A"] = {"success": True, "offerIds": ["stock-offer"]}
 
-        result = self.dispatch("order-1", leg)
+        result = self.dispatch("order-1", leg, confirmed_preview=self.leg_preview(leg))
 
         self.assertTrue(result["dispatched"])
         self.assertEqual(self.asf.sent[0][3], ("100",))
@@ -811,7 +902,9 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.assertEqual(order_status, "DELIVERED")
 
     def test_reconciliation_consumes_only_matching_app_context_stock_allocation(self):
-        leg = self.create_order(asset_amounts={"100": 3})[0]
+        leg = self.create_order(
+            asset_amounts={"100": 3}, game_id="cs2", market_hash_name="AK-47 | Redline", legacy=True
+        )[0]
         with self.db.connect() as db:
             db.execute(
                 "UPDATE gd_resource_reservations SET state='released' "
@@ -860,7 +953,8 @@ class DeliveryDispatchTests(unittest.TestCase):
         self.asf.send_result["Bot-A"] = {
             "success": True, "offerIds": ["context-scoped-offer"],
         }
-        result = self.dispatch("order-1", leg)
+        self.register_fake_cs2_handler()
+        result = self.dispatch("order-1", leg, confirmed_preview=self.leg_preview(leg))
         self.assertTrue(result["dispatched"])
         self.asf.statuses[("Bot-A", "context-scoped-offer")] = {
             "success": True, "mode": "trade-status", "found": True,

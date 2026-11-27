@@ -10,11 +10,12 @@ from core.delivery.ledger import DeliveryLedger
 from core.delivery.chat_commands import BuyerChatCommandRegistry
 from core.delivery.dispatcher import DeliveryDispatcher
 from core.delivery.reconciliation import DeliveryReconciliation
+from core.delivery.recipes import RecipeItem, SteamAssetSpec
 from core.delivery.send_policy import DeliverySendPolicy
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from integrations.telegram.outbox import (
     BuyerPlatformMessageOutbox, TelegramBotOutbox, TelegramCredentialStore,
-    TelegramOperatorReplyRouter,
+    TelegramOperatorReplyRouter, BuyerPlatformMessageDispatcher,
 )
 from integrations.playerok.sync import PlayerokDealSyncService
 
@@ -97,13 +98,17 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _create_order(self, status="PRIVACY_WAIT"):
-        config = self.ledger.create_listing_config_version(
+        item = RecipeItem(
+            item_id="test-asset", position=1, kind="steam_asset", spec_version=1,
+            quantity_per_order=1, required=True, stock_source_id=None,
+            executor_key="steam_trade_offer",
+            spec=SteamAssetSpec(
+                "command-test", 730, "2", {"market_hash_name": "Skin"}, ("Bot-A",)
+            ),
+        )
+        config = self.ledger.create_recipe_config_version(
             listing_id="listing-1", source_platform="playerok",
-            external_listing_id="listing-external-1", delivery_quantity_per_deal=1,
-            item_selectors={
-                "game_id": "cs2", "app_id": 730, "context_id": 2,
-                "market_hash_name": "Skin",
-            }, bot_pool=["Bot-A"],
+            external_listing_id="listing-external-1", recipe_items=[item],
         )
         self.ledger.create_deal(
             deal_id="deal-1", source_platform="playerok", external_deal_id="deal-ext-1",
@@ -353,3 +358,21 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TelegramBuyerBridgeTests(unittest.TestCase):
+    def test_playerok_outbox_dispatch_uses_exact_chat_and_callback(self):
+        from core.database.db import Database
+        import tempfile
+        temp = tempfile.TemporaryDirectory(); db = Database(temp.name + "/x.sqlite3")
+        with db.connect() as conn:
+            conn.executescript("CREATE TABLE gd_deals(deal_id TEXT PRIMARY KEY,chat_id TEXT); CREATE TABLE gd_buyer_message_outbox(message_id TEXT PRIMARY KEY,idempotency_key TEXT UNIQUE,deal_id TEXT,chat_id TEXT,message_text TEXT,status TEXT,attempts INTEGER DEFAULT 0);")
+            conn.execute("INSERT INTO gd_deals VALUES('d','chat-1')")
+        from integrations.telegram.outbox import BuyerPlatformMessageOutbox
+        outbox = BuyerPlatformMessageOutbox(db); message_id = outbox.enqueue('d','chat-1','hello')
+        calls=[]
+        def sender(chat,text,callback): calls.append((chat,text)); callback({'ok':True},None)
+        self.assertEqual(BuyerPlatformMessageDispatcher(db).dispatch_once(sender),1)
+        self.assertEqual(calls,[('chat-1','hello')])
+        with db.connect() as conn: self.assertEqual(conn.execute("SELECT status FROM gd_buyer_message_outbox WHERE message_id=?",(message_id,)).fetchone()[0], 'sent')
+        temp.cleanup()

@@ -9,6 +9,7 @@ using System.Text.Json.Serialization.Metadata;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -31,6 +32,8 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
     private const string TradeStatusCommandName = "gamedelivery-status";
     private const int MaxItemsPerPreview = 255;
     private const int MaxDiagnosticAppIds = 20;
+    private const int PreviewBotReadyTimeoutSeconds = 15;
+    private const int PreviewBotReadyPollMilliseconds = 250;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -342,9 +345,9 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 return Failure("Выбранный бот не найден в текущем экземпляре ASF.");
             }
 
-            if (!targetBot.IsConnectedAndLoggedOn)
+            if (!await WaitForBotReadyAsync(targetBot, PreviewBotReadyTimeoutSeconds).ConfigureAwait(false))
             {
-                return Failure("Выбранный бот ASF не подключён к Steam.");
+                return Failure("Выбранный бот ASF не подключён к Steam после ограниченного ожидания готовности.");
             }
 
             (HashSet<Asset>? inventory, string inventoryMessage) = await targetBot.Actions.GetInventory(
@@ -477,6 +480,25 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
         }
     }
 
+    private static async Task<bool> WaitForBotReadyAsync(Bot bot, int timeoutSeconds)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
+        while (!bot.IsConnectedAndLoggedOn)
+        {
+            TimeSpan remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return false;
+            }
+
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(Math.Min(PreviewBotReadyPollMilliseconds, remaining.TotalMilliseconds)),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        return true;
+    }
+
     private static MissingMemberException? FindMissingMemberException(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)
@@ -525,6 +547,11 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 Asset.SteamAppID,
                 Asset.SteamCommunityContextID,
                 language: "english").ConfigureAwait(false);
+            HashSet<TradeOffer>? sentOffers = await bot.ArchiWebHandler.GetTradeOffers(
+                activeOffers: null,
+                receivedOffers: false,
+                sentOffers: true,
+                withDescriptions: true).ConfigureAwait(false);
 
             return JsonSerializer.Serialize(new
             {
@@ -548,6 +575,23 @@ public sealed class GameDeliveryPlugin : IASF, IBotCommand2
                 runtimeTrimming,
                 inventoryCount = inventory?.Count,
                 inventoryMessage = inventory is null ? "ASF не вернул инвентарь." : null,
+                sentOffersReadOnly = sentOffers is not null,
+                sentOffersCount = sentOffers?.Count,
+                sentOffers = sentOffers?.Select(offer => new
+                {
+                    tradeOfferId = offer.TradeOfferID.ToString(CultureInfo.InvariantCulture),
+                    recipientSteamId64 = offer.OtherSteamID64.ToString(CultureInfo.InvariantCulture),
+                    status = TradeDelivery.GetTradeOfferStatusName(offer.State),
+                    itemsToGive = offer.ItemsToGiveReadOnly.Select(asset => new
+                    {
+                        appId = asset.AppID,
+                        contextId = asset.ContextID,
+                        assetId = asset.AssetID.ToString(CultureInfo.InvariantCulture),
+                        amount = asset.Amount
+                    }).ToArray()
+                }).ToArray(),
+                sentOfferTimestampsAvailable = false,
+                sentOfferTimestampsNote = "ASF TradeOffer model не содержит времени создания или изменения предложения.",
                 message = inventory is null
                     ? "Диагностика завершилась: ASF не вернул инвентарь. Отправка не выполнялась."
                     : "Диагностика успешна: инвентарь получен. Торговое предложение не создавалось."

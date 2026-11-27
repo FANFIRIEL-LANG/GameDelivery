@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -635,6 +636,43 @@ class ASFClientTests(unittest.TestCase):
             send_command.assert_called_once()
             pending = Path(temp) / "GameDelivery" / "pending_trade_requests"
             self.assertEqual(list(pending.glob("*.json")), [])
+
+    def test_send_timeout_persists_unknown_operation_without_secret(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {"LOCALAPPDATA": temp}), patch.object(
+                ASFClient, "send_command", side_effect=ASFError("IPC timeout")
+            ):
+                result = ASFClient(base_url="http://127.0.0.1:1243", allow_alternate_loopback_port=True).send_trade_offer(
+                    order_id="GD-JOURNAL-TIMEOUT", bot_name="card-bot",
+                    trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                    asset_ids=["123"],
+                )
+            self.assertTrue(result["resultUnknown"])
+            journal = json.loads((Path(temp) / "GameDelivery" / "ASFPlugin" / "send_operations.json").read_text())
+            self.assertEqual(journal["GD-JOURNAL-TIMEOUT"]["state"], "unknown")
+            self.assertNotIn("Tok-abc_1", json.dumps(journal))
+
+    def test_unknown_operation_blocks_second_send_before_ipc(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+            with patch.object(ASFClient, "send_command", side_effect=ASFError("IPC timeout")) as send_command:
+                client = ASFClient(base_url="http://127.0.0.1:1243", allow_alternate_loopback_port=True)
+                first = client.send_trade_offer(order_id="GD-JOURNAL-REPLAY", bot_name="card-bot", trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1", asset_ids=["123"])
+                second = client.send_trade_offer(order_id="GD-JOURNAL-REPLAY", bot_name="card-bot", trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1", asset_ids=["123"])
+            self.assertTrue(first["resultUnknown"])
+            self.assertTrue(second["resultUnknown"])
+            send_command.assert_called_once()
+
+    def test_concurrent_same_order_claim_allows_only_one_ipc_dispatch(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+            with patch.object(ASFClient, "send_command", side_effect=ASFError("IPC timeout")) as send_command:
+                client = ASFClient(base_url="http://127.0.0.1:1243", allow_alternate_loopback_port=True)
+                kwargs = dict(order_id="GD-JOURNAL-CONCURRENT", bot_name="card-bot",
+                              trade_url="https://steamcommunity.com/tradeoffer/new/?partner=12345&token=Tok-abc_1",
+                              asset_ids=["123"])
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(lambda _: client.send_trade_offer(**kwargs), range(2)))
+            self.assertEqual(send_command.call_count, 1)
+            self.assertTrue(all(result["resultUnknown"] for result in results))
 
     def test_send_trade_offer_keeps_token_out_of_ipc_command_and_deletes_one_use_secret(self):
         with tempfile.TemporaryDirectory() as temp:

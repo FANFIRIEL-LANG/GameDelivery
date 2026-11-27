@@ -441,7 +441,7 @@ class GameInventoryPanel(QWidget):
         filters.addWidget(self.grouping_mode, 1)
         self.view_mode = QComboBox()
         self.view_mode.addItem("Карточки предметов", "cards")
-        self.view_mode.addItem("Таблица подробностей", "table")
+        self.view_mode.addItem("Компактный список", "table")
         filters.addWidget(self.view_mode, 1)
         layout.addLayout(filters)
 
@@ -487,7 +487,9 @@ class GameInventoryPanel(QWidget):
         self._price_refresh_timer.timeout.connect(self._start_price_refresh)
         self._price_refresh_timer.start()
         self.game_combo.currentIndexChanged.connect(self._game_changed)
+        self.grouping_mode.currentIndexChanged.connect(self._persist_view_settings)
         self.grouping_mode.currentIndexChanged.connect(self.render)
+        self.view_mode.currentIndexChanged.connect(self._persist_view_settings)
         self.view_mode.currentIndexChanged.connect(self.render)
         self.select_all_bots_button.clicked.connect(self.select_all_bots)
         self.clear_bots_button.clicked.connect(self.clear_bot_selection)
@@ -501,7 +503,21 @@ class GameInventoryPanel(QWidget):
         self.price_refresh_button.setVisible(is_cs2)
         self.price_missing_button.setVisible(is_cs2)
         self.grouping_mode.setVisible(True)
+        self._load_view_settings()
         self.load_saved()
+
+    def _persist_view_settings(self, *_):
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        settings.setValue("inventory/grouping_mode", self.grouping_mode.currentData())
+        settings.setValue("inventory/view_mode", self.view_mode.currentData())
+
+    def _load_view_settings(self):
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        for combo, key in ((self.grouping_mode, "inventory/grouping_mode"), (self.view_mode, "inventory/view_mode")):
+            value = str(settings.value(key, "") or "")
+            index = combo.findData(value)
+            if index >= 0:
+                combo.setCurrentIndex(index)
 
     def _game_changed(self, *_):
         is_cs2 = self.game_combo.currentData() == "cs2"

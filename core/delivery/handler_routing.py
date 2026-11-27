@@ -17,17 +17,23 @@ def load_leg_handler_request(
     row = connection.execute(
         """
         SELECT l.leg_id,l.bot_name,l.app_id,l.context_id,ol.order_id,ol.config_version_id,ol.line_number,ol.item_type,
-               ol.item_name,ol.item_selector_json,ol.quantity,d.config_version_id AS deal_config_id
+               ol.item_name,ol.item_selector_json,ol.quantity,d.config_version_id AS deal_config_id,c.bot_pool_json
         FROM gd_delivery_legs l
         JOIN gd_order_lines ol ON ol.order_line_id=l.order_line_id
         JOIN gd_orders o ON o.order_id=ol.order_id
         JOIN gd_deals d ON d.deal_id=o.deal_id
+        JOIN gd_config_versions c ON c.config_version_id=ol.config_version_id
         WHERE l.leg_id=? AND o.order_id=?
         """,
         (leg_id, order_id),
     ).fetchone()
     if row is None:
         raise DeliveryHandlerRouteError("DeliveryLeg отсутствует в заказе")
+    try:
+        leg_app_id = int(row["app_id"])
+    except (TypeError, ValueError) as exc:
+        raise DeliveryHandlerRouteError("DeliveryLeg contains invalid AppID") from exc
+    leg_context_id = str(row["context_id"])
     config_id = str(row["config_version_id"] or "")
     if not config_id or config_id != str(row["deal_config_id"] or ""):
         raise DeliveryHandlerRouteError("OrderLine не закреплён за ConfigVersion сделки")
@@ -53,8 +59,8 @@ def load_leg_handler_request(
                 and item.executor_key == "steam_trade_offer"
                 and isinstance(item.spec, SteamAssetSpec)
                 and item.spec.game_id == "cs2"
-                and item.spec.app_id == int(row["app_id"])
-                and item.spec.context_id == str(row["context_id"])
+                and item.spec.app_id == leg_app_id
+                and item.spec.context_id == leg_context_id
                 and str(row["bot_name"]).casefold()
                 in {bot.casefold() for bot in item.spec.allowed_bot_pool}
             ):
@@ -62,6 +68,7 @@ def load_leg_handler_request(
                     "order_id": str(order_id), "leg_id": str(leg_id),
                     "item_type": item.kind, "delivery_method": item.executor_key,
                     "recipe_item_id": item.item_id, "config_version_id": config_id,
+                    "app_id": leg_app_id, "context_id": leg_context_id,
                     "legacy_reconcile_only": True,
                 }
         raise DeliveryHandlerRouteError("Recipe snapshot не подтверждает маршрут DeliveryLeg") from exc
@@ -75,6 +82,38 @@ def load_leg_handler_request(
         or row["quantity"] != item.quantity_per_order
     ):
         raise DeliveryHandlerRouteError("OrderLine не совпадает с Recipe ConfigVersion")
+    if isinstance(item.spec, SteamAssetSpec) and item.spec.game_id.casefold() == "cs2":
+        try:
+            configured_bots = json.loads(row["bot_pool_json"] or "[]")
+        except (TypeError, ValueError) as exc:
+            raise DeliveryHandlerRouteError("ConfigVersion содержит некорректный bot pool") from exc
+        if not isinstance(configured_bots, list):
+            raise DeliveryHandlerRouteError("ConfigVersion содержит некорректный bot pool")
+        allowed_bots = item.spec.allowed_bot_pool or tuple(
+            bot for bot in configured_bots if isinstance(bot, str) and bot.strip()
+        )
+        if (
+            leg_app_id != 730
+            or leg_context_id != "2"
+            or (allowed_bots and str(row["bot_name"]).casefold()
+                not in {bot.casefold() for bot in allowed_bots})
+        ):
+            raise DeliveryHandlerRouteError("CS2 DeliveryLeg не совпадает с закреплёнными AppID/context/bot pool")
+        if allow_legacy_reconcile:
+            return {
+                "order_id": str(order_id), "leg_id": str(leg_id),
+                "item_type": item.kind, "delivery_method": item.executor_key,
+                "recipe_item_id": item.item_id, "config_version_id": config_id,
+                "app_id": leg_app_id, "context_id": leg_context_id,
+                "reconcile_only": True,
+            }
+        # CS2 remains disabled until its dedicated ASF capability has separate acceptance.
+        return {
+            "order_id": str(order_id), "leg_id": str(leg_id),
+            "item_type": "cs2_item", "delivery_method": item.executor_key,
+            "recipe_item_id": item.item_id, "config_version_id": config_id,
+            "app_id": leg_app_id, "context_id": leg_context_id,
+        }
     return {
         "order_id": str(order_id), "leg_id": str(leg_id),
         "item_type": item.kind, "delivery_method": item.executor_key,

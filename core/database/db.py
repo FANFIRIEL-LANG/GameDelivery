@@ -48,6 +48,8 @@ from core.database.ledger_migrations import (
     RESERVATION_MANUAL_AUDIT_BACKUP_SUFFIX,
     RESERVATION_MANUAL_AUDIT_MIGRATION_ID,
     RECIPE_BACKUP_SUFFIX,
+    DIGITAL_CODE_MIGRATION_ID,
+    DIGITAL_CODE_BACKUP_SUFFIX,
     RECIPE_MIGRATION_ID,
     apply_delivery_ledger_migrations,
     ensure_pre_migration_backup,
@@ -97,6 +99,11 @@ class Database:
             self.path,
             migration_id=RECIPE_MIGRATION_ID,
             backup_suffix=RECIPE_BACKUP_SUFFIX,
+        )
+        ensure_pre_migration_backup(
+            self.path,
+            migration_id=DIGITAL_CODE_MIGRATION_ID,
+            backup_suffix=DIGITAL_CODE_BACKUP_SUFFIX,
         )
         ensure_pre_migration_backup(
             self.path,

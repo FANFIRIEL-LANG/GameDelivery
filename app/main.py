@@ -21,6 +21,8 @@ from app.inventory_panel import InventoryPanel
 from app.game_inventory_panel import GameInventoryPanel
 from app.bot_selector import BotSelectionModel, configured_bot_names
 from app.proxy_settings import ProxySettingsWidget
+from app.telegram_settings import TelegramSettingsWidget
+from app.operator_fulfillment_panel import OperatorFulfillmentPanel
 from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
 from integrations.asf.client import ASFClient, ASFError, TEST_ASF_IPC_URL_ENV
@@ -187,6 +189,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._games_tab(), "Модули игр")
         self.tabs.addTab(self._logs_tab(), "Журнал")
         self.tabs.addTab(self._settings_tab(), "Настройки")
+        self.operator_fulfillment_panel = self._operator_fulfillment_tab()
+        self.tabs.addTab(self.operator_fulfillment_panel, "Оператор")
         self.asf_management = ASFManagementWidget()
         self.asf_management.inventory_snapshot_updated.connect(self.inventory_panel.select_bot_snapshot)
         self.asf_management.log_line.connect(self._append_log_line)
@@ -2330,6 +2334,7 @@ class MainWindow(QMainWindow):
                 Database(self._database_path), client, self._trade_credentials,
                 send_policy=self._delivery_send_policy,
                 playerok_freshness_gate=self._playerok_freshness_gate,
+                digital_code_enabled=True,
             )
 
             if playerok_identity is not None:
@@ -3215,14 +3220,22 @@ class MainWindow(QMainWindow):
     def _append_log_line(self, line: str):
         self.log_view.append(line)
 
+    def _operator_fulfillment_tab(self):
+        try:
+            import keyring
+            backend = keyring.get_keyring()
+        except Exception:
+            backend = None
+        root = Path.home() / ".gamedelivery" / "managed-files"
+        return OperatorFulfillmentPanel(database=Database(self._database_path), managed_file_root=root, keyring_backend=backend)
+
     def _settings_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.addWidget(QLabel("Steam-аккаунты и прокси"))
         self.proxy_settings = ProxySettingsWidget()
         layout.addWidget(self.proxy_settings, 1)
-        telegram = QLabel("Telegram: только уведомления и статистика.")
-        telegram.setObjectName("muted")
+        telegram = TelegramSettingsWidget()
         layout.addWidget(telegram)
         warning = QLabel(
             "Прокси можно применить через локальный ASF IPC. Для Steam CM приложение "

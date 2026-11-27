@@ -3,7 +3,8 @@ from integrations.telegram.outbox import (
     TelegramBotOutbox,
     TelegramCredentialStore,
     TelegramOperatorReplyRouter,
-    telegram_api_sender,
+    telegram_api_sender, telegram_test_connection, telegram_api_request,
+    TelegramUpdateProcessor, BuyerPlatformMessageDispatcher,
 )
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "TelegramBotOutbox",
     "TelegramCredentialStore",
     "TelegramOperatorReplyRouter",
-    "telegram_api_sender",
+    "telegram_api_sender", "telegram_test_connection", "telegram_api_request",
+    "TelegramUpdateProcessor", "BuyerPlatformMessageDispatcher",
 ]

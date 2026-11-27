@@ -737,3 +737,226 @@ Changes: `integrations/playerok/listing_config.py`, `tests/test_playerok_browser
 - Validation: focused Steam Cards/dispatcher/handler/UI/preparation suites — **141 passed**; `python -m compileall` on changed Python files — **PASS**; `git diff --check` — **PASS**; full `python -m unittest discover -s tests -q` — **1101 passed**. The first focused command included an incorrect nonexistent test module name; that command was not used as evidence, and the corrected command passed all 141 tests.
 - No live Steam offer, Playerok mutation/message, ASF operation, GUI run or user database access occurred. The plan's separate low-risk live test-account end-to-end acceptance is still blocked; live readiness is not claimed. Continue with C.6 while keeping that explicit release gate.
 - Changed implementation/tests: `app/main.py`, `core/delivery/asf_trade_handler.py`, `core/delivery/dispatcher.py`, `tests/test_delivery_dispatcher.py`, `tests/test_delivery_handler_contract.py`, `tests/test_main_delivery_send.py`. Exact-SHA GitHub CI is the next verification after this block is committed/pushed.
+
+## 2026-11-27 � C.6 CS2 fail-closed routing checkpoint
+
+- ��������� ����������� C.6 ���� � `work/local-sync`; ������� ����� � `origin/work/local-sync` ��������� �� ������ ��������� ���������. Existing C.5/C.4/C.3 acceptance results ���������.
+- ��� typed `SteamAssetSpec(game_id="cs2")` routing ������ ������������� ��������� ����������� AppID 730, context 2 � ���������� bot pool �� Recipe/ConfigVersion. Normal dispatch ���������������� � ��������� `cs2_item`, ������� �� ��������������� � production registry; ������� CS2 �������� ������� fail-closed �� ���������� handler capability acceptance. Reconciliation-only compatibility ����������� ������ ��� ������ ������������ legacy pinned route.
+- Dispatcher ����������� item type �������� � ������� ������������� exact ASF preview ��� CS2 capability path ��� ��, ��� ��� Steam Cards. �������� CS2 dispatch fixtures ���������� ����� fake handler � preview, ����� �� �������� production gate.
+- ��������: dispatcher/handler/recovery/chat-command/MainWindow suite � **97 passed**; ������� ����� �������� reconciliation test ��������� � ��������. Compileall � `git diff --check` ��������� ��� ���������� diff.
+- Live Playerok/Steam/ASF, GUI � ���������������� �� �� ��������������; ��������� � trade offers �� ������������. C.6 ������� **PARTIAL/BLOCKED**: ����������� ��������� production CS2 handler, verified inventory/tradable/restriction capability proof � ����������� live test-account gate. ��������� ��� � �������������� � ������� ��������� CS2 handler contract/capability, �������� ������� fail-closed �������.
+
+## 2026-11-27 — C.6 routing hardening follow-up
+
+- Усилена fail-closed обработка CS2 route: некорректный AppID в persisted DeliveryLeg теперь преобразуется в контролируемый `DeliveryHandlerRouteError`, без необработанного исключения и без попытки отправки.
+- Проверки после изменения: `tests.test_delivery_dispatcher` и `tests.test_delivery_handler_contract` — **48 passed**; targeted compileall — PASS; `git diff --check` — PASS.
+- Production CS2 handler по-прежнему не зарегистрирован; live inventory/tradability/restriction proof, ASF/Steam и Playerok не использовались. C.6 остаётся PARTIAL/BLOCKED.
+
+## 2026-11-27 — C.6 dedicated CS2 handler capability gate
+
+- Добавлен отдельный `games/cs2/delivery_handler.py` с `CS2TradeOfferHandler` и immutable `CS2CapabilityAcceptance`. Handler может быть зарегистрирован только при явном подтверждении всех четырёх независимых evidence: свежий inventory, tradable/restriction metadata, no-send preview и отдельная test-account send acceptance.
+- Неполное capability не регистрирует маршрут; non-bool evidence отклоняется; accepted handler поддерживает только exact AppID 730/context 2. Production dispatcher намеренно не регистрирует этот handler, поэтому текущая отправка CS2 остаётся fail-closed.
+- Проверки: handler contract + dispatcher — **50 passed**; targeted compileall — PASS; `git diff --check` — PASS.
+- Live ASF/Steam/Playerok, test-account send, GUI и пользовательская БД не использовались. C.6 остаётся **PARTIAL/BLOCKED** до получения и аудита реальных capability evidence и отдельного разрешённого live gate.
+
+## 2026-11-27 — C.6 CS2 capability wiring checkpoint
+
+- Устранён контрактный разрыв между route loader и отдельным CS2 handler: `load_leg_handler_request()` теперь передаёт exact `app_id` и `context_id` в нормальный, legacy-reconcile и opt-in handler request. Поэтому принятый handler может проверить 730/2 по фактической DeliveryLeg, а не по значениям по умолчанию.
+- `DeliveryDispatcher` получил необязательный `cs2_capability` параметр. При отсутствии capability production registry не меняется; при неполном evidence registration возвращает false и CS2 остаётся `HANDLER_UNAVAILABLE`; только полностью принятой capability разрешено зарегистрировать dedicated handler.
+- Проверки: handler contract, dispatcher и MainWindow send — **73 passed**; targeted compileall — PASS; `git diff --check` — PASS.
+- Live ASF/Steam/Playerok, test-account send, GUI и пользовательская БД не использовались. C.6 остаётся PARTIAL/BLOCKED до реального evidence и отдельного live gate.
+
+## 2026-11-27 — C.6 opt-in dispatcher registration regression
+
+- Добавлен необязательный `cs2_capability` в `DeliveryDispatcher`: неполная capability не меняет registry, а полностью принятая capability регистрирует только exact `cs2_item/steam_trade_offer`. Default construction без capability остаётся прежним и fail-closed.
+- Route loader передаёт фактические AppID/context в request, поэтому opt-in handler проверяет persisted 730/2 leg без defaults.
+- Regression coverage подтверждает incomplete/full registration boundary. Handler/dispatcher tests — **51 passed**; compileall и diff-check — PASS.
+- Capability evidence остаётся неподтверждённым синтетическими тестами: live ASF inventory, tradable/restriction check, preview и отдельный test-account send не выполнялись. C.6 остаётся PARTIAL/BLOCKED.
+
+## 2026-11-27 — C.6 accepted-capability synthetic integration
+
+- Добавлена synthetic integration regression для opt-in пути: typed CS2 Recipe проходит через route loader с фактическими 730/2, dedicated `CS2TradeOfferHandler`, exact preview binding и существующий guarded ASF dispatch core. Fake ASF подтвердил вызов с AppID 730/context 2; внешний ASF/Steam send не выполнялся.
+- Одновременно восстановлена контролируемая обработка malformed persisted AppID через `DeliveryHandlerRouteError`; необработанный `ValueError` наружу не выходит.
+- Точечная проверка handler/dispatcher: **13 passed**; compileall и diff-check — PASS.
+- Это подтверждает только синтетическую wiring-интеграцию. Реальные fresh inventory, tradable/restriction evidence и test-account acceptance отсутствуют; production capability остаётся disabled по умолчанию, C.6 PARTIAL/BLOCKED.
+
+## 2026-11-27 — C.6 reconciliation compatibility correction
+
+- Проверена попытка подключить dedicated CS2 handler к reconciliation. Она ломала существующий legacy reconciliation path: старые `cs2_item` legs должны оставаться `steam_asset` route для принятого read-only reconciler. Optional CS2 handler registration из `DeliveryReconciliation` удалена; dedicated CS2 capability остаётся только normal dispatch opt-in, а reconciliation сохранён через generic route.
+- Исправлен оставшийся `NameError` после удаления незавершённого блока. Malformed AppID продолжает преобразовываться в `DeliveryHandlerRouteError`.
+- Полный связанный delivery suite (`dispatcher`, `handler_contract`, `recovery`, `chat_commands_telegram`, `main_delivery_send`) — **101 passed**; compileall и diff-check — PASS.
+- Live Playerok/Steam/ASF, GUI, test-account send и пользовательская БД не использовались. C.6 остаётся PARTIAL/BLOCKED до реального capability evidence и отдельного live gate.
+
+## 2026-11-27 — C.6 isolated ASF CS2 inventory read-only acceptance
+
+- Пользователь штатно обновил пароль IPC изолированного ASF; значение не выводилось, не записывалось в проект и передавалось только в памяти локального read-only клиента.
+- Запущена только изолированная ASF-сборка из `C:\Users\а\Downloads\GameDelivery-ASF-Generic-READY` с профилем `D:\ASF-CS2-TEST\Home` на loopback `127.0.0.1:1243`. Выполнен один GET инвентаря тестового бота `Ewaylariell` для AppID `730`, context `2`.
+- Получены 3 физических asset-записи; все имеют подтверждённые `tradable=true` и `marketable=true`; `tradable_after` отсутствует. Asset IDs и полные названия намеренно не записываются в журнал.
+- ASF остановлен после запроса; порт `1243` свободен. Preview, Steam Trade Offer, Playerok, пользовательская БД и GameDelivery GUI не запускались.
+- Это закрывает только live evidence свежего CS2 inventory/tradability для изолированного тестового бота. C.6 остаётся PARTIAL/BLOCKED до отдельной проверки exact no-send preview, restriction semantics и одной разрешённой test-account send acceptance.
+
+## 2026-11-27 — C.6 no-send preview live attempt
+
+- На изолированном ASF с IPC-паролем выполнен один read-only `gamedelivery-preview` для CS2 730/2 и ранее разрешённого test recipient; токен Trade URL не передавался в ASF command payload и не записывался в журнал.
+- Preview завершился fail-closed с безопасной ошибкой ASF о невозможности проверить актуальный inventory выбранного бота. По plugin contract это происходит до формирования preview и до любого создания/отправки offer; `sendEnabled=false` не был получен.
+- Steam Trade Offer не создавался, recipient inventory не изменялся, Playerok и пользовательская БД не использовались. ASF остановлен после проверки.
+- Свежая read-only inventory-проверка 730/2 остаётся подтверждённой отдельно; exact preview и test-account send acceptance не подтверждены. C.6 остаётся PARTIAL/BLOCKED.
+
+## 2026-11-27 — C.6 inventory-vs-preview discrepancy audit
+
+- Уточнено, что многоботовый ASF-пул является штатным и не ограничивался. В полном профиле загружается множество аккаунтов; `Ewaylariell` присутствует, включён и в журнале имеет успешный Steam login.
+- `games/cs2/delivery_handler.py` не вызывает ASF inventory и не участвует в preview preflight; изменения в нём для устранения этого расхождения не подтверждены.
+- Успешный Python probe использует HTTP GET `/Api/Bot/Ewaylariell/Inventory/730/2?language=english`. GameDelivery ASF plugin использует тот же выбранный `Bot` по case-insensitive имени и вызывает `targetBot.Actions.GetInventory(request.AppId, request.ContextId, language: "english")`; для CS2 request values остаются 730/2. Поэтому расхождения в имени бота, AppID/context или передаче результата по исходному коду не найдено.
+- Plugin contract дополнительно требует `targetBot.IsConnectedAndLoggedOn` и live Actions inventory; прямой IPC GET не доказывает успешность этого второго runtime вызова. Один контролируемый preview завершился fail-closed на `GetInventory`, до создания offer.
+- Отдельная read-only команда `gamedelivery-diagnose Ewaylariell` через `/Api/Command` вернула HTTP 400, поэтому runtime method signatures получить нельзя; это отдельный недостаток/несовместимость command invocation, но он не доказывает ошибку выбора CS2-бота.
+- Код и многоботовая архитектура не менялись. Preview и Steam send не запускались повторно; C.6 остаётся PARTIAL/BLOCKED до подтверждения live `Actions.GetInventory` и no-send preview.
+
+
+## 2026-11-27 — C.6 preview readiness race diagnosis and bounded gate
+
+- Изолированный ASF log установил точную причину предыдущего fail-closed preview: `gamedelivery-preview` был принят до завершения `OnLoggedOn/Init` выбранного `Ewaylariell`; plugin проверял `IsConnectedAndLoggedOn` и завершал работу до `Bot.Actions.GetInventory`. Расхождения имени бота и параметров 730/2 не обнаружено; полный многоботовый пул не ограничивался.
+- В `integrations/asf_plugin/GameDeliveryPlugin.cs` добавлен bounded readiness gate только для read-only preview: до 15 секунд, polling 250 мс, затем fail-closed с явной причиной. Send path и Steam Cards не изменялись.
+- `tests.test_asf_plugin_contract` — **43 passed**; Python compileall и `git diff --check` — PASS.
+- Live повтор preview не выполнен: локально отсутствует .NET SDK, поэтому новый C# DLL не собран и старый DLL не подменялся. Steam Trade Offer не создавался и не отправлялся. C.6 остаётся **PARTIAL/BLOCKED** до сборки нового plugin, повторного no-send preview на полном ASF-пуле и отдельной проверки разрешённой test-account доставки.
+
+
+## 2026-11-27 — C.6 rebuilt plugin and live preview evidence
+
+- Installed .NET SDK 10.0.404 in a separate user-local directory and built `integrations/asf_plugin/GameDelivery.ASFPlugin.csproj` against the assemblies in the ASF Generic 6.3.11.7 test package. Build completed with 0 warnings and 0 errors.
+- Replaced only the isolated test ASF plugin DLL at `C:\Users\а\Downloads\GameDelivery-ASF-Generic-READY\plugins\GameDelivery.ASFPlugin\GameDelivery.ASFPlugin.dll`; the rebuilt file was 172544 bytes and its source/destination SHA-256 matched. ASF loaded the plugin successfully. The full configured multi-bot pool remained enabled; `Ewaylariell` was confirmed `IsConnectedAndLoggedOn=true`.
+- A new no-send preview completed successfully after the readiness gate: selected bot `Ewaylariell`, AppID `730`, Context `2`, current inventory count `3`, exact asset composition matched, `mode=preview-only`, `sendEnabled=false`. No Trade Offer was created by preview.
+- A separate live-send attempt was made only after checking the previously authorized recipient partner `899288977` and exact preview composition. The ASF IPC call timed out after send processing began and returned `resultUnknown=true`; the fail-closed order status query returned `status=unknown` and no confirmed TradeOfferID. A read-only inventory query still returned 3 assets. No retry was attempted. Therefore live delivery acceptance and post-delivery inventory change are **NOT CONFIRMED**; C.6 remains **PARTIAL/BLOCKED**.
+- Regression evidence: `tests.test_asf_plugin_contract` — **43 passed**; compileall and `git diff --check` — PASS. No Playerok mutation, user SQLite access, Steam Web API, or Steam Cards changes were made.
+
+
+## 2026-11-27 — C.6 read-only investigation of unknown live send
+
+- В ASF log найдена точная запись операции `c6-live-test-20261127`: `Ewaylariell`, получатель соответствовал ранее разрешённому partner ID, `assetCount=3`; `inventory_fetch_started` зафиксирован в 19:31:56, `inventory_fetch_completed` в 19:31:59 с 3 активами. Последующей записи `steam_offer_dispatch_completed` нет: IPC timeout произошёл после начала send pipeline.
+- Локальный `sent_offers.json` не содержит записи этого order ID. Read-only `gamedelivery-status Ewaylariell order:c6-live-test-20261127` через вновь запущенный ASF вернул `found=false`, `status=unknown` с причиной отсутствия записи в локальном журнале. Это не считается доказательством отсутствия предложения в Steam.
+- ASF/Steam read-only история исходящих предложений не дала подтверждённого TradeOfferID для exact recipient и состава. Состав не может считаться сопоставленным с тремя preview assets; текущий inventory count=3 сам по себе доставку не доказывает. Статус принятия/завершения и timestamps предложения не установлены.
+- Повторная send-команда, создание/отмена предложения, изменение получателя или состава не выполнялись. Операция оставлена в `UNKNOWN`; C.6 остаётся **PARTIAL/BLOCKED**. Новый диагностический endpoint в код не добавлялся; существующие пользовательские изменения сохранены.
+
+
+## 2026-11-27 — C.6 Steam outgoing-history availability audit
+
+- Повторно изучен существующий read-only контур проекта. `ASFClient.get_trade_offer_status()` and `get_order_trade_status()` only call plugin `gamedelivery-status`; the exact offer path requires a known `TradeOfferID`, while the order path first requires the order ID to exist in `%LOCALAPPDATA%\GameDelivery\ASFPlugin\sent_offers.json`.
+- The plugin contains `ArchiWebHandler.GetTradeOffers(activeOffers:null, receivedOffers:false, sentOffers:true, withDescriptions:true)`, but it is not exposed as a public enumeration/history command. No existing project endpoint can enumerate all outgoing offers for recipient partner `899288977` around 2026-11-27 19:31:56 without a known offer ID or a new IPC command/API, both prohibited by this task.
+- The local `sent_offers.json` remains without `c6-live-test-20261127`; only an older, unrelated `Ewaylariell` send record exists for another recipient. ASF logs for the interval contain `ProcessSendCommand`, recipient `76561198859554705`, `inventory_fetch_started/completed` with 3 assets, but no post-dispatch completion record and no TradeOfferID.
+- An actual Steam outgoing-trade-offer history was **not** queried through an authorized project mechanism in this pass. Therefore TradeOfferID, live offer state, acceptance/completion and exact Steam asset composition remain unconfirmed. Status remains `UNKNOWN`; C.6 stays **PARTIAL/BLOCKED**. No new offer, resend, accept, cancel, confirmation, or Steam Web API call was performed.
+
+## 2026-11-27 — C.6 ASF read-only outgoing offers enumeration
+
+- На изолированном ASF Generic 6.3.11.7 с полным многоботовым пулом и обновлённой `GameDelivery.ASFPlugin.dll` выполнена только read-only команда `gamedelivery-diagnose Ewaylariell`. Подтверждены ASF `6.3.11.7`, бот `Ewaylariell`, `sendEnabled=false`, `tradeOfferCreated=false`, инвентарь CS2 получен.
+- Диагностика вызвала поддерживаемый `ArchiWebHandler.GetTradeOffers(activeOffers:null, receivedOffers:false, sentOffers:true, withDescriptions:true)` и получила 11 исходящих предложений. Для partner ID `899288977` (SteamID64 `76561198859554705`) найдены четыре предложения: `9500675937` (Accepted, 1 CS2 asset), `9500562380` (Accepted, 1 CS2 asset), `9500617575` (Accepted, 2 CS2 assets), `9503716632` (Accepted, 2 CS2 assets). Полный состав сохранён только в диагностическом результате, секреты не выводились.
+- ASF `TradeOffer` не содержит времени создания или изменения. Поэтому нельзя доказать, какое из найденных предложений относится к `c6-live-test-20261127` (операция была около 19:31:56), и нельзя подтвердить совпадение с тремя assets исходного preview. TradeOfferID операции неизвестен; результат операции остаётся `UNKNOWN`, C.6 — `PARTIAL/BLOCKED`.
+- Не выполнялись send/resend, accept, cancel, confirmation или Steam Web API. Изолированный ASF после диагностики остановлен.
+
+
+## 2026-11-27 — C.6 send pipeline durability after lost IPC result
+
+- Установлена причина инцидента `c6-live-test-20261127`: клиент `ASFClient.send_trade_offer()` создавал одноразовый secret и после IPC timeout возвращал `resultUnknown=true`, но до этого не имел собственного durable operation claim. Долговечная запись создавалась только внутри ASF plugin перед `SendTradeOffer`; при потере IPC-ответа GameDelivery не имел локальной записи, из которой можно было бы безопасно восстановить операцию.
+- В `integrations/asf/client.py` добавлен защищённый от повторной отправки operation journal `GameDelivery/ASFPlugin/send_operations.json`: до вызова ASF фиксируются order/bot/recipient/AppID/context/assets и fingerprint со статусом `dispatching`; успешный проверенный ответ переводит запись в `sent` с offer IDs; потеря ответа/ошибка после dispatch переводит её в `unknown`. Trade URL token в журнал не записывается.
+- Повторная отправка по тому же order ID и fingerprint блокируется до нового IPC вызова; другой fingerprint для того же order ID также блокируется. Это не выполняет reconciliation и не утверждает доставку: UNKNOWN требует отдельной read-only проверки Steam/ASF.
+- Адресный `python -m unittest tests.test_asf_client -q`: **61 passed**. Добавлены проверки durable UNKNOWN после timeout и запрета повторного IPC dispatch. Реальные Steam/ASF send операции не выполнялись; C.6 остаётся PARTIAL/BLOCKED до отдельного разрешённого успешного live gate.
+
+## 2026-11-27 — C.6 final duplicate-send protection audit
+
+- Проверены все production call sites Steam send: `app/main.py` (две UI точки) и `core/delivery/dispatcher.py`; все они вызывают общий `ASFClient.send_trade_offer()`. Единственный IPC route — `gamedelivery-send`, единственный ASF `SendTradeOffer` — `TradeDelivery.ProcessSendCommand`; preview/status/diagnostic ветки его не вызывают.
+- Operation journal расположен в постоянном `%LOCALAPPDATA%/GameDelivery/ASFPlugin/send_operations.json` (fallback — пользовательский `Path.home()/AppData/Local`), не в pending-secret каталоге и не в temp-каталоге. Секреты/trade token в journal не записываются.
+- Fingerprint включает order ID, bot, SteamID64 получателя, AppID/context, полный отсортированный asset ID состав и точные amounts. Изменение получателя или состава блокируется как конфликт существующей операции.
+- Journal claim выполняется до IPC под процессным lock потока; запись обновляется атомарной заменой temporary-файла (`os.replace`). Одновременные запросы в одном процессе дают только один IPC dispatch. После перезапуска состояния `dispatching`, `unknown`, `sent` и `awaiting_confirmation` остаются блокирующими; отдельной автоматической очистки нет — требуется reconciliation/operator review. Межпроцессный lock не добавлялся: штатный GameDelivery имеет один процесс отправки, а ASF plugin дополнительно имеет собственный semaphore/idempotency journal.
+- Добавлена адресная concurrency regression. `python -m unittest tests.test_asf_client -q`: **62 passed**; `compileall`: PASS; `git diff --check`: PASS. Реальные Steam отправки и новые Trade Offers не выполнялись. C.6 остаётся PARTIAL/BLOCKED до отдельного разрешённого live-теста.
+
+## 2026-11-27 — C.6 final live-test preparation (no-send)
+
+- Выполнен только read-only preflight на изолированном ASF Generic 6.3.11.7 с полным пулом. Бот `Ewaylariell` был подключён к Steam; актуальный GET инвентаря AppID 730 / Context 2 успешно вернул 3 assets.
+- Для подготовки выбран минимальный состав из одного доступного предмета: `PP-Bizon | Thermal Currents`, AssetID `54691360708`, amount 1. Описание подтверждает `tradable=true`, `marketable=true`, `market_tradable_restriction=7`; другие ограничения не выводились как доказанные правила.
+- Получатель проверен по согласованному partner ID `899288977` (SteamID64 `76561198859554705`). Trade URL token не записывался в журнал или отчёт.
+- `gamedelivery-preview` завершился успешно: `mode=preview-only`, `sendEnabled=false`, AppID 730, Context 2, assetCount 1; Trade Offer не создавался. Подготовленный fingerprint: `f29c57524819686f56898c07c50ed4a8fe6fcebf335cd03d6d78d0cf8fd4a9c3`.
+- Для order ID `c6-live-preflight-20261127` durable journal записи нет, что ожидаемо: preflight не вызывает `send_trade_offer`; journal claim создастся только после отдельного разрешения на send. Предыдущая UNKNOWN-операция `c6-live-test-20261127` не повторялась.
+- Изолированный ASF после preflight остановлен. Реальная отправка, `gamedelivery-send` и `SendTradeOffer` не выполнялись. C.6 остаётся PARTIAL/BLOCKED до отдельного разрешения и подтверждения live-результата.
+
+## 2026-11-27 — C.6 authorized live test send completed
+
+- Перед отправкой повторно подтверждены: `Ewaylariell` подключён; AssetID `54691360708` присутствует в актуальном CS2 730/2 inventory с amount 1; описание `PP-Bizon | Thermal Currents`; `tradable=true`, `marketable=true`, `market_tradable_restriction=7`. Plugin перед dispatch также выполнил собственную live inventory/tradable проверку.
+- Получатель сверён с разрешённым partner ID `899288977` / SteamID64 `76561198859554705`; fingerprint совпал с согласованным `f29c57524819686f56898c07c50ed4a8fe6fcebf335cd03d6d78d0cf8fd4a9c3`; конфликтующей записи durable journal не было.
+- Выполнен ровно один вызов общего `ASFClient.send_trade_offer()` для order `c6-live-preflight-20261127`. ASF вернул `success=true`, `mode=sent`, `sendEnabled=true`, `assetCount=1`, AppID/context `730/2`, `confirmationStatus=handled`, `tradeAccepted=false`, TradeOfferID `9512102084`. Повторный вызов не выполнялся.
+- Результат доказывает создание исходящего Trade Offer и обработку ASF/mobile confirmation; принятие предложения получателем и изменение inventory отправителя ещё не подтверждены. Изолированный ASF остановлен после операции. Ожидается подтверждение пользователя о получении; до него C.6 остаётся PARTIAL/BLOCKED.
+
+## 2026-11-27 — C.6 live test acceptance confirmed read-only
+
+- После подтверждения пользователя выполнена read-only проверка через ASF Generic 6.3.11.7 для TradeOfferID `9512102084` у бота `Ewaylariell`.
+- ASF вернул `found=true`, recipient SteamID64 `76561198859554705`, status `Accepted`; состав предложения содержит ровно AssetID `54691360708`, AppID/context `730/2`, amount 1.
+- Повторный read-only inventory 730/2 вернул 2 assets; отправленный AssetID `54691360708` отсутствует в inventory отправителя. Это подтверждает принятие предложения и уменьшение inventory отправителя на один asset. ASF остановлен после проверки.
+- Новых send-команд, offers, accept/cancel действий или изменений Playerok не выполнялось. Разрешённый C.6 live test теперь имеет подтверждённый end-to-end результат; C.7 не начинался.
+
+## 2026-11-27 — C.6 resumed verification checkpoint
+
+- После возобновления проверены текущая ветка `work/local-sync`, сохранённые незакоммиченные изменения и отсутствие активных ASF/delivery процессов.
+- Повторно выполнен только связанный локальный regression suite: `python -m unittest tests.test_asf_client tests.test_asf_plugin_contract tests.test_delivery_dispatcher tests.test_delivery_handler_contract tests.test_delivery_chat_commands_telegram -q` — **167 passed**. `compileall` для затронутых Python-модулей ранее прошёл; дополнительная live-операция не запускалась.
+- Предыдущая read-only проверка TradeOfferID `9512102084` со статусом `Accepted` и отсутствием AssetID `54691360708` у отправителя остаётся последним подтверждённым live evidence. C.6 не переоткрывается; C.7 не начинался.
+
+
+## 2026-11-27 — C.7 protected digital code stock foundation
+
+- Добавлен `core/delivery/digital_codes.py`: preview импорта проверяет пустые, дублирующиеся и некорректные строки до записи; SQLite хранит только `code_id`, product/batch, SHA-256 и lifecycle, plaintext кода сохраняется только в OS keyring `GameDelivery.DigitalCodes`.
+- Импорт атомарен и идемпотентен по hash; конкретный код резервируется под один order через `BEGIN IMMEDIATE`. Состояния `reserved`, `revealed`, `unknown`, `released`, `consumed` и append-only audit покрывают повторное раскрытие, неизвестный исход и явный operator reconcile. UNKNOWN не выдаёт следующий код автоматически.
+- Добавлена аддитивная migration `2026-11-digital-code-stock-v1` с backup suffix; цифровой маршрут `digital_text_unit/text_delivery` подключён к общему handler registry только через явный `digital_code_enabled=True` opt-in и возвращает `ACTION_REQUIRED`, не выполняя внешнюю отправку и не раскрывая код в логах.
+- Тесты `tests.test_digital_codes`, `tests.test_delivery_handler_contract`, `tests.test_delivery_dispatcher`: **56 passed**. Реальный импорт, пользовательская БД, Playerok, Steam и Telegram не использовались; C.7 остаётся **PARTIAL** до подключения операторского UI/конкретного delivery adapter и проверки полного lifecycle через production order flow. Следующий шаг — добавить безопасный UI для preview/import и явного reveal/reconcile без отображения plaintext в диагностике.
+
+
+## 2026-11-27 — C.8/C.9 safe delivery foundations
+
+- C.8: добавлен `core/delivery/file_catalog.py`. Управляемый каталог нормализует и проверяет containment, сохраняет стабильный file ID, размер и SHA-256, повторно проверяет целостность перед резервированием и переводит выдачу в `MANUAL_REQUIRED`, пока не подтверждён реальный adapter конкретной площадки. Произвольные пути и фиктивный delivered статус блокируются.
+- C.9: добавлен `core/delivery/service_tasks.py`. Единицы услуги резервируются отдельно, поддерживаются `in_progress`, частичное выполнение, `awaiting_confirmation`, `completed`, `cancelled`, `disputed`; завершение требует полного количества и evidence, переходы аудируются.
+- Адресные тесты `tests.test_file_catalog_service_tasks` и `tests.test_digital_codes`: **6 passed**; compileall и `git diff --check` прошли. Внешние площадки, Playerok, Steam, Telegram и пользовательская БД не использовались. C.8/C.9 остаются **PARTIAL** до подключения операторского UI и подтверждённого способа фактической передачи; C.7 остаётся **PARTIAL** до UI import/reveal/reconcile. Следующий блок — C.10, общий операторский интерфейс и Telegram lifecycle.
+
+
+## 2026-11-27 — C.10 Telegram channel hardening
+
+- Расширен существующий `integrations/telegram/outbox.py`: добавлены общий безопасный Bot API request helper, раздельная read-only `telegram_test_connection(getMe)` и идемпотентный `TelegramUpdateProcessor` для повторных update без повторной команды. Existing OS keyring credential store, durable outbox/retry и reply-to deal/chat/order binding переиспользованы.
+- Ошибки API не раскрывают token/proxy credentials; Telegram остаётся вспомогательным каналом и не блокирует delivery queue. Реальный Telegram API и пользовательские credentials не использовались.
+- `tests.test_delivery_chat_commands_telegram`: **9 passed**, compileall прошёл. C.10 остаётся **PARTIAL**: настройки UI, polling lifecycle и тестовое сообщение должны быть подключены к существующему Settings tab после отдельной UI integration работы.
+
+
+## 2026-11-27 — C.10 operator settings and C.11 readiness hardening
+
+- В существующий Settings tab подключён `app/telegram_settings.py`: token/proxy credentials идут только в OS keyring, operator chat и allowlist IDs — в QSettings; `Проверить подключение` (getMe) и `Отправить тестовое сообщение` разделены. Секреты не помещаются в UI status/error text.
+- Telegram update processor дедуплицирует update_id и сохраняет точную reply-to привязку через существующий order/deal/chat mapping.
+- Усилены C.8/C.9 инварианты: file reservation повторяет containment/hash проверку внутри `BEGIN IMMEDIATE`; service lifecycle отклоняет недопустимые state transitions.
+- Проверки перед C.11: целевые Telegram/digital/file/service/dispatcher tests — **67 passed**, compileall — PASS, `git diff --check` — PASS. Внешний Telegram API не вызывался.
+
+
+## 2026-11-27 — Autonomous Stage C continuation checkpoint
+
+- После подтверждённого C.6 реализованы безопасные foundations C.7–C.10: protected digital-code stock, managed file catalog, manual service units, Telegram connection/update/outbox hardening и Settings UI. Все новые внешние действия остаются opt-in/manual; реальные Steam/Playerok/Telegram/file sends не выполнялись.
+- C.7: import preview/atomic keyring stock/reserve/reveal/UNKNOWN reconcile; C.8: stable file ID/hash/containment и `MANUAL_REQUIRED`; C.9: unit lifecycle/evidence/audit; C.10: allowlist/reply binding/dedup update и раздельные connection/test-message controls.
+- Проверено: `python -m unittest discover -s tests -q` — **1117 passed**; targeted C.7–C.10 suite — **68 passed** после edge-case regression; compileall и `git diff --check` — PASS.
+- Осталось до полного C.11 acceptance: подключить production order/UI actions для code reveal/import и service/file operator workflows, подтвердить площадочные adapters/live gates по отдельному разрешению и затем выполнить полный acceptance audit. C.7–C.10 не объявляются полностью завершёнными по одному unit suite.
+
+
+## 2026-11-27 — C.7 digital stock wired into unified order reservation
+
+- `DeliveryOrderPipeline.prepare_recipe_order` теперь проверяет доступный digital stock по `RecipeItem.stock_source_id`; обязательная нехватка блокирует preflight, optional item безопасно пропускается.
+- `DeliveryReservationService.reserve_recipe_plan` резервирует точные `code_id` через `DigitalCodeStore.reserve_for_order_line` внутри общей `BEGIN IMMEDIATE` транзакции, создаёт operator-assisted DeliveryLeg и связывает ресурс с `OrderLine`; физические Steam asset/card rules не менялись.
+- Добавлен список stock для operator panel; plaintext code по-прежнему отсутствует в SQLite, логах и UI status. UNKNOWN/reveal/reconcile остаются отдельным явным lifecycle.
+- Regression `tests.test_digital_codes`, `tests.test_recipe_unified_reservations`, `tests.test_delivery_handler_contract`: **47 passed**; compileall и diff-check проходят. C.7 остаётся **PARTIAL** до production reveal/reconcile action binding и end-to-end operator UI verification.
+
+## 2026-11-27 — C.10 buyer message unknown-result safety
+
+- Исправлен bridge `BuyerPlatformMessageDispatcher`: callback `unknown_result` переводит запись в terminal `unknown` с причиной и исключает её из автоматического retry, поскольку browser adapter допускает, что мутация уже достигла Playerok.
+- Добавлена совместимость с ранее созданной таблицей outbox без `created_at`/`last_error`; plaintext и секреты не затрагиваются.
+- `python -m unittest tests.test_delivery_chat_commands_telegram -q`: **10 passed**. Внешние Playerok/Telegram операции не выполнялись.
+
+## 2026-11-27 — C.10 Telegram bridge integrity checkpoint
+
+- Проверен текущий production bridge: `TelegramOperatorReplyRouter` сохраняет allowlist и строгую связку operator reply → order → deal → Playerok chat; `TelegramUpdateProcessor` дедуплицирует `update_id` и повторно не вызывает маршрутизацию.
+- `BuyerPlatformMessageDispatcher` использует существующий browser adapter callback; успешный callback переводит запись в `sent`, обычная ошибка остаётся `retry`, а `unknown_result` переводит запись в блокирующий `unknown` без автоматической повторной мутации.
+- Добавлена совместимость outbox с ранее созданными схемами без `last_error`; секреты и текстовые credentials не выводятся в diagnostics.
+- Проверка: `python -m unittest tests.test_delivery_chat_commands_telegram -q` — **10 passed**. Внешние Telegram/Playerok действия не выполнялись. C.10/C.11 остаются незавершёнными до полного acceptance audit.
+
+## 2026-11-27 — C.8/C.9 operator lifecycle integration
+
+- Операторская вкладка расширена действиями для существующих stores: резерв файла по `file_id/order_id` с явным подтверждением переводит ресурс в `MANUAL_REQUIRED`; переход состояния услуги принимает `unit_id/state/completed_units`, требует подтверждения и записывает evidence через существующий audit.
+- Автоматическая передача файлов не добавлялась: неподтверждённый adapter по-прежнему fail-closed. Завершение услуги возможно только по правилам `ServiceTaskStore` и при полном количестве.
+- Проверка: `python -m unittest tests.test_file_catalog_service_tasks tests.test_delivery_chat_commands_telegram tests.test_digital_codes tests.test_recipe_unified_reservations -q` — **48 passed**; `py_compile app/operator_fulfillment_panel.py` — PASS. Внешние операции не выполнялись.
