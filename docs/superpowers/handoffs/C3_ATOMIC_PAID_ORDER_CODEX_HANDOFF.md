@@ -88,3 +88,29 @@ Add focused tests alongside existing Playerok sync and unified Recipe reservatio
 ## Completion criteria
 
 Do not claim C.3 complete until the transaction tests, compatibility regressions and CI all pass on the final HEAD. Do not merge PR #4 or change `main`.
+
+## Implementation checkpoint — 2026-11-27
+
+The typed/legacy-Recipe atomic path described above is partially implemented on `work/local-sync` (working tree based on HEAD `bd1c28dd2f196e840fc8ea3180aebf8f63326eb0`; no commit/push). PAID sync and explicit ConfigVersion binding no longer create Order shells. `PlayerokPaidPreparation` freezes and commit-time revalidates the account/deal/listing/config/audit binding. `prepare_paid_recipe_deal()` commits a supported Recipe Order, full manifest, ListingStock transfer, DeliveryLegs, and canonical reservations atomically; blocked preflight commits only Order+manifest+blocked status. A fault injected during DeliveryLeg insert rolls back the new Order and all earlier writes. Targeted 87-test suite and compileall/diff-check passed.
+
+C.3 remains open. Legacy selector configurations that cannot be represented as a Recipe currently fail closed before creating an Order; their previous CS2/Steam Cards paths still need transaction-aware integration while preserving selector behavior, Steam Cards quota, and manual review. Add a ConfigVersion-change-after-plan test and a UI binding→Import regression, then run required CI. No application, user DB, Playerok, ASF, or Steam operations were used.
+
+## Follow-up verification — 2026-11-27
+
+The compatibility note above is narrowed by code inspection: `legacy_config_to_recipe()` supports recognized legacy CS2 wrappers, legacy Steam Cards selectors, and single unambiguous legacy asset/card forms. Those shapes enter the same atomic PAID Recipe path. Unknown or ambiguous selector shapes remain fail-closed; do not route them through old order-based reservation APIs as a workaround. `prepare_steam_card_order()` and `prepare_cs2_order()` implementations were not changed.
+
+Additional transaction coverage was added in `tests/test_playerok_listing_stock_handoff.py` and the operator Import signal assertion in `tests/test_playerok_browser_and_listing_config.py`:
+
+- failure after deterministic Order insert but before manifest completion;
+- failure after manifest but before ListingStock transfer;
+- failure after transfer but before DeliveryLeg;
+- canonical reservation insert failure;
+- commit-time stock depletion and external reservation conflict;
+- Steam Cards quota conflict after successful planning, with no partial claim/reservation;
+- successful PAID Steam Cards complete-set + quota commit;
+- Deal status changes to SENT between pure planning and `BEGIN IMMEDIATE` commit;
+- retry/concurrent preparation and operator bind-to-import affordance.
+
+Verification: `python -m unittest tests.test_playerok_listing_stock_handoff tests.test_playerok_browser_and_listing_config tests.test_playerok_sync tests.test_recipe_unified_reservations tests.test_trade_delivery_ui tests.test_marketplace_integrations` — **143 passed**; targeted `compileall` — PASS; `git diff --check` — PASS. CI has not run for the resulting changes yet.
+
+Remaining before C.3 can be marked DONE: commit this reviewed logical block without disturbing other local changes; push only after confirming no upstream-only commits; run Tests and Windows Build workflows on the exact pushed SHA; inspect final workflow results; run any required migration/schema regression not included in the Tests workflow. Marketplace Import currently supplies no live inventory/card metadata, so physical preparations without preallocated ListingStock remain blocked until an operator flow supplies fresh verified inputs. No external Playerok/ASF/Steam operations or user SQLite were used.

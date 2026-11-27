@@ -14,8 +14,14 @@ from core.delivery.reservation_service import (
     OrderReservationResult,
     PlannedRecipeLine,
     PlannedResource,
+    ResourceReservationConflict,
 )
-from core.delivery.playerok_eligibility import require_canonical_playerok_delivery_eligible
+from core.delivery.playerok_eligibility import (
+    PlayerokPaidPreparation,
+    create_playerok_order_for_preparation,
+    load_playerok_paid_preparation,
+    require_canonical_playerok_delivery_eligible,
+)
 from core.delivery.recipes import (
     DigitalTextUnitSpec,
     RecipeValidationError,
@@ -383,10 +389,23 @@ class DeliveryOrderPipeline:
             snapshots=snapshots,
         )
 
-    def _persist_preflight_manifest(self, order_id: str, config_version_id: str) -> None:
+    def _persist_preflight_manifest(
+        self, order_id: str, config_version_id: str,
+        paid_context: PlayerokPaidPreparation | None = None,
+    ) -> None:
         """Persist the complete immutable manifest for a blocked preflight, without reserves."""
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if paid_context is not None:
+                if paid_context.order_id != order_id or paid_context.config_version_id != config_version_id:
+                    raise ValueError("Paid preparation context не совпадает с планом")
+                recipe = self.ledger.recipe_for_config_version(
+                    connection, config_version_id, allow_legacy=True
+                )
+                create_playerok_order_for_preparation(
+                    connection, paid_context,
+                    sum(item.quantity_per_order for item in recipe.items),
+                )
             self.ledger.materialize_recipe_order_lines_in_transaction(
                 connection, order_id, config_version_id, allow_legacy=True
             )
@@ -398,6 +417,77 @@ class DeliveryOrderPipeline:
             ).rowcount
             if changed != 1:
                 raise ValueError("Статус заказа изменился во время preflight; блокировка не сохранена")
+
+    def _config_for_paid_preparation(
+        self, account_user_id: str, external_deal_id: str
+    ) -> tuple[PlayerokPaidPreparation, dict[str, Any]]:
+        with self.database.connect() as db:
+            context = load_playerok_paid_preparation(db, account_user_id, external_deal_id)
+            row = db.execute(
+                "SELECT d.source_platform,d.listing_id,d.config_version_id,c.recipe_schema_version,"
+                "c.delivery_quantity_per_deal,c.item_selectors_json,c.bot_pool_json "
+                "FROM gd_deals d JOIN gd_config_versions c ON c.config_version_id=d.config_version_id "
+                "WHERE d.deal_id=? AND c.listing_id=d.listing_id",
+                (context.deal_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Аудированная ConfigVersion сделки недоступна")
+        try:
+            selectors = json.loads(row["item_selectors_json"])
+            bot_pool = json.loads(row["bot_pool_json"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ConfigVersion содержит некорректный JSON") from exc
+        if not isinstance(selectors, (dict, list)) or not isinstance(bot_pool, list):
+            raise ValueError("ConfigVersion содержит некорректные селекторы или пул ботов")
+        config = {
+            **dict(row), "config_version_id": context.config_version_id,
+            "listing_id": context.listing_id, "selectors": selectors, "bot_pool": bot_pool,
+        }
+        # Do not create even a blocked Order for configurations outside the
+        # typed/legacy Recipe path handled by this atomic preparation API.
+        with self.database.connect() as db:
+            self.ledger.recipe_for_config_version(
+                db, context.config_version_id, allow_legacy=True
+            )
+        return context, config
+
+    def prepare_paid_recipe_deal(
+        self,
+        *,
+        account_user_id: str,
+        external_deal_id: str,
+        snapshots: Mapping[str, InventorySnapshot],
+        recipient_badges: Iterable[RecipientBadge] = (),
+        badge_data_verified: bool = False,
+        buyer_complete_sets_by_app_id: Mapping[int, int] | None = None,
+        buyer_inventory_verified: bool = False,
+        seller_inventory_verified: bool = False,
+        card_hashes_by_app_id: Mapping[int, Iterable[str]] | None = None,
+        card_definitions_verified: bool = False,
+        game_app_ids_by_name: Mapping[str, int] | None = None,
+        now: datetime | None = None,
+    ) -> OrderReservationResult:
+        context, config = self._config_for_paid_preparation(account_user_id, external_deal_id)
+        with self.database.connect() as db:
+            existing = db.execute(
+                "SELECT status FROM gd_orders WHERE order_id=?", (context.order_id,)
+            ).fetchone()
+        if existing is not None and existing["status"] == "reserved":
+            return self.cs2_reservations.reserve_recipe_plan(
+                order_id=context.order_id, config_version_id=context.config_version_id,
+                planned_by_line={}, paid_context=context,
+            )
+        return self.prepare_recipe_order(
+            order_id=context.order_id, snapshots=snapshots,
+            recipient_badges=recipient_badges, badge_data_verified=badge_data_verified,
+            buyer_complete_sets_by_app_id=buyer_complete_sets_by_app_id,
+            buyer_inventory_verified=buyer_inventory_verified,
+            seller_inventory_verified=seller_inventory_verified,
+            card_hashes_by_app_id=card_hashes_by_app_id,
+            card_definitions_verified=card_definitions_verified,
+            game_app_ids_by_name=game_app_ids_by_name, now=now,
+            _paid_context=context, _config_override=config,
+        )
 
     def prepare_recipe_order(
         self,
@@ -413,6 +503,8 @@ class DeliveryOrderPipeline:
         card_definitions_verified: bool = False,
         game_app_ids_by_name: Mapping[str, int] | None = None,
         now: datetime | None = None,
+        _paid_context: PlayerokPaidPreparation | None = None,
+        _config_override: dict[str, Any] | None = None,
     ) -> OrderReservationResult:
         """Plan every RecipeItem, then reserve the complete order in one ledger transaction.
 
@@ -422,7 +514,9 @@ class DeliveryOrderPipeline:
         order = str(order_id or "").strip()
         if not order or not isinstance(snapshots, Mapping):
             raise ValueError("order_id и snapshots обязательны")
-        config = self._config_for_order(order)
+        if _paid_context is not None and _paid_context.order_id != order:
+            raise ValueError("Paid preparation context не совпадает с order_id")
+        config = _config_override or self._config_for_order(order)
         config_id = str(config["config_version_id"])
         # Resource selection is pure with respect to the delivery ledger:
         # stable OrderLine IDs are derived from the immutable ConfigVersion.
@@ -616,12 +710,12 @@ class DeliveryOrderPipeline:
             reserved_keys.update((resource.bot_name.casefold(), asset_id_key(resource.asset_id)) for resource in resources)
 
         if failed_required:
-            self._persist_preflight_manifest(order, config_id)
+            self._persist_preflight_manifest(order, config_id, _paid_context)
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (), " ".join(failed_required)
             )
         if not any(line_plan.units or line_plan.use_listing_stock for line_plan in planned.values()):
-            self._persist_preflight_manifest(order, config_id)
+            self._persist_preflight_manifest(order, config_id, _paid_context)
             return OrderReservationResult(
                 order, "preflight_blocked", (), (), (),
                 "В Recipe нет обязательных физических ресурсов для безопасного резервирования.",
@@ -631,16 +725,22 @@ class DeliveryOrderPipeline:
                 order_id=order,
                 config_version_id=config_id,
                 planned_by_line=planned,
+                paid_context=_paid_context,
             )
         except Exception as exc:
             from core.delivery.listing_stock import InsufficientListingStock
-            if isinstance(exc, InsufficientListingStock):
+            if isinstance(exc, (InsufficientListingStock, ResourceReservationConflict)):
                 # The reservation transaction rolled back in full. Persist the
                 # immutable manifest separately, with no DeliveryLeg/reservation.
-                self._persist_preflight_manifest(order, config_id)
+                self._persist_preflight_manifest(order, config_id, _paid_context)
+                reason = (
+                    f"Ресурс уже занят другим заказом: {exc}"
+                    if isinstance(exc, ResourceReservationConflict)
+                    else f"Недостаточно закреплённого складского остатка: {exc}"
+                )
                 return OrderReservationResult(
                     order, "preflight_blocked", (), (), (),
-                    f"Недостаточно закреплённого складского остатка: {exc}",
+                    reason,
                 )
             raise
 

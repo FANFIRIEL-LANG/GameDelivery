@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -133,7 +132,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window._prepare_delivery_order()
                     warning.assert_not_called()
                     info.assert_called_once()
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         order = db.execute(
                             "SELECT asset_count, status FROM delivery_orders"
                         ).fetchone()
@@ -143,7 +142,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     self.assertEqual(order[0], 1)
                     self.assertIn("не отправлен", order[1])
                     self.assertEqual(reservation, ("Bot A", "123"))
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         order_asset = db.execute(
                             "SELECT order_id, bot_name, asset_id FROM delivery_order_assets"
                         ).fetchone()
@@ -205,7 +204,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     displayed = info.call_args.args[2]
                     self.assertIn("НЕ создавалось и НЕ отправлялось", displayed)
                     self.assertNotIn("private-preview-token", displayed)
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         status = db.execute(
                             "SELECT status FROM delivery_orders WHERE order_id = ?",
                             (order_id,),
@@ -257,7 +256,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     )
                     window._prepare_delivery_order()
                     warning.assert_called_once()
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         rows = db.execute(
                             "SELECT bot_name, asset_id FROM steam_asset_reservations"
                         ).fetchall()
@@ -299,7 +298,7 @@ class AppStartupSmokeTests(unittest.TestCase):
 
                     warning.assert_called_once()
                     information.assert_not_called()
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         reservation_count = db.execute(
                             "SELECT COUNT(*) FROM steam_asset_reservations"
                         ).fetchone()[0]
@@ -320,7 +319,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                 "games.steam_cards.reservations", fromlist=["AssetReservationStore"]
             ).AssetReservationStore(database)
             reservations.reserve("GD-TEST", [("Bot A", "123")])
-            with sqlite3.connect(database) as db:
+            with connect_sqlite(database, row_factory=None) as db:
                 db.execute("""
                     CREATE TABLE delivery_orders (
                         order_id TEXT PRIMARY KEY, recipient_trade_url TEXT NOT NULL,
@@ -364,7 +363,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     window.orders.setCurrentCell(legacy_row, 0)
                     window.orders.selectRow(legacy_row)
                     window._cancel_selected_order()
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         status = db.execute(
                             "SELECT status FROM delivery_orders WHERE order_id = 'GD-TEST'"
                         ).fetchone()[0]
@@ -385,7 +384,7 @@ class AppStartupSmokeTests(unittest.TestCase):
             reservations = AssetReservationStore(database)
             reservations.reserve("GD-ONE", [("Bot A", "789")])
             reservations.reserve("GD-TWO", [("Bot A", "890")])
-            with sqlite3.connect(database) as db:
+            with connect_sqlite(database, row_factory=None) as db:
                 db.execute("""
                     CREATE TABLE delivery_orders (
                         order_id TEXT PRIMARY KEY, recipient_trade_url TEXT NOT NULL,
@@ -505,7 +504,7 @@ class AppStartupSmokeTests(unittest.TestCase):
     def test_startup_marks_interrupted_sending_order_as_unknown_and_locks_retry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "orders.sqlite3"
-            with sqlite3.connect(database) as db:
+            with connect_sqlite(database, row_factory=None) as db:
                 db.execute("""
                     CREATE TABLE delivery_orders (
                         order_id TEXT PRIMARY KEY,
@@ -532,7 +531,7 @@ class AppStartupSmokeTests(unittest.TestCase):
             with patch.object(MainWindow, "_database_path", new_callable=PropertyMock, return_value=database):
                 window = MainWindow()
                 try:
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         status = db.execute(
                             "SELECT status, trade_confirmation_status FROM delivery_orders WHERE order_id = ?",
                             ("GD-INTERRUPTED",),
@@ -608,7 +607,7 @@ class AppStartupSmokeTests(unittest.TestCase):
                     }
                     window._import_marketplace_order(order)
                     window._import_marketplace_order({**order, "status": "SENT"})
-                    with sqlite3.connect(database) as db:
+                    with connect_sqlite(database, row_factory=None) as db:
                         rows = db.execute(
                             "SELECT COUNT(*) FROM delivery_orders WHERE source_platform='playerok'"
                         ).fetchone()[0]

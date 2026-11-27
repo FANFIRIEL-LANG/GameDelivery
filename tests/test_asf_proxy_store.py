@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core.database.connection import connect_sqlite
 from integrations.asf.proxy_config import SteamProxy
 from integrations.asf.proxy_store import ProxyStore
 
@@ -65,7 +66,7 @@ class ProxyStoreTests(unittest.TestCase):
         self.assertEqual(profile["username"], "proxy-user")
         self.assertNotIn("password", profile)
         self.assertEqual(self.store.get_password("bot-a"), "proxy-secret")
-        with sqlite3.connect(self.database) as db:
+        with connect_sqlite(self.database, row_factory=None) as db:
             raw = repr(db.execute("SELECT * FROM steam_proxy_profiles").fetchall())
         self.assertNotIn("proxy-secret", raw)
 
@@ -146,7 +147,7 @@ class ProxyStoreTests(unittest.TestCase):
 
         self.assertEqual(len(ids), 1)
         self.assertEqual(self.store.get_pool_password(ids[0]), "pool-secret")
-        with sqlite3.connect(self.database) as db:
+        with connect_sqlite(self.database, row_factory=None) as db:
             raw = repr(db.execute("SELECT * FROM steam_proxy_pool").fetchall())
         self.assertNotIn("pool-secret", raw)
 

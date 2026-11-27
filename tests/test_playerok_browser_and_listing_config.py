@@ -5,6 +5,7 @@ import json
 import re
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,9 +14,10 @@ from pathlib import Path
 
 from core.database.db import Database
 from core.delivery.dispatcher import DeliveryDispatcher
+from core.delivery.ledger import DeliveryLedger
 from core.delivery.order_pipeline import DeliveryOrderPipeline
 from core.delivery.playerok_freshness import PlayerokFreshnessGate
-from core.delivery.recipes import normalize_legacy_cs2_selector_options
+from core.delivery.recipes import RecipeItem, SteamAssetSpec, normalize_legacy_cs2_selector_options
 from core.delivery.stock_ledger import QuantityStockLedger, StockResource
 from core.delivery.stock_identity import StockItemIdentity
 from integrations.playerok import browser_sales
@@ -1052,6 +1054,55 @@ class PlayerokListingConfigTests(unittest.TestCase):
                 "FROM gd_deals"
             ).fetchone()
             self.assertEqual(tuple(row), ("seller-account", "deal-account-scoped", None, "unresolved"))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
+        panel.close()
+
+    def test_bound_paid_row_stays_importable_after_sales_refresh_without_order_shell(self):
+        service = PlayerokDealSyncService(self.db)
+        item = RecipeItem(
+            item_id="steam-item", position=1, kind="steam_asset", spec_version=1,
+            quantity_per_order=1, required=True, stock_source_id="stock",
+            executor_key="steam_trade_offer",
+            spec=SteamAssetSpec(
+                "cs2", 730, "2", {"market_hash_name": "AK-47 | Redline"}, ("Bot-A",)
+            ),
+        )
+        config = DeliveryLedger(self.db).create_recipe_config_version(
+            listing_id="listing-paid-ui", source_platform="playerok",
+            external_listing_id="external-paid-ui", recipe_items=[item], title="Paid UI",
+        )
+        service.sync_graphql_snapshot(trusted_graphql_snapshot("seller-ui", []))
+        created_at = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+        service.sync_graphql_snapshot(trusted_graphql_snapshot("seller-ui", [{
+            "deal_id": "paid-ui", "listing_id": "external-paid-ui", "status": "PAID",
+            "created_at": created_at,
+        }]))
+        binding = service.bind_paid_deal_config_version(
+            account_user_id="seller-ui", external_deal_id="paid-ui",
+            config_version_id=config["config_version_id"], operator_id="operator",
+            reason="Проверена версия на момент оплаты",
+        )
+        with self.db.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
+
+        panel = MarketplacePanel(database=self.db, sync_service=service)
+        panel._show_orders([{
+            "platform": "playerok", "deal_id": "paid-ui", "status": "PAID",
+            "account_user_id": "seller-ui", "listing_id": "external-paid-ui",
+        }])
+        panel.orders_table.selectRow(0)
+        selected = panel.orders_table.item(0, 0).data(Qt.ItemDataRole.UserRole)
+        self.assertEqual(selected["config_version_id"], config["config_version_id"])
+        self.assertEqual(selected["paid_config_binding_id"], binding["binding_id"])
+        self.assertTrue(panel.import_order_button.isEnabled())
+        self.assertFalse(panel.bind_paid_config_button.isEnabled())
+        imported = []
+        panel.order_import_requested.connect(imported.append)
+        panel.import_order_button.click()
+        self.assertEqual(len(imported), 1)
+        self.assertEqual(imported[0]["deal_id"], "paid-ui")
+        self.assertEqual(imported[0]["config_version_id"], config["config_version_id"])
+        with self.db.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM gd_orders").fetchone()[0], 0)
         panel.close()
 

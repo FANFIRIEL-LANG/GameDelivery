@@ -8,7 +8,11 @@ from typing import Any, Mapping
 
 from core.database.db import Database
 from core.delivery.ledger import DeliveryLedger
-from core.delivery.playerok_eligibility import require_canonical_playerok_delivery_eligible
+from core.delivery.playerok_eligibility import (
+    PlayerokPaidPreparation,
+    create_playerok_order_for_preparation,
+    require_canonical_playerok_delivery_eligible,
+)
 from core.delivery.listing_stock import InsufficientListingStock, ListingStockService
 from core.delivery.recipes import (
     DigitalTextUnitSpec,
@@ -61,6 +65,10 @@ class OrderReservationResult:
     @property
     def reserved(self) -> bool:
         return self.status == "reserved"
+
+
+class ResourceReservationConflict(ValueError):
+    """A preplanned physical resource was claimed before commit."""
 
 
 @dataclass(frozen=True)
@@ -523,6 +531,7 @@ class DeliveryReservationService:
         order_id: str,
         config_version_id: str,
         planned_by_line: Mapping[str, PlannedRecipeLine],
+        paid_context: PlayerokPaidPreparation | None = None,
     ) -> OrderReservationResult:
         """Atomically commit every preplanned required Recipe resource and leg.
 
@@ -539,6 +548,16 @@ class DeliveryReservationService:
         stock_backed_assets: set[tuple[tuple[str, str, int, str, str, bool], str]] = set()
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if paid_context is not None:
+                if paid_context.order_id != order or paid_context.config_version_id != config_id:
+                    raise ValueError("Paid preparation context не совпадает с reservation plan")
+                recipe = DeliveryLedger.recipe_for_config_version(
+                    connection, config_id, allow_legacy=True
+                )
+                create_playerok_order_for_preparation(
+                    connection, paid_context,
+                    sum(item.quantity_per_order for item in recipe.items),
+                )
             require_canonical_playerok_delivery_eligible(connection, order)
             order_row = connection.execute(
                 "SELECT o.status,d.config_version_id,d.listing_id,d.source_platform FROM gd_orders o "
@@ -915,6 +934,14 @@ class DeliveryReservationService:
                         # immutable manifest and blocked status.
                         connection.rollback()
                         connection.execute("BEGIN IMMEDIATE")
+                        if paid_context is not None:
+                            recipe = DeliveryLedger.recipe_for_config_version(
+                                connection, config_id, allow_legacy=True
+                            )
+                            create_playerok_order_for_preparation(
+                                connection, paid_context,
+                                sum(item.quantity_per_order for item in recipe.items),
+                            )
                         DeliveryLedger.materialize_recipe_order_lines_in_transaction(
                             connection, order, config_id, allow_legacy=True
                         )
@@ -930,7 +957,9 @@ class DeliveryReservationService:
                             order, "preflight_blocked", (), (), (),
                             "Один из выбранных ресурсов уже имеет активный резерв.",
                         )
-                    raise ValueError("Один из выбранных ресурсов уже имеет активный резерв")
+                    raise ResourceReservationConflict(
+                        "Один из выбранных ресурсов уже имеет активный резерв"
+                    )
                 key = (
                     line_id, resource.bot_name, resource.app_id, str(resource.context_id),
                     str(resource.game_id), resource.steam_cards_compatibility,

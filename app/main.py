@@ -666,12 +666,24 @@ class MainWindow(QMainWindow):
                     (account_id, external_id),
                 ).fetchone()
             if canonical is None:
-                self.statusBar().showMessage(
-                    "Сделка не добавлена: для неё нет нового canonical-заказа с точным объявлением "
-                    "и ConfigVersion. Baseline и неразрешённые сделки не импортируются в legacy-очередь."
+                if not marketplace_order.get("paid_config_binding_id") and not marketplace_order.get("config_version_id"):
+                    self.statusBar().showMessage(
+                        "Сделка не добавлена: требуется точное объявление и аудированная ConfigVersion. "
+                        "Baseline и неразрешённые сделки не импортируются в заказ."
+                    )
+                    return
+                prepared = self.delivery_pipeline.prepare_paid_recipe_deal(
+                    account_user_id=account_id,
+                    external_deal_id=external_id,
+                    snapshots={},
                 )
-                return
-            local_order_id = str(canonical["order_id"])
+                local_order_id = prepared.order_id
+                preparation_result = (
+                    f"Подготовка: {prepared.status}. {prepared.message}"
+                )
+            else:
+                local_order_id = str(canonical["order_id"])
+                preparation_result = "Повторный импорт не создавал заказ и резерв повторно."
             self._load_saved_orders()
             self.tabs.setCurrentIndex(0)
             for row in range(self.orders.rowCount()):
@@ -683,10 +695,10 @@ class MainWindow(QMainWindow):
                     self.orders.selectRow(row)
                     break
             self.statusBar().showMessage(
-                f"Сделка Playerok {external_id} уже связана с canonical-заказом "
-                f"{local_order_id}; legacy-дубль не создавался."
+                f"Сделка Playerok {external_id}: canonical-заказ {local_order_id}. "
+                f"{preparation_result}"
             )
-        except (OSError, sqlite3.Error, ValueError) as exc:
+        except (OSError, sqlite3.Error, ValueError, KeyError) as exc:
             self.statusBar().showMessage(f"Не удалось импортировать заказ Playerok: {exc}")
 
     def _load_order_bots(self, *_):

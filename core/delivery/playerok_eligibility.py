@@ -1,10 +1,93 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
+from dataclasses import dataclass
 
 
 class PlayerokDeliveryBlocked(ValueError):
     """A Playerok deal is not eligible for delivery from its persisted snapshot."""
+
+
+@dataclass(frozen=True)
+class PlayerokPaidPreparation:
+    account_user_id: str
+    external_deal_id: str
+    deal_id: str
+    listing_id: str
+    config_version_id: str
+    order_id: str
+    binding_id: str
+    operator_id: str
+    reason: str
+
+
+def load_playerok_paid_preparation(
+    connection: sqlite3.Connection, account_user_id: str, external_deal_id: str
+) -> PlayerokPaidPreparation:
+    account = str(account_user_id or "").strip()
+    external = str(external_deal_id or "").strip()
+    if not account or not external:
+        raise ValueError("Account ID и Deal ID обязательны")
+    row = connection.execute(
+        "SELECT d.deal_id,d.listing_id,d.config_version_id,d.platform_status,d.is_historical,"
+        "d.listing_resolution_status,b.binding_id,b.config_version_id AS bound_config_id,"
+        "b.listing_id AS bound_listing_id,b.operator_id,b.reason,s.baseline_completed "
+        "FROM gd_deals d JOIN gd_config_versions c ON c.config_version_id=d.config_version_id "
+        "AND c.listing_id=d.listing_id LEFT JOIN playerok_paid_config_bindings b "
+        "ON b.account_user_id=d.playerok_account_id AND b.deal_id=d.deal_id "
+        "LEFT JOIN playerok_sync_state s ON s.account_user_id=d.playerok_account_id "
+        "WHERE d.source_platform='playerok' AND d.playerok_account_id=? AND d.external_deal_id=?",
+        (account, external),
+    ).fetchone()
+    if row is None:
+        raise KeyError("Playerok Deal не найден для указанного аккаунта")
+    if str(row["platform_status"] or "").upper() != "PAID" or row["is_historical"] != 0:
+        raise PlayerokDeliveryBlocked("Подготовка разрешена только для актуальной PAID-сделки.")
+    if row["baseline_completed"] != 1:
+        raise PlayerokDeliveryBlocked("Полный baseline Playerok для аккаунта ещё не завершён.")
+    listing = str(row["listing_id"] or "")
+    config = str(row["config_version_id"] or "")
+    if row["listing_resolution_status"] != "resolved" or not listing or not config:
+        raise PlayerokDeliveryBlocked("Сделка не сопоставлена с точным объявлением и ConfigVersion.")
+    if (
+        not row["binding_id"] or row["bound_config_id"] != config
+        or row["bound_listing_id"] != listing
+    ):
+        raise PlayerokDeliveryBlocked("Для сделки нет точной аудированной привязки ConfigVersion.")
+    order_id = "playerok-order:" + hashlib.sha256(
+        (account + "\x1f" + external).encode("utf-8")
+    ).hexdigest()[:32]
+    return PlayerokPaidPreparation(
+        account, external, str(row["deal_id"]), listing, config, order_id,
+        str(row["binding_id"]), str(row["operator_id"]), str(row["reason"]),
+    )
+
+
+def create_playerok_order_for_preparation(
+    connection: sqlite3.Connection,
+    context: PlayerokPaidPreparation,
+    total_quantity: int,
+) -> None:
+    """Create the deterministic order shell only inside its preparation transaction."""
+    if not connection.in_transaction:
+        raise RuntimeError("Playerok order preparation requires an active transaction")
+    current = load_playerok_paid_preparation(
+        connection, context.account_user_id, context.external_deal_id
+    )
+    if current != context:
+        raise PlayerokDeliveryBlocked("Сделка или аудированная ConfigVersion изменилась после планирования.")
+    if type(total_quantity) is not int or total_quantity < 1:
+        raise ValueError("Количество заказа должно быть положительным целым числом")
+    connection.execute(
+        "INSERT OR IGNORE INTO gd_orders(order_id,deal_id,status,total_quantity) "
+        "VALUES(?,?,'pending',?)", (context.order_id, context.deal_id, total_quantity),
+    )
+    row = connection.execute(
+        "SELECT deal_id,total_quantity FROM gd_orders WHERE order_id=?", (context.order_id,)
+    ).fetchone()
+    if row is None or row["deal_id"] != context.deal_id or row["total_quantity"] != total_quantity:
+        raise PlayerokDeliveryBlocked("Существующий заказ не совпадает с подготовленным контекстом сделки.")
 
 
 def _is_playerok(source_platform: object) -> bool:

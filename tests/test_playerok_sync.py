@@ -183,7 +183,7 @@ class PlayerokDealSyncTests(unittest.TestCase):
             reason="Оператор сверил версию объявления на момент оплаты",
         )
         self.assertEqual(result["config_version_id"], config["config_version_id"])
-        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["status"], "awaiting_preparation")
         with self.database.connect() as db:
             binding = db.execute(
                 "SELECT account_user_id,deal_id,listing_id,config_version_id,operator_id,reason "
@@ -204,9 +204,10 @@ class PlayerokDealSyncTests(unittest.TestCase):
             self.assertEqual(
                 db.execute("SELECT COUNT(*) FROM gd_orders WHERE deal_id=?",
                            (normalized_id,)).fetchone()[0],
-                1,
+                0,
             )
-        # A later polling sync must preserve the audited binding and its order.
+        # A later polling sync must preserve the audited binding without
+        # materializing an Order before atomic preparation.
         self.syncer.sync(adapter)
         with self.database.connect() as db:
             self.assertEqual(
@@ -217,9 +218,9 @@ class PlayerokDealSyncTests(unittest.TestCase):
             self.assertEqual(
                 db.execute("SELECT COUNT(*) FROM gd_orders WHERE deal_id=?",
                            (normalized_id,)).fetchone()[0],
-                1,
+                0,
             )
-        with self.assertRaisesRegex(ValueError, "уже создан"):
+        with self.assertRaisesRegex(ValueError, "уже зафиксирована"):
             self.syncer.bind_paid_deal_config_version(
                 account_user_id="seller-account-1",
                 external_deal_id="paid-explicit-binding",
@@ -494,15 +495,6 @@ class PlayerokDealSyncTests(unittest.TestCase):
                 "SELECT config_version_id,listing_id FROM gd_deals WHERE deal_id=?", (normalized_id,)
             ).fetchone()
             self.assertIsNone(config["config_version_id"])
-            latest_config = db.execute(
-                "SELECT config_version_id,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
-                "FROM gd_config_versions WHERE listing_id=? ORDER BY version_number DESC LIMIT 1",
-                (config["listing_id"],),
-            ).fetchone()
-            self.syncer._maybe_create_order(
-                db, normalized_id, "atomic-failure", "seller-account-1", "PAID", 0,
-                config["listing_id"], latest_config["config_version_id"], dict(latest_config),
-            )
             for table in ("gd_orders", "gd_order_lines", "gd_delivery_legs", "gd_resource_reservations"):
                 self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
 

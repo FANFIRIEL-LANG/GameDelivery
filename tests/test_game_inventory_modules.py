@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from games.catalog import GAME_CATALOG, get_game
+from core.database.connection import connect_sqlite
 from core.database.db import Database
 from core.delivery.stock_ledger import QuantityStockLedger
 from games.inventory import (
@@ -244,7 +245,7 @@ class GameInventoryStoreTests(unittest.TestCase):
         import sqlite3
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "legacy.sqlite3"
-            with sqlite3.connect(database) as db:
+            with connect_sqlite(database, row_factory=None) as db:
                 db.execute("""
                     CREATE TABLE game_inventory_snapshot (
                         game_id TEXT NOT NULL, bot_name TEXT NOT NULL, asset_id TEXT NOT NULL,

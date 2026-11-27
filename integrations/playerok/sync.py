@@ -10,8 +10,6 @@ from integrations.playerok.browser_sales import (
     BrowserSalesSnapshot,
     is_fresh_trusted_browser_sales_snapshot,
 )
-from core.delivery.ledger import DeliveryLedger
-from core.delivery.recipes import SteamAssetSpec, UnsupportedLegacyRecipeError
 
 
 class PlayerokDealSyncService:
@@ -286,11 +284,6 @@ class PlayerokDealSyncService:
             account_id, historical_value, source_listing_ref, listing_resolution_status,
         ))
 
-        if config is not None:
-            self._maybe_create_order(
-                db, normalized_id, external_id, account_id, self._status(deal),
-                historical_value, listing_id, config_id, config,
-            )
         return normalized_id, created
 
     def resolve_unresolved_deal(
@@ -379,8 +372,8 @@ class PlayerokDealSyncService:
     ) -> dict[str, Any]:
         """Explicitly bind a PAID deal to an operator-selected immutable ConfigVersion.
 
-        The binding audit, deal snapshot and initial order creation share one
-        BEGIN IMMEDIATE transaction. No latest-version fallback is performed.
+        The binding audit and deal snapshot share one BEGIN IMMEDIATE transaction.
+        The order is created later with its complete manifest and reservations.
         """
         account = str(account_user_id or "").strip()
         external = str(external_deal_id or "").strip()
@@ -428,11 +421,6 @@ class PlayerokDealSyncService:
             ).fetchone()
             if existing_binding is not None:
                 raise ValueError("Для этой PAID-сделки ConfigVersion уже зафиксирована")
-            config = db.execute(
-                "SELECT config_version_id,recipe_schema_version,delivery_quantity_per_deal,"
-                "item_selectors_json,bot_pool_json FROM gd_config_versions WHERE config_version_id=?",
-                (config_id,),
-            ).fetchone()
             db.execute(
                 "UPDATE gd_deals SET config_version_id=? WHERE deal_id=? AND listing_id=? "
                 "AND (config_version_id IS NULL OR config_version_id='')",
@@ -447,83 +435,12 @@ class PlayerokDealSyncService:
                 "VALUES(?,?,?,?,?,?,?)",
                 (binding_id, account, deal_pk, listing_id, config_id, operator, why),
             )
-            self._maybe_create_order(
-                db, deal_pk, external, account, "PAID", 0,
-                listing_id, config_id, dict(config),
-            )
-            order = db.execute(
-                "SELECT order_id,status,total_quantity FROM gd_orders WHERE deal_id=?",
-                (deal_pk,),
-            ).fetchone()
-            if order is None:
-                raise ValueError("Выбранная ConfigVersion не позволяет создать безопасный заказ")
+            order_id = self._stable("playerok-order", account + "\x1f" + external)
             return {
                 "deal_id": external, "listing_id": listing_id,
-                "config_version_id": config_id, "order_id": str(order["order_id"]),
-                "status": str(order["status"]), "binding_id": binding_id,
+                "config_version_id": config_id, "order_id": order_id,
+                "status": "awaiting_preparation", "binding_id": binding_id,
             }
-
-    def _maybe_create_order(
-        self, db, normalized_id, external_id, account_id, status, historical,
-        listing_id, config_id, config,
-    ) -> None:
-        baseline = db.execute(
-            "SELECT baseline_completed FROM playerok_sync_state WHERE account_user_id=?",
-            (account_id,),
-        ).fetchone()
-        if (
-            historical or baseline is None or baseline[0] != 1
-            or listing_id is None or config_id is None or status != "PAID"
-        ):
-            return
-        bound_version = db.execute(
-            "SELECT config_version_id FROM gd_deals WHERE deal_id=? AND listing_id=?",
-            (normalized_id, listing_id),
-        ).fetchone()
-        if bound_version is None or bound_version["config_version_id"] != config_id:
-            return
-        version = db.execute(
-            "SELECT recipe_schema_version,delivery_quantity_per_deal,item_selectors_json,bot_pool_json "
-            "FROM gd_config_versions WHERE config_version_id=?", (config_id,),
-        ).fetchone()
-        if version is None:
-            raise RuntimeError("ConfigVersion сохранённой сделки не найден")
-        typed_recipe = version["recipe_schema_version"] is not None
-        if typed_recipe:
-            recipe = DeliveryLedger.recipe_for_config_version(db, config_id, allow_legacy=False)
-            quantity = sum(item.quantity_per_order for item in recipe.items)
-            materialize_legacy_manifest = False
-        else:
-            quantity = version["delivery_quantity_per_deal"]
-            try:
-                bot_pool = json.loads(version["bot_pool_json"] or "[]")
-            except (TypeError, ValueError):
-                bot_pool = []
-            if (
-                type(quantity) is not int or quantity < 1
-                or not isinstance(bot_pool, list)
-                or not any(isinstance(bot, str) and bot.strip() for bot in bot_pool)
-            ):
-                return
-            try:
-                recipe = DeliveryLedger.recipe_for_config_version(db, config_id, allow_legacy=True)
-            except UnsupportedLegacyRecipeError:
-                # Preserve the old selector-driven path for configurations that
-                # are not a single unambiguous RecipeItem.
-                recipe = None
-            materialize_legacy_manifest = recipe is not None
-        order_id = self._stable("playerok-order", account_id + "\x1f" + external_id)
-        db.execute(
-            "INSERT OR IGNORE INTO gd_orders(order_id,deal_id,status,total_quantity) "
-            "VALUES(?,?,'pending',?)", (order_id, normalized_id, quantity),
-        )
-        if materialize_legacy_manifest:
-            # Keep the legacy selector path unchanged. Typed Recipe OrderLines
-            # are created only by reserve_recipe_plan(), in the same transaction
-            # as ListingStock transfer, DeliveryLegs and canonical reservations.
-            DeliveryLedger.materialize_recipe_order_lines_in_transaction(
-                db, order_id, config_id, allow_legacy=True
-            )
 
     def _baseline(
         self, adapter: Any, account_user_id: str, *, allow_status_mutation: bool = False

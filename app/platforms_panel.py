@@ -69,6 +69,7 @@ class MarketplacePanel(QWidget):
         *, database=None, sync_service: PlayerokDealSyncService | None = None,
     ):
         super().__init__(parent)
+        self.database = database or getattr(sync_service, "database", None)
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -1012,7 +1013,10 @@ class MarketplacePanel(QWidget):
         item = self.orders_table.item(row, 0) if row >= 0 else None
         order = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         self.import_order_button.setEnabled(
-            isinstance(order, dict) and bool(order.get("order_id"))
+            isinstance(order, dict) and bool(
+                order.get("order_id") or order.get("paid_config_binding_id")
+                or (str(order.get("status") or "").upper() == "PAID" and order.get("config_version_id"))
+            )
         )
         self.bind_paid_config_button.setEnabled(
             self.sync_service is not None
@@ -1020,6 +1024,7 @@ class MarketplacePanel(QWidget):
             and str(order.get("status") or "").upper() == "PAID"
             and bool(order.get("account_user_id"))
             and bool(order.get("deal_id") or order.get("external_deal_id"))
+            and not order.get("config_version_id")
         )
 
     def _bind_selected_paid_config(self) -> None:
@@ -1064,8 +1069,13 @@ class MarketplacePanel(QWidget):
             )
             self.status_label.setText(
                 f"ConfigVersion {result['config_version_id']} закреплена. "
-                f"Создан заказ {result['order_id']} со статусом {result['status']}."
+                "Заказ будет создан атомарно вместе с manifest и резервом при подготовке."
             )
+            deal_data["config_version_id"] = result["config_version_id"]
+            deal_data["order_id"] = result["order_id"]
+            deal_data["paid_config_binding_id"] = result["binding_id"]
+            item.setData(Qt.ItemDataRole.UserRole, dict(deal_data))
+            self._update_button_state()
         except Exception as exc:
             QMessageBox.warning(self, "Не удалось закрепить ConfigVersion", str(exc))
             self.status_label.setText(f"Привязка ConfigVersion не выполнена: {exc}")
@@ -1077,18 +1087,43 @@ class MarketplacePanel(QWidget):
             return
         item = self.orders_table.item(row, 0)
         order = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
-        if not isinstance(order, dict) or not order.get("order_id"):
+        if not isinstance(order, dict) or not (
+            order.get("order_id") or order.get("paid_config_binding_id")
+            or (str(order.get("status") or "").upper() == "PAID" and order.get("config_version_id"))
+        ):
             self.status_label.setText("Не удалось прочитать выбранную сделку.")
             return
         self.order_import_requested.emit(dict(order))
         self.status_label.setText(
-            f"Передаю сделку {order['order_id']} в очередь GameDelivery. "
-            "Итог импорта отображается в статусной строке главного окна."
+            f"Передаю сделку {order.get('deal_id', order.get('order_id', ''))} "
+            "на атомарную подготовку в GameDelivery. Итог отобразится в статусной строке главного окна."
         )
 
     def _show_orders(self, orders: list[dict[str, Any]]) -> None:
         self.orders_table.setRowCount(0)
         for order in orders:
+            if (
+                str(order.get("platform") or "").casefold() == "playerok"
+                and str(order.get("status") or "").upper() == "PAID"
+                and self.database is not None
+                and order.get("account_user_id")
+                and (order.get("deal_id") or order.get("external_deal_id"))
+            ):
+                with self.database.connect() as db:
+                    binding = db.execute(
+                        "SELECT b.binding_id,b.config_version_id FROM gd_deals d "
+                        "JOIN playerok_paid_config_bindings b ON b.deal_id=d.deal_id "
+                        "AND b.account_user_id=d.playerok_account_id "
+                        "WHERE d.source_platform='playerok' AND d.playerok_account_id=? "
+                        "AND d.external_deal_id=?",
+                        (str(order["account_user_id"]), str(order.get("deal_id") or order.get("external_deal_id"))),
+                    ).fetchone()
+                if binding is not None:
+                    order = {
+                        **order,
+                        "config_version_id": str(binding["config_version_id"]),
+                        "paid_config_binding_id": str(binding["binding_id"]),
+                    }
             row = self.orders_table.rowCount()
             self.orders_table.insertRow(row)
             values = (

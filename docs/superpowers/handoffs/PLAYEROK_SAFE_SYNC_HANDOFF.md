@@ -760,3 +760,60 @@ HEAD до задания `5ee6e99af4764875ece85aad41369a69c258e4af`, branch `wor
 - Целевой набор: 98 PASS по GraphQL HTTP/sync, sync service, polling и browser/listing regressions; compileall PASS. Использованы только mock transport и временная SQLite. Live API и пользовательские данные не проверялись.
 
 Дальше: отдельно проверить read-only live GraphQL контракт с разрешённой сессией; если endpoint/operation contract не работает, показать безопасную ошибку и не делать baseline. Не включать резервирование или отправку без отдельного этапа и подтверждённой ConfigVersion.
+
+## C.3 atomic PAID preparation — implementation checkpoint (2026-11-27)
+
+Текущая ветка `work/local-sync`, исходный HEAD `bd1c28dd2f196e840fc8ea3180aebf8f63326eb0`; до работы clean, удалённая ветка совпадала. После изменений HEAD не менялся, восемь файлов modified. Commit/push и CI не выполнялись.
+
+### Сделано
+
+- Удалено создание `gd_orders` из Playerok sync и из `bind_paid_deal_config_version()`. Binding остаётся аудированным и exact; возвращается стабильный ID будущего заказа, статус `awaiting_preparation`.
+- `PlayerokPaidPreparation` замораживает account/deal/listing/config/binding audit и deterministic order ID. Helper повторно сравнивает весь контекст в транзакции, требует актуальный PAID, nonhistorical Deal и завершённый account baseline.
+- Новый `DeliveryOrderPipeline.prepare_paid_recipe_deal()` получает только exact audited ConfigVersion. Для поддержанного Recipe планирование не пишет ledger. Ветка успеха создаёт Order + весь OrderLine manifest + ListingStock transfer + DeliveryLegs + canonical reservations + reserved status в одной `BEGIN IMMEDIATE`; injected trigger после начала фиксации откатывает и Order. Preflight-blocked создаёт только Order + полный manifest + `preflight_blocked`; legs/reservations отсутствуют. Retry стабильный и идемпотентный.
+- Marketplace Import запускает подготовку после exact binding. Без свежих snapshot разрешён только уже выделенный ListingStock; остальные Recipe fail closed в blocked manifest до обычного этапа подготовки. Существующий order-based путь сохранён.
+
+### Проверки
+
+`python -m unittest tests.test_playerok_sync tests.test_playerok_listing_stock_handoff tests.test_recipe_unified_reservations tests.test_trade_delivery_ui tests.test_marketplace_integrations` — **87 PASS**. Compileall шести затронутых Python-модулей — PASS. `git diff --check` — PASS. Использовались только временные тестовые SQLite; пользовательская БД, приложение, GUI, Playerok, ASF и Steam не запускались.
+
+### Открыто / следующий шаг
+
+C.3 **не закрыт**. Новая atomic ветка валидирована на поддержанном Recipe пути, но legacy selector-варианты, которые нельзя однозначно представить как Recipe, теперь отклоняются без создания Order. Нужен transaction-aware мост к прежним legacy CS2/Steam Cards reservation paths с сохранением selection, card quota и manual review. Дополнить тест гонки изменения ConfigVersion после планирования и UI regression binding→Import. Затем повторить целевые regressions и прогнать обязательный CI на финальном commit. Не подключать ASF/Steam отправку и не менять Playerok статусы.
+
+## Task: autonomous Stage C execution — status table and C.3 checkpoint (2026-11-27)
+
+### Stage C status from current plan/code review
+
+| Этап | Статус | Текущий остаток / evidence |
+|---|---|---|
+| C.1 Inventory and compatibility map | DONE | Historical plan/Master Log contains inventory and compatibility evidence; not re-opened in this C.3 slice. |
+| C.2 Domain and allocation rules | PARTIAL | Domain rules, pure selection/preflight foundations and acceptance decisions exist; live data/source gates and production handler wiring remain. |
+| C.3 Unified ledger and safe lifecycle | PARTIAL | PAID Deal → deterministic Order + full Recipe manifest + ListingStock + legs + canonical reserves transaction implemented; focused regressions pass. CI on final SHA and broader migration/full regression gates remain. Unsupported/ambiguous legacy formats fail closed. |
+| C.4 Handler contract/dispatcher/recovery | PARTIAL | Versioned contract/registry foundation exists; production delivery paths, per-leg dispatcher/reconciliation/recovery and full contract acceptance remain. |
+| C.5 Steam Trading Cards delivery | PARTIAL | Existing selection/preflight/reservation path and the new paid Recipe atomic quota path are tested; C.4 handler connection and permitted live test-account end-to-end acceptance remain. |
+| C.6 Game inventory and CS2 | PARTIAL | Inventory model/view, availability checks and reservation foundations exist; supported CS2 handler/execution and end-to-end proof remain gated. No trade was sent. |
+| C.7 Digital keys/codes | OPEN | Protected stock import, atomic unique code reservation and safe reveal/reconcile acceptance are not implemented. |
+| C.8 File delivery | OPEN | Verified file source, delivery adapter and result/retry lifecycle are not implemented. |
+| C.9 Services/manual execution | OPEN | Full operator-owned service execution and audit lifecycle are not implemented. |
+| C.10 Unified operator interface/Telegram | PARTIAL | Existing Playerok, inventory and notification components exist; unified entitlement/reservation/reconcile UI and Telegram acceptance requirements remain. |
+| C.11 Full regression and acceptance | OPEN | Full cross-handler failure/recovery regression, exact-SHA CI, packaged checks and permitted live acceptance are outstanding. |
+
+This is a scoped status snapshot, not a completion claim. C.3 remains the active priority; no later block has been started. C.1/C.2/C.4-C.10 statuses must be revisited only when their own gates are reached, using the Stage C plan and current tests rather than this summary alone.
+
+### C.3 follow-up verification
+
+The prior checkpoint's legacy-compatibility statement is narrowed: `legacy_config_to_recipe()` adapts recognized CS2 wrappers, Steam Cards legacy selectors, and single unambiguous asset/card selector shapes; unknown or ambiguous shapes remain fail-closed. `prepare_steam_card_order()` and `prepare_cs2_order()` code was not changed.
+
+Added focused coverage for rollback after Order insert, manifest, ListingStock transfer, DeliveryLeg and canonical reservation insert; commit-time listing-stock depletion, resource conflict and Steam Cards quota conflict; successful paid Steam Cards complete-set/quota commit; status invalidation between pure planning and commit; concurrent/repeated preparation; and UI bind-to-Import signal delivery. Exact command:
+
+`python -m unittest tests.test_playerok_listing_stock_handoff tests.test_playerok_browser_and_listing_config tests.test_playerok_sync tests.test_recipe_unified_reservations tests.test_trade_delivery_ui tests.test_marketplace_integrations` — **143 passed**.
+
+Targeted `compileall` and `git diff --check` passed. No CI has been run for this worktree yet. Marketplace Import currently sends no live inventory/card metadata into preparation; this is fail-closed and leaves such preparations blocked until the operator's existing verified-input flow is connected. No user DB, GUI, Playerok, ASF or Steam action was used.
+
+Next: review complete diff, run required migration/full suite once, commit only the reviewed project files (never `PLAYEROK_LOCAL_REVIEW.patch`), verify `origin/work/local-sync` has no unique commits, push the logical block, then require Tests and Windows Build success on that exact SHA before changing C.3 from PARTIAL. Do not work on C.4 until C.3's own acceptance gate is met.
+
+### Full regression correction — 2026-11-27
+
+The Stage C.3 migration and full regression gates were then run: migration/ledger/reservation group — **29 passed**; full `python -m unittest discover -s tests` — **1088 passed**. The first full run exposed 13 Windows cleanup errors (WinError 32), not production test failures: raw `sqlite3.connect()` context managers in three test modules did not close handles before temporary-directory removal, and diagnostics tests kept RotatingFileHandler open until `tearDown`. Replaced those test connections with `connect_sqlite(..., row_factory=None)` and closed handlers inside each temporary-directory scope. Focused cleanup regressions — **28 passed**; the full suite then passed.
+
+Updated checkpoint: no known local test failures. `compileall` and `git diff --check` passed before the test-only cleanup edits and must be rerun on the final diff. Required GitHub Actions Tests and Windows Build have not yet been run for the resulting commit/SHA. Keep C.3 PARTIAL until exact-SHA CI passes. Preserve the 16-file local change set and verify remote ancestry before pushing; do not include the protected review patch.
