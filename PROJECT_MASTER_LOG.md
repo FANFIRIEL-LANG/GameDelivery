@@ -1370,3 +1370,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Windows package run `46132527182`, job `build-windows`: success.
 - The latest branch state is therefore CI-green for both required workflows; no follow-up fix is required.
 - Remaining Stage C gates are controlled live acceptance only; no external mutation is performed in this checkpoint.
+
+## 2026-11-28 — checkpoint after log correction
+
+- Corrected the publication checkpoint to record the actual implementation SHA instead of the literal PowerShell placeholder.
+- Correction commit: `732e8cf75c718db4254f5377272bcb5f4b963a4d`.
+- Remote Tests run `46133115657` and Windows package run `46133115690` for this exact SHA both completed successfully.
+- Worktree is clean; no new functional change was introduced by this correction.
