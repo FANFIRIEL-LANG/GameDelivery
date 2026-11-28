@@ -1439,3 +1439,9 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Event and chat identifiers are normalized at the outbox boundary, preventing unusable notifications and ambiguous idempotency keys from headless callers.
 - Added regression coverage for all three invalid-input classes.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **78 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.
+
+## 2026-11-28 — service quantity type hardening
+
+- Tightened `ServiceTaskStore.reserve` to require an actual integer quantity; Python boolean values are no longer accepted as quantity `1`.
+- Added regression for the boolean quantity edge case at the store boundary.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **78 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.

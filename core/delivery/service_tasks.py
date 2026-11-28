@@ -41,7 +41,7 @@ class ServiceTaskStore:
             """)
 
     def reserve(self, *, product_id: str, order_id: str, quantity: int, instructions: str, criteria: str) -> str:
-        if not product_id.strip() or not order_id.strip() or not isinstance(quantity, int) or quantity < 1 or not instructions.strip() or not criteria.strip():
+        if not product_id.strip() or not order_id.strip() or type(quantity) is not int or quantity < 1 or not instructions.strip() or not criteria.strip():
             raise ServiceTaskError("Товар, order_id, количество, инструкции и критерии обязательны")
         product_id, order_id = product_id.strip(), order_id.strip()
         unit_id = "service:" + str(uuid.uuid4())
