@@ -1403,3 +1403,11 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Enforced non-empty `product_id` and canonical `order_id` at `ServiceTaskStore.reserve`, not only in the operator UI. The store now trims both identifiers before persistence, preventing headless callers from creating unbound service units.
 - Added a store-boundary regression for empty order IDs.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **73 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.
+
+## 2026-11-28 — Telegram outbox concurrent-claim recovery hardening
+
+- Hardened `TelegramBotOutbox.deliver_once`: rows are atomically claimed as `sending` before the external request, preventing concurrent workers from selecting and sending the same notification.
+- Added stale-claim recovery: a `sending` row older than five minutes is returned to `retry` before the next delivery pass, so a worker crash does not strand notifications permanently.
+- Success and failure updates now require ownership of the `sending` claim.
+- Added regression for recovery after a simulated crashed worker.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **74 passed**; compileall — PASS; `git diff --check` — PASS. No Telegram API or other external operation performed.

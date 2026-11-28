@@ -298,6 +298,29 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             row = db.execute("SELECT status,attempts FROM telegram_outbox WHERE outbox_id=?", (first,)).fetchone()
         self.assertEqual((row["status"], row["attempts"]), ("retry", 1))
 
+    def test_stale_telegram_claim_is_recovered_after_worker_crash(self):
+        credentials = TelegramCredentialStore(backend=self.keyring)
+        credentials.configure(bot_token="123456:secret")
+        calls = []
+        outbox = TelegramBotOutbox(
+            self.db, credentials,
+            lambda token, payload, proxy: calls.append(payload) or {"ok": True},
+        )
+        outbox_id = outbox.enqueue(
+            event_type="UNKNOWN", chat_id="-100123", order_id="order-1",
+            payload={"text": "recovery"}, idempotency_key="recovery:order-1",
+        )
+        with self.db.connect() as db:
+            db.execute(
+                "UPDATE telegram_outbox SET status='sending',updated_at='2000-01-01T00:00:00.000Z' WHERE outbox_id=?",
+                (outbox_id,),
+            )
+        result = outbox.deliver_once()
+        self.assertEqual(result[0]["status"], "sent")
+        self.assertEqual(len(calls), 1)
+        with self.db.connect() as db:
+            self.assertEqual(db.execute("SELECT status FROM telegram_outbox WHERE outbox_id=?", (outbox_id,)).fetchone()[0], "sent")
+
     def test_pending_delivery_events_are_moved_to_filtered_telegram_outbox(self):
         credentials = TelegramCredentialStore(backend=self.keyring)
         credentials.configure(bot_token="123456:secret")

@@ -196,6 +196,17 @@ class TelegramBotOutbox:
         if limit < 1 or limit > 100:
             raise ValueError("limit должен быть от 1 до 100")
         with self.database.connect() as db:
+            # A crashed worker must not strand a notification forever, while a
+            # concurrent worker must not send the same row twice. The claim is
+            # deliberately short and durable; the external request happens
+            # only after the row is marked sending.
+            db.execute("""
+                UPDATE telegram_outbox
+                   SET status='retry', next_attempt_at=NULL,
+                       updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE status='sending'
+                   AND updated_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes')
+            """)
             rows = [dict(row) for row in db.execute("""
                 SELECT * FROM telegram_outbox
                 WHERE status IN ('pending','retry')
@@ -208,6 +219,13 @@ class TelegramBotOutbox:
             return [{"outbox_id": row["outbox_id"], "status": "pending", "error": "Telegram token is not configured"} for row in rows]
         proxy = self.credentials.proxy()
         for row in rows:
+            with self.database.connect() as db:
+                claimed = db.execute("""
+                    UPDATE telegram_outbox SET status='sending',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    WHERE outbox_id=? AND status IN ('pending','retry')
+                """, (row["outbox_id"],)).rowcount
+            if claimed != 1:
+                continue
             try:
                 response = self.sender(token, json.loads(row["payload_json"]), proxy)
                 message_id = None
@@ -220,7 +238,7 @@ class TelegramBotOutbox:
                         UPDATE telegram_outbox SET status='sent',telegram_message_id=?,
                             attempts=attempts+1,last_error=NULL,
                             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                        WHERE outbox_id=?
+                        WHERE outbox_id=? AND status='sending'
                     """, (str(message_id) if message_id is not None else None, row["outbox_id"]))
                 if message_id is not None and row.get("order_id"):
                     try:
@@ -242,7 +260,7 @@ class TelegramBotOutbox:
                         UPDATE telegram_outbox SET status='retry',attempts=attempts+1,
                             last_error=?,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+60 seconds'),
                             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                        WHERE outbox_id=?
+                        WHERE outbox_id=? AND status='sending'
                     """, (type(exc).__name__, row["outbox_id"]))
                 results.append({"outbox_id": row["outbox_id"], "status": "retry"})
         return results
