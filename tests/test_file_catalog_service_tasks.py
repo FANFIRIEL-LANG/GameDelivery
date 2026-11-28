@@ -72,6 +72,11 @@ class FileServiceTests(unittest.TestCase):
    row=db.execute("select evidence_json from gd_service_audit where unit_id=? order by created_at desc limit 1", (uid,)).fetchone()
   self.assertIn("operator proof", row[0])
 
+ def test_service_reservation_requires_order_id_at_store_boundary(self):
+  s=ServiceTaskStore(self.db)
+  with self.assertRaises(ServiceTaskError):
+   s.reserve(product_id="p",order_id="",quantity=1,instructions="do",criteria="proof")
+
  def test_service_confirmation_requires_evidence_at_store_boundary(self):
   s=ServiceTaskStore(self.db); uid=s.reserve(product_id="p",order_id="o",quantity=1,instructions="do",criteria="proof")
   s.transition(unit_id=uid,state="in_progress",actor="op")

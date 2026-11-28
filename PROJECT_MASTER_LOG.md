@@ -1397,3 +1397,9 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Re-registering an inactive catalog row resets its old `order_id` explicitly before making the new content available. New rows initialize with a null binding.
 - Regression covers the active-reservation replacement block.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **72 passed**; compileall — PASS; `git diff --check` — PASS. No external file transfer performed.
+
+## 2026-11-28 — service reservation identity hardening
+
+- Enforced non-empty `product_id` and canonical `order_id` at `ServiceTaskStore.reserve`, not only in the operator UI. The store now trims both identifiers before persistence, preventing headless callers from creating unbound service units.
+- Added a store-boundary regression for empty order IDs.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **73 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.

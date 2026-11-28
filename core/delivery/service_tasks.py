@@ -41,8 +41,9 @@ class ServiceTaskStore:
             """)
 
     def reserve(self, *, product_id: str, order_id: str, quantity: int, instructions: str, criteria: str) -> str:
-        if not isinstance(quantity, int) or quantity < 1 or not instructions.strip() or not criteria.strip():
-            raise ServiceTaskError("Количество, инструкции и критерии обязательны")
+        if not product_id.strip() or not order_id.strip() or not isinstance(quantity, int) or quantity < 1 or not instructions.strip() or not criteria.strip():
+            raise ServiceTaskError("Товар, order_id, количество, инструкции и критерии обязательны")
+        product_id, order_id = product_id.strip(), order_id.strip()
         unit_id = "service:" + str(uuid.uuid4())
         with self.database.connect() as db:
             db.execute("INSERT INTO gd_service_units(unit_id,product_id,order_id,quantity,instructions,criteria) VALUES(?,?,?,?,?,?)", (unit_id,product_id,order_id,quantity,instructions,criteria))
