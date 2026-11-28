@@ -221,7 +221,7 @@ class DigitalCodeStore:
             row = db.execute("SELECT state,order_id FROM gd_digital_codes WHERE code_id=?", (code_id,)).fetchone()
             if row is None or row["order_id"] != order_id:
                 raise DigitalCodeError("Код не закреплён за указанным заказом")
-            if row["state"] not in {"reserved", "revealed"}:
+            if row["state"] != "reserved":
                 raise DigitalCodeError("Код нельзя раскрыть в текущем состоянии")
             value = self.keyring.get_password(self.SERVICE, self._key(code_id))
             if not value:

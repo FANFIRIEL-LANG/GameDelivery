@@ -1377,3 +1377,9 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Correction commit: `732e8cf75c718db4254f5377272bcb5f4b963a4d`.
 - Remote Tests run `46133115657` and Windows package run `46133115690` for this exact SHA both completed successfully.
 - Worktree is clean; no new functional change was introduced by this correction.
+
+## 2026-11-28 — digital-code exactly-once reveal hardening
+
+- Corrected `DigitalCodeStore.reveal`: a code can now be revealed only from `reserved`; a second reveal is rejected instead of returning the plaintext again and writing a duplicate `revealed` audit event. This enforces the approved exactly-once digital-code delivery invariant; explicit UNKNOWN reconcile remains required before any later lifecycle decision.
+- Updated the regression to prove second reveal is rejected and the audit contains one `revealed` action only.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **72 passed**; compileall — PASS; `git diff --check` — PASS. No external operations or user database access performed.

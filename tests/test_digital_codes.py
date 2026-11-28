@@ -67,11 +67,11 @@ class DigitalCodeTests(unittest.TestCase):
         with self.assertRaises(DigitalCodeError):
             self.store.reserve(product_id="game", order_id="order-2")
         self.assertEqual(self.store.reveal(code_id=reservation["code_id"], order_id="order-1"), "A-1")
-        self.assertEqual(self.store.reveal(code_id=reservation["code_id"], order_id="order-1"), "A-1")
+        with self.assertRaises(DigitalCodeError):
+            self.store.reveal(code_id=reservation["code_id"], order_id="order-1")
         with self.db.connect() as db:
             audit = db.execute("SELECT action FROM gd_digital_code_audit ORDER BY created_at").fetchall()
-            self.assertEqual([row[0] for row in audit], ["imported", "reserved", "revealed", "revealed"])
-
+            self.assertEqual([row[0] for row in audit], ["imported", "reserved", "revealed"])
     def test_unknown_blocks_until_explicit_reconcile(self):
         self.store.import_codes(product_id="game", batch_id="batch-1", source="A-1\n")
         reservation = self.store.reserve(product_id="game", order_id="order-1")
