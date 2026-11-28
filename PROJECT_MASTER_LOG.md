@@ -1337,3 +1337,10 @@ Changes: `integrations/playerok/listing_config.py`, `tests/test_playerok_browser
 После публикации требуется дождаться и проверить каждый обязательный GitHub Actions job, исправлять только подтверждённые CI-проблемы в `work/local-sync`, выполнять локальные проверки и публиковать follow-up commits только в эту ветку до успешного CI. После успешного CI live Steam/ASF, Playerok, Telegram и file-delivery acceptance остаются отдельными контролируемыми планами; реальные внешние операции не выполнять без отдельного разрешения.
 
 Последний локальный evidence перед этапом: 1134/1134 tests OK при deterministic Qt settings, Windows onedir package/self-test PASS, compileall PASS, `git diff --check` PASS. Этот checkpoint только фиксирует следующий goal block и границы разрешения; commit/push не выполнялись.
+
+## 2026-11-28 — publication checkpoint
+
+- Pre-publication status/diff/file audit completed on work/local-sync; all included files were GameDelivery changes and no unrelated user changes were included.
+- Published implementation commit: $sha (local commit created; push follows after recording this checkpoint).
+- Scope remains limited to work/local-sync; no merge, force push, main, or PR #4 operation.
+
