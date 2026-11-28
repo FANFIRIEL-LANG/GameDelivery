@@ -6,6 +6,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ASFPluginContractTests(unittest.TestCase):
+    def test_trade_signature_requires_patched_asf_host_and_never_claims_official_host_is_clean(self):
+        workflow = (ROOT / ".github" / "workflows" / "asf-custom-generic.yml").read_text(encoding="utf-8")
+        readme = (ROOT / "integrations" / "asf_plugin" / "README.md").read_text(encoding="utf-8")
+        patch = (ROOT / "integrations" / "asf_patch" / "remove-trade-offer-signature.patch").read_text(encoding="utf-8")
+        self.assertIn('string tradeOfferMessage = string.Empty;', patch)
+        self.assertIn('string tradeOfferMessage = $"Sent by {SharedInfo.PublicIdentifier}/{SharedInfo.Version}";', patch)
+        self.assertIn("Apply the single-purpose signature patch and verify source", workflow)
+        self.assertIn("exactly one ASF signature assignment changed", workflow)
+        self.assertIn("GameDelivery-ASF-Generic.zip", workflow)
+        self.assertIn("custom ASF runtime artifact", readme)
+        self.assertIn("official ASF 6.3.11.7 deliberately adds", readme)
+        self.assertIn("patched ASF host changes the ASF-owned", readme)
+
     def test_preview_and_send_validate_card_and_cs2_assets_by_exact_context(self):
         delivery = (ROOT / "integrations" / "asf_plugin" / "TradeDelivery.cs").read_text(encoding="utf-8")
         plugin = (ROOT / "integrations" / "asf_plugin" / "GameDeliveryPlugin.cs").read_text(encoding="utf-8")

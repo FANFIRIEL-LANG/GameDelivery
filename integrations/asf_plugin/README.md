@@ -30,12 +30,13 @@ Run only `gamedelivery-diagnose <BotName> <AppID> --recipient <SteamID64>`. The 
 
 ## Install the CI package
 
-The GitHub Actions artifact is named `GameDelivery-ASFPlugin`. It contains the plugin DLL, this README, and `BUILD_INFO.txt`.
+For trade-offer delivery, install the **custom ASF runtime artifact** `GameDelivery-ASF-Generic` produced by the custom-ASF workflow. The ordinary `GameDelivery-ASFPlugin` artifact is only the plugin contract/smoke package and must not be used as the host for live sending: official ASF 6.3.11.7 deliberately adds its own `Sent by ...` message.
 
-1. Download the artifact from a successful **ASF plugin** workflow run.
-2. Stop ASF and extract the plugin folder into ASF's `plugins` directory.
-3. Confirm the resulting path is `plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll`.
-4. Start ASF through GameDelivery and check its console/log for `GameDeliveryPlugin` being loaded.
+1. Download `GameDelivery-ASF-Generic.zip` from a successful **Build custom ASF Generic (no trade-off signature)** workflow run.
+2. Verify `BUILD_INFO.txt` identifies upstream ASF tag `6.3.11.7` and the single-purpose signature patch.
+3. Stop the isolated/test ASF instance and replace only that runtime from the archive; keep a backup and do not overwrite an unrelated installation.
+4. Confirm the resulting path contains `ArchiSteamFarm.dll` and `plugins/GameDelivery.ASFPlugin/GameDelivery.ASFPlugin.dll`.
+5. Start ASF through GameDelivery and check its console/log for `GameDeliveryPlugin` being loaded.
 
 The plugin is compiled against the official ASF 6.3.11.7 release assemblies. Its System.Text.Json options explicitly configure DefaultJsonTypeInfoResolver because ASF may disable the framework's implicit reflection resolver. The plugin and smoke test build with JsonSerializerIsReflectionEnabledByDefault=false. JSON parsing and serialization use `.NET 10 System.Text.Json`, which is part of the shared framework; the plugin has no Newtonsoft.Json or other external JSON runtime dependency. The CI build verifies the official `ASF-generic.zip` SHA-256 and rejects a plugin output/package that bundles host-shared assemblies (`ArchiSteamFarm.dll`, `SteamKit2.dll`, or `System.Composition.AttributedModel.dll`). Install this package with ASF 6.3.11.7. The plugin package intentionally contains only `GameDelivery.ASFPlugin.dll`, this README, and `BUILD_INFO.txt`; ASF supplies its own shared runtime dependencies. For another ASF version, rebuild against that exact installation using the instructions below.
 
@@ -62,7 +63,7 @@ Only the GameDelivery order screen calls `gamedelivery-send` after an explicit c
 - The one-use command payload contains a random nonce, not the recipient trade token. GameDelivery stores the token in a one-use JSON file under the current user's LocalAppData; the plugin verifies the file's order, bot, recipient, nonce, and exact asset list and then deletes the file.
 - The plugin writes a persistent record keyed by order ID with a fingerprint of the order, recipient, bot, and assets. Reusing the order with a different payload is refused. Repeated calls for a recorded offer do not create a second offer. If the outcome is unknown, the plugin blocks an automatic retry and instructs the operator to inspect Steam's outgoing offers.
 - The result contains the offer ID(s) and whether an ASF/mobile confirmation remains pending. This does **not** mean the recipient has accepted the offer. Use `gamedelivery-status <BotName> <TradeOfferID>` to read the current outgoing offer state and exact `items_to_give` manifest through ASF.
-- `SendTradeOffer` is called with an empty `customMessage`, so GameDelivery adds no extra suffix. ASF 6.3.11.7 itself still adds its fixed `Sent by ArchiSteamFarm...` identifier; the plugin argument cannot remove that ASF-owned signature.
+- `SendTradeOffer` is called with an empty `customMessage`, so GameDelivery adds no extra suffix. The patched ASF host changes the ASF-owned `tradeOfferMessage` assignment to `string.Empty`; therefore neither the standard ASF identifier nor a replacement message is sent. Running the plugin on the official unpatched host still produces the signature and is a deployment error, not a UI issue.
 - The plugin does not automatically accept arbitrary incoming offers.
 
 The plugin's idempotency record is stored under `%LOCALAPPDATA%\GameDelivery\ASFPlugin\sent_offers.json`. One-use secrets are stored temporarily under `%LOCALAPPDATA%\GameDelivery\pending_trade_requests`. Keep the Windows account and its LocalAppData protected. The trade token is not put in the ASF command payload or the GameDelivery journal.
