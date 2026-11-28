@@ -98,7 +98,11 @@ class FileCatalog:
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM gd_files WHERE file_id=?", (file_id,)).fetchone()
-            if row is None or row["state"] != "available":
+            if row is None:
+                raise FileCatalogError("Файл не найден")
+            if row["state"] == "manual_required" and row["order_id"] == order_id:
+                return {"file_id": file_id, "order_id": order_id, "status": "MANUAL_REQUIRED", "reason": "Передача файла не автоматизируется без подтверждённого adapter"}
+            if row["state"] != "available":
                 raise FileCatalogError("Файл уже занят или недоступен")
             path = self._inside(self.root / row["relative_path"])
             if not path.is_file():

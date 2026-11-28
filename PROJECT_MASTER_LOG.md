@@ -1445,3 +1445,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Tightened `ServiceTaskStore.reserve` to require an actual integer quantity; Python boolean values are no longer accepted as quantity `1`.
 - Added regression for the boolean quantity edge case at the store boundary.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **78 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.
+
+## 2026-11-28 — idempotent manual file reservation
+
+- Made `FileCatalog.reserve` idempotent for the same `file_id + order_id` after it reaches `MANUAL_REQUIRED`; repeated operator clicks now return the existing binding instead of reporting a misleading conflict.
+- A different order or any other active/terminal state remains fail-closed.
+- Added regression for repeated reservation of the same manual file unit.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **78 passed**; compileall — PASS; `git diff --check` — PASS. No external file transfer performed.
