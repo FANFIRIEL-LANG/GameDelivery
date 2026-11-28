@@ -1341,7 +1341,7 @@ Changes: `integrations/playerok/listing_config.py`, `tests/test_playerok_browser
 ## 2026-11-28 — publication checkpoint
 
 - Pre-publication status/diff/file audit completed on work/local-sync; all included files were GameDelivery changes and no unrelated user changes were included.
-- Published implementation commit: $sha (local commit created; push follows after recording this checkpoint).
+- Published implementation commit: 2ee0e8a2306c55ee9a0e3b956d8980b101bfc607 (local commit created; publication followed in the next checkpoint).
 - Scope remains limited to work/local-sync; no merge, force push, main, or PR #4 operation.
 
 
