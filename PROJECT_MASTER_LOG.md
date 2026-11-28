@@ -1344,3 +1344,21 @@ Changes: `integrations/playerok/listing_config.py`, `tests/test_playerok_browser
 - Published implementation commit: $sha (local commit created; push follows after recording this checkpoint).
 - Scope remains limited to work/local-sync; no merge, force push, main, or PR #4 operation.
 
+
+## 2026-11-28 — Remote CI acceptance checkpoint
+
+- Published commits on `origin/work/local-sync`: implementation `2ee0e8a2306c55ee9a0e3b956d8980b101bfc607`; publication-log checkpoint `4087a83c7c2b4624cb4064cf1259ecf23b821e9e`.
+- GitHub Actions for exact HEAD `4087a83c7c2b4624cb4064cf1259ecf23b821e9e` completed successfully:
+  - Tests run `46132226534`, job `test`: success.
+  - Windows package run `46132226443`, job `build-windows`: success.
+  - ASF plugin run `46132226430`: `build-plugin`, `generic-runtime-smoke`, and `windows-storage-acl-smoke` succeeded; `win-x64-trimmed-runtime-smoke` was skipped by workflow conditions (not a failure).
+- No CI failure required a follow-up code change. No merge, force push, `main`, or PR #4 operation was performed.
+
+### Controlled live acceptance plan (no live operations executed)
+
+1. Steam/ASF: prerequisites — isolated test bot, test recipient/account, exact approved asset/order fingerprint, ASF IPC health, and explicit live-send permission. Scenario — read-only inventory/recipient preflight, no-send preview, then one authorized test delivery; verify journal, offer ID/status and post-delivery inventory. Risks — timeout/unknown outcome, mobile confirmation, recipient decline, stale/moved asset. Recovery — stop retries, preserve UNKNOWN, reconcile read-only by exact offer/order fingerprint, then manually decide.
+2. Playerok: prerequisites — isolated/test listing and authenticated internal-browser session, approved test order, explicit mutation permission. Scenario — inspect order and run one controlled message/status or adapter action; verify durable event/state and UI audit. Risks — duplicate message, browser timeout, session/anti-bot failure. Recovery — leave dispatching/unknown state durable, do not retry blindly, reconcile in browser and use manual operator action.
+3. Telegram: prerequisites — dedicated bot token/chat, authorized buyer/test chat, configured proxy if needed, explicit message permission. Scenario — send one controlled test notification/reply through outbox and verify pending→sent, update offset and audit. Risks — wrong chat, duplicate delivery, API/proxy outage. Recovery — revoke/clear credentials if misconfigured, keep outbox retry/unknown state, deduplicate by event key, retry only after verification.
+4. File delivery: prerequisites — isolated test catalog item, non-sensitive test file, approved order, destination and explicit transfer permission. Scenario — one controlled delivery through the file handler, verify exact file hash/size, durable delivery/evidence/audit and no path escape. Risks — wrong file/recipient, partial transfer, path or permission error. Recovery — mark failed/unknown, do not re-send automatically, verify destination and hash, then manual retry with a new idempotency decision.
+
+Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain prohibited until separate explicit permission.
