@@ -1411,3 +1411,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Success and failure updates now require ownership of the `sending` claim.
 - Added regression for recovery after a simulated crashed worker.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **74 passed**; compileall — PASS; `git diff --check` — PASS. No Telegram API or other external operation performed.
+
+## 2026-11-28 — bounded Telegram outbox retry hardening
+
+- Added a bounded retry policy to `TelegramBotOutbox`: after five failed delivery attempts the notification becomes terminal `failed` and no further automatic retry is scheduled.
+- The failure result is returned as `failed`, while earlier attempts remain `retry` with the existing delay. This prevents an unavailable Telegram endpoint from causing an unbounded worker loop.
+- Added regression for the terminal fifth attempt.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **75 passed**; compileall — PASS; `git diff --check` — PASS. No Telegram API or other external operation performed.

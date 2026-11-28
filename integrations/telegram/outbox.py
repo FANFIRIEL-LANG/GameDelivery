@@ -109,7 +109,9 @@ def telegram_api_sender(token: str, payload: dict[str, Any], proxy: dict[str, st
 
 
 class TelegramBotOutbox:
-    """Durable non-blocking Telegram notification queue with idempotent retries."""
+    """Durable non-blocking Telegram notification queue with bounded retries."""
+
+    MAX_ATTEMPTS = 5
 
     EVENT_CATEGORIES = (
         "new_order", "insufficient_stock", "privacy_wait",
@@ -257,12 +259,20 @@ class TelegramBotOutbox:
                 # Telegram is an auxiliary channel: record failure and continue the delivery pipeline.
                 with self.database.connect() as db:
                     db.execute("""
-                        UPDATE telegram_outbox SET status='retry',attempts=attempts+1,
-                            last_error=?,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+60 seconds'),
-                            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                        WHERE outbox_id=? AND status='sending'
-                    """, (type(exc).__name__, row["outbox_id"]))
-                results.append({"outbox_id": row["outbox_id"], "status": "retry"})
+                        UPDATE telegram_outbox
+                           SET status=CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'retry' END,
+                               attempts=attempts+1,
+                               last_error=?,
+                               next_attempt_at=CASE WHEN attempts + 1 >= ? THEN NULL
+                                                    ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now','+60 seconds') END,
+                               updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                         WHERE outbox_id=? AND status='sending'
+                    """, (self.MAX_ATTEMPTS, type(exc).__name__, self.MAX_ATTEMPTS, row["outbox_id"]))
+                with self.database.connect() as db:
+                    final_status = db.execute(
+                        "SELECT status FROM telegram_outbox WHERE outbox_id=?", (row["outbox_id"],)
+                    ).fetchone()[0]
+                results.append({"outbox_id": row["outbox_id"], "status": final_status})
         return results
 
     def enqueue_pending_delivery_events(self, *, operator_chat_id: str, limit: int = 50) -> int:

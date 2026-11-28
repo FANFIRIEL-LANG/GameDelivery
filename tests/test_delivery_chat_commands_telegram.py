@@ -298,6 +298,25 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
             row = db.execute("SELECT status,attempts FROM telegram_outbox WHERE outbox_id=?", (first,)).fetchone()
         self.assertEqual((row["status"], row["attempts"]), ("retry", 1))
 
+    def test_telegram_outbox_stops_after_bounded_failures(self):
+        credentials = TelegramCredentialStore(backend=self.keyring)
+        credentials.configure(bot_token="123456:secret")
+        outbox = TelegramBotOutbox(
+            self.db, credentials,
+            lambda *args: (_ for _ in ()).throw(RuntimeError("API down")),
+        )
+        outbox_id = outbox.enqueue(
+            event_type="UNKNOWN", chat_id="-100123", order_id="order-1",
+            payload={"text": "bounded"}, idempotency_key="bounded:order-1",
+        )
+        with self.db.connect() as db:
+            db.execute("UPDATE telegram_outbox SET attempts=4 WHERE outbox_id=?", (outbox_id,))
+        result = outbox.deliver_once()
+        self.assertEqual(result[0]["status"], "failed")
+        with self.db.connect() as db:
+            row = db.execute("SELECT status,attempts,next_attempt_at FROM telegram_outbox WHERE outbox_id=?", (outbox_id,)).fetchone()
+        self.assertEqual((row["status"], row["attempts"], row["next_attempt_at"]), ("failed", 5, None))
+
     def test_stale_telegram_claim_is_recovered_after_worker_crash(self):
         credentials = TelegramCredentialStore(backend=self.keyring)
         credentials.configure(bot_token="123456:secret")
