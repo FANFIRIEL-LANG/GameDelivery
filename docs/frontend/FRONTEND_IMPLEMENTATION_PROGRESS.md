@@ -211,3 +211,6 @@ The verified frontend state was published only to `origin/work/local-sync`. The 
 
 Final commit: `68fd5732781ec11737befcb46a02f3b2079e035b`.
 All mandatory final jobs passed: Electron frontend run `46164663166`, Windows executable/package run `46164663196`, and Tests run `46164663152`. The package and test jobs were inspected at job level and completed successfully.
+
+### 2026-11-28 — final post-publication CI verification
+The documentation follow-up revision `603d1870c6724993cf3e7d117af9f654351b09` passed the Tests and Windows executable/package workflows. The code-bearing frontend revision `68fd5732781ec11737befcb46a02f3b2079e035b` passed the Electron frontend workflow. No CI job remains failed or in progress for the published revisions.

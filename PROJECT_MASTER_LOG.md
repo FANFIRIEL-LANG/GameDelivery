@@ -1716,3 +1716,10 @@ Checks: `npm run renderer-smoke` passed (security contract, TypeScript typecheck
   - Windows executable/package: run `46164663196`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46164663196
   - Tests: run `46164663152`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46164663152
 - All jobs completed with conclusion `success`. No merge, force push, main or PR #4 changes.
+
+## Remote CI final post-publication verification (2026-11-28)
+- Documentation-only follow-up commit: `603d1870c6724993cf3e7d117af9f654351b09`.
+- For that exact published revision, final required workflows completed successfully:
+  - Tests: run `46165126956`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46165126956
+  - Windows executable/package: run `46165126966`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46165126966
+- Electron frontend workflow had already passed for the code-bearing revision `68fd5732781ec11737befcb46a02f3b2079e035b` as run `46164663166`; the follow-up changed documentation only.
