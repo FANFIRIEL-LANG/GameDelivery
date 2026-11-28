@@ -1383,3 +1383,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Corrected `DigitalCodeStore.reveal`: a code can now be revealed only from `reserved`; a second reveal is rejected instead of returning the plaintext again and writing a duplicate `revealed` audit event. This enforces the approved exactly-once digital-code delivery invariant; explicit UNKNOWN reconcile remains required before any later lifecycle decision.
 - Updated the regression to prove second reveal is rejected and the audit contains one `revealed` action only.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **72 passed**; compileall — PASS; `git diff --check` — PASS. No external operations or user database access performed.
+
+## 2026-11-28 — file reservation order binding hardening
+
+- Fixed the managed file catalog reservation boundary: `gd_files.order_id` is now persisted when a file is reserved for manual delivery, with compatibility ALTER for existing databases that predate the column.
+- Empty order IDs are rejected by the store, and the transaction keeps the exact file-to-order binding together with the `MANUAL_REQUIRED` state.
+- Regression now verifies the persisted order binding.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **72 passed**; compileall — PASS; `git diff --check` — PASS. No external file transfer or user database access performed.

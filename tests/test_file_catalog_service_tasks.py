@@ -17,6 +17,7 @@ class FileServiceTests(unittest.TestCase):
  def test_file_containment_hash_and_manual_gate(self):
   root=Path(self.t.name)/"files"; root.mkdir(); f=root/"a.bin"; f.write_bytes(b"abc")
   c=FileCatalog(self.db,root); rec=c.register(product_id="p",path=f); self.assertTrue(c.verify(rec["file_id"])["valid"]); self.assertEqual(c.reserve(file_id=rec["file_id"],order_id="o")["status"],"MANUAL_REQUIRED")
+  with self.db.connect() as db: self.assertEqual(db.execute("select order_id from gd_files where file_id=?", (rec["file_id"],)).fetchone()[0], "o")
   with self.assertRaises(FileCatalogError): c.register(product_id="p",path=Path(self.t.name)/"../x")
 
 

@@ -24,7 +24,7 @@ class FileCatalog:
         with self.database.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS gd_files (
-                    file_id TEXT PRIMARY KEY, product_id TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE,
+                    file_id TEXT PRIMARY KEY, product_id TEXT NOT NULL, order_id TEXT, relative_path TEXT NOT NULL UNIQUE,
                     size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0), sha256 TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'available' CHECK(state IN ('available','reserved','delivered','invalid','manual_required')),
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -32,6 +32,9 @@ class FileCatalog:
                 );
                 CREATE INDEX IF NOT EXISTS idx_gd_files_product_state ON gd_files(product_id,state);
             """)
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_files)")}
+            if "order_id" not in columns:
+                db.execute("ALTER TABLE gd_files ADD COLUMN order_id TEXT")
 
     def _inside(self, path: str | Path) -> Path:
         candidate = Path(path).expanduser().resolve()
@@ -71,6 +74,9 @@ class FileCatalog:
         return {"file_id": file_id, "valid": valid, "size_bytes": len(data), "sha256": digest}
 
     def reserve(self, *, file_id: str, order_id: str) -> dict[str, Any]:
+        order_id = order_id.strip()
+        if not order_id:
+            raise FileCatalogError("order_id is required")
         check = self.verify(file_id)
         if not check["valid"]:
             raise FileCatalogError("Целостность файла не подтверждена")
@@ -85,5 +91,5 @@ class FileCatalog:
             data = path.read_bytes()
             if len(data) != row["size_bytes"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise FileCatalogError("Целостность файла не подтверждена в транзакции")
-            db.execute("UPDATE gd_files SET state='manual_required',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE file_id=?", (file_id,))
+            db.execute("UPDATE gd_files SET state='manual_required',order_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE file_id=?", (order_id, file_id))
         return {"file_id": file_id, "order_id": order_id, "status": "MANUAL_REQUIRED", "reason": "Передача файла не автоматизируется без подтверждённого adapter"}
