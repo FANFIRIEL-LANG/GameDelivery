@@ -178,6 +178,11 @@ class TelegramBotOutbox:
         self, *, event_type: str, chat_id: str, payload: dict[str, Any],
         order_id: str | None = None, idempotency_key: str | None = None,
     ) -> str | None:
+        event_type, chat_id = str(event_type).strip(), str(chat_id).strip()
+        if not event_type or not chat_id:
+            raise ValueError("event_type and chat_id are required")
+        if not isinstance(payload, dict):
+            raise ValueError("Telegram payload must be an object")
         if self.event_filters.get(event_type, True) is False:
             return None
         key = idempotency_key or hashlib.sha256(

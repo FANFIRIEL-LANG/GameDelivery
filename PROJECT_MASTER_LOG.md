@@ -1432,3 +1432,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - `reserve_for_order_line` is now idempotent: repeating the same order-line reservation returns the existing code IDs; a quantity mismatch raises `DigitalCodeConflict` instead of reserving additional codes.
 - Added regression for repeated order-line reservation and preserved optional-item/legacy-schema behavior.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **77 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.
+
+## 2026-11-28 — Telegram outbox input-boundary hardening
+
+- `TelegramBotOutbox.enqueue` now rejects empty event types, empty chat IDs, and non-object payloads before creating durable rows.
+- Event and chat identifiers are normalized at the outbox boundary, preventing unusable notifications and ambiguous idempotency keys from headless callers.
+- Added regression coverage for all three invalid-input classes.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **78 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.

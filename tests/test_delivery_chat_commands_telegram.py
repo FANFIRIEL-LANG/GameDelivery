@@ -272,6 +272,16 @@ class ChatCommandsAndTelegramTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._commands({"!статус": "override"})
 
+    def test_telegram_outbox_rejects_unbound_enqueue_values(self):
+        credentials = TelegramCredentialStore(backend=self.keyring)
+        outbox = TelegramBotOutbox(self.db, credentials)
+        with self.assertRaises(ValueError):
+            outbox.enqueue(event_type=" ", chat_id="-1001", payload={})
+        with self.assertRaises(ValueError):
+            outbox.enqueue(event_type="unknown", chat_id=" ", payload={})
+        with self.assertRaises(ValueError):
+            outbox.enqueue(event_type="unknown", chat_id="-1001", payload=[])
+
     def test_telegram_outbox_retries_api_failure_without_throwing_and_deduplicates(self):
         credentials = TelegramCredentialStore(backend=self.keyring)
         credentials.configure(bot_token="123456:secret", proxy_url="socks5h://proxy.example:1080", proxy_username="proxy-user", proxy_password="proxy-secret")
