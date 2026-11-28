@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSettings, Signal
-from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from integrations.telegram.outbox import TelegramCredentialStore, telegram_api_request, telegram_test_connection
 
@@ -24,21 +24,34 @@ class TelegramSettingsWidget(QWidget):
         self.proxy_user = QLineEdit(str(self.settings.value("telegram/proxy_username", "")))
         self.proxy_password = QLineEdit(); self.proxy_password.setEchoMode(QLineEdit.EchoMode.Password)
         form = QFormLayout(); form.addRow("Bot token", self.token); form.addRow("Operator chat ID", self.chat_id); form.addRow("Allowed user IDs", self.users); form.addRow("Telegram proxy URL", self.proxy); form.addRow("Proxy username", self.proxy_user); form.addRow("Proxy password", self.proxy_password)
+        self.event_checks = {}
+        event_row = QHBoxLayout()
+        for event in ("new_order", "insufficient_stock", "privacy_wait", "trade_restricted", "declined", "unknown", "support_request"):
+            check = QCheckBox(event); check.setChecked(self.settings.value("telegram/events/" + event, True, type=bool)); self.event_checks[event] = check; event_row.addWidget(check)
         save = QPushButton("Сохранить настройки"); save.clicked.connect(self.save)
         connect = QPushButton("Проверить подключение"); connect.clicked.connect(self.test_connection)
         test = QPushButton("Отправить тестовое сообщение"); test.clicked.connect(self.test_message)
         row = QHBoxLayout(); row.addWidget(save); row.addWidget(connect); row.addWidget(test)
+        layout_events = QVBoxLayout(); layout_events.addWidget(QLabel("События уведомлений")); layout_events.addLayout(event_row)
         self.status = QLabel("Telegram не проверен"); self.status.setWordWrap(True)
-        layout = QVBoxLayout(self); layout.addLayout(form); layout.addLayout(row); layout.addWidget(self.status)
+        layout = QVBoxLayout(self); layout.addLayout(form); layout.addLayout(layout_events); layout.addLayout(row); layout.addWidget(self.status)
 
     def save(self):
         try:
             token = self.token.text().strip()
+            proxy_url = self.proxy.text().strip()
+            proxy_username = self.proxy_user.text().strip()
             if token:
-                self.credentials.configure(bot_token=token, proxy_url=self.proxy.text().strip() or None, proxy_username=self.proxy_user.text().strip() or None, proxy_password=self.proxy_password.text() or None)
+                self.credentials.configure(bot_token=token, proxy_url=proxy_url or None, proxy_username=proxy_username or None, proxy_password=self.proxy_password.text() or None)
+            elif not proxy_url or not proxy_username:
+                self.credentials.clear_proxy()
+                if proxy_url:
+                    self.credentials.set("proxy_url", proxy_url)
             self.settings.setValue("telegram/operator_chat_id", self.chat_id.text().strip())
             self.settings.setValue("telegram/allowed_user_ids", ",".join(sorted(_ids(self.users.text()))))
-            self.settings.setValue("telegram/proxy_url", self.proxy.text().strip())
+            self.settings.setValue("telegram/proxy_url", proxy_url)
+            self.settings.setValue("telegram/proxy_username", proxy_username)
+            for event, check in self.event_checks.items(): self.settings.setValue("telegram/events/" + event, check.isChecked())
             self.settings.sync(); self._status("Настройки Telegram сохранены")
         except Exception as exc:
             self._status("Не удалось сохранить Telegram: " + type(exc).__name__)

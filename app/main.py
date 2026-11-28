@@ -22,6 +22,12 @@ from app.game_inventory_panel import GameInventoryPanel
 from app.bot_selector import BotSelectionModel, configured_bot_names
 from app.proxy_settings import ProxySettingsWidget
 from app.telegram_settings import TelegramSettingsWidget
+from integrations.telegram.outbox import (
+    BuyerPlatformMessageOutbox,
+    TelegramCredentialStore,
+    TelegramOperatorReplyRouter,
+    TelegramRuntimeCoordinator,
+)
 from app.operator_fulfillment_panel import OperatorFulfillmentPanel
 from app.asf_management import ASFManagementWidget
 from app.platforms_panel import MarketplacePanel
@@ -98,6 +104,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         logger.info("MainWindow initialization started")
+        self._closing = False
         self.setWindowTitle("GameDelivery — локальная панель")
         startup_stage = "Windows Credential Manager initialization"
         try:
@@ -129,7 +136,11 @@ class MainWindow(QMainWindow):
                 "Данные автоматически не сбрасывались и не восстанавливались.\n\n"
                 f"Подробности: {type(exc).__name__}: {safe_detail or 'причина не указана'}"
             )
-            QMessageBox.critical(self, f"Ошибка запуска: {startup_stage}", message)
+            # Modal dialogs block the explicit headless self-test forever. Keep
+            # the visible error label authoritative there, while retaining the
+            # modal alert for every interactive Windows run.
+            if os.environ.get("GAMEDELIVERY_SELF_TEST", "").strip() != "1":
+                QMessageBox.critical(self, f"Ошибка запуска: {startup_stage}", message)
             self.startup_error_label = QLabel(message)
             self.startup_error_label.setWordWrap(True)
             self.startup_error_label.setMargin(24)
@@ -172,6 +183,12 @@ class MainWindow(QMainWindow):
         self.marketplace_panel.browser_auth_status_changed.connect(
             self._update_playerok_auth_status
         )
+        self._telegram_runtime = None
+        self._telegram_runtime_running = False
+        self._telegram_runtime_timer = QTimer(self)
+        self._telegram_runtime_timer.setInterval(60_000)
+        self._telegram_runtime_timer.timeout.connect(self._schedule_telegram_runtime)
+        self._setup_telegram_runtime()
         self.tabs.addTab(self.marketplace_panel, "Площадки")
         self.inventory_panel = self._inventory_tab()
         self.tabs.addTab(self.inventory_panel, "Инвентарь")
@@ -534,6 +551,12 @@ class MainWindow(QMainWindow):
 
     @property
     def _database_path(self):
+        # Only the explicit packaged self-test may redirect storage. Normal
+        # Windows runs retain the established per-user location even if an
+        # unrelated environment variable is present.
+        override = os.environ.get("GAMEDELIVERY_DATABASE_PATH", "").strip()
+        if os.environ.get("GAMEDELIVERY_SELF_TEST", "").strip() == "1" and override:
+            return Path(override)
         return Path.home() / ".gamedelivery" / "gamedelivery.sqlite3"
 
     def _ensure_delivery_order_schema(self):
@@ -1199,6 +1222,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Отправка через ASF не начата", str(exc))
 
     def _run_asf_call_async(self, operation, callback):
+        if getattr(self, "_closing", False):
+            return
         worker = _AsfCallWorker(operation, callback)
         if not hasattr(self, "_asf_workers"):
             self._asf_workers = set()
@@ -1209,6 +1234,8 @@ class MainWindow(QMainWindow):
 
     def _dispatch_asf_call_result(self, worker, result, error):
         self._asf_workers.discard(worker)
+        if getattr(self, "_closing", False):
+            return
         worker.callback(result, error)
 
     def _on_async_trade_preview(
@@ -3219,6 +3246,79 @@ class MainWindow(QMainWindow):
 
     def _append_log_line(self, line: str):
         self.log_view.append(line)
+
+    def closeEvent(self, event):
+        # Stop periodic work before QObject teardown. Running ASF workers may
+        # finish later, but their queued callbacks must not touch a destroyed
+        # MainWindow (important for Qt test shutdown and packaged exits).
+        self._closing = True
+        for timer_name in ("_telegram_runtime_timer", "_delivery_reconcile_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                timer.stop()
+        for worker in list(getattr(self, "_asf_workers", set())):
+            try:
+                worker.signals.finished.disconnect(self._dispatch_asf_call_result)
+            except (RuntimeError, TypeError):
+                pass
+        getattr(self, "_asf_workers", set()).clear()
+        super().closeEvent(event)
+
+    def _setup_telegram_runtime(self):
+        try:
+            import keyring
+            database = Database(self._database_path)
+            credentials = TelegramCredentialStore(keyring.get_keyring())
+            buyer_outbox = BuyerPlatformMessageOutbox(database)
+            router = TelegramOperatorReplyRouter(
+                database, allowed_user_ids=set(), allowed_chat_ids=set(),
+                buyer_message_enqueue=buyer_outbox.enqueue,
+            )
+            self._telegram_runtime = TelegramRuntimeCoordinator(database, credentials, router)
+            self._telegram_runtime_timer.start()
+        except Exception as exc:
+            logger.warning("Telegram runtime setup deferred: %s", type(exc).__name__)
+
+    def _schedule_telegram_runtime(self):
+        if self._telegram_runtime is None or self._telegram_runtime_running:
+            return
+        settings = QSettings("FANFIRIEL-LANG", "GameDelivery")
+        operator_chat_id = str(settings.value("telegram/operator_chat_id", "") or "").strip()
+        allowed_users = {x.strip() for x in str(settings.value("telegram/allowed_user_ids", "") or "").replace(";", ",").split(",") if x.strip()}
+        if hasattr(self._telegram_runtime.reply_router, "allowed_users"):
+            self._telegram_runtime.reply_router.allowed_users = allowed_users
+            self._telegram_runtime.reply_router.allowed_chats = {operator_chat_id} if operator_chat_id else set()
+        if hasattr(self._telegram_runtime, "outbox"):
+            event_names = ("new_order", "insufficient_stock", "privacy_wait", "trade_restricted", "declined", "unknown", "support_request")
+            def _setting_bool(name: str, default: bool = True) -> bool:
+                # Keep runtime compatible with QSettings and lightweight test
+                # settings adapters that only implement value(key, default).
+                raw = settings.value("telegram/events/" + name, default)
+                if isinstance(raw, str):
+                    return raw.strip().casefold() not in {"", "0", "false", "no", "off"}
+                return bool(raw)
+            self._telegram_runtime.outbox.event_filters = {name: _setting_bool(name) for name in event_names}
+        self._telegram_runtime_running = True
+        self._run_asf_call_async(
+            lambda: self._telegram_runtime.tick(operator_chat_id=operator_chat_id),
+            self._on_telegram_runtime_complete,
+        )
+
+    def _on_telegram_runtime_complete(self, result, error):
+        self._telegram_runtime_running = False
+        if error is not None:
+            # Telegram is auxiliary; a polling/API failure must not block a
+            # queued Playerok reply handled by the existing browser adapter.
+            logger.warning("Telegram runtime tick failed: %s", type(error).__name__)
+        runtime = self._telegram_runtime
+        if runtime is None:
+            return
+        # WebEngine mutations must stay on the GUI thread and reuse the existing
+        # MarketplacePanel adapter. Unknown callback results remain terminal.
+        try:
+            runtime.dispatch_buyer_messages(self.marketplace_panel.send_playerok_chat_text)
+        except Exception as exc:
+            logger.warning("Playerok buyer-message dispatch failed: %s", type(exc).__name__)
 
     def _operator_fulfillment_tab(self):
         try:

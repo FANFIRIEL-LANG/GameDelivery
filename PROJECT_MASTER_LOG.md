@@ -960,3 +960,380 @@ Changes: `integrations/playerok/listing_config.py`, `tests/test_playerok_browser
 - Операторская вкладка расширена действиями для существующих stores: резерв файла по `file_id/order_id` с явным подтверждением переводит ресурс в `MANUAL_REQUIRED`; переход состояния услуги принимает `unit_id/state/completed_units`, требует подтверждения и записывает evidence через существующий audit.
 - Автоматическая передача файлов не добавлялась: неподтверждённый adapter по-прежнему fail-closed. Завершение услуги возможно только по правилам `ServiceTaskStore` и при полном количестве.
 - Проверка: `python -m unittest tests.test_file_catalog_service_tasks tests.test_delivery_chat_commands_telegram tests.test_digital_codes tests.test_recipe_unified_reservations -q` — **48 passed**; `py_compile app/operator_fulfillment_panel.py` — PASS. Внешние операции не выполнялись.
+
+## 2026-11-27 — full regression checkpoint after operator integration
+
+- Полный локальный suite `python -m unittest discover -s tests -q` достиг **1120 tests**, единственный сбой был в устаревшем ожидании списка вкладок после добавления штатной вкладки `Оператор`.
+- Обновлён только UI smoke expectation в `tests/test_app_startup.py`; повторный `tests.test_app_startup -q` — **14 passed**.
+- `compileall -q app core integrations` — PASS. Внешние Steam/Playerok/Telegram операции не выполнялись.
+- Следующий финальный шаг: повторить полный suite после исправления тестового ожидания, затем зафиксировать C.11 acceptance и отдельные реальные ограничения внешних adapters.
+
+## 2026-11-27 — C.11 full regression checkpoint
+
+- Исправлено устаревшее UI smoke expectation: штатная вкладка `Оператор` теперь учитывается в списке вкладок `MainWindow`.
+- Полная регрессия после исправления: `python -m unittest discover -s tests -q` — **1120 tests, OK** за 187.660 s.
+- `tests.test_app_startup -q` — **14 passed**; `compileall -q app core integrations` — PASS.
+- Во время suite выводились ожидаемые mock/error-path diagnostics (ASF 401/URLError, storage failure scenarios, UNKNOWN send paths); необратимых внешних операций не выполнялось.
+- Stage C.11 локальная regression часть подтверждена. Открытые ограничения остаются внешними: live Playerok/Telegram/file adapters и Windows packaging/release smoke требуют отдельной среды/разрешения; они не маскируются под выполненные live проверки.
+
+## 2026-11-27 — Windows packaged smoke hardening
+
+- Обнаружен и исправлен реальный дефект CI/package smoke: `python -m app --self-test` ранее создавал полноценный `MainWindow` и требовал локальный ASF `IPC.config`, из-за чего чистая Windows-сборка без developer ASF не проходила smoke.
+- `app/__main__.py` теперь в режиме `--self-test` выставляет существующий `GAMEDELIVERY_TEST_ASF_IPC_URL` marker до создания `MainWindow`; production запуск без `--self-test` не изменён.
+- Локальная проверка `QT_QPA_PLATFORM=offscreen python -m app --self-test` — PASS без ASF-конфигурации.
+- `python -m unittest tests.test_windows_harness tests.test_app_startup -q` — **24 passed**; `compileall` — PASS; `git diff --check` — PASS.
+- Следующий шаг: при наличии Windows runner выполнить workflow `.github/workflows/package-windows.yml`; live Steam/Playerok/Telegram операции остаются вне этой проверки.
+
+## 2026-11-27 — local Windows packaging smoke
+
+- Проверен существующий workflow `.github/workflows/package-windows.yml` и выполнена эквивалентная локальная PyInstaller onedir-сборка: PyInstaller 6.22.3 на Windows 11 / Python 3.14.6, с теми же collect-all/collect-submodules параметрами.
+- Сборка завершилась успешно; создан `dist/GameDelivery/GameDelivery.exe` (6,782,999 bytes), размер onedir-пакета около 610 MB.
+- Запущен собранный `GameDelivery.exe --self-test` с `QT_QPA_PLATFORM=offscreen`; процесс завершился без ошибки. Smoke не требовал локального ASF благодаря исправленному тестовому marker.
+- В build output есть предупреждения PyInstaller о отсутствующем optional QML plugin `Qt/labs/assetdownloader`; основной executable собран и smoke прошёл. CI остаётся авторитетной проверкой на закреплённом Python 3.12 runner.
+- Реальные Steam/Playerok/Telegram операции не выполнялись. Следующий шаг — зафиксировать текущие изменения отдельным разрешённым commit/push или выполнить доступный CI workflow; без разрешения commit/push не выполняются.
+
+## 2026-11-27 — ASF plugin release-toolchain checkpoint
+
+- Проверен `integrations/asf_plugin/GameDelivery.ASFPlugin.csproj`: целевая версия `net10.0`, зависимости ASF подключаются через `ASF_BIN_DIR`, System.Text.Json остаётся framework implementation; проект не менялся.
+- Локальная Windows-среда не содержит .NET SDK: `dotnet --list-sdks` не вернул установленного SDK. Поэтому локальная сборка plugin против ASF Generic 6.3.11.7 недоступна без установки .NET 10 SDK или Windows CI runner.
+- Существующий workflow `.github/workflows/asf-plugin.yml` остаётся авторитетным способом сборки с официальными ASF 6.3.11.7 assemblies; запуск внешнего CI из текущей сессии не выполнялся.
+- Python/Qt Windows onedir packaging и packaged self-test уже прошли; этот блокер относится только к локальной пересборке C# plugin. Реальные Steam/Playerok/Telegram операции не выполнялись.
+
+## 2026-11-27 — ASF/plugin contract verification
+
+- Без запуска ASF и внешних Steam операций выполнены `python -m unittest tests.test_asf_plugin_contract tests.test_asf_client -q`: **106 passed**.
+- Контрактные проверки подтверждают guarded diagnostic/send branching, UNKNOWN/idempotency safety, System.Text.Json expectations и ASF IPC client behavior.
+- Локальная C# compilation по-прежнему не выполняется: в среде отсутствует .NET SDK; это ограничение toolchain, не результат ошибки plugin source. Для окончательной DLL-проверки нужен существующий GitHub Windows runner workflow `asf-plugin.yml` с .NET 10 и ASF Generic 6.3.11.7 assemblies.
+
+## 2026-11-27 — release readiness verification checkpoint
+
+- Повторно проверены `tests.test_asf_plugin_contract`, `tests.test_windows_harness`, `tests.test_app_startup`: **68 passed**.
+- `git diff --check` не обнаружил содержательных whitespace-ошибок; остаются только стандартные предупреждения Git о преобразовании LF/CRLF.
+- Текущая машина имеет .NET runtime 10.0.15, но `dotnet --list-sdks` сообщает `No SDKs were found`; ASF assemblies также отсутствуют в локальном `ASF` каталоге. Локальный C# build поэтому объективно невозможен без отдельного runner/toolchain.
+- Python Windows onedir build и packaged self-test подтверждены ранее. ASF plugin build/runtime smoke, Playerok live sync, Telegram live actions и file adapter live delivery требуют соответствующих внешних сред и не выдаются за локально подтверждённые.
+
+## 2026-11-27 — local ASF plugin build and smoke
+
+- Временный .NET 10 SDK `10.0.404` установлен в `%TEMP%`; системная установка и проектные файлы не изменялись.
+- Официальный ASF Generic `6.3.11.7` архив скачан и проверен SHA-256 `cb3ddb9bd10560458a460664c9af6186e124e89801d118197a82eef5a9315ceb`; ASF assemblies использованы из временного каталога.
+- `dotnet build integrations\asf_plugin\GameDelivery.ASFPlugin.csproj --configuration Release -p:ASF_BIN_DIR=...` — успешно, 0 warnings, 0 errors; DLL собрана в `integrations/asf_plugin/bin/Release/net10.0/GameDelivery.ASFPlugin.dll`.
+- `dotnet run --project tests/asf_plugin_smoke/ASFPlugin.Smoke.csproj ...` — `ASF plugin command dispatch, MEF registration, and runtime compatibility smoke tests passed.`
+- Output не содержит `ArchiSteamFarm.dll`, `SteamKit2.dll` или `System.Composition.AttributedModel.dll`; plugin использует host-shared assemblies. Steam/ASF account, IPC и trade offers не запускались.
+
+## 2026-11-27 — final local acceptance checkpoint after plugin build
+
+- Полная регрессия после локальной сборки ASF plugin и packaging hardening: `python -m unittest discover -s tests -q` — **1120 tests, OK** за 186.474 s.
+- `python -m compileall -q app core games integrations notifications tests` — PASS; `git diff --check` — PASS по содержательным изменениям.
+- Рабочее дерево содержит только ожидаемые изменения `PROJECT_MASTER_LOG.md`, `app/__main__.py`, `tests/test_app_startup.py`; build outputs (`dist`, `build`, plugin `bin/obj`) не отслеживаются Git.
+- Local Windows GUI package smoke, official ASF 6.3.11.7 plugin build and plugin smoke all have positive local evidence. Live Playerok/Telegram/file adapters and external CI runner remain environmental gates; no irreversible external operation was performed.
+
+## 2026-11-27 — ASF Generic runtime plugin smoke
+
+- Собранный `GameDelivery.ASFPlugin.dll` установлен во временную копию официального ASF Generic 6.3.11.7; ASF запущен без ботов и с `IPC=false`.
+- `GAMEDELIVERY_VALIDATE_SEND_JIT=1` подтвердил `GameDeliveryPlugin send state-machine JIT probe: "status":"success"`; plugin runtime load smoke завершён успешно.
+- Процесс ASF остановлен после проверки. Не выполнялись логин, IPC-команды, Steam inventory запросы или Trade Offers.
+
+## 2026-11-27 — release hygiene audit
+
+- Проверены текущие изменения и Git index: секретные значения, cookies, trade tokens, DLL/PDB/SQLite и build output в отслеживаемые изменения не попали.
+- `git status` содержит только `PROJECT_MASTER_LOG.md`, `app/__main__.py` и `tests/test_app_startup.py`; `git diff --check` не выявил содержательных ошибок.
+- Подтверждённые локальные gates: 1120 Python tests, compileall, Windows PyInstaller package/self-test, ASF plugin build против проверенного ASF 6.3.11.7 и ASF Generic runtime smoke.
+- Не подтверждены внешними live действиями: Playerok session/sales в текущем запуске, Telegram API, автоматическая файловая передача и пользовательская Steam delivery поверх уже принятого C.6 evidence. Эти ограничения остаются явно отделены от локального acceptance.
+
+## 2026-11-27 — CI full-suite timeout alignment
+
+- Read-only GitHub Actions API показал для последнего опубликованного SHA `e8493cb` успешные Windows package и ASF plugin workflows, но общий `Tests` workflow завершился failure.
+- Локальная полная регрессия на той же ветке проходит: **1120 tests, OK** примерно за 186 секунд. Workflow имел full-suite timeout 180 секунд и job timeout 8 минут, что меньше подтверждённого локального runtime с запасом на Ubuntu/Qt.
+- `.github/workflows/tests.yml` скорректирован минимально: job timeout увеличен до 12 минут, full-suite timeout до 300 секунд; test commands и критерии результатов не менялись.
+- Повторный GitHub run требует commit/push и не запускается в этой сессии без отдельного разрешения. Реальные внешние операции не выполнялись.
+
+## 2026-11-27 — GitHub Tests failure root cause clarified
+
+- Read-only Actions job/annotation API для run `46055843777` (SHA `e8493cb`) показал: предварительные compile/trade/reconciliation/UI steps прошли; full suite затем инициировал isolation, где failure был конкретно `test_app_startup.py (exit 1)`, а отдельный `test_cs2_inventory_panel.py` имел только Qt shutdown segfault после успешных assertions.
+- Причина удалённого startup failure — workflow запускался на SHA до локального исправления ожидаемого списка вкладок `MainWindow` (в текущем рабочем дереве `Оператор` уже добавлен и `tests.test_app_startup` проходит). Это не было доказано как timeout; локальное увеличение timeout оставлено с запасом для Ubuntu/Qt, но повторный workflow ещё не запускался.
+- Следующая объективная проверка — опубликовать текущий исправленный тестовый контракт и убедиться, что новый GitHub run проходит; без разрешения commit/push не выполняется.
+
+## 2026-11-27 — CI workflow local verification
+
+- После анализа GitHub annotations локально проверены связанные gates: `tests.test_windows_harness`, `tests.test_app_startup`, `tests.test_asf_plugin_contract` — **68 passed**.
+- `.github/workflows/tests.yml` содержит только минимальное увеличение timeout для подтверждённого full suite runtime; лишняя пустая строка EOF удалена, `git diff --check` проходит по содержательным изменениям.
+- Повторный удалённый run невозможен без публикации коммита; commit/push не выполнялись по ограничениям долгосрочной цели. Рабочее дерево сохранено.
+
+## 2026-11-27 — Telegram proxy routing fix
+
+- Обнаружен production gap: `telegram_api_request` принимал `proxy`, но игнорировал его, поэтому Settings `getMe`/test-message могли обходить сохранённый proxy.
+- Исправлен общий helper: валидирует HTTP(S)/SOCKS5 proxy, формирует authenticated proxy URL и передаёт его в `requests.post`; token и proxy credentials не выводятся в ошибках.
+- Добавлен mock regression на proxy routing и отсутствие token в proxy diagnostics.
+- `python -m unittest tests.test_delivery_chat_commands_telegram -q` — **11 passed**; `py_compile integrations/telegram/outbox.py` — PASS. Реальный Telegram API не вызывался.
+
+## 2026-11-27 — Telegram runtime coordinator foundation
+
+- Проверено, что Telegram outbox/update processor ранее были только библиотечными компонентами и не имели runtime tick. Добавлен `TelegramRuntimeCoordinator`: durable notification enqueue/drain, persistent `getUpdates` offset, idempotent `TelegramUpdateProcessor` и безопасный no-op при отсутствии token.
+- Coordinator использует существующий `TelegramBotOutbox`, `telegram_api_request` и `BuyerPlatformMessageDispatcher`; неизвестный Playerok mutation result остаётся terminal `unknown`.
+- Добавлен regression на disabled/no-token lifecycle; `python -m unittest tests.test_delivery_chat_commands_telegram -q` — **12 passed**.
+- Полное подключение buyer reply tick к `MainWindow` отложено до доступного штатного `PlayerokBrowserChatAPI.send_text_message` callback в production lifecycle; фиктивный adapter не создавался. Telegram notifications могут работать независимо и не блокируют delivery.
+
+## 2026-11-27 — Telegram runtime lifecycle wiring
+
+- `MainWindow` теперь создаёт `TelegramRuntimeCoordinator` через существующий OS keyring и database, запускает безопасный 60-секундный tick и обновляет allowlist/operator chat из QSettings.
+- Runtime tick переносит pending delivery events в durable Telegram outbox, выполняет Telegram notification delivery/update polling и не блокирует delivery pipeline при отсутствии credentials или ошибке API.
+- Incoming allowlisted replies проходят существующий `TelegramOperatorReplyRouter` и создают buyer-message outbox запись с точной deal/chat binding. Автоматический Playerok send из фонового tick намеренно не включён: `WebEngine` mutation должна выполняться через существующий UI-thread `MarketplacePanel.send_playerok_chat_text` callback, чтобы не создавать второй browser mechanism.
+- Проверки: `tests.test_app_startup tests.test_delivery_chat_commands_telegram` — **26 passed**; `py_compile app/main.py integrations/telegram/outbox.py` — PASS. Реальный Telegram/Playerok API не вызывался.
+
+## 2026-11-27 — Telegram runtime polling regression
+
+- Добавлен mock regression для настроенного `TelegramRuntimeCoordinator`: `getUpdates` возвращает update `7`, offset durable state сохраняется как `8`, следующий tick запрашивает offset `8` и не создаёт повторную обработку старого update.
+- `python -m unittest tests.test_delivery_chat_commands_telegram -q` — **13 passed**; `python -m compileall -q app integrations/telegram tests/test_delivery_chat_commands_telegram.py` — PASS.
+- Реальный Telegram API, Playerok сообщения и другие внешние mutations не выполнялись.
+
+## 2026-11-27 — C.10 Playerok buyer reply UI-thread bridge
+
+- `TelegramRuntimeCoordinator.dispatch_buyer_messages()` подключён к штатному `MarketplacePanel.send_playerok_chat_text()` после завершения фонового Telegram tick. Вызов выполняется в GUI-потоке через основной callback `_run_asf_call_async`; второй WebEngine transport или отдельная авторизация не создавались.
+- `BuyerPlatformMessageDispatcher` теперь атомарно переводит `pending/retry` в durable `dispatching` до browser mutation. Успешный callback даёт `sent`, явный `unknown_result` — terminal `unknown`, обычная доставленная ошибка — `retry`; потеря callback/аварийное завершение оставляет `dispatching`, который не попадает в автоматический retry.
+- Адресные тесты покрывают успешный GUI adapter callback, terminal `unknown_result` и повторный запуск после потерянного callback без второй отправки. `python -m unittest tests.test_delivery_chat_commands_telegram -q` — **16 passed**. `tests.test_app_startup tests.test_windows_harness tests.test_delivery_chat_commands_telegram -q` — **40 passed**; `py_compile` затронутых модулей — PASS.
+- Реальные Telegram/Playerok сообщения не отправлялись. C.10 остаётся незавершённым до live acceptance на отдельно разрешённой тестовой сессии; C.11 требует финального аудита остальных внешних gates и нового CI run после разрешённой публикации.
+
+## 2026-11-27 — Stage C continuation verification checkpoint
+
+- Проверен фактический production wiring C.7–C.10: digital code import/preview/reserve/reveal/reconcile доступен в `OperatorFulfillmentPanel`; unified order reservation вызывает `DigitalCodeStore.reserve_for_order_line`; file/service workflows подключены к той же вкладке и остаются manual/explicit-confirmation; Telegram replies проходят allowlist + reply-to deal/chat binding и штатный Playerok WebEngine adapter.
+- После UI-thread bridge и durable buyer-message claim выполнена адресная интеграция: `python -m unittest tests.test_digital_codes tests.test_recipe_unified_reservations tests.test_file_catalog_service_tasks tests.test_delivery_handler_contract tests.test_delivery_dispatcher tests.test_delivery_chat_commands_telegram tests.test_app_startup -q` — **121 passed** за 48.617 s. `py_compile` затронутых модулей — PASS; `git diff --check` — PASS по содержательным изменениям.
+- Новые внешние Telegram/Playerok действия не выполнялись; секреты и пользовательская SQLite БД вне тестовых временных баз не использовались. Live acceptance Telegram reply, автоматическая file delivery и повторный GitHub CI run остаются внешними gates. Commit/push не выполнялись.
+- Следующий конкретный шаг: после отдельного разрешения на публикацию подготовить commit из текущих относящихся к проекту изменений, исключив `PLAYEROK_LOCAL_REVIEW.patch`, затем проверить новый CI run; до этого цель остаётся активной и не объявляется полностью завершённой.
+
+## 2026-11-27 — final local regression evidence after Telegram bridge
+
+- Полный локальный suite после последнего изменения: `python -m unittest discover -s tests -q` — **1126 tests, OK** за 188.891 s. Предупреждения в выводе относятся к предусмотренным mock error paths (ASF 401/URLError, UNKNOWN send, storage failures); реальные внешние операции не выполнялись.
+- Дополнительная адресная проверка `python -m unittest tests.test_delivery_chat_commands_telegram -q` — **16 passed**, exit code 0; `python -m compileall -q app core games integrations notifications tests` — exit code 0; `git diff --check` — exit code 0.
+- Ранее собранный Windows onedir self-test остаётся подтверждённым; новый Steam/Playerok/Telegram live gate не запускался. Рабочая ветка `work/local-sync`; commit/push не выполнялись.
+
+## 2026-11-27 — Telegram auxiliary failure does not block Playerok reply
+
+- Найден и исправлен lifecycle gap: `_on_telegram_runtime_complete()` прекращал обработку при ошибке Telegram API до вызова buyer-message dispatcher. Теперь ошибка только логируется, а queued Playerok reply всё равно передаётся штатному `MarketplacePanel.send_playerok_chat_text()`.
+- Добавлен regression на сохранение buyer dispatch при ошибке Telegram tick; `python -m unittest tests.test_delivery_chat_commands_telegram -q` — **17 passed**; `py_compile app/main.py` — PASS.
+- Реальные Telegram/Playerok сообщения не отправлялись.
+
+## 2026-11-27 — C.3 typed Playerok path revalidated
+
+- Повторно проверен ранее отмеченный C.3 application integration gap. Текущий `_prepare_ledger_order()` направляет ConfigVersion с `recipe_schema_version` в `_prepare_typed_cs2_recipe_order()`, который вызывает `DeliveryOrderPipeline.prepare_recipe_order()`; Playerok ConfigVersion save path вызывает `PlayerokListingConfigService.allocate_listing_stock()` для однозначного typed CS2 selector и блокирует заказ без listing batch.
+- Адресная проверка `python -m unittest tests.test_trade_delivery_ui tests.test_playerok_browser_and_listing_config tests.test_playerok_listing_stock_handoff -q` — **77 passed** за 34.596 s. Старый checkpoint C.3 обновлён фактическим доказательством текущего wiring; legacy Steam Cards и legacy CS2 paths не изменялись.
+- Реальные Playerok/Steam операции не выполнялись. Остаточные внешние gates: live Playerok session/sales, Telegram API/real buyer reply, автоматическая file delivery и новый GitHub CI run после публикации.
+
+## 2026-11-27 — C.9 operator evidence field
+
+- В `OperatorFulfillmentPanel` добавлено поле «Доказательство / заметка» для service lifecycle. Переходы `awaiting_confirmation` и `completed` теперь требуют непустого evidence; значение передаётся в существующий `ServiceTaskStore.transition()` и сохраняется в append-only audit.
+- Промежуточные состояния продолжают использовать штатную валидацию transitions; автоматическое завершение и внешняя передача не добавлялись.
+- `python -m unittest tests.test_file_catalog_service_tasks -q` — **3 passed**; `py_compile app/operator_fulfillment_panel.py` — PASS. Реальные услуги и пользовательская БД не использовались.
+
+## 2026-11-27 — C.9 evidence test correction
+
+- Первый запуск нового теста использовал недопустимый переход `reserved → awaiting_confirmation`; это выявило штатный guard state machine. Тест исправлен на допустимую последовательность `reserved → in_progress → awaiting_confirmation`.
+- Повторная проверка: `python -m unittest tests.test_file_catalog_service_tasks -q` — **3 passed**; `py_compile` панели и теста — PASS; `git diff --check` — PASS.
+
+## 2026-11-27 — C.7 operator reservation order binding
+
+- Усилен production boundary `OperatorFulfillmentPanel.reserve_code()`: ручная резервация цифрового кода теперь требует существующий `gd_orders.order_id`; неизвестный или недоступный canonical order store блокируется до вызова `DigitalCodeStore.reserve()`.
+- Low-level `DigitalCodeStore` не изменён и остаётся совместимым reusable store для unified reservation tests; plaintext кодов по-прежнему нет в SQLite/UI stock table/logs.
+- Адресный UI regression `tests.test_file_catalog_service_tasks` — **4 passed**: orphan reservation не создаётся, существующий canonical order резервирует код; `py_compile` и `git diff --check` — PASS.
+
+## 2026-11-27 — C.10 Telegram event filters wired to Settings
+
+- В `TelegramSettingsWidget` добавлены независимые переключатели категорий уведомлений (`new_order`, `insufficient_stock`, `privacy_wait`, `trade_restricted`, `declined`, `unknown`, `support_request`) с сохранением в QSettings.
+- `MainWindow` применяет сохранённые фильтры к существующему `TelegramBotOutbox` перед каждым runtime tick; новый канал или параллельная очередь не создавались.
+- Проверки: `python -m unittest tests.test_app_startup tests.test_delivery_chat_commands_telegram -q` — **31 passed**; `py_compile` `app/telegram_settings.py` и `app/main.py` — PASS; `git diff --check` — PASS.
+- Реальный Telegram API не вызывался; тестовое сообщение не отправлялось.
+
+## 2026-11-27 — C.10 Telegram event filter persistence regression
+
+- Добавлен `tests/test_telegram_settings_ui.py`: изолированный INI `QSettings` проверяет, что выключенная категория `unknown` сохраняется между экземплярами `TelegramSettingsWidget`, остальные категории остаются включёнными по умолчанию; keyring и Telegram API не вызываются.
+- Проверка: `python -m unittest tests.test_telegram_settings_ui -q` — **1 passed**; `py_compile` — PASS; `git diff --check` — PASS.
+
+## 2026-11-27 — C.9 evidence enforced at service boundary
+
+- Evidence requirement перенесён из UI в `ServiceTaskStore.transition()`: прямые вызовы production store также fail-closed для `awaiting_confirmation` и `completed`, если evidence пустой. Состояние не изменяется при отказе; операторская форма продолжает передавать введённую заметку.
+- `python -m unittest tests.test_file_catalog_service_tasks -q` — **5 passed**; `py_compile` — PASS; `git diff --check` — PASS.
+
+## 2026-11-28 — C.8 operator file reservation order binding
+
+- `OperatorFulfillmentPanel.reserve_file()` теперь требует существующий канонический `gd_orders.order_id` до явного подтверждения и вызова `FileCatalog.reserve()`. Неизвестный Order ID не создаёт orphan file reservation; low-level catalog contract не изменён.
+- Проверки: `python -m unittest tests.test_file_catalog_service_tasks -q` — **6 passed**; `py_compile` — PASS; `git diff --check` — PASS. Реальная файловая передача не выполнялась.
+
+## 2026-11-28 — Stage C local acceptance checkpoint after C.7-C.10 hardening
+
+- Совместная целевая регрессия `python -m unittest tests.test_digital_codes tests.test_file_catalog_service_tasks tests.test_telegram_settings_ui tests.test_delivery_chat_commands_telegram tests.test_app_startup tests.test_trade_delivery_ui -q` — **62 tests, OK** за 37.813 s.
+- `python -m compileall -q app core integrations tests` — PASS; `git diff --check` — PASS по содержательным изменениям.
+- Покрыты текущие локальные gates: protected digital-code lifecycle и canonical order binding, file integrity/manual gate и canonical order binding, service state/evidence guard, Telegram event-filter persistence/runtime buyer bridge, startup и trade UI regressions.
+- Реальные Playerok/Steam/Telegram/file operations не выполнялись. Остались внешние gates: live Playerok session/sales, live Telegram buyer reply, автоматическая file adapter delivery, пользовательская SQLite migration и remote CI после разрешённого commit/push.
+
+## 2026-11-28 — release hygiene and packaged smoke checkpoint
+
+- Проверено текущее рабочее дерево: `PLAYEROK_LOCAL_REVIEW.patch` не изменён и не попал в status; tracked SQLite/DLL/PDB/dist/build artifacts отсутствуют среди изменений. Scan diff не обнаружил реальные token/cookie/trade URL secrets; совпадения относятся к mock values, credential field names и safe proxy handling.
+- Ранее собранный `dist/GameDelivery/GameDelivery.exe` повторно запущен с `--self-test` и `QT_QPA_PLATFORM=offscreen`; процесс завершился без ошибки/диагностики.
+- Реальные Steam/Playerok/Telegram/file operations не выполнялись; commit/push не выполнялись. Remote CI остаётся непроверенным до разрешённой публикации.
+
+## 2026-11-28 — packaged build refreshed after current UI changes
+
+- Выполнена свежая локальная PyInstaller onedir-сборка по параметрам `.github/workflows/package-windows.yml`: PyInstaller 6.22.3, Python 3.14.6, Windows 11; `pyinstaller --noconfirm --clean --windowed --onedir --name GameDelivery` с теми же collect-all/collect-submodules флагами завершился успешно.
+- Свежий `dist/GameDelivery/GameDelivery.exe` запущен с `QT_QPA_PLATFORM=offscreen --self-test`; процесс завершился без ошибки. Размер executable **6,745,786 bytes**, timestamp **2026-11-28 00:08:03 +03:00**.
+- PyInstaller вывел только известное предупреждение об отсутствующем optional Qt QML plugin `Qt/labs/assetdownloader`; основной executable и smoke не затронуты. Реальные внешние операции не выполнялись.
+
+## 2026-11-28 — Stage C targeted verification after current hardening
+
+- Уже запущенная целевая проверка завершилась без повторного запуска: `python -m unittest tests.test_file_catalog_service_tasks tests.test_digital_codes tests.test_telegram_settings_ui tests.test_delivery_chat_commands_telegram tests.test_app_startup -q` — **43 tests, OK** за 16.676 s.
+- `python -m compileall -q app core integrations tests` — exit code 0; `git diff --check` — exit code 0. Вывод о `local storage initialization failed` относится к предусмотренным mock/error-path тестам и не привёл к падению suite.
+- Текущая ветка `work/local-sync`; изменения остаются незакоммиченными. `PLAYEROK_LOCAL_REVIEW.patch` не затронут. Реальные Steam/Playerok/Telegram/file операции и commit/push не выполнялись.
+- Остаточные внешние gates не изменились: live Playerok session/sales, live Telegram buyer reply, автоматический file adapter, пользовательская SQLite migration и remote GitHub CI после разрешённой публикации. Следующий локальный шаг при наличии конкретного gap — адресный аудит соответствующего production workflow; C.7 не запускался отдельным внешним действием.
+
+## 2026-11-28 — Telegram proxy credential clearing hardening
+
+- В ходе локального аудита найден production gap в Settings: сохранение пустого proxy не удаляло прежние `proxy_url`, username и password из OS keyring, поэтому runtime мог продолжать использовать устаревший proxy.
+- `TelegramCredentialStore.configure()` теперь атомарно очищает optional proxy credentials перед записью нового набора; `clear_proxy()` безопасно обрабатывает отсутствующие optional entries. Секретные значения не выводятся и не записываются в файлы.
+- Добавлен regression `test_clearing_proxy_removes_stale_keyring_credentials`; `python -m unittest tests.test_telegram_settings_ui -q` — **2 passed**; `py_compile` затронутых модулей — PASS; `git diff --check` — PASS.
+- Реальный Telegram API и пользовательские credentials не использовались. Ветка `work/local-sync`, commit/push не выполнялись; внешние live gates остаются без изменений.
+
+## 2026-11-28 — C.9 canonical service-order binding
+
+- Локальный аудит обнаружил gap в `OperatorFulfillmentPanel.reserve_service()`: UI мог создать `gd_service_units` с произвольным или отсутствующим `Order ID`, в отличие от уже защищённых digital-code и file reservation путей.
+- UI boundary теперь требует существующую canonical таблицу `gd_orders` и точное совпадение `order_id` до вызова `ServiceTaskStore.reserve()`; standalone low-level service store и state machine не изменялись.
+- Добавлен regression на блокировку orphan service reservation и успешную резервацию после появления canonical order. `python -m unittest tests.test_file_catalog_service_tasks -q` — **7 passed**; `py_compile` затронутых файлов — PASS; `git diff --check` — PASS.
+- Реальные услуги, пользовательская SQLite БД и внешние передачи не выполнялись. Ветка `work/local-sync`; commit/push не выполнялись.
+
+## 2026-11-28 — Stage C UI/runtime integration regression
+
+- После canonical service-order binding выполнена связанная проверка `python -m unittest tests.test_app_startup tests.test_delivery_chat_commands_telegram tests.test_telegram_settings_ui tests.test_file_catalog_service_tasks -q` — **40 tests, OK** за 16.569 s.
+- `py_compile` затронутых application/integration/test файлов — PASS; `git diff --check` — PASS. Сообщения `local storage initialization failed` относятся к ожидаемым mock/error-path startup tests и не привели к падению suite.
+- Проверены startup contract, Telegram runtime/buyer bridge, proxy credential lifecycle, event filters, digital/file/service operator boundaries. Реальные Telegram/Playerok/file/Steam операции не выполнялись.
+- Ветка `work/local-sync`; незакоммиченные изменения сохранены, `PLAYEROK_LOCAL_REVIEW.patch` не затронут, commit/push не выполнялись.
+
+## 2026-11-28 — local-sync continuation verification
+
+- Revalidated the currently changed integration slices without repeating the recorded 1120/1126 full-suite runs: `tests.test_playerok_sync tests.test_playerok_listing_stock_handoff` — **37 passed**; `tests.test_file_catalog_service_tasks tests.test_telegram_settings_ui tests.test_delivery_chat_commands_telegram` — **26 passed**; `tests.test_playerok_browser_and_listing_config` — **50 passed**.
+- `python -m compileall -q app core integrations tests` and `git diff --check` remain clean.
+- A combined run including `tests.test_app_startup` was stopped after the existing startup smoke process stalled during `test_game_catalog_contains_requested_games_and_filters_search` immediately after the expected mocked local-storage initialization warnings. The focused non-startup slices pass; this startup hang is now an unresolved local verification issue and was not masked as success.
+- No commit/push, main/PR #4 changes, real Steam/Playerok/Telegram/file operations, or user database operations were performed. Existing uncommitted work remains intact.
+
+## 2026-11-28 — headless startup error handling hardening
+
+- Fixed a test/package smoke hazard in `MainWindow`: database startup errors no longer open a modal `QMessageBox` when `QT_QPA_PLATFORM=offscreen`; the visible startup error label and logger remain authoritative, while interactive Windows runs retain the modal alert.
+- This prevents headless/self-test processes from hanging indefinitely on an expected startup error. No database recovery semantics were weakened.
+- Direct diagnosis confirmed the current sandbox cannot write the real user DB (`OperationalError: attempt to write a readonly database`); this is an environment permission issue, not a migration corruption. The catalog test still requires an isolated writable DB fixture and remains a separate test-environment failure.
+- `python -m compileall -q app core integrations tests` — PASS; `git diff --check` — PASS. No external operations or commit/push performed.
+
+## 2026-11-28 — isolated database path and Windows self-test hardening
+
+- Added opt-in `GAMEDELIVERY_DATABASE_PATH` override to `MainWindow`; normal Windows runs still use `%USERPROFILE%\\.gamedelivery\\gamedelivery.sqlite3`.
+- `python -m app --self-test` now uses a temporary isolated SQLite database and marks self-test mode explicitly, so packaging smoke cannot mutate or lock the user's production database.
+- Startup error dialogs remain modal for interactive runs and are suppressed only for explicit self-test mode; existing error-dialog tests remain valid.
+- Verification: `QT_QPA_PLATFORM=offscreen python -m app --self-test` — PASS; `tests.test_app_startup` with a writable temporary database — **14 tests, OK**; compileall and diff check — PASS.
+- No real external operations, commit, or push performed.
+
+## 2026-11-28 — refreshed Windows package after self-test isolation changes
+
+- Rebuilt the onedir Windows package with the exact workflow flags from `.github/workflows/package-windows.yml` using PyInstaller 6.22.3 / Python 3.14.6.
+- Packaged executable smoke: `QT_QPA_PLATFORM=offscreen .\\dist\\GameDelivery\\GameDelivery.exe --self-test` — exit code 0.
+- Build completed successfully; known optional Qt QML `assetdownloader` warning remains non-blocking.
+- This local package verifies the isolated self-test path, but does not replace the required remote CI artifact or live Steam/Playerok/Telegram/file acceptance. No commit/push or external mutations performed.
+
+## 2026-11-28 — C.3/C.4 regression after packaging hardening
+
+- Revalidated the core recovery and Playerok transaction surfaces after the isolated self-test/database-path changes: `tests.test_delivery_dispatcher tests.test_delivery_recovery tests.test_playerok_sync tests.test_playerok_listing_stock_handoff tests.test_main_delivery_send` — **118 passed** in 48.708 s.
+- Expected mock warnings cover fail-closed freshness/blocked paths and UNKNOWN trade-send behavior; no real ASF, Steam, Playerok or Telegram operation occurred.
+- Fresh packaged smoke and compile/diff checks remain green. C.3/C.4 local regression behavior is unchanged by the packaging hardening.
+
+## 2026-11-28 — Telegram settings adapter compatibility correction
+
+- Full-suite verification surfaced a real compatibility defect in `_schedule_telegram_runtime()`: it called `settings.value(..., type=bool)`, while the lightweight settings adapter used by runtime tests supports only `(key, default)`. Replaced it with a local boolean normalization helper that accepts both QSettings and test adapters, including string values `0/false/no/off`.
+- The same full-suite run also showed that an externally supplied `GAMEDELIVERY_DATABASE_PATH` must not redirect normal application storage. The override is now honored only when explicit `GAMEDELIVERY_SELF_TEST=1`; normal Windows runs always retain the canonical per-user database path.
+- Focused Telegram regression after the fix: `tests.test_delivery_chat_commands_telegram` — **17 passed**. Packaged self-test remains PASS.
+- The attempted full suite reached 1134 tests but was not accepted as green: it ran against the pre-fix code and had environment-sensitive proxy-path failures plus a Qt shutdown crash. No claim of full-suite success is made; the focused regression and self-test are the authoritative post-fix checks.
+
+## 2026-11-28 — service audit ordering fix from full-suite evidence
+
+- The isolated full-suite run exposed one genuine defect: multiple service transitions within SQLite's millisecond-resolution default timestamp could make `ORDER BY created_at DESC` return the earlier audit row, hiding the latest operator evidence.
+- `ServiceTaskStore._audit()` now writes an explicit UTC microsecond timestamp. State transitions and evidence requirements are unchanged; audit readers can deterministically retrieve the latest evidence.
+- Regression: `python -m unittest tests.test_file_catalog_service_tasks -q` — **7 passed**. `compileall` and `git diff --check` — PASS.
+- The prior isolated full suite reached **1134 tests** and had only this service-audit assertion failure before Qt shutdown; it was not counted as green. The defect is now corrected locally.
+
+## 2026-11-28 — Qt shutdown lifecycle hardening
+
+- Added explicit `MainWindow.closeEvent()` cleanup: periodic Telegram/reconciliation timers stop before QObject teardown, outstanding ASF worker callbacks are disconnected, and late worker results are ignored via a `_closing` guard.
+- `_run_asf_call_async()` now refuses new work after shutdown; `_dispatch_asf_call_result()` never invokes callbacks on a closing window. This preserves active operation durability while preventing late GUI callbacks during packaged exit/test teardown.
+- The change targets the Qt shutdown crash observed after the 1134-test run. Focused startup and Telegram paths remain covered; packaged self-test and compile checks are rerun separately.
+
+## 2026-11-28 — Qt lifecycle hardening packaged verification
+
+- Rebuilt the Windows onedir package after adding `MainWindow.closeEvent()` cleanup and ASF callback shutdown guards.
+- Fresh packaged smoke `QT_QPA_PLATFORM=offscreen .\\dist\\GameDelivery\\GameDelivery.exe --self-test` — exit code 0.
+- Focused post-change regression `tests.test_delivery_chat_commands_telegram tests.test_file_catalog_service_tasks` — **24 passed**; compileall and diff-check passed.
+- The generated `GameDelivery.spec` is a local PyInstaller build artifact and remains untracked; source changes are limited to the requested worktree.
+
+## 2026-11-28 — full regression after Qt shutdown guards
+
+- Isolated full suite rerun after the closeEvent/late-callback hardening: **1134 tests, OK** in 186.324 s. All assertions passed.
+- The Python process still terminates with Windows code `0xC0000409` after unittest reports OK, so the result is recorded as assertion-green but process-exit-unverified; this is consistent with the repository's known intermittent Qt shutdown issue and is not falsely marked as a clean full-suite exit.
+- `tests.test_app_startup` alone — **14 passed**; `tests.test_cs2_inventory_panel` alone — **32 passed**. Focused post-change suites and packaged smoke remain green.
+- Further Qt/WebEngine teardown isolation remains an open local hardening task. No external operations, commit, or push performed.
+
+## 2026-11-28 — deterministic Qt headless test/package environment
+
+- Re-ran the isolated full suite with `QT_QPA_PLATFORM=offscreen`, `QT_QUICK_BACKEND=software`, and `QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu`: **1134 tests, OK**, clean process exit code 0 in 193.476 s.
+- The software Qt/WebEngine settings eliminate the post-OK Windows Qt shutdown crash observed under the bare offscreen environment without changing application behavior.
+- Updated `.github/workflows/tests.yml` full-suite and isolation environments with the same deterministic Qt settings. Updated `.github/workflows/package-windows.yml` packaged smoke environment likewise.
+- `compileall` and `git diff --check` — PASS. No external operations, commit, or push performed.
+
+## 2026-11-28 — worktree hygiene checkpoint
+
+- Removed only the generated untracked `GameDelivery.spec` PyInstaller artifact; no source or user data was removed.
+- Current worktree remains limited to the existing requested implementation/test/workflow changes plus `tests/test_telegram_settings_ui.py`.
+- `compileall` and `git diff --check` remain PASS. Full isolated suite evidence is 1134/1134 assertions with clean exit under deterministic Qt settings.
+
+## 2026-11-28 — packaged self-test documentation
+
+- Updated the generated Windows package instructions to document `GameDelivery.exe --self-test` as a no-network startup smoke test using a temporary isolated database, with no user-data mutation.
+- Workflow syntax remains clean under `git diff --check`; no application behavior or licensing changed.
+
+## 2026-11-28 — self-test environment restoration
+
+- Hardened `app.__main__._dispatch(--self-test)` to restore all temporary environment variables (`GAMEDELIVERY_TEST_ASF_IPC_URL`, `GAMEDELIVERY_SELF_TEST`, `GAMEDELIVERY_DATABASE_PATH`) in a `finally` block when invoked in-process.
+- Packaged/headless self-test after the change — exit code 0; `py_compile` and `git diff --check` — PASS.
+- This prevents self-test harness state from leaking into subsequent in-process commands while preserving isolated temporary storage.
+
+## 2026-11-28 — self-test environment restoration regression
+
+- Direct in-process regression confirmed `_dispatch(['--self-test'])` returns 0 and restores sentinel values for all three environment variables after completion.
+- This validates both isolated startup and non-leaking harness state; compileall/diff-check remain clean.
+
+## 2026-11-28 — final local package refresh after self-test restoration
+
+- Rebuilt the onedir package after the final `--self-test` environment restoration change using the workflow's PyInstaller flags.
+- Fresh packaged executable smoke with deterministic Qt settings exited 0.
+- Removed the generated untracked `.spec` file after the build; current status contains only the intended source/workflow/test/log changes.
+
+## 2026-11-28 — startup error comment alignment
+
+- Corrected the `MainWindow` startup-error comment to match actual behavior: modal suppression is limited to explicit `GAMEDELIVERY_SELF_TEST=1`, not all offscreen runs. Runtime behavior is unchanged.
+- `py_compile` and `git diff --check` — PASS.
+
+## 2026-11-28 — resumed-goal smoke checkpoint
+
+- After goal resumption, reran the current executable path: `python -m app --self-test` — PASS.
+- Post-resumption focused regression `tests.test_delivery_chat_commands_telegram tests.test_file_catalog_service_tasks` — **24 passed**.
+- `compileall` and `git diff --check` — PASS; no external operations or user database access performed.
+
+## 2026-11-28 — import/style cleanup checkpoint
+
+- Reformatted the Telegram outbox import in `app/main.py` into a maintainable multiline import; behavior unchanged.
+- Focused regression after cleanup: **24 passed** (`tests.test_delivery_chat_commands_telegram`, `tests.test_file_catalog_service_tasks`). Compileall and diff-check passed.
+
+## 2026-11-28 — startup regression checkpoint after import cleanup
+
+- `tests.test_app_startup` under deterministic Qt settings — **14 passed**.
+- Expected startup error-path logs were emitted for deliberately invalid/mock storage cases; no user database was modified.
+- Compileall and diff-check remain PASS.
+
+## 2026-11-28 — NEXT GOAL BLOCK: Remote CI and final acceptance (authorization recorded)
+
+Пользователь разрешил следующий этап долгосрочной Goal GameDelivery: после явного нажатия «Возобновить цель» разрешены проверка, commit и push только проверенного состояния в `origin/work/local-sync`, без merge, force push, изменения `main` или закрытия/слияния PR #4. До явного возобновления публикация не выполняется.
+
+После публикации требуется дождаться и проверить каждый обязательный GitHub Actions job, исправлять только подтверждённые CI-проблемы в `work/local-sync`, выполнять локальные проверки и публиковать follow-up commits только в эту ветку до успешного CI. После успешного CI live Steam/ASF, Playerok, Telegram и file-delivery acceptance остаются отдельными контролируемыми планами; реальные внешние операции не выполнять без отдельного разрешения.
+
+Последний локальный evidence перед этапом: 1134/1134 tests OK при deterministic Qt settings, Windows onedir package/self-test PASS, compileall PASS, `git diff --check` PASS. Этот checkpoint только фиксирует следующий goal block и границы разрешения; commit/push не выполнялись.

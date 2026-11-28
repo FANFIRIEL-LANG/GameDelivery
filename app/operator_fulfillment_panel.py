@@ -28,7 +28,7 @@ class OperatorFulfillmentPanel(QWidget):
         cl.addLayout(buttons)
         self.code_status = QLabel("Коды: действие не выполнялось"); self.code_status.setWordWrap(True); cl.addWidget(self.code_status); self.code_table = QTableWidget(0,5); self.code_table.setHorizontalHeaderLabels(["Code ID","Product","Batch","State","Order ID"]); cl.addWidget(self.code_table)
         files = QWidget(); fl = QVBoxLayout(files); self.file_product = QLineEdit(); self.file_id = QLineEdit(); self.file_order = QLineEdit(); fb = QPushButton("Зарегистрировать файл"); fb.clicked.connect(self.register_file); fbr = QPushButton("Зарезервировать файл"); fbr.clicked.connect(self.reserve_file); fl.addWidget(self.file_product); fl.addWidget(self.file_id); fl.addWidget(self.file_order); fl.addWidget(fb); fl.addWidget(fbr); self.file_status=QLabel("Файлы: передача требует подтверждённого adapter"); fl.addWidget(self.file_status)
-        service = QWidget(); sl = QVBoxLayout(service); self.service_product=QLineEdit(); self.service_order=QLineEdit(); self.service_id=QLineEdit(); self.service_state=QLineEdit("in_progress"); self.service_done=QSpinBox(); self.service_done.setMinimum(0); self.service_instructions=QLineEdit(); self.service_criteria=QLineEdit(); self.service_quantity=QSpinBox(); self.service_quantity.setMinimum(1); sf=QFormLayout(); sf.addRow("Unit ID",self.service_id); sf.addRow("Состояние",self.service_state); sf.addRow("Выполнено",self.service_done); sf.addRow("Товар услуги",self.service_product); sf.addRow("Order ID",self.service_order); sf.addRow("Количество",self.service_quantity); sf.addRow("Инструкции",self.service_instructions); sf.addRow("Критерии",self.service_criteria); sl.addLayout(sf); sb=QPushButton("Зарезервировать единицы услуги"); sb.clicked.connect(self.reserve_service); st=QPushButton("Обновить состояние услуги"); st.clicked.connect(self.transition_service); sl.addWidget(sb); sl.addWidget(st); self.service_status=QLabel("Услуги: действие не выполнялось"); sl.addWidget(self.service_status)
+        service = QWidget(); sl = QVBoxLayout(service); self.service_product=QLineEdit(); self.service_order=QLineEdit(); self.service_id=QLineEdit(); self.service_state=QLineEdit("in_progress"); self.service_done=QSpinBox(); self.service_done.setMinimum(0); self.service_instructions=QLineEdit(); self.service_criteria=QLineEdit(); self.service_evidence=QLineEdit(); self.service_quantity=QSpinBox(); self.service_quantity.setMinimum(1); sf=QFormLayout(); sf.addRow("Unit ID",self.service_id); sf.addRow("Состояние",self.service_state); sf.addRow("Выполнено",self.service_done); sf.addRow("Товар услуги",self.service_product); sf.addRow("Order ID",self.service_order); sf.addRow("Количество",self.service_quantity); sf.addRow("Инструкции",self.service_instructions); sf.addRow("Критерии",self.service_criteria); sf.addRow("Доказательство / заметка",self.service_evidence); sl.addLayout(sf); sb=QPushButton("Зарезервировать единицы услуги"); sb.clicked.connect(self.reserve_service); st=QPushButton("Обновить состояние услуги"); st.clicked.connect(self.transition_service); sl.addWidget(sb); sl.addWidget(st); self.service_status=QLabel("Услуги: действие не выполнялось"); sl.addWidget(self.service_status)
         self.tabs.addTab(code,"Цифровые коды"); self.tabs.addTab(files,"Файлы"); self.tabs.addTab(service,"Услуги"); layout=QVBoxLayout(self); layout.addWidget(self.tabs)
 
     def _store(self):
@@ -54,7 +54,18 @@ class OperatorFulfillmentPanel(QWidget):
 
     def reserve_code(self):
         try:
-            result=self._store().reserve(product_id=self.code_product.text(),order_id=self.code_order.text()); self.code_status.setText("Зарезервирован code ID: " + result["code_id"]); self.status_changed.emit("digital_code_reserved")
+            product_id = self.code_product.text().strip()
+            order_id = self.code_order.text().strip()
+            if not product_id or not order_id:
+                raise ValueError("Товар кодов и Order ID обязательны")
+            with self.database.connect() as db:
+                columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_orders)")}
+                if "order_id" not in columns:
+                    raise ValueError("Канонический order store недоступен")
+                if db.execute("SELECT 1 FROM gd_orders WHERE order_id=?", (order_id,)).fetchone() is None:
+                    raise ValueError("Order ID не найден в канонической очереди")
+            result=self._store().reserve(product_id=product_id,order_id=order_id)
+            self.code_status.setText("Зарезервирован code ID: " + result["code_id"]); self.status_changed.emit("digital_code_reserved")
         except Exception as exc: self._error(self.code_status,"Резервация не выполнена",exc)
 
     def refresh_codes(self):
@@ -113,6 +124,12 @@ class OperatorFulfillmentPanel(QWidget):
         try:
             file_id = self.file_id.text().strip(); order_id = self.file_order.text().strip()
             if not file_id or not order_id: raise ValueError("File ID и Order ID обязательны")
+            with self.database.connect() as db:
+                columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_orders)")}
+                if "order_id" not in columns:
+                    raise ValueError("Канонический order store недоступен")
+                if db.execute("SELECT 1 FROM gd_orders WHERE order_id=?", (order_id,)).fetchone() is None:
+                    raise ValueError("Order ID не найден в канонической очереди")
             if QMessageBox.question(self, "Подтверждение резерва файла", "Зарезервировать файл для ручной передачи?") != QMessageBox.StandardButton.Yes: return
             result = self.files.reserve(file_id=file_id, order_id=order_id)
             self.file_status.setText("Файл зарезервирован: " + result["status"] + "; передача вручную")
@@ -121,7 +138,22 @@ class OperatorFulfillmentPanel(QWidget):
 
     def reserve_service(self):
         try:
-            uid=self.services.reserve(product_id=self.service_product.text(),order_id=self.service_order.text(),quantity=self.service_quantity.value(),instructions=self.service_instructions.text(),criteria=self.service_criteria.text()); self.service_status.setText("Единица услуги зарезервирована: " + uid); self.status_changed.emit("service_reserved")
+            product_id = self.service_product.text().strip()
+            order_id = self.service_order.text().strip()
+            if not product_id or not order_id:
+                raise ValueError("Товар услуги и Order ID обязательны")
+            with self.database.connect() as db:
+                columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_orders)")}
+                if "order_id" not in columns:
+                    raise ValueError("Канонический order store недоступен")
+                if db.execute("SELECT 1 FROM gd_orders WHERE order_id=?", (order_id,)).fetchone() is None:
+                    raise ValueError("Order ID не найден в канонической очереди")
+            uid = self.services.reserve(
+                product_id=product_id, order_id=order_id,
+                quantity=self.service_quantity.value(),
+                instructions=self.service_instructions.text(), criteria=self.service_criteria.text(),
+            )
+            self.service_status.setText("Единица услуги зарезервирована: " + uid); self.status_changed.emit("service_reserved")
         except Exception as exc: self._error(self.service_status,"Резервация услуги не выполнена",exc)
 
     def transition_service(self):
@@ -129,7 +161,14 @@ class OperatorFulfillmentPanel(QWidget):
             unit_id = self.service_id.text().strip(); state = self.service_state.text().strip()
             if not unit_id or not state: raise ValueError("Unit ID и состояние обязательны")
             if QMessageBox.question(self, "Подтверждение состояния услуги", "Записать переход и audit?") != QMessageBox.StandardButton.Yes: return
-            self.services.transition(unit_id=unit_id, state=state, actor="operator-ui", completed_units=self.service_done.value(), evidence={"source": "operator-ui"})
+            evidence_text = self.service_evidence.text().strip()
+            if state in {"awaiting_confirmation", "completed"} and not evidence_text:
+                raise ValueError("Для подтверждения услуги укажи evidence или заметку.")
+            self.services.transition(
+                unit_id=unit_id, state=state, actor="operator-ui",
+                completed_units=self.service_done.value(),
+                evidence={"source": "operator-ui", "note": evidence_text},
+            )
             self.service_status.setText("Состояние услуги обновлено: " + state); self.status_changed.emit("service_state_changed")
         except Exception as exc: self._error(self.service_status, "Состояние услуги не обновлено", exc)
 

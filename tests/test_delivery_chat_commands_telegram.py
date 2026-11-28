@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from core.database.db import Database
@@ -15,7 +16,7 @@ from core.delivery.send_policy import DeliverySendPolicy
 from integrations.asf.trade_credentials import SteamTradeCredentialStore
 from integrations.telegram.outbox import (
     BuyerPlatformMessageOutbox, TelegramBotOutbox, TelegramCredentialStore,
-    TelegramOperatorReplyRouter, BuyerPlatformMessageDispatcher,
+    TelegramOperatorReplyRouter, BuyerPlatformMessageDispatcher, TelegramRuntimeCoordinator,
 )
 from integrations.playerok.sync import PlayerokDealSyncService
 
@@ -361,6 +362,129 @@ if __name__ == "__main__":
 
 
 class TelegramBuyerBridgeTests(unittest.TestCase):
+    def test_telegram_runtime_coordinator_is_disabled_without_token(self):
+        from integrations.telegram.outbox import TelegramRuntimeCoordinator
+        class EmptyCredentials:
+            def get(self, name): return None
+        from core.database.db import Database
+        import tempfile
+        temp = tempfile.TemporaryDirectory(); db = Database(temp.name + "/x.sqlite3")
+        coordinator = TelegramRuntimeCoordinator(db, EmptyCredentials(), object())
+        self.assertEqual(coordinator.tick(), {"status": "disabled", "processed": 0, "notifications": 0})
+        temp.cleanup()
+
+    def test_telegram_runtime_coordinator_persists_update_offset(self):
+        from integrations.telegram.outbox import TelegramRuntimeCoordinator
+        class Credentials:
+            def get(self, name): return "bot-token" if name == "bot_token" else None
+            def proxy(self): return None
+        class Router:
+            def __init__(self): self.calls = []
+            def handle_reply(self, **kwargs): self.calls.append(kwargs); return True
+        router = Router(); responses = []
+        def api(token, method, payload=None, proxy=None):
+            responses.append((method, payload))
+            return {"ok": True, "result": [{"update_id": 7, "message": {"text": "x"}}]} if method == "getUpdates" else {"ok": True}
+        from unittest.mock import patch
+        with patch("integrations.telegram.outbox.telegram_api_request", side_effect=api):
+            temp = tempfile.TemporaryDirectory(); db = Database(Path(temp.name) / "x.sqlite3")
+            coordinator = TelegramRuntimeCoordinator(db, Credentials(), router, sender=lambda *args: {"ok": True})
+            first = coordinator.tick(); second = coordinator.tick()
+            with db.connect() as conn: offset = conn.execute("SELECT value FROM telegram_runtime_state WHERE key='update_offset'").fetchone()[0]
+            self.assertEqual(first["status"], "ok"); self.assertEqual(second["status"], "ok"); self.assertEqual(offset, "8")
+            self.assertEqual([payload["offset"] for method, payload in responses if method == "getUpdates"], [0, 8])
+            temp.cleanup()
+
+    def test_telegram_api_request_passes_proxy_without_exposing_credentials(self):
+        from integrations.telegram.outbox import telegram_api_request
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"ok": True, "result": {}}
+        with patch("requests.post", return_value=Response()) as post:
+            telegram_api_request("123:secret", "getMe", proxy={"url": "socks5h://proxy.example:1080", "username": "u", "password": "p"})
+        kwargs = post.call_args.kwargs
+        self.assertEqual(kwargs["proxies"]["https"], "socks5h://u:p@proxy.example:1080")
+        self.assertNotIn("secret", repr(kwargs["proxies"]))
+
+    def test_buyer_dispatch_claim_blocks_retry_after_interruption(self):
+        from core.database.db import Database
+        import tempfile
+        temp = tempfile.TemporaryDirectory(); db = Database(temp.name + "/x.sqlite3")
+        with db.connect() as conn:
+            conn.executescript("CREATE TABLE gd_deals(deal_id TEXT PRIMARY KEY,chat_id TEXT);")
+            conn.execute("INSERT INTO gd_deals VALUES('d','chat-1')")
+        outbox = BuyerPlatformMessageOutbox(db)
+        outbox.enqueue('d', 'chat-1', 'hello')
+        calls = []
+        def interrupted_sender(chat, text, callback):
+            calls.append((chat, text))  # callback is lost after dispatch began
+        dispatcher = BuyerPlatformMessageDispatcher(db)
+        self.assertEqual(dispatcher.dispatch_once(interrupted_sender), 1)
+        self.assertEqual(dispatcher.dispatch_once(interrupted_sender), 0)
+        self.assertEqual(calls, [('chat-1', 'hello')])
+        with db.connect() as conn:
+            status = conn.execute("SELECT status FROM gd_buyer_message_outbox").fetchone()[0]
+        self.assertEqual(status, 'dispatching')
+        temp.cleanup()
+
+    def test_buyer_dispatch_unknown_result_is_terminal(self):
+        from core.database.db import Database
+        import tempfile
+        temp = tempfile.TemporaryDirectory(); db = Database(temp.name + "/x.sqlite3")
+        with db.connect() as conn:
+            conn.executescript("CREATE TABLE gd_deals(deal_id TEXT PRIMARY KEY,chat_id TEXT);")
+            conn.execute("INSERT INTO gd_deals VALUES('d','chat-1')")
+        outbox = BuyerPlatformMessageOutbox(db)
+        message_id = outbox.enqueue('d', 'chat-1', 'hello')
+        calls = []
+        def unknown_sender(chat, text, callback):
+            calls.append(chat); callback(None, 'unknown_result')
+        dispatcher = BuyerPlatformMessageDispatcher(db)
+        self.assertEqual(dispatcher.dispatch_once(unknown_sender), 1)
+        self.assertEqual(dispatcher.dispatch_once(unknown_sender), 0)
+        with db.connect() as conn:
+            status = conn.execute("SELECT status FROM gd_buyer_message_outbox WHERE message_id=?", (message_id,)).fetchone()[0]
+        self.assertEqual((status, calls), ('unknown', ['chat-1']))
+        temp.cleanup()
+
+    def test_runtime_dispatch_remains_available_when_telegram_tick_failed(self):
+        from core.database.db import Database
+        import tempfile
+        temp = tempfile.TemporaryDirectory(); db = Database(temp.name + "/x.sqlite3")
+        with db.connect() as conn:
+            conn.executescript("CREATE TABLE gd_deals(deal_id TEXT PRIMARY KEY,chat_id TEXT);")
+            conn.execute("INSERT INTO gd_deals VALUES('d','chat-1')")
+        outbox = BuyerPlatformMessageOutbox(db); outbox.enqueue('d', 'chat-1', 'hello')
+        coordinator = TelegramRuntimeCoordinator(db, object(), object())
+        calls = []
+        adapter = lambda chat, text, callback: (calls.append((chat, text)), callback({'ok': True}, None))
+        # MainWindow calls this path after its async tick callback, even when
+        # the Telegram API operation reported an error.
+        coordinator.dispatch_buyer_messages(adapter)
+        with db.connect() as conn:
+            status = conn.execute("SELECT status FROM gd_buyer_message_outbox").fetchone()[0]
+        self.assertEqual((status, calls), ('sent', [('chat-1', 'hello')]))
+        temp.cleanup()
+
+    def test_runtime_dispatch_uses_supplied_buyer_adapter(self):
+        from core.database.db import Database
+        import tempfile
+        temp = tempfile.TemporaryDirectory(); db = Database(temp.name + "/x.sqlite3")
+        with db.connect() as conn:
+            conn.executescript("CREATE TABLE gd_deals(deal_id TEXT PRIMARY KEY,chat_id TEXT);")
+            conn.execute("INSERT INTO gd_deals VALUES('d','chat-1')")
+        outbox = BuyerPlatformMessageOutbox(db)
+        outbox.enqueue('d', 'chat-1', 'hello')
+        coordinator = TelegramRuntimeCoordinator(db, object(), object())
+        calls = []
+        def ui_adapter(chat, text, callback):
+            calls.append((chat, text)); callback({'ok': True}, None)
+        self.assertEqual(coordinator.dispatch_buyer_messages(ui_adapter), 1)
+        with db.connect() as conn:
+            status = conn.execute("SELECT status FROM gd_buyer_message_outbox").fetchone()[0]
+        self.assertEqual((status, calls), ('sent', [('chat-1', 'hello')]))
+        temp.cleanup()
+
     def test_playerok_outbox_dispatch_uses_exact_chat_and_callback(self):
         from core.database.db import Database
         import tempfile

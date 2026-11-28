@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 
@@ -61,6 +62,11 @@ class ServiceTaskStore:
             done = row["completed_units"] if completed_units is None else completed_units
             if not isinstance(done, int) or done < 0 or done > row["quantity"]:
                 raise ServiceTaskError("Неверное число выполненных единиц")
+            evidence_data = dict(evidence or {})
+            if state in {"awaiting_confirmation", "completed"} and not any(
+                str(value).strip() for value in evidence_data.values() if value is not None
+            ):
+                raise ServiceTaskError("Для подтверждения услуги требуется evidence")
             if state == "completed" and done != row["quantity"]:
                 raise ServiceTaskError("Нельзя завершить услугу без выполнения всех единиц")
             db.execute("UPDATE gd_service_units SET state=?,completed_units=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE unit_id=?", (state,done,unit_id))
@@ -68,4 +74,12 @@ class ServiceTaskStore:
 
     @staticmethod
     def _audit(db, unit_id: str, action: str, actor: str, evidence: Mapping[str, Any]):
-        db.execute("INSERT INTO gd_service_audit(audit_id,unit_id,action,actor,evidence_json) VALUES(?,?,?,?,?)", (str(uuid.uuid4()), unit_id, action, actor, json.dumps(dict(evidence), sort_keys=True)))
+        # SQLite's strftime('%f') default has millisecond precision; several
+        # service transitions can occur within one millisecond. Persist a
+        # microsecond timestamp explicitly so audit readers can identify the
+        # latest evidence deterministically by created_at.
+        created_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+        db.execute(
+            "INSERT INTO gd_service_audit(audit_id,unit_id,action,actor,evidence_json,created_at) VALUES(?,?,?,?,?,?)",
+            (str(uuid.uuid4()), unit_id, action, actor, json.dumps(dict(evidence), sort_keys=True), created_at),
+        )

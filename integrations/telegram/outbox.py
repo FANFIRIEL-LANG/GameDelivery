@@ -35,9 +35,25 @@ class TelegramCredentialStore:
         except Exception:
             raise OSError("Не удалось прочитать Telegram credentials из системного keyring") from None
 
+    def delete(self, name: str) -> None:
+        """Remove one optional credential without exposing its value."""
+        try:
+            self.backend.delete_password(self.SERVICE, name)
+        except Exception:
+            raise OSError("Не удалось удалить Telegram credentials из системного keyring") from None
+
+    def clear_proxy(self) -> None:
+        for name in ("proxy_url", "proxy_username", "proxy_password"):
+            try:
+                self.delete(name)
+            except OSError:
+                # Missing optional keyring entries are already cleared.
+                pass
+
     def configure(self, *, bot_token: str, proxy_url: str | None = None,
                   proxy_username: str | None = None, proxy_password: str | None = None) -> None:
         self.set("bot_token", bot_token)
+        self.clear_proxy()
         if proxy_url:
             self.set("proxy_url", proxy_url)
         if proxy_username:
@@ -392,12 +408,28 @@ class TelegramOperatorReplyRouter:
 
 
 def telegram_api_request(token, method, payload=None, proxy=None):
+    """Call a Telegram Bot API method with the configured proxy and safe errors."""
     import requests
-    if not token or not method: raise ValueError("Telegram credentials invalid")
+    from urllib.parse import quote, urlsplit, urlunsplit
+    if not token or any(ord(ch) < 32 for ch in str(token)) or not method:
+        raise ValueError("Telegram credentials or method invalid")
+    proxies = None
+    if proxy and proxy.get("url"):
+        parsed = urlsplit(str(proxy["url"]))
+        if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+            raise ValueError("Telegram proxy must use HTTP(S) or SOCKS5")
+        host = parsed.hostname + ((":" + str(parsed.port)) if parsed.port else "")
+        if proxy.get("username"):
+            host = quote(str(proxy["username"]), safe="") + ":" + quote(str(proxy.get("password", "")), safe="") + "@" + host
+        raw = urlunsplit((parsed.scheme, host, parsed.path, parsed.query, ""))
+        proxies = {"http": raw, "https": raw}
     try:
-        r=requests.post("https://api.telegram.org/bot"+token+"/"+method,json=payload or {},timeout=(5,20)); r.raise_for_status(); data=r.json()
-    except Exception as exc: raise RuntimeError("Telegram API request failed: "+type(exc).__name__) from None
-    if not isinstance(data,dict) or data.get("ok") is not True: raise RuntimeError("Telegram API did not confirm method")
+        response = requests.post("https://api.telegram.org/bot" + str(token) + "/" + str(method), json=payload or {}, proxies=proxies, timeout=(5, 20))
+        response.raise_for_status(); data = response.json()
+    except Exception as exc:
+        raise RuntimeError("Telegram API request failed: " + type(exc).__name__) from None
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        raise RuntimeError("Telegram API did not confirm method")
     return data
 
 def telegram_test_connection(token, proxy=None):
@@ -411,13 +443,24 @@ class BuyerPlatformMessageDispatcher:
             if "created_at" not in cols: db.execute("ALTER TABLE gd_buyer_message_outbox ADD COLUMN created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'")
             if "last_error" not in cols: db.execute("ALTER TABLE gd_buyer_message_outbox ADD COLUMN last_error TEXT")
             rows=[dict(r) for r in db.execute("SELECT * FROM gd_buyer_message_outbox WHERE COALESCE(status,'pending') IN ('pending','retry') ORDER BY created_at LIMIT ?",(limit,)).fetchall()]
+        claimed = []
         for row in rows:
+            # Claim before invoking the browser mutation. A process crash leaves
+            # dispatching durable and therefore blocks an unsafe automatic retry.
+            with self.database.connect() as db:
+                cursor = db.execute(
+                    "UPDATE gd_buyer_message_outbox SET status='dispatching',attempts=attempts+1,last_error=NULL WHERE message_id=? AND COALESCE(status,'pending') IN ('pending','retry')",
+                    (row["message_id"],),
+                )
+            if cursor.rowcount != 1:
+                continue
+            claimed.append(row["message_id"])
             def cb(result,error,message_id=row["message_id"]):
                 ok=error is None and result is not False; status="sent" if ok else ("unknown" if error=="unknown_result" else "retry"); detail=None if ok else (error if isinstance(error,str) else type(error).__name__)
-                with self.database.connect() as db: db.execute("UPDATE gd_buyer_message_outbox SET status=?,last_error=? WHERE message_id=?",(status,detail,message_id))
+                with self.database.connect() as db: db.execute("UPDATE gd_buyer_message_outbox SET status=?,last_error=? WHERE message_id=? AND status='dispatching'",(status,detail,message_id))
             try: send_text(str(row["chat_id"]),str(row["message_text"]),cb)
             except Exception as exc: cb(None,exc)
-        return len(rows)
+        return len(claimed)
 
 class TelegramUpdateProcessor:
     def __init__(self, database, reply_router):
@@ -440,3 +483,49 @@ class TelegramUpdateProcessor:
             from_user_id=str(user.get("id") or ""), operator_chat_id=str(chat.get("id") or ""),
             reply_to_message_id=str(replied.get("message_id") or ""), text=str(message.get("text") or "")))
 
+
+
+class TelegramRuntimeCoordinator:
+    """Non-blocking Telegram poll/drain coordinator for the application lifecycle."""
+    def __init__(self, database, credentials, reply_router, *, sender=telegram_api_sender, buyer_sender=None):
+        self.database = database
+        self.credentials = credentials
+        self.reply_router = reply_router
+        self.sender = sender
+        self.buyer_sender = buyer_sender
+        self.processor = TelegramUpdateProcessor(database, reply_router)
+        self.outbox = TelegramBotOutbox(database, credentials, sender)
+        self.buyer_dispatcher = BuyerPlatformMessageDispatcher(database) if buyer_sender else None
+        self._offset = self._load_offset()
+
+    def _load_offset(self):
+        with self.database.connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS telegram_runtime_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            row = db.execute("SELECT value FROM telegram_runtime_state WHERE key='update_offset'").fetchone()
+        try: return int(row[0]) if row else 0
+        except (TypeError, ValueError): return 0
+
+    def _save_offset(self, value):
+        with self.database.connect() as db:
+            db.execute("INSERT INTO telegram_runtime_state(key,value) VALUES('update_offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(value),))
+
+    def dispatch_buyer_messages(self, send_text, *, limit=20):
+        """Dispatch queued buyer replies through the already-owned UI adapter."""
+        if not callable(send_text):
+            raise ValueError("send_text callback is required")
+        return BuyerPlatformMessageDispatcher(self.database).dispatch_once(send_text, limit=limit)
+
+    def tick(self, *, operator_chat_id="", limit=20):
+        token = self.credentials.get("bot_token")
+        if not token: return {"status": "disabled", "processed": 0, "notifications": 0}
+        processed = 0
+        if operator_chat_id:
+            processed = self.outbox.enqueue_pending_delivery_events(operator_chat_id=operator_chat_id, limit=limit)
+        notifications = self.outbox.deliver_once(limit=limit)
+        updates = telegram_api_request(token, "getUpdates", {"offset": self._offset, "limit": limit, "timeout": 0}, self.credentials.proxy()).get("result", [])
+        for update in updates if isinstance(updates, list) else []:
+            if not isinstance(update, dict): continue
+            update_id = update.get("update_id")
+            if isinstance(update_id, int): self.processor.process(update); self._offset = max(self._offset, update_id + 1)
+        self._save_offset(self._offset)
+        return {"status": "ok", "processed": processed, "notifications": len(notifications), "updates": len(updates) if isinstance(updates, list) else 0}

@@ -68,6 +68,8 @@ jobs:
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_QUICK_BACKEND = 'software'
+          $env:QTWEBENGINE_CHROMIUM_FLAGS = '--disable-gpu'
           .\dist\GameDelivery\GameDelivery.exe --self-test
 
       - name: Add build information and package instructions
@@ -84,6 +86,7 @@ jobs:
           @'
           GameDelivery — Windows x64
           Start the application with GameDelivery.exe.
+          For a local no-network startup smoke test, run GameDelivery.exe --self-test; it uses a temporary isolated database and does not modify user data.
           The local database is stored in %USERPROFILE%\.gamedelivery\gamedelivery.sqlite3.
           The application is packaged with its Python and Qt runtime dependencies.
           Install ASF once, then select its executable and config directory in the GameDelivery ASF-bots tab. GameDelivery can launch, stop and restart ASF and provides its console in-app.
