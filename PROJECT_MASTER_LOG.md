@@ -1706,3 +1706,13 @@ Checks: `npm run renderer-smoke` passed (security contract, TypeScript typecheck
 - The packaged EXE remained alive through the bounded startup interval and was terminated by the harness.
 - `git diff --check` PASS.
 - No external integration or business mutation was performed.
+
+## Remote CI publication checkpoint (2026-11-28)
+- Published verified frontend state to `origin/work/local-sync`.
+- Commits: `ef2a7be` (Electron frontend), `adae5d7` (Python setup for Electron checks), `6692b54` (Python setup for packaging job), `6acde3b` (bounded frontend job), `68fd573` (backend dependencies for bridge smoke).
+- Final published commit: `68fd5732781ec11737befcb46a02f3b2079e035b`.
+- Remote CI for final published commit completed successfully:
+  - Electron frontend: run `46164663166`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46164663166
+  - Windows executable/package: run `46164663196`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46164663196
+  - Tests: run `46164663152`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46164663152
+- All jobs completed with conclusion `success`. No merge, force push, main or PR #4 changes.

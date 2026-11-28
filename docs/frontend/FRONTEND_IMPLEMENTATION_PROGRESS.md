@@ -205,3 +205,9 @@ Installer SHA-256: `6CEA02BE2EF6214E14F35B2C2D64BD355896CDC022BE96093B1C5CB1D50D
 
 ### 2026-11-28 — final packaged EXE regression
 Revalidated the unpacked executable after the final NSIS rebuild and externalized bridge correction. The packaged EXE startup smoke passed again. This is desktop lifecycle evidence only and does not constitute live Steam/Playerok/Telegram acceptance.
+
+### 2026-11-28 — Remote CI completed
+The verified frontend state was published only to `origin/work/local-sync`. The first Electron CI attempt failed during frontend checks because the Windows runner did not have the Python backend dependencies required by the real bridge smoke. Added Python setup and `pip install -r requirements.txt` to the frontend workflow, then republished.
+
+Final commit: `68fd5732781ec11737befcb46a02f3b2079e035b`.
+All mandatory final jobs passed: Electron frontend run `46164663166`, Windows executable/package run `46164663196`, and Tests run `46164663152`. The package and test jobs were inspected at job level and completed successfully.
