@@ -222,3 +222,6 @@ Added a fillable acceptance record aligned with the controlled live plan. It sep
 Added a lightweight documentation contract test for the controlled live acceptance plan and record template. It prevents accidental removal of the four integration sections, evidence/recovery requirements or the explicit approval stop gate.
 
 Verification: `npm run live-plan-smoke` PASS; diff check PASS. The test performs no external operation.
+
+### 2026-11-28 — Remote CI with live-plan smoke
+The acceptance documentation contract test was added to the Electron Windows workflow and passed remotely together with renderer, bridge, production packaging and repository tests. Runs `46166107423`, `46166107435` and `46166107426` all completed successfully for commit `6deead4d292d247b2c9f36d8d3c549dbfbf1429f`.

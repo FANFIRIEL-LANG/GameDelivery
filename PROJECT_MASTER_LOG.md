@@ -1733,3 +1733,10 @@ Checks: `npm run renderer-smoke` passed (security contract, TypeScript typecheck
 - Added `frontend/tests/live-plan-smoke.mjs` and `npm run live-plan-smoke`.
 - The check verifies that the controlled plan contains Steam/ASF, Playerok, Telegram, file-delivery sections, required preconditions/scenario/evidence/recovery markers and a stop gate, and that the record template contains explicit result states.
 - Verification: `npm run live-plan-smoke` PASS; `git diff --check` PASS. No live operation performed.
+
+## Remote CI — live-plan smoke included (2026-11-28)
+- Final published commit with live-plan documentation smoke: `6deead4d292d247b2c9f36d8d3c549dbfbf1429f`.
+- Electron frontend run `46166107423` — success: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46166107423
+- Windows executable/package run `46166107435` — success: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46166107435
+- Tests run `46166107426` — success: https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46166107426
+- All mandatory jobs completed successfully, including `live-plan-smoke` in the Electron workflow.
