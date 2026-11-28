@@ -56,8 +56,23 @@ class FileCatalog:
         relative = file_path.relative_to(self.root).as_posix()
         file_id = "file:" + hashlib.sha256((relative + "\0" + digest).encode()).hexdigest()
         with self.database.connect() as db:
-            db.execute("""INSERT INTO gd_files(file_id,product_id,relative_path,size_bytes,sha256) VALUES(?,?,?,?,?)
-                ON CONFLICT(relative_path) DO UPDATE SET product_id=excluded.product_id,size_bytes=excluded.size_bytes,sha256=excluded.sha256,state='available',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')""", (file_id,product_id,relative,len(data),digest))
+            existing = db.execute(
+                "SELECT state,order_id FROM gd_files WHERE relative_path=?",
+                (relative,),
+            ).fetchone()
+            if existing is not None and existing["state"] in {"reserved", "manual_required", "delivered"}:
+                raise FileCatalogError("Нельзя заменить файл с активной или завершённой выдачей")
+            if existing is None:
+                db.execute(
+                    "INSERT INTO gd_files(file_id,product_id,order_id,relative_path,size_bytes,sha256) VALUES(?,?,?,?,?,?)",
+                    (file_id, product_id, None, relative, len(data), digest),
+                )
+            else:
+                db.execute(
+                    """UPDATE gd_files SET file_id=?,product_id=?,order_id=NULL,size_bytes=?,sha256=?,state='available',
+                       updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE relative_path=?""",
+                    (file_id, product_id, len(data), digest, relative),
+                )
         return {"file_id": file_id, "product_id": product_id, "size_bytes": len(data), "sha256": digest}
 
     def verify(self, file_id: str) -> dict[str, Any]:

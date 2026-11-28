@@ -1390,3 +1390,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Empty order IDs are rejected by the store, and the transaction keeps the exact file-to-order binding together with the `MANUAL_REQUIRED` state.
 - Regression now verifies the persisted order binding.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **72 passed**; compileall — PASS; `git diff --check` — PASS. No external file transfer or user database access performed.
+
+## 2026-11-28 — file catalog replacement safety hardening
+
+- Prevented re-registering a managed path while its prior file unit is `reserved`, `manual_required`, or `delivered`; this avoids silently clearing an active order binding or rewriting delivery history.
+- Re-registering an inactive catalog row resets its old `order_id` explicitly before making the new content available. New rows initialize with a null binding.
+- Regression covers the active-reservation replacement block.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **72 passed**; compileall — PASS; `git diff --check` — PASS. No external file transfer performed.
