@@ -1,0 +1,43 @@
+name: Build GameDelivery Electron frontend
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/local-sync]
+    paths:
+      - frontend/**
+      - .github/workflows/frontend-windows.yml
+  pull_request:
+    paths:
+      - frontend/**
+      - .github/workflows/frontend-windows.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-electron-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Run frontend checks
+        working-directory: frontend
+        run: npm run renderer-smoke && npm run bridge-smoke && npm run production-smoke
+      - name: Build Windows installer
+        working-directory: frontend
+        run: npm run package:win
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameDelivery-Electron-Windows-installer
+          path: frontend/dist/GameDelivery-*-setup.exe
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,11 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+const root = resolve(import.meta.dirname, "..");
+const main = readFileSync(resolve(root, "frontend/electron/main/index.ts"), "utf8");
+const preload = readFileSync(resolve(root, "frontend/electron/preload/index.ts"), "utf8");
+for (const required of ["contextIsolation: true", "nodeIntegration: false", "sandbox: true"]) if (!main.includes(required)) throw new Error(`Missing Electron security setting: ${required}`);
+if (!preload.includes("contextBridge.exposeInMainWorld")) throw new Error("Preload does not expose a contextBridge API");
+for (const channel of ["gamedelivery:get-health", "gamedelivery:get-capabilities", "gamedelivery:list-orders", "gamedelivery:get-operator-summary", "gamedelivery:get-asf-status", "gamedelivery:get-asf-inventory"]) if (!preload.includes(channel)) throw new Error(`Missing allowlisted preload channel: ${channel}`);
+if (preload.includes("process.") || preload.includes("require(") || preload.includes("eval(")) throw new Error("Preload contains an unsafe direct runtime API");
+if (/ipcRenderer\.send\s*\(/.test(preload) || /ipcRenderer\.invoke\s*\(\s*[^"`]/.test(preload)) throw new Error("Preload exposes a non-constant IPC channel");
+console.log("Electron security contract: PASS");

@@ -1,0 +1,9 @@
+export type CapabilityState = "available" | "unavailable" | "not_implemented" | "error";
+export type DesktopCapability = { id: string; state: CapabilityState };
+export type BridgeHealthResponse = { ok: boolean; service?: "python_bridge"; error?: string };
+export type CapabilitiesResponse = { ok: boolean; capabilities?: DesktopCapability[]; error?: string };
+export type OrderSnapshot = { id: number; source: string; external_id: string; item_type: string; item_name: string; quantity: number; status: string; payload: unknown; error_message: string | null; created_at: string; updated_at: string };
+export type OrdersResponse = { ok: boolean; orders?: OrderSnapshot[]; error?: string };
+export type OperatorSummaryResponse = { ok: boolean; digital_codes?: number; files?: number; service_units?: number; error?: string };
+export type ASFStatusResponse = { ok: boolean; status?: unknown; error?: string; type?: string };
+export type ASFInventoryResponse = { ok: boolean; inventory?: unknown; error?: string; type?: string };

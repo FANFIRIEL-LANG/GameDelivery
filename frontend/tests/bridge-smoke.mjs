@@ -1,0 +1,17 @@
+import { spawn } from "node:child_process";
+import { strict as assert } from "node:assert";
+const child = spawn(process.env.PYTHON ?? "python", ["backend_bridge.py"], { cwd: process.cwd(), stdio: ["pipe", "pipe", "ignore"] });
+let buffer = "";
+const next = () => new Promise((resolve,reject)=>{const onData=chunk=>{buffer+=chunk.toString();const i=buffer.indexOf("\n");if(i<0)return;child.stdout.off("data",onData);try{resolve(JSON.parse(buffer.slice(0,i)));buffer=buffer.slice(i+1)}catch(e){reject(e)}};child.stdout.on("data",onData);setTimeout(()=>{child.stdout.off("data",onData);reject(new Error("bridge_timeout"))},3000)});
+const ask=async (method, extra={})=>{child.stdin.write(JSON.stringify({method,...extra})+"\n");return await next()};
+const caps=await ask("capabilities");assert.equal(caps.ok,true);assert.ok(Array.isArray(caps.capabilities));
+const orders=await ask("orders.list");assert.equal(orders.ok,true);assert.ok(Array.isArray(orders.orders));
+const operator=await ask("operator.summary");assert.equal(operator.ok,true);for(const key of ["digital_codes","files","service_units"])assert.equal(typeof operator[key],"number");
+const asf=await ask("asf.status");assert.ok(asf.ok || asf.error === "asf_unavailable");
+const invalidInventory=await ask("asf.inventory");assert.deepEqual(invalidInventory,{ok:false,error:"invalid_request"});
+const cardsInventory=await ask("asf.inventory",{bot:"test-bot",app_id:753,context_id:6});assert.ok(cardsInventory.ok || cardsInventory.error === "asf_unavailable");
+const cs2Inventory=await ask("asf.inventory",{bot:"test-bot",app_id:730,context_id:2});assert.ok(cs2Inventory.ok || cs2Inventory.error === "asf_unavailable");
+const mixedInventory=await ask("asf.inventory",{bot:"test-bot",app_id:753,context_id:2});assert.deepEqual(mixedInventory,{ok:false,error:"invalid_request"});
+const unknown=await ask("not-real");assert.deepEqual(unknown,{ok:false,error:"not_implemented"});
+child.stdin.write("not-json\n");const invalid=await next();assert.deepEqual(invalid,{ok:false,error:"invalid_request"});
+child.kill();console.log("Bridge lifecycle/contract/error smoke: PASS");

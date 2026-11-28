@@ -1,0 +1,3 @@
+import type { BridgeHealthResponse, CapabilitiesResponse, OrdersResponse } from "./src/services/backend/contracts";
+declare global { interface Window { gameDelivery: { getHealth: () => Promise<BridgeHealthResponse>; getCapabilities: () => Promise<CapabilitiesResponse>; listOrders: () => Promise<OrdersResponse>; getOperatorSummary: () => Promise<import("./services/backend/contracts").OperatorSummaryResponse>; getASFStatus: () => Promise<import("./services/backend/contracts").ASFStatusResponse>; getASFInventory: (botName: string, appId: 753 | 730, contextId: 6 | 2) => Promise<import("./services/backend/contracts").ASFInventoryResponse>; }; } }
+export {};

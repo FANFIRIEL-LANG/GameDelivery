@@ -30,3 +30,7 @@ ArchiSteamFarm/
 **/config/*.json
 # Local GameDelivery state may contain account/order metadata.
 .gamedelivery/
+
+frontend/node_modules/
+frontend/dist/
+frontend/dist-electron/

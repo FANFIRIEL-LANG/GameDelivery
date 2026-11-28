@@ -102,3 +102,28 @@ jobs:
           path: dist/GameDelivery/
           if-no-files-found: error
           retention-days: 30
+
+  build-electron-frontend:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout GameDelivery
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build and package Electron directory
+        working-directory: frontend
+        run: npm run package:dir
+      - name: Upload Electron unpacked package
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameDelivery-Electron-Windows-unpacked
+          path: frontend/dist/win-unpacked/
+          if-no-files-found: error
+          retention-days: 30

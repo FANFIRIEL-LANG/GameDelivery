@@ -1,0 +1,18 @@
+appId: com.gamedelivery.desktop
+productName: GameDelivery
+asar: true
+extraResources:
+  - from: backend_bridge.py
+    to: backend_bridge.py
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+win:
+  target:
+    - nsis
+  artifactName: ${productName}-${version}-setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

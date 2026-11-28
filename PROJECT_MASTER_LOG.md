@@ -1488,3 +1488,221 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - A different order or any other active/terminal state remains fail-closed.
 - Added regression for repeated reservation of the same manual file unit.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **78 passed**; compileall — PASS; `git diff --check` — PASS. No external file transfer performed.
+
+## Frontend Stage 0 audit checkpoint (2026-11-28)
+
+Stage 0 of the new Electron + React + TypeScript frontend specification completed. Repository is currently a PySide6 application: `app/__main__.py` → `app/main.py::MainWindow`; no Electron/React/Vite/TypeScript scaffold, generic local HTTP API, or generic backend WebSocket transport exists. Actual integration boundaries were mapped for ASF IPC, Playerok browser/GraphQL/Safe Sync, orders/delivery/reservations, operator digital codes/files/services, inventory, proxy/OpenSkin and Telegram. Findings are recorded in `docs/frontend/BACKEND_INTEGRATION_MAP.md`; continuation state is recorded in `docs/frontend/FRONTEND_IMPLEMENTATION_PROGRESS.md`.
+
+No business logic or existing frontend was removed. No external operations were performed. Next slice is a non-destructive Stage 1 Electron scaffold with a typed safe bridge and explicit `not_implemented` capability responses where no backend transport exists.
+## Frontend Stage 1 scaffold checkpoint (2026-11-28)
+
+Created a non-destructive `frontend/` Electron/Vite/React/TypeScript scaffold with secure BrowserWindow defaults (`contextIsolation: true`, `nodeIntegration: false`, sandbox enabled), preload IPC bridge, explicit `not_implemented` backend transport capability, and minimal renderer startup page. Existing PySide6 app and backend were not modified. No fake endpoint or business operation was added. Package installation/build was not run because dependencies are not installed yet; next step is install frontend dependencies and add UI Kit/AppShell only after validating the scaffold.
+
+## Frontend Stage 1 scaffold checkpoint (2026-11-28)
+
+Created initial Electron/Vite/React/TypeScript scaffold under `frontend/`, secure preload bridge, and explicit unavailable backend transport. No business logic or external operations changed.
+
+## Frontend Stage 1 scaffold checkpoint (2026-11-28)
+
+Created the initial `frontend/` Electron/Vite/React/TypeScript scaffold with secure BrowserWindow settings and a minimal typed preload bridge. The only exposed capability is an explicit `backend-transport: not_implemented`; no fake backend endpoints or business operations were added. Existing PySide6 frontend, Python backend, ASF, Playerok and delivery logic were not changed. Dependency installation, typecheck/build and Electron startup smoke remain to be verified in the next slice.
+
+## Frontend Stage 1 working renderer checkpoint (2026-11-28)
+
+Stage 1 advanced beyond empty scaffold: frontend dependencies and lockfile were installed; Tailwind/PostCSS configuration was added; a working React renderer now exposes eight navigable sections through a Zustand store, secure Electron preload/main files, topbar status, explicit backend-unavailable states and a collapsible console. No fake backend data or business operations were introduced. `npm run typecheck` and `npm run build` pass; `git diff --check` passes. Electron runtime smoke and real Python backend transport remain pending. Existing PySide6/backend/business logic remains unchanged.
+
+## Frontend read-only Python bridge checkpoint (2026-11-28)
+
+Added a minimal real local JSONL bridge for capability discovery from actual Python module availability. Electron main starts/stops the bridge and exposes only the typed capability query via preload. Unknown methods return explicit `not_implemented`; no mutations or secrets are handled. Existing business logic remains unchanged.
+
+## Frontend bridge verification correction (2026-11-28)
+
+The local JSONL bridge was corrected to add the repository root to `sys.path`. Direct capability probe now returns actual importability states for orders, Playerok, ASF, digital codes, files, services, Telegram and OpenSkin; unknown methods return explicit `not_implemented`. Renderer security smoke, TypeScript typecheck and Vite production build pass after the correction.
+
+## Orders read-only bridge slice (2026-11-28)
+
+Extended the real local JSONL bridge with `orders.list`, backed by the existing `core.orders.service.OrderService` and configured database path (`GAMEDELIVERY_DATABASE_PATH`, otherwise the existing user state location). The operation is read-only and serializes the existing order records; no order transitions, reservation changes or delivery actions are exposed. Unknown methods remain explicit `not_implemented`.
+
+Electron preload now exposes only `getCapabilities` and `listOrders`; Electron main owns the bridge request/response flow. The React renderer reads the real order snapshot and displays the confirmed order count without optimistic or mock data. Direct probe returned `{"ok":true,"orders":[]}` for the current empty database.
+
+Checks: `npm run renderer-smoke` passed (security contract, TypeScript typecheck, Vite build); `python -m py_compile backend_bridge.py` passed; unknown bridge method returned `not_implemented`; `git diff --check` passed. No external operations or business mutations were performed.
+
+## Checkpoint — typed read-only desktop snapshot (2026-11-28)
+- Added typed renderer contracts for capabilities and order snapshots, plus a small backend client with explicit bridge error handling.
+- Dashboard now renders only real local `capabilities` and `orders.list` results; Orders section exposes a read-only table and empty/error states.
+- JSONL bridge now parses JSON requests generically while preserving the allowlisted methods (`capabilities`, `orders.list`) and explicit `not_implemented` responses.
+- Verification: `npm run renderer-smoke` PASS (security smoke, TypeScript, Vite build); `python -m py_compile backend_bridge.py` PASS; direct bridge probe for capabilities/orders/unknown PASS; `git diff --check` PASS.
+- No external operations, Steam actions, commits, or pushes performed.
+
+## Checkpoint — reusable UI primitives and shell status (2026-11-28)
+- Added reusable UI primitives for Button, Card, EmptyState and StatusIndicator under `frontend/src/components/ui/`.
+- Refined AppShell wording so the current UI clearly identifies the read-only bridge and disabled live actions instead of claiming the bridge is entirely disconnected.
+- Added status/metric styling while preserving the existing dark graphite/orange design system and safe read-only behavior.
+- Verification: `npm run renderer-smoke` PASS; `git diff --check` PASS. No backend business logic or external operation changed.
+
+## Checkpoint — feature extraction and bridge lifecycle smoke (2026-11-28)
+- Moved Dashboard, Orders, and unavailable module rendering out of `App.tsx` into feature components.
+- Added a process-level JSONL bridge lifecycle/contract smoke test covering capabilities, orders.list, unknown method handling, response parsing and shutdown.
+- Added `bridge-smoke` npm script. No mutating IPC channels or external integrations were added.
+- Verification: `npm run renderer-smoke` PASS; `npm run bridge-smoke` PASS; `git diff --check` PASS.
+
+## Checkpoint — bridge failure handling (2026-11-28)
+- Hardened Electron bridge request lifecycle: unavailable process, process error/exit, concurrent request rejection, write failure, invalid response, timeout cleanup and shutdown reset are explicit states.
+- Extended bridge smoke test with malformed JSON request handling (`invalid_request`).
+- No arbitrary IPC, credentials, business mutations or external operations were added.
+- Verification: `npm run renderer-smoke` PASS; `npm run bridge-smoke` PASS; `python -m py_compile backend_bridge.py` PASS; `git diff --check` PASS.
+
+## Checkpoint — bridge health and renderer connection state (2026-11-28)
+- Added a real local `health` bridge method returning the running Python bridge service state; no external service is contacted.
+- Added restricted `gamedelivery:get-health` IPC and typed preload/client contract.
+- Dashboard header now distinguishes `BRIDGE ONLINE · READ-ONLY` from `BRIDGE UNAVAILABLE` based on the actual bridge response.
+- Extended bridge smoke coverage to retain capabilities, orders, unknown method and malformed request checks.
+- Verification: `npm run renderer-smoke` PASS; `npm run bridge-smoke` PASS; `python -m py_compile backend_bridge.py` PASS; `git diff --check` PASS.
+
+## Checkpoint — read-only Orders table controls (2026-11-28)
+- Added client-side search, status filtering and created/updated sorting to the read-only Orders view.
+- Filters operate only on the verified `orders.list` snapshot; no backend lifecycle or mutation is introduced.
+- Long item names retain a native title tooltip and the table keeps a minimum width with horizontal scrolling.
+- Verification: `npm run renderer-smoke` PASS; `git diff --check` PASS.
+
+## Checkpoint — read-only operator inventory summary (2026-11-28)
+- Added `operator.summary` to the local bridge. It reads only counts from existing `gd_digital_codes`, `gd_files` and `gd_service_units` tables when present; absent tables return zero counts without exposing secrets or file contents.
+- Added typed IPC/preload/client contracts and a Dashboard operator-stock card.
+- No import, reveal, reserve, file delivery or service transition operation was exposed.
+- Verification: `operator.summary` direct probe returned `ok: true` with current counts 0/0/0; `npm run renderer-smoke` PASS; `npm run bridge-smoke` PASS; Python compile PASS.
+
+## Checkpoint — operator summary contract coverage (2026-11-28)
+- Extended `frontend/tests/bridge-smoke.mjs` to assert `operator.summary` success and numeric fields for digital codes, files and service units.
+- This verifies the new read-only operator contract without initializing schemas, exposing secrets or executing operator actions.
+- Verification: `npm run bridge-smoke` PASS; `npm run renderer-smoke` PASS.
+
+## Checkpoint — ASF read-only status adapter (2026-11-28)
+- Added `asf.status` to the local bridge using the existing `integrations.asf.client.ASFClient.get_status()` route `/Api/ASF` over loopback only.
+- ASF IPC URL is restricted to the existing local default or explicit `ASF_IPC_BASE_URL`; optional password is read from process environment and never returned to renderer/log payloads.
+- Unavailable ASF runtime returns explicit `asf_unavailable`; no inventory, trade, confirmation, bot-control or Steam mutation is exposed.
+- Added typed preload/client contracts and bridge smoke coverage allowing either a verified status response or explicit unavailable state.
+- Current direct probe: `asf_unavailable` because no ASF IPC listener is running.
+- Verification: `npm run renderer-smoke` PASS; `npm run bridge-smoke` PASS; Python compile PASS.
+
+## Checkpoint — ASF inventory read-only contract (2026-11-28)
+- Added restricted `asf.inventory` bridge operation backed by existing `ASFClient.get_bot_inventory()`.
+- Renderer API accepts only bot name and the two existing product contexts: Steam Cards `(753,6)` or CS2 `(730,2)`; the business types remain separated.
+- Invalid or missing request data returns `invalid_request`; unavailable ASF returns `asf_unavailable`.
+- No inventory selection, reservation, trade offer, confirmation or other mutation was exposed.
+- Verification: renderer smoke PASS; bridge smoke PASS including invalid inventory request; Python compile PASS.
+
+## Checkpoint — guarded ASF inventory UI (2026-11-28)
+- Added an Inventory feature view with explicit bot name and product-context selection.
+- The UI calls only the typed read-only `getASFInventory` API and supports separate Steam Cards `(753,6)` and CS2 `(730,2)` contexts.
+- Missing bot input, ASF unavailable state and raw read-only response are shown explicitly; no item selection, reservation or trade action is present.
+- Verification: `npm run renderer-smoke` PASS; no Steam operation performed.
+
+## Checkpoint — ASF context separation regression coverage (2026-11-28)
+- Extended bridge smoke coverage for valid Steam Cards `(753,6)` and CS2 `(730,2)` inventory requests.
+- Added regression assertion that mixed context `(753,2)` is rejected as `invalid_request`.
+- Valid requests are accepted by contract and return either real ASF data or explicit `asf_unavailable`; no Steam runtime or credentials are required for the test.
+- Verification: `npm run bridge-smoke` PASS; `npm run renderer-smoke` PASS.
+
+## Checkpoint — inventory loading and retry-safe UI state (2026-11-28)
+- Added explicit loading state to the Inventory snapshot action; repeated clicks are disabled while the read-only request is in flight.
+- Errors clear before a new attempt and loading is reset in `finally`, preserving safe retry behavior without automatic retries.
+- Verification: `npm run renderer-smoke` PASS; no ASF or Steam operation performed.
+
+## Checkpoint — ASF and Playerok feature states (2026-11-28)
+- Added an ASF feature view using the real `getASFStatus` read-only route, with loading, available and unavailable states.
+- Added a Playerok feature view that explicitly documents the current Qt-owned browser/session boundary; it does not invent an API or fall back to an external browser.
+- Existing Inventory remains the only ASF inventory action and is read-only.
+- Verification: `npm run renderer-smoke` PASS; no external operation performed.
+
+## Checkpoint — explicit Operator and Telegram boundaries (2026-11-28)
+- Added Operator feature state: Dashboard read-only counts are available, while code reveal, file delivery and service transitions remain disabled without verified contracts.
+- Added Telegram feature state: existing Python-owned settings/runtime remain untouched; token binding, `/start` linking and message sending are explicitly unavailable.
+- All eight navigation sections now have a deliberate state or read-only view; no fake success is shown.
+- Verification: `npm run renderer-smoke` PASS; no Telegram, operator or external operation performed.
+
+## Checkpoint — production Electron layout (2026-11-28)
+- Added `frontend/electron.tsconfig.json` to compile Electron main/preload sources into `dist-electron/`.
+- Main now loads the production renderer from `dist/index.html` while keeping the secure preload path and Python bridge path.
+- Added `production-smoke` and `tests/production-layout.mjs` to verify renderer build, compiled main/preload, and bridge source presence.
+- Verification: `npm run production-smoke` PASS; no Electron window launch or external operation performed.
+
+## Checkpoint — Electron desktop startup smoke (2026-11-28)
+- Added `tests/electron-startup.mjs` and `electron-startup-smoke`.
+- The check builds renderer and Electron bundles, launches the compiled Electron main process for a bounded interval, verifies it does not exit immediately, then terminates the test process without touching external services.
+- Current Windows startup smoke: PASS. The test uses Windows shell spawning for `.cmd` compatibility; Node emits its standard shell-argument deprecation warning, with no test failure.
+
+## Checkpoint — Windows packaging (2026-11-28)
+- Added electron-builder configuration `frontend/electron-builder.yml` with Windows NSIS target and unpacked directory target.
+- Moved Electron to devDependencies, set package `main` to `dist-electron/main/index.js`, and added `package:dir` / `package:win` scripts.
+- Windows packaging completed successfully:
+  - unpacked app: `frontend/dist/win-unpacked/`
+  - installer: `frontend/dist/GameDelivery-0.1.0-setup.exe`
+  - blockmap generated.
+- Packaging is unsigned because no code-signing certificate was configured.
+- The package includes the Python bridge source but does not bundle a Python interpreter; deployment still requires a compatible Python runtime and existing GameDelivery Python environment. This is documented as a remaining packaging limitation, not claimed as a self-contained installer.
+- Verification: `npm run package:dir` PASS; `npm run package:win` PASS; `git diff --check` PASS.
+
+## Checkpoint — packaged EXE startup and hashes (2026-11-28)
+- Launched the generated `dist/win-unpacked/GameDelivery.exe` in a bounded hidden Windows smoke test; it remained alive through the startup window and was then terminated by the harness.
+- SHA-256 provenance:
+  - installer `GameDelivery-0.1.0-setup.exe`: `30F373BB86FDBFE9CF5B65A978CF4DBEE1BB351CBE9F652EE15AC41D3FAB2D27`
+  - unpacked `GameDelivery.exe`: `31441F7C2A4CA26FF99054D96F0ED65B59CB07318270244A4D59EB88114A67E7`
+- Verification: packaged Windows startup smoke PASS. This confirms launch lifecycle only; Python runtime and live integrations remain deployment prerequisites.
+
+## Checkpoint — Windows installation and data preservation guide (2026-11-28)
+- Added `frontend/README.md` with build/package commands, runtime prerequisites, data/config preservation procedure and current integration boundary.
+- The guide explicitly preserves the existing SQLite database, keyring, ASF config/data and Playerok profile; it does not instruct destructive replacement or migration.
+- Verification basis: package:win and packaged EXE startup smoke already passed; documentation now records the remaining Python-runtime and unsigned-installer limitations.
+
+## Checkpoint — frontend acceptance regression run (2026-11-28)
+- Re-ran the targeted final frontend checks after packaging/documentation changes.
+- Current branch remains `work/local-sync`; only GameDelivery frontend/docs changes are present as uncommitted work.
+- Verification: `npm run electron-startup-smoke` PASS (renderer build, Electron compile, production layout, bounded Electron startup); `npm run bridge-smoke` PASS; `python -m py_compile backend_bridge.py` PASS; `git diff --check` PASS.
+- No commit/push, live integration, Steam, Playerok, Telegram or file-delivery operation performed.
+
+## Checkpoint — Remote CI workflow for Electron frontend (2026-11-28)
+- Added `.github/workflows/frontend-windows.yml` for Windows CI on frontend changes and `work/local-sync` pushes.
+- The workflow installs from `frontend/package-lock.json`, runs renderer/bridge/production smoke checks, builds the Windows NSIS installer and uploads it as an artifact.
+- Added an Electron unpacked-package job to the existing Windows packaging workflow for future coordinated CI runs.
+- No workflow was executed or published in this turn; commit/push remain unauthorized.
+- Local packaging and startup evidence remains PASS from the prior checkpoint.
+
+## Checkpoint — preload allowlist regression hardening (2026-11-28)
+- Extended `frontend/tests-security.mjs` to assert every currently exposed IPC channel is present and to reject non-constant `ipcRenderer` channel usage.
+- Existing context isolation, node integration, sandbox and direct-runtime API checks remain active.
+- Verification: `npm run renderer-smoke` PASS; no external operation performed.
+
+## Checkpoint — partial bridge failure isolation (2026-11-28)
+- Changed AppShell data loading from `Promise.all` to `Promise.allSettled` so one unavailable read-only slice cannot hide healthy order/capability/health snapshots.
+- Partial failures now produce explicit `partial_bridge_unavailable` while successful independent responses remain visible.
+- No retries or mutations were added.
+- Verification: `npm run renderer-smoke` PASS; `git diff --check` PASS.
+
+## Checkpoint — controlled live acceptance plan (2026-11-28)
+- Added `docs/frontend/LIVE_ACCEPTANCE_PLAN.md` covering Steam/ASF, Playerok, Telegram and file delivery.
+- Each section defines preconditions, one controlled scenario, expected result, verification evidence, risks and recovery behavior.
+- The plan explicitly stops before real external operations and preserves fail-closed/UNKNOWN handling; no live operation was performed.
+
+## Checkpoint — final local scope and secret scan (2026-11-28)
+- Confirmed working branch remains `work/local-sync` with no commits or pushes.
+- Reviewed current status: only GameDelivery frontend, workflow, docs and Master Log changes are present.
+- `git diff --check` PASS.
+- Searched frontend, new workflow and frontend docs for credential-like literals; no embedded IPC passwords, bot tokens, API keys or secrets were found.
+- Live acceptance remains a prepared plan only; no external mutation was executed.
+
+## Checkpoint — packaged Python bridge path fix (2026-11-28)
+- Fixed the packaged-app bridge path: `backend_bridge.py` is now an electron-builder `extraResources` file outside `app.asar`, and packaged Main resolves it through `process.resourcesPath`; development still resolves the repository path.
+- This avoids attempting to launch an external Python process against an asar virtual path.
+- Verified `dist/win-unpacked/resources/backend_bridge.py` exists.
+- Rebuilt package directory and launched the packaged EXE in a bounded Windows smoke test: PASS.
+
+## Checkpoint — final NSIS rebuild after bridge path correction (2026-11-28)
+- Rebuilt the Windows NSIS installer after externalizing `backend_bridge.py` to `resources/`.
+- `npm run package:win` PASS; `dist/win-unpacked/resources/backend_bridge.py` exists.
+- Final installer SHA-256: `6CEA02BE2EF6214E14F35B2C2D64BD355896CDC022BE96093B1C5CB1D50D4298`.
+- Installer remains unsigned and Python runtime remains a documented prerequisite.
+
+## Checkpoint — final packaged EXE regression (2026-11-28)
+- Launched the final `dist/win-unpacked/GameDelivery.exe` produced after the NSIS rebuild.
+- The packaged EXE remained alive through the bounded startup interval and was terminated by the harness.
+- `git diff --check` PASS.
+- No external integration or business mutation was performed.

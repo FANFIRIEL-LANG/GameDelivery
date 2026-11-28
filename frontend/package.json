@@ -1,0 +1,42 @@
+{
+  "name": "gamedelivery-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "security-smoke": "node tests-security.mjs",
+    "renderer-smoke": "npm run security-smoke && npm run typecheck && npm run build",
+    "bridge-smoke": "node tests/bridge-smoke.mjs",
+    "build:electron": "tsc -p electron.tsconfig.json",
+    "production-smoke": "npm run build && npm run build:electron && node tests/production-layout.mjs",
+    "electron-startup-smoke": "npm run production-smoke && node tests/electron-startup.mjs",
+    "package:dir": "npm run build && npm run build:electron && electron-builder --dir",
+    "package:win": "npm run build && npm run build:electron && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "lucide-react": "latest",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "latest"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.5",
+    "@types/electron": "^1.4.38",
+    "@types/node": "^26.6.11",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
+    "autoprefixer": "^10.7.1",
+    "electron-builder": "^26.18.0",
+    "postcss": "^8.5.34",
+    "tailwindcss": "^4.3.5",
+    "typescript": "latest",
+    "vite": "latest",
+    "electron": "latest"
+  },
+  "description": "GameDelivery desktop frontend",
+  "author": "GameDelivery",
+  "main": "dist-electron/main/index.js"
+}
