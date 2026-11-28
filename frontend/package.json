@@ -13,7 +13,8 @@
     "production-smoke": "npm run build && npm run build:electron && node tests/production-layout.mjs",
     "electron-startup-smoke": "npm run production-smoke && node tests/electron-startup.mjs",
     "package:dir": "npm run build && npm run build:electron && electron-builder --dir",
-    "package:win": "npm run build && npm run build:electron && electron-builder --win nsis"
+    "package:win": "npm run build && npm run build:electron && electron-builder --win nsis",
+    "live-plan-smoke": "node tests/live-plan-smoke.mjs"
   },
   "dependencies": {
     "lucide-react": "latest",

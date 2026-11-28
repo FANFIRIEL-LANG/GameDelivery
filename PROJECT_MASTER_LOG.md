@@ -1723,3 +1723,13 @@ Checks: `npm run renderer-smoke` passed (security contract, TypeScript typecheck
   - Tests: run `46165126956`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46165126956
   - Windows executable/package: run `46165126966`, https://github.com/FANFIRIEL-LANG/GameDelivery/actions/runs/46165126966
 - Electron frontend workflow had already passed for the code-bearing revision `68fd5732781ec11737befcb46a02f3b2079e035b` as run `46164663166`; the follow-up changed documentation only.
+
+## Checkpoint — live acceptance record template (2026-11-28)
+- Added `docs/frontend/LIVE_ACCEPTANCE_RECORD_TEMPLATE.md` for human-controlled Steam/ASF, Playerok, Telegram and file-delivery acceptance.
+- Template requires approval references, evidence, explicit result states and recovery notes; it forbids recording secrets and treats incomplete evidence as UNKNOWN.
+- No live operation was performed.
+
+## Checkpoint — live acceptance documentation smoke (2026-11-28)
+- Added `frontend/tests/live-plan-smoke.mjs` and `npm run live-plan-smoke`.
+- The check verifies that the controlled plan contains Steam/ASF, Playerok, Telegram, file-delivery sections, required preconditions/scenario/evidence/recovery markers and a stop gate, and that the record template contains explicit result states.
+- Verification: `npm run live-plan-smoke` PASS; `git diff --check` PASS. No live operation performed.

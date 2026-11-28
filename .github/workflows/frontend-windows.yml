@@ -36,7 +36,7 @@ jobs:
         run: npm ci
       - name: Run frontend checks
         working-directory: frontend
-        run: npm run renderer-smoke && npm run bridge-smoke && npm run production-smoke
+        run: npm run renderer-smoke && npm run bridge-smoke && npm run live-plan-smoke && npm run production-smoke
       - name: Build Windows installer
         working-directory: frontend
         run: npm run package:win

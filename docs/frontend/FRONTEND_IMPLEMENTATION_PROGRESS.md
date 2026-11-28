@@ -214,3 +214,11 @@ All mandatory final jobs passed: Electron frontend run `46164663166`, Windows ex
 
 ### 2026-11-28 — final post-publication CI verification
 The documentation follow-up revision `603d1870c6724993cf3e7d117af9f654351b09` passed the Tests and Windows executable/package workflows. The code-bearing frontend revision `68fd5732781ec11737befcb46a02f3b2079e035b` passed the Electron frontend workflow. No CI job remains failed or in progress for the published revisions.
+
+### 2026-11-28 — live acceptance record template
+Added a fillable acceptance record aligned with the controlled live plan. It separates evidence for Steam/ASF, Playerok, Telegram and file delivery, includes explicit `NOT RUN`/`PASS`/`FAIL`/`UNKNOWN` states, and requires recovery notes without storing tokens or other secrets.
+
+### 2026-11-28 — live plan documentation smoke
+Added a lightweight documentation contract test for the controlled live acceptance plan and record template. It prevents accidental removal of the four integration sections, evidence/recovery requirements or the explicit approval stop gate.
+
+Verification: `npm run live-plan-smoke` PASS; diff check PASS. The test performs no external operation.
