@@ -1425,3 +1425,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - Whitespace-padded identifiers can no longer pass validation but miss stock rows or create non-canonical order bindings.
 - Added regression for normalized direct reservation.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **76 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.
+
+## 2026-11-28 — digital order-line reservation idempotency
+
+- Added durable `order_line_id` binding to digital-code stock, including compatibility migration for existing databases and a transaction-local schema guard for legacy callers.
+- `reserve_for_order_line` is now idempotent: repeating the same order-line reservation returns the existing code IDs; a quantity mismatch raises `DigitalCodeConflict` instead of reserving additional codes.
+- Added regression for repeated order-line reservation and preserved optional-item/legacy-schema behavior.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **77 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.

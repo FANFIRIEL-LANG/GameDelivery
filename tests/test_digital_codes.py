@@ -78,6 +78,21 @@ class DigitalCodeTests(unittest.TestCase):
         self.assertEqual(result["product_id"], "game")
         self.assertEqual(result["order_id"], "order-1")
 
+    def test_order_line_reservation_is_idempotent(self):
+        self.store.import_codes(product_id="game", batch_id="batch-1", source="A-1\nB-2\n")
+        with self.db.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            first = DigitalCodeStore.reserve_for_order_line(
+                db, product_id="game", order_id="order-1", order_line_id="line-1", quantity=1,
+            )
+            second = DigitalCodeStore.reserve_for_order_line(
+                db, product_id="game", order_id="order-1", order_line_id="line-1", quantity=1,
+            )
+            db.commit()
+        self.assertEqual(first, second)
+        with self.db.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM gd_digital_codes WHERE state='reserved'").fetchone()[0], 1)
+
     def test_unknown_blocks_until_explicit_reconcile(self):
         self.store.import_codes(product_id="game", batch_id="batch-1", source="A-1\n")
         reservation = self.store.reserve(product_id="game", order_id="order-1")

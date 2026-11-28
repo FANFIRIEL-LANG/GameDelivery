@@ -101,6 +101,7 @@ class DigitalCodeStore:
                     state TEXT NOT NULL DEFAULT 'available'
                         CHECK(state IN ('available','reserved','revealed','unknown','released','consumed')),
                     order_id TEXT,
+                    order_line_id TEXT,
                     reserved_at TEXT,
                     revealed_at TEXT,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -120,6 +121,9 @@ class DigitalCodeStore:
                 CREATE INDEX IF NOT EXISTS idx_gd_digital_code_audit_code
                     ON gd_digital_code_audit(code_id,created_at);
             """)
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(gd_digital_codes)")}
+            if "order_line_id" not in columns:
+                db.execute("ALTER TABLE gd_digital_codes ADD COLUMN order_line_id TEXT")
 
     @classmethod
     def _key(cls, code_id: str) -> str:
@@ -172,6 +176,20 @@ class DigitalCodeStore:
             raise DigitalCodeError("product_id, order_id и order_line_id обязательны")
         if type(quantity) is not int or quantity < 1:
             raise DigitalCodeError("quantity должен быть положительным целым")
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(gd_digital_codes)")}
+        if "order_line_id" not in columns:
+            connection.execute("ALTER TABLE gd_digital_codes ADD COLUMN order_line_id TEXT")
+        existing = connection.execute(
+            """SELECT code_id FROM gd_digital_codes
+               WHERE order_id=? AND order_line_id=?
+                 AND state IN ('reserved','revealed','unknown','consumed')
+               ORDER BY created_at,code_id""",
+            (order_id, order_line_id),
+        ).fetchall()
+        if existing:
+            if len(existing) != quantity:
+                raise DigitalCodeConflict("Для order line уже существует другой резерв кодов")
+            return tuple(str(row["code_id"]) for row in existing)
         rows = connection.execute(
             "SELECT code_id FROM gd_digital_codes WHERE product_id=? AND state='available' ORDER BY created_at,code_id LIMIT ?",
             (product_id, quantity),
@@ -181,8 +199,8 @@ class DigitalCodeStore:
         code_ids = tuple(str(row["code_id"]) for row in rows)
         for code_id in code_ids:
             changed = connection.execute(
-                "UPDATE gd_digital_codes SET state='reserved',order_id=?,reserved_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE code_id=? AND state='available'",
-                (order_id, code_id),
+                "UPDATE gd_digital_codes SET state='reserved',order_id=?,order_line_id=?,reserved_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE code_id=? AND state='available'",
+                (order_id, order_line_id, code_id),
             ).rowcount
             if changed != 1:
                 raise DigitalCodeConflict("Код уже зарезервирован")
