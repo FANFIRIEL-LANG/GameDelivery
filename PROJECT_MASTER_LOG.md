@@ -1362,3 +1362,11 @@ Changes: `integrations/playerok/listing_config.py`, `tests/test_playerok_browser
 4. File delivery: prerequisites — isolated test catalog item, non-sensitive test file, approved order, destination and explicit transfer permission. Scenario — one controlled delivery through the file handler, verify exact file hash/size, durable delivery/evidence/audit and no path escape. Risks — wrong file/recipient, partial transfer, path or permission error. Recovery — mark failed/unknown, do not re-send automatically, verify destination and hash, then manual retry with a new idempotency decision.
 
 Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain prohibited until separate explicit permission.
+
+## 2026-11-28 — final remote CI for acceptance-plan checkpoint
+
+- The follow-up log commit `f90267cb2b271c053ed300b1f6ba008ef5b9e239` triggered the required workflows on the exact latest SHA.
+- Tests run `46132527183`, job `test`: success.
+- Windows package run `46132527182`, job `build-windows`: success.
+- The latest branch state is therefore CI-green for both required workflows; no follow-up fix is required.
+- Remaining Stage C gates are controlled live acceptance only; no external mutation is performed in this checkpoint.
