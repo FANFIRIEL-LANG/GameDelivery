@@ -72,6 +72,12 @@ class DigitalCodeTests(unittest.TestCase):
         with self.db.connect() as db:
             audit = db.execute("SELECT action FROM gd_digital_code_audit ORDER BY created_at").fetchall()
             self.assertEqual([row[0] for row in audit], ["imported", "reserved", "revealed"])
+    def test_reserve_normalizes_identifiers_at_store_boundary(self):
+        self.store.import_codes(product_id="game", batch_id="batch-1", source="A-1\n")
+        result = self.store.reserve(product_id=" game ", order_id=" order-1 ")
+        self.assertEqual(result["product_id"], "game")
+        self.assertEqual(result["order_id"], "order-1")
+
     def test_unknown_blocks_until_explicit_reconcile(self):
         self.store.import_codes(product_id="game", batch_id="batch-1", source="A-1\n")
         reservation = self.store.reserve(product_id="game", order_id="order-1")

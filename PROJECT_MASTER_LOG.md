@@ -1418,3 +1418,10 @@ Actual Steam/ASF, Playerok, Telegram messages and real file transfers remain pro
 - The failure result is returned as `failed`, while earlier attempts remain `retry` with the existing delay. This prevents an unavailable Telegram endpoint from causing an unbounded worker loop.
 - Added regression for the terminal fifth attempt.
 - Verification: targeted C.7/C.8/C.9/C.10 regression — **75 passed**; compileall — PASS; `git diff --check` — PASS. No Telegram API or other external operation performed.
+
+## 2026-11-28 — digital stock identifier normalization
+
+- Hardened both digital-code reservation entry points to trim and persist canonical `product_id`, `order_id`, and `order_line_id` values at the store boundary.
+- Whitespace-padded identifiers can no longer pass validation but miss stock rows or create non-canonical order bindings.
+- Added regression for normalized direct reservation.
+- Verification: targeted C.7/C.8/C.9/C.10 regression — **76 passed**; compileall — PASS; `git diff --check` — PASS. No external operations performed.

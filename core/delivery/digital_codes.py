@@ -167,7 +167,8 @@ class DigitalCodeStore:
     @staticmethod
     def reserve_for_order_line(connection, *, product_id: str, order_id: str, order_line_id: str, quantity: int, actor: str = "system") -> tuple[str, ...]:
         """Reserve exact unique codes inside an existing BEGIN IMMEDIATE transaction."""
-        if not product_id.strip() or not order_id.strip() or not order_line_id.strip():
+        product_id, order_id, order_line_id = product_id.strip(), order_id.strip(), order_line_id.strip()
+        if not product_id or not order_id or not order_line_id:
             raise DigitalCodeError("product_id, order_id и order_line_id обязательны")
         if type(quantity) is not int or quantity < 1:
             raise DigitalCodeError("quantity должен быть положительным целым")
@@ -203,7 +204,8 @@ class DigitalCodeStore:
             return [dict(row) for row in db.execute(sql, params).fetchall()]
 
     def reserve(self, *, product_id: str, order_id: str, actor: str = "system") -> dict[str, Any]:
-        if not product_id.strip() or not order_id.strip():
+        product_id, order_id = product_id.strip(), order_id.strip()
+        if not product_id or not order_id:
             raise DigitalCodeError("product_id и order_id обязательны")
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
